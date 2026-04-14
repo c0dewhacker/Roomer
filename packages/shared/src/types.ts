@@ -55,11 +55,18 @@ export enum AssetStatus {
   ASSIGNED = 'ASSIGNED',
   MAINTENANCE = 'MAINTENANCE',
   RETIRED = 'RETIRED',
+  DISABLED = 'DISABLED',
+}
+
+export enum BookableStatus {
+  OPEN = 'OPEN',
+  RESTRICTED = 'RESTRICTED',
+  ASSIGNED = 'ASSIGNED',
+  DISABLED = 'DISABLED',
 }
 
 export enum AssetAssigneeType {
   USER = 'USER',
-  DESK = 'DESK',
 }
 
 export enum NotificationType {
@@ -188,7 +195,7 @@ export interface UserResourceRole {
 export interface Booking {
   id: string
   userId: string
-  deskId: string
+  assetId: string
   startsAt: Date
   endsAt: Date
   status: BookingStatus
@@ -200,7 +207,7 @@ export interface Booking {
 export interface QueueEntry {
   id: string
   userId: string
-  deskId: string
+  assetId: string
   wantedStartsAt: Date
   wantedEndsAt: Date
   position: number
@@ -215,6 +222,9 @@ export interface AssetCategory {
   id: string
   name: string
   description: string | null
+  defaultIsBookable: boolean | null
+  defaultIcon: string | null
+  colour: string
   createdAt: Date
 }
 
@@ -229,6 +239,18 @@ export interface Asset {
   purchaseDate: Date | null
   warrantyExpiry: Date | null
   notes: string | null
+  // Bookable-asset fields
+  isBookable: boolean
+  bookingLabel: string | null
+  amenities: string[]
+  bookingStatus: BookableStatus | null
+  primaryZoneId: string | null
+  floorId: string | null
+  x: number | null
+  y: number | null
+  width: number | null
+  height: number | null
+  rotation: number | null
   createdAt: Date
   updatedAt: Date
 }
@@ -236,9 +258,7 @@ export interface Asset {
 export interface AssetAssignment {
   id: string
   assetId: string
-  assigneeType: AssetAssigneeType
   userId: string | null
-  deskId: string | null
   assignedById: string | null
   assignedAt: Date
   returnedAt: Date | null

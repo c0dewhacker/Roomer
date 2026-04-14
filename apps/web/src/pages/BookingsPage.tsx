@@ -79,7 +79,7 @@ function EditBookingDialog({
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="max-w-sm">
         <DialogHeader>
-          <DialogTitle>Modify booking — {booking.desk?.name}</DialogTitle>
+          <DialogTitle>Modify booking — {(booking.asset ?? booking.desk)?.name}</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-2">
           <div>
@@ -131,7 +131,9 @@ function EditBookingDialog({
 function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boolean }) {
   const navigate = useNavigate()
   const cancel = useCancelBooking()
-  const floorId = booking.desk?.zone?.floor?.id
+  // Support both new `asset` field and legacy `desk` field
+  const bookingAsset = booking.asset ?? booking.desk
+  const floorId = bookingAsset?.zone?.floor?.id
   const [editOpen, setEditOpen] = useState(false)
   const canModify = showCancel && booking.status === 'CONFIRMED'
 
@@ -145,7 +147,7 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
               onClick={() => floorId && navigate(`/floors/${floorId}`)}
             >
               <div className="flex items-center gap-2">
-                <p className="font-medium truncate">{booking.desk?.name ?? 'Unknown desk'}</p>
+                <p className="font-medium truncate">{bookingAsset?.name ?? 'Unknown asset'}</p>
                 <Badge variant={statusVariant[booking.status] ?? 'secondary'} className="shrink-0 text-xs">
                   {booking.status}
                 </Badge>
@@ -153,9 +155,9 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
               <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
                 <MapPin className="h-3 w-3 shrink-0" />
                 {[
-                  booking.desk?.zone?.floor?.building?.name,
-                  booking.desk?.zone?.floor?.name,
-                  booking.desk?.zone?.name,
+                  bookingAsset?.zone?.floor?.building?.name,
+                  bookingAsset?.zone?.floor?.name,
+                  bookingAsset?.zone?.name,
                 ]
                   .filter(Boolean)
                   .join(' › ')}
@@ -190,7 +192,7 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
                     <AlertDialogHeader>
                       <AlertDialogTitle>Cancel booking?</AlertDialogTitle>
                       <AlertDialogDescription>
-                        Cancel your booking for <strong>{booking.desk?.name}</strong> on{' '}
+                        Cancel your booking for <strong>{(booking.asset ?? booking.desk)?.name}</strong> on{' '}
                         {format(parseISO(booking.startsAt), 'PPP')}? This action cannot be undone.
                         Anyone in the queue will be notified.
                       </AlertDialogDescription>

@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
-import type { DeskWithStatus } from '@/types'
+import type { AssetWithStatus } from '@/types'
 
 const STATUS_LEGEND: Array<{ label: string; colour: string; status: string }> = [
   { label: 'Available', colour: 'bg-green-500', status: 'available' },
@@ -24,7 +24,7 @@ const STATUS_LEGEND: Array<{ label: string; colour: string; status: string }> = 
 export default function FloorPage() {
   const { floorId } = useParams<{ floorId: string }>()
   const [selectedDate, setSelectedDate] = useState(new Date())
-  const [selectedDesk, setSelectedDesk] = useState<DeskWithStatus | null>(null)
+  const [selectedDesk, setSelectedDesk] = useState<AssetWithStatus | null>(null)
   const qc = useQueryClient()
 
   const [showWhoIsIn, setShowWhoIsIn] = useState(false)
@@ -52,7 +52,7 @@ export default function FloorPage() {
   const handlePrevDay = () => setSelectedDate((d) => addDays(d, -1))
   const handleNextDay = () => setSelectedDate((d) => addDays(d, 1))
 
-  const handleDeskClick = useCallback((desk: DeskWithStatus) => {
+  const handleDeskClick = useCallback((desk: AssetWithStatus) => {
     setSelectedDesk(desk)
   }, [])
 
@@ -161,7 +161,7 @@ export default function FloorPage() {
             <FloorPlanCanvas
               floorId={floorId}
               date={selectedDate}
-              onDeskClick={handleDeskClick}
+              onAssetClick={handleDeskClick}
             />
           )}
         </div>

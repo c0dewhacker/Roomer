@@ -1,14 +1,15 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Package, Plus, Trash2, UserCheck, UserX } from 'lucide-react'
+import { Package, Plus, Pencil, Trash2, UserCheck, UserX, X } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { assetsApi, buildingsApi, floorsApi, usersApi } from '@/lib/api'
+import { assetsApi, usersApi } from '@/lib/api'
 import { toast } from 'sonner'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -53,15 +54,39 @@ const statusVariant: Record<string, 'default' | 'secondary' | 'destructive' | 'o
   ASSIGNED: 'secondary',
   MAINTENANCE: 'outline',
   RETIRED: 'destructive',
+  DISABLED: 'outline',
+}
+
+const AVAILABLE_ICONS = [
+  'monitor', 'desk', 'phone', 'phone-booth', 'locker',
+  'printer', 'whiteboard', 'room', 'chair', 'coffee', 'wifi',
+] as const
+
+const ICON_DISPLAY: Record<string, string> = {
+  monitor: '\uD83D\uDDA5',
+  desk: '\uD83D\uDCBA',
+  phone: '\uD83D\uDCDE',
+  'phone-booth': '\u260E',
+  locker: '\uD83D\uDD12',
+  printer: '\uD83D\uDDA8',
+  whiteboard: '\uD83D\uDCCB',
+  room: '\uD83D\uDEAA',
+  chair: '\uD83E\uDE91',
+  coffee: '\u2615',
+  wifi: '\uD83D\uDCF6',
 }
 
 // --- Asset Form Dialog ---
 const assetSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   categoryId: z.string().min(1, 'Category is required'),
+  description: z.string().optional(),
   serialNumber: z.string().optional(),
   assetTag: z.string().optional(),
-  status: z.enum(['AVAILABLE', 'ASSIGNED', 'MAINTENANCE', 'RETIRED']),
+  status: z.enum(['AVAILABLE', 'ASSIGNED', 'MAINTENANCE', 'RETIRED', 'DISABLED']),
+  isBookable: z.boolean().optional(),
+  bookingLabel: z.string().optional(),
+  bookingStatus: z.enum(['OPEN', 'RESTRICTED', 'ASSIGNED', 'DISABLED']).optional(),
   notes: z.string().optional(),
 })
 type AssetForm = z.infer<typeof assetSchema>
@@ -78,26 +103,51 @@ function AssetDialog({
   categories: AssetCategory[]
 }) {
   const qc = useQueryClient()
+  const [amenities, setAmenities] = useState<string[]>(existing?.amenities ?? [])
+  const [amenityInput, setAmenityInput] = useState('')
+
   const { register, handleSubmit, setValue, watch, formState: { errors }, reset } = useForm<AssetForm>({
     resolver: zodResolver(assetSchema),
     defaultValues: {
       name: existing?.name ?? '',
       categoryId: existing?.categoryId ?? '',
+      description: existing?.description ?? '',
       serialNumber: existing?.serialNumber ?? '',
       assetTag: existing?.assetTag ?? '',
-      status: existing?.status ?? 'AVAILABLE',
+      status: (existing?.status as AssetForm['status']) ?? 'AVAILABLE',
+      isBookable: existing?.isBookable ?? false,
+      bookingLabel: existing?.bookingLabel ?? '',
+      bookingStatus: (existing?.bookingStatus as AssetForm['bookingStatus']) ?? 'OPEN',
       notes: existing?.notes ?? '',
     },
   })
 
+  // Reset form and amenities whenever the dialog opens for a different asset
+  useEffect(() => {
+    reset({
+      name: existing?.name ?? '',
+      categoryId: existing?.categoryId ?? '',
+      description: existing?.description ?? '',
+      serialNumber: existing?.serialNumber ?? '',
+      assetTag: existing?.assetTag ?? '',
+      status: (existing?.status as AssetForm['status']) ?? 'AVAILABLE',
+      isBookable: existing?.isBookable ?? false,
+      bookingLabel: existing?.bookingLabel ?? '',
+      bookingStatus: (existing?.bookingStatus as AssetForm['bookingStatus']) ?? 'OPEN',
+      notes: existing?.notes ?? '',
+    })
+    setAmenities(existing?.amenities ?? [])
+    setAmenityInput('')
+  }, [existing, reset])
+
   const create = useMutation({
-    mutationFn: (d: AssetForm) => assetsApi.create(d),
+    mutationFn: (d: AssetForm) => assetsApi.create({ ...d, amenities }),
     onSuccess: () => { toast.success('Asset created'); qc.invalidateQueries({ queryKey: ['assets'] }); onClose(); reset() },
     onError: () => toast.error('Failed to create asset'),
   })
 
   const update = useMutation({
-    mutationFn: (d: AssetForm) => assetsApi.update(existing!.id, d),
+    mutationFn: (d: AssetForm) => assetsApi.update(existing!.id, { ...d, amenities }),
     onSuccess: () => { toast.success('Asset updated'); qc.invalidateQueries({ queryKey: ['assets'] }); onClose() },
     onError: () => toast.error('Failed to update asset'),
   })
@@ -105,16 +155,22 @@ function AssetDialog({
   const onSubmit = (d: AssetForm) => existing ? update.mutate(d) : create.mutate(d)
   const isPending = create.isPending || update.isPending
 
+  const addAmenity = () => {
+    const val = amenityInput.trim()
+    if (val && !amenities.includes(val)) setAmenities((prev) => [...prev, val])
+    setAmenityInput('')
+  }
+
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{existing ? 'Edit Asset' : 'Add Asset'}</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           <div>
             <Label htmlFor="name">Name *</Label>
-            <Input id="name" {...register('name')} className="mt-1.5" placeholder="e.g. MacBook Pro" />
+            <Input id="name" {...register('name')} className="mt-1.5" placeholder="e.g. Standing Desk 4A" />
             {errors.name && <p className="text-xs text-destructive mt-1">{errors.name.message}</p>}
           </div>
           <div>
@@ -131,6 +187,10 @@ function AssetDialog({
             </Select>
             {errors.categoryId && <p className="text-xs text-destructive mt-1">{errors.categoryId.message}</p>}
           </div>
+          <div>
+            <Label htmlFor="description">Description</Label>
+            <Textarea id="description" {...register('description')} className="mt-1.5 resize-none" rows={2} placeholder="Optional description" />
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label htmlFor="serialNumber">Serial Number</Label>
@@ -142,7 +202,7 @@ function AssetDialog({
             </div>
           </div>
           <div>
-            <Label>Status</Label>
+            <Label>Physical Status</Label>
             <Select value={watch('status')} onValueChange={(v) => setValue('status', v as AssetForm['status'])}>
               <SelectTrigger className="mt-1.5">
                 <SelectValue />
@@ -152,13 +212,78 @@ function AssetDialog({
                 <SelectItem value="ASSIGNED">Assigned</SelectItem>
                 <SelectItem value="MAINTENANCE">Maintenance</SelectItem>
                 <SelectItem value="RETIRED">Retired</SelectItem>
+                <SelectItem value="DISABLED">Disabled</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div>
             <Label htmlFor="notes">Notes</Label>
-            <Input id="notes" {...register('notes')} className="mt-1.5" placeholder="Optional notes" />
+            <Input id="notes" {...register('notes')} className="mt-1.5" placeholder="Internal notes" />
           </div>
+
+          <div className="border-t pt-4">
+            <div className="flex items-center gap-2 mb-3">
+              <input
+                id="isBookable"
+                type="checkbox"
+                checked={watch('isBookable') ?? false}
+                onChange={(e) => setValue('isBookable', e.target.checked)}
+                className="h-4 w-4 rounded border-border"
+              />
+              <Label htmlFor="isBookable" className="cursor-pointer text-sm font-medium">Bookable on floor plan</Label>
+            </div>
+            {watch('isBookable') && (
+              <div className="space-y-4 pl-6">
+                <div>
+                  <Label>Booking Status</Label>
+                  <Select value={watch('bookingStatus') ?? 'OPEN'} onValueChange={(v) => setValue('bookingStatus', v as AssetForm['bookingStatus'])}>
+                    <SelectTrigger className="mt-1.5">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="OPEN">Open (anyone can book)</SelectItem>
+                      <SelectItem value="RESTRICTED">Restricted (allow list only)</SelectItem>
+                      <SelectItem value="ASSIGNED">Assigned (permanent user only)</SelectItem>
+                      <SelectItem value="DISABLED">Disabled (not bookable)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label htmlFor="bookingLabel">Booking Label</Label>
+                  <Input id="bookingLabel" {...register('bookingLabel')} className="mt-1.5" placeholder="e.g. Hot desk, Standing desk…" />
+                </div>
+                <div>
+                  <Label>Amenities</Label>
+                  <div className="flex gap-2 mt-1.5">
+                    <Input
+                      value={amenityInput}
+                      onChange={(e) => setAmenityInput(e.target.value)}
+                      placeholder="e.g. Monitor, Sit-stand…"
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addAmenity() } }}
+                    />
+                    <Button type="button" variant="outline" size="sm" onClick={addAmenity} className="shrink-0">Add</Button>
+                  </div>
+                  {amenities.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {amenities.map((a) => (
+                        <Badge key={a} variant="secondary" className="gap-1 pr-1.5">
+                          {a}
+                          <button
+                            type="button"
+                            onClick={() => setAmenities((prev) => prev.filter((x) => x !== a))}
+                            className="ml-0.5 rounded-full hover:text-destructive"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
             <Button type="submit" disabled={isPending}>
@@ -175,9 +300,6 @@ function AssetDialog({
 
 function AssignDialog({ open, onClose, assetId }: { open: boolean; onClose: () => void; assetId: string }) {
   const qc = useQueryClient()
-  const [assigneeType, setAssigneeType] = useState<'USER' | 'DESK'>('USER')
-
-  // User search
   const [userSearch, setUserSearch] = useState('')
   const [selectedUser, setSelectedUser] = useState<{ id: string; displayName: string; email: string } | null>(null)
 
@@ -185,180 +307,64 @@ function AssignDialog({ open, onClose, assetId }: { open: boolean; onClose: () =
     queryKey: ['users', 'search', userSearch],
     queryFn: () => usersApi.list({ q: userSearch, limit: 20 }),
     select: (r) => r.data,
-    enabled: assigneeType === 'USER' && userSearch.length >= 2,
+    enabled: userSearch.length >= 2,
   })
-
-  // Desk picker: buildings → floors → desks
-  const [selectedBuildingId, setSelectedBuildingId] = useState('')
-  const [selectedFloorId, setSelectedFloorId] = useState('')
-  const [selectedDeskId, setSelectedDeskId] = useState('')
-
-  const { data: buildings } = useQuery({
-    queryKey: ['buildings'],
-    queryFn: () => buildingsApi.list(),
-    select: (r) => r.data,
-    enabled: assigneeType === 'DESK',
-  })
-
-  const { data: buildingDetail } = useQuery({
-    queryKey: ['buildings', selectedBuildingId],
-    queryFn: () => buildingsApi.get(selectedBuildingId),
-    select: (r) => r.data,
-    enabled: assigneeType === 'DESK' && !!selectedBuildingId,
-  })
-
-  const { data: floorDetail } = useQuery({
-    queryKey: ['floors', selectedFloorId],
-    queryFn: () => floorsApi.get(selectedFloorId),
-    select: (r) => r.data,
-    enabled: assigneeType === 'DESK' && !!selectedFloorId,
-  })
-
-  // Flatten desks from all zones in selected floor
-  const floorDesks = floorDetail?.zones?.flatMap((z) => z.desks.map((d) => ({ ...d, zoneName: z.name }))) ?? []
-
-  const resolvedId = assigneeType === 'USER' ? (selectedUser?.id ?? '') : selectedDeskId
 
   const assign = useMutation({
-    mutationFn: () => assetsApi.assign(assetId, { assigneeType, assigneeId: resolvedId }),
+    mutationFn: () => assetsApi.assign(assetId, { assigneeType: 'USER', assigneeId: selectedUser!.id }),
     onSuccess: () => {
       toast.success('Asset assigned')
       qc.invalidateQueries({ queryKey: ['assets'] })
-      qc.invalidateQueries({ queryKey: ['floors'] })
       onClose()
       setSelectedUser(null)
       setUserSearch('')
-      setSelectedBuildingId('')
-      setSelectedFloorId('')
-      setSelectedDeskId('')
     },
     onError: () => toast.error('Failed to assign asset'),
   })
-
-  const handleTypeChange = (t: 'USER' | 'DESK') => {
-    setAssigneeType(t)
-    setSelectedUser(null)
-    setUserSearch('')
-    setSelectedBuildingId('')
-    setSelectedFloorId('')
-    setSelectedDeskId('')
-  }
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Assign Asset</DialogTitle>
+          <DialogTitle>Assign Asset to User</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-1">
-          <div>
-            <Label>Assign to</Label>
-            <Select value={assigneeType} onValueChange={(v) => handleTypeChange(v as 'USER' | 'DESK')}>
-              <SelectTrigger className="mt-1.5">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="USER">User</SelectItem>
-                <SelectItem value="DESK">Desk (floor plan)</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {assigneeType === 'USER' && (
-            <div className="space-y-2">
-              <Label>Search user</Label>
-              <Input
-                placeholder="Name or email…"
-                value={userSearch}
-                onChange={(e) => { setUserSearch(e.target.value); setSelectedUser(null) }}
-                className="mt-1"
-              />
-              {selectedUser && (
-                <div className="rounded-md border bg-muted/40 px-3 py-2">
-                  <p className="text-sm font-medium">{selectedUser.displayName}</p>
-                  <p className="text-xs text-muted-foreground">{selectedUser.email}</p>
-                </div>
-              )}
-              {!selectedUser && userResults && userResults.length > 0 && (
-                <div className="rounded-md border divide-y max-h-40 overflow-y-auto">
-                  {userResults.map((u) => (
-                    <button
-                      key={u.id}
-                      type="button"
-                      className="w-full text-left px-3 py-2 hover:bg-muted transition-colors"
-                      onClick={() => { setSelectedUser(u); setUserSearch(u.displayName) }}
-                    >
-                      <p className="text-sm font-medium">{u.displayName}</p>
-                      <p className="text-xs text-muted-foreground">{u.email}</p>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {assigneeType === 'DESK' && (
-            <div className="space-y-3">
-              <div>
-                <Label>Building</Label>
-                <Select value={selectedBuildingId} onValueChange={(v) => { setSelectedBuildingId(v); setSelectedFloorId(''); setSelectedDeskId('') }}>
-                  <SelectTrigger className="mt-1.5">
-                    <SelectValue placeholder="Select building…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(buildings ?? []).map((b) => (
-                      <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+          <div className="space-y-2">
+            <Label>Search user</Label>
+            <Input
+              placeholder="Name or email…"
+              value={userSearch}
+              onChange={(e) => { setUserSearch(e.target.value); setSelectedUser(null) }}
+              className="mt-1"
+            />
+            {selectedUser && (
+              <div className="rounded-md border bg-muted/40 px-3 py-2">
+                <p className="text-sm font-medium">{selectedUser.displayName}</p>
+                <p className="text-xs text-muted-foreground">{selectedUser.email}</p>
               </div>
-
-              {selectedBuildingId && (
-                <div>
-                  <Label>Floor</Label>
-                  <Select value={selectedFloorId} onValueChange={(v) => { setSelectedFloorId(v); setSelectedDeskId('') }}>
-                    <SelectTrigger className="mt-1.5">
-                      <SelectValue placeholder="Select floor…" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {(buildingDetail?.floors ?? []).map((f) => (
-                        <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-
-              {selectedFloorId && (
-                <div>
-                  <Label>Desk</Label>
-                  <Select value={selectedDeskId} onValueChange={setSelectedDeskId}>
-                    <SelectTrigger className="mt-1.5">
-                      <SelectValue placeholder="Select desk…" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {floorDesks.length === 0 ? (
-                        <SelectItem value="__none__" disabled>No desks on this floor</SelectItem>
-                      ) : (
-                        floorDesks.map((d) => (
-                          <SelectItem key={d.id} value={d.id}>
-                            {d.name}
-                            <span className="text-muted-foreground ml-1">— {d.zoneName}</span>
-                          </SelectItem>
-                        ))
-                      )}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-            </div>
-          )}
+            )}
+            {!selectedUser && userResults && userResults.length > 0 && (
+              <div className="rounded-md border divide-y max-h-40 overflow-y-auto">
+                {userResults.map((u) => (
+                  <button
+                    key={u.id}
+                    type="button"
+                    className="w-full text-left px-3 py-2 hover:bg-muted transition-colors"
+                    onClick={() => { setSelectedUser(u); setUserSearch(u.displayName) }}
+                  >
+                    <p className="text-sm font-medium">{u.displayName}</p>
+                    <p className="text-xs text-muted-foreground">{u.email}</p>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
           <Button
             onClick={() => assign.mutate()}
-            disabled={!resolvedId || assign.isPending}
+            disabled={!selectedUser || assign.isPending}
           >
             {assign.isPending ? 'Assigning…' : 'Assign'}
           </Button>
@@ -372,15 +378,20 @@ function AssignDialog({ open, onClose, assetId }: { open: boolean; onClose: () =
 const categorySchema = z.object({
   name: z.string().min(1, 'Name is required'),
   description: z.string().optional(),
+  defaultIsBookable: z.boolean().optional(),
+  defaultIcon: z.string().optional(),
+  colour: z.string().optional(),
 })
 type CategoryForm = z.infer<typeof categorySchema>
 
 function CategoryDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const qc = useQueryClient()
-  const { register, handleSubmit, formState: { errors }, reset } = useForm<CategoryForm>({
+  const { register, handleSubmit, formState: { errors }, reset, watch, setValue } = useForm<CategoryForm>({
     resolver: zodResolver(categorySchema),
-    defaultValues: { name: '', description: '' },
+    defaultValues: { name: '', description: '', defaultIsBookable: false, defaultIcon: '', colour: '#6366f1' },
   })
+  const selectedIcon = watch('defaultIcon')
+  const colour = watch('colour')
 
   const create = useMutation({
     mutationFn: (d: CategoryForm) => assetsApi.createCategory(d),
@@ -397,12 +408,58 @@ function CategoryDialog({ open, onClose }: { open: boolean; onClose: () => void 
         <form onSubmit={handleSubmit((d) => create.mutate(d))} className="space-y-4">
           <div>
             <Label htmlFor="catName">Name *</Label>
-            <Input id="catName" {...register('name')} className="mt-1.5" placeholder="e.g. Laptops" />
+            <Input id="catName" {...register('name')} className="mt-1.5" placeholder="e.g. Desks" />
             {errors.name && <p className="text-xs text-destructive mt-1">{errors.name.message}</p>}
           </div>
           <div>
             <Label htmlFor="catDesc">Description</Label>
             <Input id="catDesc" {...register('description')} className="mt-1.5" placeholder="Optional description" />
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              id="defaultIsBookable"
+              type="checkbox"
+              checked={watch('defaultIsBookable') ?? false}
+              onChange={(e) => setValue('defaultIsBookable', e.target.checked)}
+              className="h-4 w-4 rounded border-border"
+            />
+            <Label htmlFor="defaultIsBookable" className="cursor-pointer text-sm">Bookable by default</Label>
+          </div>
+          <div>
+            <Label>Colour</Label>
+            <div className="flex items-center gap-3 mt-1.5">
+              <input
+                type="color"
+                value={colour ?? '#6366f1'}
+                onChange={(e) => setValue('colour', e.target.value)}
+                className="h-9 w-16 cursor-pointer rounded border border-input bg-transparent p-0.5"
+              />
+              <Input
+                value={colour ?? ''}
+                onChange={(e) => setValue('colour', e.target.value)}
+                className="w-32 font-mono"
+                placeholder="#6366f1"
+              />
+              <div className="h-7 w-7 rounded border" style={{ backgroundColor: colour ?? '#6366f1' }} />
+            </div>
+          </div>
+          <div>
+            <Label>Default Icon</Label>
+            <p className="text-xs text-muted-foreground mb-2 mt-0.5">Select an icon for assets in this category</p>
+            <div className="grid grid-cols-6 gap-2">
+              {AVAILABLE_ICONS.map((icon) => (
+                <button
+                  key={icon}
+                  type="button"
+                  title={icon}
+                  onClick={() => setValue('defaultIcon', icon === selectedIcon ? '' : icon)}
+                  className={`flex flex-col items-center gap-0.5 p-2 rounded-md border text-lg transition-colors ${selectedIcon === icon ? 'border-primary bg-primary/10' : 'border-border hover:bg-muted'}`}
+                >
+                  <span>{ICON_DISPLAY[icon]}</span>
+                  <span className="text-[9px] text-muted-foreground truncate w-full text-center">{icon}</span>
+                </button>
+              ))}
+            </div>
           </div>
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
@@ -479,6 +536,7 @@ function AssetsTab({ categories }: { categories: AssetCategory[] }) {
                 <TableHead>Serial</TableHead>
                 <TableHead>Tag</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Bookable</TableHead>
                 <TableHead>Assignee</TableHead>
                 <TableHead className="w-[120px]">Actions</TableHead>
               </TableRow>
@@ -497,14 +555,29 @@ function AssetsTab({ categories }: { categories: AssetCategory[] }) {
                         {asset.status}
                       </Badge>
                     </TableCell>
+                    <TableCell>
+                      {asset.isBookable ? (
+                        <Badge variant="default" className="text-xs">
+                          {asset.bookingStatus ?? 'OPEN'}
+                        </Badge>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">No</span>
+                      )}
+                    </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
-                      {currentAssignment?.user?.displayName
-                        ?? (currentAssignment?.assigneeType === 'DESK'
-                          ? `Desk${(currentAssignment as any)?.desk?.name ? `: ${(currentAssignment as any).desk.name}` : ''}`
-                          : (currentAssignment ? '—' : '—'))}
+                      {currentAssignment?.user?.displayName ?? (currentAssignment ? '—' : '—')}
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          title="Edit"
+                          onClick={() => { setEditTarget(asset); setDialogOpen(true) }}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
                         {currentAssignment ? (
                           <Button
                             variant="ghost"
@@ -616,11 +689,24 @@ function CategoriesTab() {
           {(categories ?? []).map((cat) => (
             <Card key={cat.id}>
               <CardContent className="p-4 flex items-center justify-between">
-                <div>
-                  <p className="font-medium">{cat.name}</p>
-                  {cat.description && (
-                    <p className="text-xs text-muted-foreground">{cat.description}</p>
+                <div className="flex items-center gap-3">
+                  {cat.colour && (
+                    <div className="h-8 w-8 rounded-full border shrink-0" style={{ backgroundColor: cat.colour }} />
                   )}
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium">{cat.name}</p>
+                      {cat.defaultIcon && ICON_DISPLAY[cat.defaultIcon] && (
+                        <span className="text-base" title={cat.defaultIcon}>{ICON_DISPLAY[cat.defaultIcon]}</span>
+                      )}
+                      {cat.defaultIsBookable && (
+                        <Badge variant="secondary" className="text-xs">Bookable</Badge>
+                      )}
+                    </div>
+                    {cat.description && (
+                      <p className="text-xs text-muted-foreground">{cat.description}</p>
+                    )}
+                  </div>
                 </div>
                 <AlertDialog>
                   <AlertDialogTrigger asChild>

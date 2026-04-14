@@ -40,16 +40,16 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
         <div className="flex items-start justify-between gap-3">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <p className="font-medium truncate">{entry.desk?.name ?? 'Unknown desk'}</p>
+              <p className="font-medium truncate">{(entry.asset ?? entry.desk)?.name ?? 'Unknown asset'}</p>
               <Badge variant={cfg.variant} className="shrink-0 text-xs">
                 {cfg.label}
               </Badge>
             </div>
 
-            {entry.desk?.zone && (
+            {(entry.asset ?? entry.desk)?.zone && (
               <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
                 <MapPin className="h-3 w-3 shrink-0" />
-                {entry.desk.zone.name}
+                {(entry.asset ?? entry.desk)!.zone!.name}
               </p>
             )}
 
@@ -97,7 +97,7 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
                     <AlertDialogTitle>Leave queue?</AlertDialogTitle>
                     <AlertDialogDescription>
                       You will lose your position #{entry.position} in the queue for{' '}
-                      <strong>{entry.desk?.name}</strong>.
+                      <strong>{(entry.asset ?? entry.desk)?.name}</strong>.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>

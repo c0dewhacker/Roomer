@@ -86,9 +86,9 @@ export function requireResourceRole(
   }
 }
 
-// Middleware for desk endpoints: resolves desk → zone → floorId, then checks floor-level role.
+// Middleware for asset endpoints: resolves asset → floorId directly, then checks floor-level role.
 // Also passes for SUPER_ADMIN.
-export function requireFloorRoleForDesk(minimumRole: ResourceRoleType) {
+export function requireFloorRoleForAsset(minimumRole: ResourceRoleType) {
   return async function (request: FastifyRequest, reply: FastifyReply): Promise<void> {
     if (!request.user) {
       return reply.status(401).send({
@@ -101,16 +101,22 @@ export function requireFloorRoleForDesk(minimumRole: ResourceRoleType) {
     }
 
     const { id } = request.params as { id: string }
-    const desk = await prisma.desk.findUnique({
+    const asset = await prisma.asset.findUnique({
       where: { id },
-      select: { zone: { select: { floorId: true } } },
+      select: { floorId: true },
     })
 
-    if (!desk) {
-      return reply.status(404).send({ error: { message: 'Desk not found', code: 'NOT_FOUND' } })
+    if (!asset) {
+      return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
     }
 
-    const floorId = desk.zone.floorId
+    if (!asset.floorId) {
+      return reply.status(403).send({
+        error: { message: 'Insufficient permissions', code: 'FORBIDDEN' },
+      })
+    }
+
+    const floorId = asset.floorId
 
     const directRole = await prisma.userResourceRole.findFirst({
       where: { userId: request.user.id, scopeType: ResourceScopeType.FLOOR, floorId },

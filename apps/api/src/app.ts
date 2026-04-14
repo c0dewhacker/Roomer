@@ -12,7 +12,6 @@ import { authRoutes } from './routes/auth'
 import { buildingRoutes } from './routes/buildings'
 import { floorRoutes } from './routes/floors'
 import { zoneRoutes, zoneGroupRoutes } from './routes/zones'
-import { deskRoutes } from './routes/desks'
 import { bookingRoutes } from './routes/bookings'
 import { queueRoutes } from './routes/queue'
 import { userRoutes } from './routes/users'
@@ -143,7 +142,6 @@ export async function buildApp(): Promise<FastifyInstance> {
   await fastify.register(floorRoutes, { prefix: '/api/v1/floors' })
   await fastify.register(zoneRoutes, { prefix: '/api/v1/zones' })
   await fastify.register(zoneGroupRoutes, { prefix: '/api/v1/zone-groups' })
-  await fastify.register(deskRoutes, { prefix: '/api/v1/desks' })
   await fastify.register(bookingRoutes, { prefix: '/api/v1/bookings' })
   await fastify.register(queueRoutes, { prefix: '/api/v1/queue' })
   await fastify.register(userRoutes, { prefix: '/api/v1/users' })

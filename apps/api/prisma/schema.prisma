@@ -42,7 +42,8 @@ enum AccountStatus {
   BLOCKED
 }
 
-enum DeskStatus {
+/// Booking eligibility status for bookable assets (replaces DeskStatus).
+enum BookableStatus {
   OPEN
   RESTRICTED
   ASSIGNED
@@ -68,11 +69,7 @@ enum AssetStatus {
   ASSIGNED
   MAINTENANCE
   RETIRED
-}
-
-enum AssetAssigneeType {
-  USER
-  DESK
+  DISABLED
 }
 
 enum NotificationType {
@@ -174,6 +171,7 @@ model Floor {
   floorPlan  FloorPlan?
   zoneGroups ZoneGroup[]
   zones      Zone[]
+  assets     Asset[]
   resourceRoles      UserResourceRole[]
   groupResourceRoles GroupResourceRole[]
   groupAccess        GroupFloorAccess[]
@@ -204,66 +202,125 @@ model ZoneGroup {
 }
 
 model Zone {
-  id              String     @id @default(cuid())
-  floorId         String
-  zoneGroupId     String?
-  name            String
-  colour          String     @default("#6366f1")
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
-  floor           Floor      @relation(fields: [floorId], references: [id], onDelete: Cascade)
-  zoneGroup       ZoneGroup? @relation(fields: [zoneGroupId], references: [id])
-  desks           Desk[]
-  additionalDesks DeskZone[]
+  id          String     @id @default(cuid())
+  floorId     String
+  zoneGroupId String?
+  name        String
+  colour      String     @default("#6366f1")
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  floor       Floor      @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  zoneGroup   ZoneGroup? @relation(fields: [zoneGroupId], references: [id])
+  /// Assets whose primary zone is this zone
+  assets      Asset[]    @relation("PrimaryZone")
+  /// Additional zone memberships (asset can belong to multiple zones)
+  assetZones  AssetZone[]
 }
 
-model Desk {
-  id               String               @id @default(cuid())
-  zoneId           String
-  name             String
-  x                Float
-  y                Float
-  width            Float                @default(3.0)
-  height           Float                @default(2.0)
-  rotation         Float                @default(0)
-  status           DeskStatus           @default(OPEN)
-  amenities        String[]
-  createdAt        DateTime             @default(now())
-  updatedAt        DateTime             @updatedAt
-  zone             Zone                 @relation(fields: [zoneId], references: [id], onDelete: Cascade)
-  allowList        DeskAllowList[]
-  bookings         Booking[]
-  queueEntries     QueueEntry[]
-  assetAssignments AssetAssignment[]
-  userAssignments  DeskUserAssignment[]
-  additionalZones  DeskZone[]
-}
-
-model DeskUserAssignment {
-  deskId    String
-  userId    String
-  isPrimary Boolean  @default(false)
-  createdAt DateTime @default(now())
-  desk      Desk     @relation(fields: [deskId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@id([deskId, userId])
-  @@index([deskId])
-  @@index([userId])
-}
-
-model DeskZone {
-  deskId    String
+/// Junction table for additional zone memberships of an asset.
+/// An asset's primary zone is stored as Asset.primaryZoneId.
+model AssetZone {
+  assetId   String
   zoneId    String
   createdAt DateTime @default(now())
-  desk      Desk     @relation(fields: [deskId], references: [id], onDelete: Cascade)
+  asset     Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
   zone      Zone     @relation(fields: [zoneId], references: [id], onDelete: Cascade)
 
-  @@id([deskId, zoneId])
-  @@index([deskId])
+  @@id([assetId, zoneId])
+  @@index([assetId])
   @@index([zoneId])
 }
 
+/// Per-asset allow-list: when an asset's bookingStatus is RESTRICTED,
+/// only users on this list (plus permanent user-assignments) may book it.
+model AssetAllowList {
+  assetId   String
+  userId    String
+  createdAt DateTime @default(now())
+  asset     Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([assetId, userId])
+}
+
+/// Category for an asset. Controls default bookability and map appearance.
+model AssetCategory {
+  id               String   @id @default(cuid())
+  name             String   @unique
+  description      String?
+  /// New assets in this category are bookable by default when true.
+  defaultIsBookable Boolean @default(false)
+  /// Icon slug used on the floor-plan canvas (e.g. "monitor", "phone", "lock").
+  defaultIcon      String?
+  /// Hex colour for map markers in this category.
+  colour           String   @default("#6366f1")
+  createdAt        DateTime @default(now())
+  assets           Asset[]
+}
+
+/// Unified asset model. Bookable assets (isBookable=true) replace the old Desk model.
+/// Non-bookable assets are physical inventory items tracked for assignment purposes.
+model Asset {
+  id           String      @id @default(cuid())
+  categoryId   String
+  name         String
+  description  String?
+  serialNumber String?
+  assetTag     String?     @unique
+  /// Physical tracking status.
+  status       AssetStatus @default(AVAILABLE)
+  notes        String?
+
+  // ── Bookability ────────────────────────────────────────────────────────────
+  /// When true, users can book this asset on the floor plan.
+  isBookable    Boolean        @default(false)
+  /// Label shown in the booking UI, e.g. "Desk", "Phone Booth", "Room".
+  bookingLabel  String?
+  /// Amenities available on this asset (only meaningful when isBookable=true).
+  amenities     String[]
+  /// Booking eligibility. Null when not bookable.
+  bookingStatus BookableStatus?
+
+  // ── Map placement ──────────────────────────────────────────────────────────
+  /// Primary zone this asset belongs to (null = not placed on any floor plan).
+  primaryZoneId String?
+  /// Floor this asset is placed on (null = not placed).
+  floorId       String?
+  x             Float?
+  y             Float?
+  /// Rendered width on the canvas (grid units). Defaults to 3 for placed assets.
+  width         Float?
+  /// Rendered height on the canvas (grid units). Defaults to 2 for placed assets.
+  height        Float?
+  rotation      Float?
+
+  // ── Physical asset tracking ────────────────────────────────────────────────
+  purchaseDate   DateTime?
+  warrantyExpiry DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  category        AssetCategory         @relation(fields: [categoryId], references: [id])
+  primaryZone     Zone?                 @relation("PrimaryZone", fields: [primaryZoneId], references: [id], onDelete: SetNull)
+  floor           Floor?                @relation(fields: [floorId], references: [id], onDelete: SetNull)
+  additionalZones AssetZone[]
+  allowList       AssetAllowList[]
+  userAssignments AssetUserAssignment[]
+  /// Temporary assignments (checked-out to a user with a return date).
+  assignments     AssetAssignment[]
+  /// Bookings made against this asset (only populated when isBookable=true).
+  bookings        Booking[]
+  queueEntries    QueueEntry[]
+
+  @@index([floorId])
+  @@index([primaryZoneId])
+  @@index([categoryId])
+  @@index([isBookable])
+}
+
+/// Permanent user assignment — records which user "owns" or is primarily responsible
+/// for an asset (e.g. a desk permanently assigned to an employee).
 model AssetUserAssignment {
   assetId   String
   userId    String
@@ -277,14 +334,21 @@ model AssetUserAssignment {
   @@index([userId])
 }
 
-model DeskAllowList {
-  deskId    String
-  userId    String
-  createdAt DateTime @default(now())
-  desk      Desk     @relation(fields: [deskId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+/// Temporary assignment — tracks an asset checked out to a specific user
+/// (e.g. a laptop loan). Has an explicit returnedAt to record when it was returned.
+model AssetAssignment {
+  id           String    @id @default(cuid())
+  assetId      String
+  userId       String?
+  assignedById String?
+  assignedAt   DateTime  @default(now())
+  returnedAt   DateTime?
+  notes        String?
+  asset        Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  user         User?     @relation(fields: [userId], references: [id])
 
-  @@id([deskId, userId])
+  @@index([assetId])
+  @@index([userId])
 }
 
 model User {
@@ -305,9 +369,8 @@ model User {
   assetAssignments     AssetAssignment[]
   notifications        Notification[]
   auditLogsAsActor     AuditLog[]           @relation("actor")
-  deskAllowList        DeskAllowList[]
+  assetAllowList       AssetAllowList[]
   groupMemberships     UserGroupMember[]
-  deskUserAssignments  DeskUserAssignment[]
   assetUserAssignments AssetUserAssignment[]
 
   @@index([email])
@@ -397,7 +460,7 @@ model GroupResourceRole {
 model Booking {
   id        String        @id @default(cuid())
   userId    String
-  deskId    String
+  assetId   String
   startsAt  DateTime
   endsAt    DateTime
   status    BookingStatus @default(CONFIRMED)
@@ -405,9 +468,9 @@ model Booking {
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
   user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  desk      Desk          @relation(fields: [deskId], references: [id], onDelete: Cascade)
+  asset     Asset         @relation(fields: [assetId], references: [id], onDelete: Cascade)
 
-  @@index([deskId, startsAt, endsAt])
+  @@index([assetId, startsAt, endsAt])
   @@index([userId, startsAt])
   @@index([status])
 }
@@ -415,7 +478,7 @@ model Booking {
 model QueueEntry {
   id             String           @id @default(cuid())
   userId         String
-  deskId         String
+  assetId        String
   wantedStartsAt DateTime
   wantedEndsAt   DateTime
   position       Int
@@ -425,56 +488,11 @@ model QueueEntry {
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
   user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  desk           Desk             @relation(fields: [deskId], references: [id], onDelete: Cascade)
+  asset          Asset            @relation(fields: [assetId], references: [id], onDelete: Cascade)
 
-  @@index([deskId, status, wantedStartsAt, wantedEndsAt])
+  @@index([assetId, status, wantedStartsAt, wantedEndsAt])
   @@index([userId, status])
   @@index([expiresAt, status])
-}
-
-model AssetCategory {
-  id          String   @id @default(cuid())
-  name        String   @unique
-  description String?
-  createdAt   DateTime @default(now())
-  assets      Asset[]
-}
-
-model Asset {
-  id             String            @id @default(cuid())
-  categoryId     String
-  name           String
-  description    String?
-  serialNumber   String?
-  assetTag       String?           @unique
-  status         AssetStatus       @default(AVAILABLE)
-  purchaseDate   DateTime?
-  warrantyExpiry DateTime?
-  notes          String?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-  category         AssetCategory        @relation(fields: [categoryId], references: [id])
-  assignments      AssetAssignment[]
-  userAssignments  AssetUserAssignment[]
-}
-
-model AssetAssignment {
-  id           String            @id @default(cuid())
-  assetId      String
-  assigneeType AssetAssigneeType
-  userId       String?
-  deskId       String?
-  assignedById String?
-  assignedAt   DateTime          @default(now())
-  returnedAt   DateTime?
-  notes        String?
-  asset        Asset             @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  user         User?             @relation(fields: [userId], references: [id])
-  desk         Desk?             @relation(fields: [deskId], references: [id])
-
-  @@index([assetId])
-  @@index([userId])
-  @@index([deskId])
 }
 
 model Notification {

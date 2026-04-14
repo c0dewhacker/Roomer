@@ -9,7 +9,7 @@ import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage'
 import { env } from '../env'
 
 export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
-  // GET /floors/:id — floor with zones, desks, floorPlan
+  // GET /floors/:id — floor with zones, bookable assets, floorPlan
   fastify.get('/:id', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
 
@@ -22,7 +22,10 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         zones: {
           orderBy: { name: 'asc' },
           include: {
-            desks: { orderBy: { name: 'asc' } },
+            assets: {
+              where: { isBookable: true },
+              orderBy: { name: 'asc' },
+            },
           },
         },
       },
@@ -300,7 +303,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
   })
 
   // GET /floors/:id/availability?date=YYYY-MM-DD
-  // Returns a flat array of desks with computed bookingStatus for the requesting user.
+  // Returns zones with nested bookable assets and computed bookingStatus for the requesting user.
   fastify.get('/:id/availability', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
     const { date } = request.query as { date?: string }
@@ -321,7 +324,8 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         zones: {
           orderBy: { name: 'asc' },
           include: {
-            desks: {
+            assets: {
+              where: { isBookable: true },
               orderBy: { name: 'asc' },
               include: {
                 allowList: { select: { userId: true } },
@@ -329,12 +333,6 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
                   select: {
                     isPrimary: true,
                     user: { select: { id: true, displayName: true, email: true } },
-                  },
-                },
-                assetAssignments: {
-                  where: { returnedAt: null },
-                  include: {
-                    asset: { select: { id: true, name: true, category: { select: { name: true } } } },
                   },
                 },
                 bookings: {
@@ -371,35 +369,34 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
     }
 
-    type BookingStatus = 'available' | 'mine' | 'booked' | 'restricted' | 'assigned' | 'disabled' | 'queued' | 'promoted' | 'zone_conflict'
+    type AvailabilityStatus = 'available' | 'mine' | 'booked' | 'restricted' | 'assigned' | 'disabled' | 'queued' | 'promoted' | 'zone_conflict'
 
     // Collect zone group IDs where the current user has a booking today
     const userBookedZoneGroupIds = new Set<string>()
     for (const zone of floor.zones) {
       if (!zone.zoneGroupId) continue
-      for (const desk of zone.desks) {
-        if (desk.bookings.some((b) => b.userId === currentUserId)) {
+      for (const asset of zone.assets) {
+        if (asset.bookings.some((b) => b.userId === currentUserId)) {
           userBookedZoneGroupIds.add(zone.zoneGroupId)
         }
       }
     }
 
-    const desks = floor.zones.flatMap((zone) =>
-      zone.desks.map((desk) => {
-        const myBooking = desk.bookings.find((b) => b.userId === currentUserId)
-        const othersBookings = desk.bookings.filter((b) => b.userId !== currentUserId)
-        const myQueueEntry = desk.queueEntries[0] ?? null
-        const isOnAllowList = desk.allowList.some((a) => a.userId === currentUserId)
-        const isAssignedUser = desk.userAssignments.some((ua) => ua.user.id === currentUserId)
+    const zones = floor.zones.map((zone) => {
+      const assets = zone.assets.map((asset) => {
+        const myBooking = asset.bookings.find((b) => b.userId === currentUserId)
+        const othersBookings = asset.bookings.filter((b) => b.userId !== currentUserId)
+        const myQueueEntry = asset.queueEntries[0] ?? null
+        const isOnAllowList = asset.allowList.some((a) => a.userId === currentUserId)
+        const isAssignedUser = asset.userAssignments.some((ua) => ua.user.id === currentUserId)
 
-        let bookingStatus: BookingStatus
+        let bookingStatus: AvailabilityStatus
 
-        if (desk.status === 'DISABLED') {
+        if (asset.bookingStatus === 'DISABLED') {
           bookingStatus = 'disabled'
         } else if (myBooking) {
           bookingStatus = 'mine'
         } else if (othersBookings.length > 0) {
-          // Desk is booked — check if user is queued
           if (myQueueEntry?.status === 'PROMOTED') {
             bookingStatus = 'promoted'
           } else if (myQueueEntry?.status === 'WAITING') {
@@ -408,14 +405,15 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
             bookingStatus = 'booked'
           }
         } else if (
-          desk.status === 'ASSIGNED' &&
+          asset.bookingStatus === 'ASSIGNED' &&
           !isAssignedUser &&
           request.user.globalRole !== 'SUPER_ADMIN'
         ) {
           bookingStatus = 'assigned'
         } else if (
-          desk.status === 'RESTRICTED' &&
+          asset.bookingStatus === 'RESTRICTED' &&
           !isOnAllowList &&
+          !isAssignedUser &&
           request.user.globalRole !== 'SUPER_ADMIN'
         ) {
           bookingStatus = 'restricted'
@@ -423,7 +421,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           bookingStatus = 'available'
         }
 
-        // Zone group conflict: desk is available but user already has a booking in the same zone group
+        // Zone group conflict: asset is available but user already has a booking in the same zone group
         if (
           bookingStatus === 'available' &&
           zone.zoneGroupId &&
@@ -433,19 +431,20 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         }
 
         return {
-          id: desk.id,
+          id: asset.id,
           zoneId: zone.id,
           zoneName: zone.name,
           zoneColour: zone.colour,
-          name: desk.name,
-          x: desk.x,
-          y: desk.y,
-          width: desk.width,
-          height: desk.height,
-          rotation: desk.rotation,
-          status: desk.status,
-          amenities: desk.amenities,
-          bookingStatus,
+          name: asset.name,
+          bookingLabel: asset.bookingLabel,
+          x: asset.x,
+          y: asset.y,
+          width: asset.width,
+          height: asset.height,
+          rotation: asset.rotation,
+          bookingStatus: asset.bookingStatus,
+          amenities: asset.amenities,
+          availabilityStatus: bookingStatus,
           currentBooking: myBooking
             ? { id: myBooking.id, userId: myBooking.userId, startsAt: myBooking.startsAt, endsAt: myBooking.endsAt }
             : othersBookings[0]
@@ -453,18 +452,19 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
             : null,
           bookedBy: othersBookings.map((b) => ({ userId: b.userId, displayName: b.user?.displayName ?? 'Unknown' })),
           myQueueEntry,
-          assets: desk.assetAssignments.map((a) => ({
-            assignmentId: a.id,
-            assetId: a.asset.id,
-            assetName: a.asset.name,
-            categoryName: a.asset.category.name,
-          })),
-          assignedUsers: desk.userAssignments.map((ua) => ({ ...ua.user, isPrimary: ua.isPrimary })),
+          assignedUsers: asset.userAssignments.map((ua) => ({ ...ua.user, isPrimary: ua.isPrimary })),
         }
-      }),
-    )
+      })
 
-    return reply.status(200).send({ data: { floorId: floor.id, date, desks } })
+      return {
+        id: zone.id,
+        name: zone.name,
+        colour: zone.colour,
+        assets,
+      }
+    })
+
+    return reply.status(200).send({ data: { floorId: floor.id, date, zones } })
   })
 }
 

@@ -2,15 +2,15 @@ import type {
   User,
   Building,
   Floor,
-  Desk,
-  DeskWithStatus,
-  DeskAssignedUser,
+  AssetWithStatus,
+  AssetAssignedUser,
   Booking,
   QueueEntry,
   Notification,
   Asset,
   AssetCategory,
   AssetAssignment,
+  AssetZone,
   UtilisationDataPoint,
   BookingDataPoint,
   TopUserDataPoint,
@@ -107,7 +107,7 @@ export const buildingsApi = {
 // --- Floors ---
 export const floorsApi = {
   get: (id: string) =>
-    api.get<{ data: Floor & { zones: Array<{ id: string; name: string; colour: string; zoneGroupId: string | null; desks: Desk[] }>; zoneGroups: Array<{ id: string; name: string; floorId: string }>; floorPlan: { id: string; floorId: string; fileType: 'IMAGE' | 'PDF' | 'DXF'; renderedPath: string; thumbnailPath?: string; width: number; height: number; updatedAt: string } | null } }>(
+    api.get<{ data: Floor & { zones: Array<{ id: string; name: string; colour: string; zoneGroupId: string | null; assets: Asset[] }>; zoneGroups: Array<{ id: string; name: string; floorId: string }>; floorPlan: { id: string; floorId: string; fileType: 'IMAGE' | 'PDF' | 'DXF'; renderedPath: string; thumbnailPath?: string; width: number; height: number; updatedAt: string } | null } }>(
       `/floors/${id}`,
     ),
   create: (body: { buildingId: string; name: string; level?: number }) =>
@@ -124,7 +124,7 @@ export const floorsApi = {
     )
   },
   getAvailability: (id: string, date: string) =>
-    api.get<{ data: { desks: DeskWithStatus[] } }>(`/floors/${id}/availability?date=${date}`),
+    api.get<{ data: { assets: AssetWithStatus[] } }>(`/floors/${id}/availability?date=${date}`),
   getManagers: (id: string) =>
     api.get<{ data: Array<{ roleId: string; id: string; displayName: string; email: string }> }>(
       `/floors/${id}/managers`,
@@ -158,46 +158,79 @@ export const zoneGroupsApi = {
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/zone-groups/${id}`),
 }
 
-// --- Desks ---
-export const desksApi = {
-  create: (body: {
-    zoneId: string
-    name: string
-    x: number
-    y: number
+// --- Assets (bookable) ---
+export type PositionUpdate = { id: string; x: number; y: number; width: number; height: number; rotation: number }
+
+export const assetsApi = {
+  list: () => api.get<{ data: Asset[] }>('/assets'),
+  listCategories: () => api.get<{ data: AssetCategory[] }>('/assets/categories'),
+  get: (id: string) => api.get<{ data: Asset }>(`/assets/${id}`),
+  create: (body: Partial<Asset> & {
+    isBookable?: boolean
+    bookingLabel?: string
+    amenities?: string[]
+    bookingStatus?: string
+    primaryZoneId?: string
+    floorId?: string
+    x?: number
+    y?: number
     width?: number
     height?: number
     rotation?: number
+  }) => api.post<{ data: Asset }>('/assets', body),
+  update: (id: string, body: Partial<Asset> & {
+    isBookable?: boolean
+    bookingLabel?: string
     amenities?: string[]
-  }) => api.post<{ data: Desk }>('/desks', body),
-  update: (id: string, body: Partial<Desk>) =>
-    api.put<{ data: Desk }>(`/desks/${id}`, body),
-  delete: (id: string) => api.delete<{ data: { ok: true } }>(`/desks/${id}`),
-  updatePositions: (
-    positions: Array<{ id: string; x: number; y: number; width: number; height: number; rotation: number }>,
-  ) => api.patch<{ data: { ok: true } }>('/desks/positions', { desks: positions }),
-  addAllowList: (id: string, userId: string) =>
-    api.post<{ data: { deskId: string; userId: string } }>(`/desks/${id}/allow-list`, { userId }),
-  removeAllowList: (id: string, userId: string) =>
-    api.delete<{ data: { ok: true } }>(`/desks/${id}/allow-list/${userId}`),
+    bookingStatus?: string
+    primaryZoneId?: string
+    floorId?: string
+    x?: number
+    y?: number
+    width?: number
+    height?: number
+    rotation?: number
+  }) => api.patch<{ data: Asset }>(`/assets/${id}`, body),
+  delete: (id: string) => api.delete<{ data: { ok: true } }>(`/assets/${id}`),
+  assign: (id: string, body: { assigneeType: string; assigneeId: string }) =>
+    api.post<{ data: AssetAssignment }>(`/assets/${id}/assign`, body),
+  unassign: (id: string) => api.post<{ data: AssetAssignment }>(`/assets/${id}/unassign`, {}),
+  history: (id: string) => api.get<{ data: AssetAssignment[] }>(`/assets/${id}/history`),
+  // Floor plan position updates
+  updatePositions: (updates: PositionUpdate[]) =>
+    api.patch<{ data: { ok: true } }>('/assets/positions', { assets: updates }),
+  // Allow-list
   getAllowList: (id: string) =>
-    api.get<{ data: Array<{ id: string; displayName: string; email: string }> }>(`/desks/${id}/allow-list`),
-  // Multi-user permanent assignments
+    api.get<{ data: Array<{ id: string; displayName: string; email: string }> }>(`/assets/${id}/allow-list`),
+  addAllowList: (id: string, userId: string) =>
+    api.post<{ data: { assetId: string; userId: string } }>(`/assets/${id}/allow-list`, { userId }),
+  removeAllowList: (id: string, userId: string) =>
+    api.delete<{ data: { ok: true } }>(`/assets/${id}/allow-list/${userId}`),
+  // Permanent user assignments
   getAssignments: (id: string) =>
-    api.get<{ data: DeskAssignedUser[] }>(`/desks/${id}/assignments`),
-  addAssignment: (id: string, userId: string, isPrimary?: boolean) =>
-    api.post<{ data: DeskAssignedUser }>(`/desks/${id}/assignments`, { userId, isPrimary: isPrimary ?? false }),
+    api.get<{ data: AssetAssignedUser[] }>(`/assets/${id}/assignments`),
+  addAssignment: (id: string, data: { userId: string; isPrimary?: boolean }) =>
+    api.post<{ data: AssetAssignedUser }>(`/assets/${id}/assignments`, data),
   removeAssignment: (id: string, userId: string) =>
-    api.delete<{ data: { ok: true } }>(`/desks/${id}/assignments/${userId}`),
+    api.delete<{ data: { ok: true } }>(`/assets/${id}/assignments/${userId}`),
   setPrimaryAssignment: (id: string, userId: string) =>
-    api.patch<{ data: { ok: true } }>(`/desks/${id}/assignments/${userId}/primary`),
+    api.patch<{ data: { ok: true } }>(`/assets/${id}/assignments/${userId}/primary`),
   // Additional zones
   getZones: (id: string) =>
-    api.get<{ data: Array<{ id: string; name: string; colour: string; isPrimary: boolean }> }>(`/desks/${id}/zones`),
+    api.get<{ data: AssetZone[] }>(`/assets/${id}/zones`),
   addZone: (id: string, zoneId: string) =>
-    api.post<{ data: { ok: true } }>(`/desks/${id}/zones`, { zoneId }),
+    api.post<{ data: { ok: true } }>(`/assets/${id}/zones`, { zoneId }),
   removeZone: (id: string, zoneId: string) =>
-    api.delete<{ data: { ok: true } }>(`/desks/${id}/zones/${zoneId}`),
+    api.delete<{ data: { ok: true } }>(`/assets/${id}/zones/${zoneId}`),
+  // Bookings for an asset
+  getBookings: (id: string, params?: { status?: string; date?: string }) => {
+    const qs = new URLSearchParams()
+    if (params?.status) qs.set('status', params.status)
+    if (params?.date) qs.set('date', params.date)
+    return api.get<{ data: Booking[] }>(`/assets/${id}/bookings${qs.toString() ? `?${qs}` : ''}`)
+  },
+  createCategory: (body: { name: string; description?: string; defaultIsBookable?: boolean; defaultIcon?: string; colour?: string }) =>
+    api.post<{ data: AssetCategory }>('/assets/categories', body),
 }
 
 // --- Bookings ---
@@ -207,7 +240,7 @@ export const bookingsApi = {
       `/bookings${status ? `?status=${status}` : ''}`,
     ),
   get: (id: string) => api.get<{ data: Booking }>(`/bookings/${id}`),
-  create: (body: { deskId: string; startsAt: string; endsAt: string; notes?: string }) =>
+  create: (body: { assetId: string; startsAt: string; endsAt: string; notes?: string }) =>
     api.post<{ data: Booking }>('/bookings', body),
   update: (id: string, body: Partial<{ startsAt: string; endsAt: string; notes: string }>) =>
     api.patch<{ data: Booking }>(`/bookings/${id}`, body),
@@ -217,7 +250,7 @@ export const bookingsApi = {
 // --- Queue ---
 export const queueApi = {
   list: () => api.get<{ data: QueueEntry[] }>('/queue'),
-  join: (body: { deskId: string; wantedStartsAt: string; wantedEndsAt: string; expiresAt: string }) =>
+  join: (body: { assetId: string; wantedStartsAt: string; wantedEndsAt: string; expiresAt: string }) =>
     api.post<{ data: QueueEntry }>('/queue', body),
   leave: (id: string) => api.delete<{ data: { ok: true } }>(`/queue/${id}`),
   claim: (id: string) => api.post<{ data: Booking }>(`/queue/${id}/claim`),
@@ -282,21 +315,6 @@ export const authProvidersApi = {
     ),
 }
 
-// --- Assets ---
-export const assetsApi = {
-  list: () => api.get<{ data: Asset[] }>('/assets'),
-  listCategories: () => api.get<{ data: AssetCategory[] }>('/assets/categories'),
-  get: (id: string) => api.get<{ data: Asset }>(`/assets/${id}`),
-  create: (body: Partial<Asset>) => api.post<{ data: Asset }>('/assets', body),
-  update: (id: string, body: Partial<Asset>) => api.patch<{ data: Asset }>(`/assets/${id}`, body),
-  delete: (id: string) => api.delete<{ data: { ok: true } }>(`/assets/${id}`),
-  assign: (id: string, body: { assigneeType: string; assigneeId: string }) =>
-    api.post<{ data: AssetAssignment }>(`/assets/${id}/assign`, body),
-  unassign: (id: string) => api.post<{ data: AssetAssignment }>(`/assets/${id}/unassign`, {}),
-  history: (id: string) => api.get<{ data: AssetAssignment[] }>(`/assets/${id}/history`),
-  createCategory: (body: { name: string; description?: string }) =>
-    api.post<{ data: AssetCategory }>('/assets/categories', body),
-}
 
 // --- Leases ---
 export const leasesApi = {
@@ -408,13 +426,15 @@ export type ImportRow = {
   floor_level?: string
   zone_name: string
   zone_colour?: string
-  desk_name: string
-  desk_status?: string
-  desk_amenities?: string
+  asset_name: string
+  asset_category?: string
+  is_bookable?: string
+  asset_status?: string
+  asset_amenities?: string
 }
 
 export type ImportResult = {
-  created: { buildings: number; floors: number; zones: number; desks: number }
+  created: { buildings: number; floors: number; zones: number; assets: number }
   errors: Array<{ row: number; message: string }>
 }
 

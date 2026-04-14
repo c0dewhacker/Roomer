@@ -52,65 +52,65 @@ async function processSendNotification(
   if (type === NotificationType.BOOKING_CONFIRMED && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { desk: { include: { zone: { include: { floor: true } } } } },
+      include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true } } } } },
     })
     if (booking) {
-      title = `Booking confirmed — ${booking.desk.name}`
-      body = `Your desk ${booking.desk.name} is booked from ${booking.startsAt.toISOString()} to ${booking.endsAt.toISOString()}`
+      title = `Booking confirmed — ${booking.asset.name}`
+      body = `Your booking for ${booking.asset.name} is confirmed from ${booking.startsAt.toISOString()} to ${booking.endsAt.toISOString()}`
       emailPayload = renderBookingConfirmed(booking, user, {
-        name: booking.desk.name,
-        zoneName: booking.desk.zone.name,
-        floorName: booking.desk.zone.floor.name,
+        name: booking.asset.name,
+        zoneName: booking.asset.primaryZone?.name ?? '',
+        floorName: booking.asset.floor?.name ?? '',
       })
     }
   } else if (type === NotificationType.BOOKING_CANCELLED && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { desk: true },
+      include: { asset: true },
     })
     if (booking) {
-      title = `Booking cancelled — ${booking.desk.name}`
-      body = `Your booking for ${booking.desk.name} has been cancelled.`
-      emailPayload = renderBookingCancelled(booking, user, booking.desk)
+      title = `Booking cancelled — ${booking.asset.name}`
+      body = `Your booking for ${booking.asset.name} has been cancelled.`
+      emailPayload = renderBookingCancelled(booking, user, booking.asset)
     }
   } else if (type === NotificationType.BOOKING_CANCELLED_BY_ADMIN && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { desk: true },
+      include: { asset: true },
     })
     if (booking) {
-      title = `Booking cancelled by admin — ${booking.desk.name}`
-      body = `Your booking for ${booking.desk.name} has been cancelled by an administrator.`
-      emailPayload = renderBookingCancelled(booking, user, booking.desk)
+      title = `Booking cancelled by admin — ${booking.asset.name}`
+      body = `Your booking for ${booking.asset.name} has been cancelled by an administrator.`
+      emailPayload = renderBookingCancelled(booking, user, booking.asset)
     }
   } else if (type === NotificationType.QUEUE_JOINED && queueEntryId) {
     const entry = await prisma.queueEntry.findUnique({
       where: { id: queueEntryId },
-      include: { desk: true },
+      include: { asset: true },
     })
     if (entry) {
-      title = `Joined queue — ${entry.desk.name}`
-      body = `You are #${entry.position} in the queue for ${entry.desk.name}.`
-      emailPayload = renderQueueJoined(entry, user, entry.desk)
+      title = `Joined queue — ${entry.asset.name}`
+      body = `You are #${entry.position} in the queue for ${entry.asset.name}.`
+      emailPayload = renderQueueJoined(entry, user, entry.asset)
     }
   } else if (type === NotificationType.QUEUE_PROMOTED && queueEntryId) {
     const entry = await prisma.queueEntry.findUnique({
       where: { id: queueEntryId },
-      include: { desk: true },
+      include: { asset: true },
     })
     if (entry && claimDeadline) {
-      title = `Desk available — ${entry.desk.name}`
-      body = `Claim your desk by ${new Date(claimDeadline).toISOString()}.`
-      emailPayload = renderQueuePromoted(entry, user, entry.desk, new Date(claimDeadline))
+      title = `Asset available — ${entry.asset.name}`
+      body = `Claim your booking by ${new Date(claimDeadline).toISOString()}.`
+      emailPayload = renderQueuePromoted(entry, user, entry.asset, new Date(claimDeadline))
     }
   } else if (type === NotificationType.QUEUE_EXPIRED && queueEntryId) {
     const entry = await prisma.queueEntry.findUnique({
       where: { id: queueEntryId },
-      include: { desk: true },
+      include: { asset: true },
     })
     if (entry) {
-      title = `Queue entry expired — ${entry.desk.name}`
-      body = `Your queue entry for ${entry.desk.name} has expired.`
+      title = `Queue entry expired — ${entry.asset.name}`
+      body = `Your queue entry for ${entry.asset.name} has expired.`
     }
   } else if (type === NotificationType.WELCOME) {
     title = 'Welcome to Roomer'
@@ -202,10 +202,10 @@ async function handleExpireClaimDeadlines(): Promise<void> {
       data: { status: 'EXPIRED' },
     })
 
-    // Promote the next WAITING entry for this desk that overlaps the same slot
+    // Promote the next WAITING entry for this asset that overlaps the same slot
     const nextEntry = await prisma.queueEntry.findFirst({
       where: {
-        deskId: entry.deskId,
+        assetId: entry.assetId,
         status: 'WAITING',
         wantedStartsAt: { lt: entry.wantedEndsAt },
         wantedEndsAt: { gt: entry.wantedStartsAt },

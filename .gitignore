@@ -45,6 +45,7 @@ apps/api/prisma/migrations/*.sql.tmp
 #claude
 .claude*/
 .swarm/
+.serena/
 examples/
 CLAUDE.md
 .mcp.json

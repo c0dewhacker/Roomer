@@ -29,11 +29,21 @@ const rowSchema = z.object({
     .string()
     .regex(/^(#[0-9a-fA-F]{6})?$/, 'zone_colour must be a hex colour or empty')
     .optional(),
-  desk_name: z.string().min(1, 'desk_name is required'),
-  desk_status: z
+  asset_name: z.string().min(1, 'asset_name is required'),
+  asset_category: z.string().min(1, 'asset_category is required'),
+  asset_status: z
     .enum(['OPEN', 'RESTRICTED', 'ASSIGNED', 'DISABLED'])
     .default('OPEN'),
-  desk_amenities: z.string().optional(),
+  asset_amenities: z.string().optional(),
+  is_bookable: z
+    .string()
+    .optional()
+    .transform((v) => {
+      if (v === 'false' || v === '0') return false
+      return true // default true for backwards compat
+    }),
+  serial_number: z.string().optional(),
+  asset_tag: z.string().optional(),
 })
 
 const importBodySchema = z.object({
@@ -87,12 +97,13 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
       let buildingsCreated = 0
       let floorsCreated = 0
       let zonesCreated = 0
-      let desksCreated = 0
+      let assetsCreated = 0
 
       // Cache maps to avoid repeated DB lookups within this import
       const buildingCache = new Map<string, string>()       // name → id
       const floorCache    = new Map<string, string>()       // `${buildingId}::${floorName}` → id
       const zoneCache     = new Map<string, string>()       // `${floorId}::${zoneName}` → id
+      const categoryCache = new Map<string, { id: string; defaultIsBookable: boolean | null }>()
       let zoneIndexCounter = 0
 
       await prisma.$transaction(async (tx) => {
@@ -165,17 +176,47 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
             zoneCache.set(zoneKey, zoneId)
           }
 
-          // ── Desk ───────────────────────────────────────────────────────────
-          const amenities = row.desk_amenities
-            ? row.desk_amenities.split(';').map((a) => a.trim()).filter(Boolean)
+          // ── AssetCategory ──────────────────────────────────────────────────
+          const categoryKey = row.asset_category.trim()
+          let categoryEntry = categoryCache.get(categoryKey)
+          if (!categoryEntry) {
+            const existing = await tx.assetCategory.findFirst({
+              where: { name: categoryKey },
+              select: { id: true, defaultIsBookable: true },
+            })
+            if (existing) {
+              categoryEntry = { id: existing.id, defaultIsBookable: existing.defaultIsBookable }
+            } else {
+              // Auto-create category; infer defaultIsBookable from first occurrence of is_bookable
+              const created = await tx.assetCategory.create({
+                data: {
+                  name: categoryKey,
+                  defaultIsBookable: row.is_bookable,
+                  colour: '#6366f1',
+                },
+                select: { id: true, defaultIsBookable: true },
+              })
+              categoryEntry = { id: created.id, defaultIsBookable: created.defaultIsBookable }
+            }
+            categoryCache.set(categoryKey, categoryEntry)
+          }
+
+          // ── Asset ──────────────────────────────────────────────────────────
+          const amenities = row.asset_amenities
+            ? row.asset_amenities.split(';').map((a) => a.trim()).filter(Boolean)
             : []
 
-          await tx.desk.create({
+          await tx.asset.create({
             data: {
-              zoneId,
-              name: row.desk_name.trim(),
-              status: row.desk_status as any,
+              categoryId: categoryEntry.id,
+              name: row.asset_name.trim(),
+              isBookable: row.is_bookable,
+              bookingStatus: row.is_bookable ? (row.asset_status as any) : null,
+              primaryZoneId: zoneId,
+              floorId,
               amenities,
+              serialNumber: row.serial_number?.trim() || null,
+              assetTag: row.asset_tag?.trim() || null,
               x: 50,
               y: 50,
               width: 3,
@@ -183,13 +224,13 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
               rotation: 0,
             },
           })
-          desksCreated++
+          assetsCreated++
         }
       })
 
       return reply.status(200).send({
         data: {
-          created: { buildings: buildingsCreated, floors: floorsCreated, zones: zonesCreated, desks: desksCreated },
+          created: { buildings: buildingsCreated, floors: floorsCreated, zones: zonesCreated, assets: assetsCreated },
           errors,
         },
       })

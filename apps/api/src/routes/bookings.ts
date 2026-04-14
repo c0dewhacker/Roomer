@@ -11,7 +11,7 @@ const reportQuerySchema = z.object({
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
   userId: z.string().min(1).optional(),
-  deskId: z.string().min(1).optional(),
+  assetId: z.string().min(1).optional(),
   floorId: z.string().min(1).optional(),
   buildingId: z.string().min(1).optional(),
   status: z.enum(['CONFIRMED', 'CANCELLED', 'COMPLETED']).optional(),
@@ -19,15 +19,15 @@ const reportQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(20),
 })
 
-async function checkDeskOverlap(
-  deskId: string,
+async function checkAssetOverlap(
+  assetId: string,
   startsAt: Date,
   endsAt: Date,
   excludeBookingId?: string,
 ): Promise<boolean> {
   const conflict = await prisma.booking.findFirst({
     where: {
-      deskId,
+      assetId,
       status: 'CONFIRMED',
       id: excludeBookingId ? { not: excludeBookingId } : undefined,
       startsAt: { lt: endsAt },
@@ -39,17 +39,21 @@ async function checkDeskOverlap(
 
 async function checkZoneGroupOverlap(
   userId: string,
-  deskId: string,
+  assetId: string,
   startsAt: Date,
   endsAt: Date,
   excludeBookingId?: string,
 ): Promise<boolean> {
-  const desk = await prisma.desk.findUnique({
-    where: { id: deskId },
-    include: { zone: { include: { zoneGroup: true } } },
+  const asset = await prisma.asset.findUnique({
+    where: { id: assetId },
+    select: {
+      primaryZoneId: true,
+      primaryZone: { select: { zoneGroupId: true } },
+    },
   })
 
-  if (!desk?.zone.zoneGroupId) return false
+  const zoneGroupId = asset?.primaryZone?.zoneGroupId
+  if (!zoneGroupId) return false
 
   const conflict = await prisma.booking.findFirst({
     where: {
@@ -58,8 +62,8 @@ async function checkZoneGroupOverlap(
       id: excludeBookingId ? { not: excludeBookingId } : undefined,
       startsAt: { lt: endsAt },
       endsAt: { gt: startsAt },
-      desk: {
-        zone: { zoneGroupId: desk.zone.zoneGroupId },
+      asset: {
+        primaryZone: { zoneGroupId },
       },
     },
   })
@@ -79,23 +83,23 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         })
       }
 
-      const { from, to, userId, deskId, floorId, buildingId, status, page, limit } = result.data
+      const { from, to, userId, assetId, floorId, buildingId, status, page, limit } = result.data
       const skip = (page - 1) * limit
 
       const where: Record<string, unknown> = {}
       if (status) where['status'] = status
       if (userId) where['userId'] = userId
-      if (deskId) where['deskId'] = deskId
+      if (assetId) where['assetId'] = assetId
       if (from || to) {
         where['startsAt'] = {}
         if (from) (where['startsAt'] as Record<string, unknown>)['gte'] = new Date(from)
         if (to) (where['startsAt'] as Record<string, unknown>)['lte'] = new Date(to)
       }
       if (floorId) {
-        where['desk'] = { zone: { floorId } }
+        where['asset'] = { floorId }
       }
       if (buildingId) {
-        where['desk'] = { zone: { floor: { buildingId } } }
+        where['asset'] = { floor: { buildingId } }
       }
 
       const [bookings, total] = await Promise.all([
@@ -105,9 +109,10 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
           take: limit,
           include: {
             user: { select: { id: true, displayName: true, email: true } },
-            desk: {
+            asset: {
               include: {
-                zone: { include: { floor: { include: { building: { select: { id: true, name: true } } } } } },
+                floor: { include: { building: { select: { id: true, name: true } } } },
+                primaryZone: { select: { id: true, name: true } },
               },
             },
           },
@@ -143,8 +148,11 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     const bookings = await prisma.booking.findMany({
       where,
       include: {
-        desk: {
-          include: { zone: { include: { floor: { include: { building: { select: { id: true, name: true } } } } } } },
+        asset: {
+          include: {
+            floor: { include: { building: { select: { id: true, name: true } } } },
+            primaryZone: { select: { id: true, name: true } },
+          },
         },
       },
       orderBy: { startsAt: 'asc' },
@@ -162,47 +170,52 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    const { deskId, notes } = result.data
+    const { assetId, notes } = result.data
     const startsAt = new Date(result.data.startsAt)
     const endsAt = new Date(result.data.endsAt)
 
-    const desk = await prisma.desk.findUnique({
-      where: { id: deskId },
+    const asset = await prisma.asset.findUnique({
+      where: { id: assetId },
       include: {
         allowList: { select: { userId: true } },
         userAssignments: { select: { userId: true } },
-        zone: { include: { floor: { select: { id: true, buildingId: true } } } },
+        floor: { select: { id: true, buildingId: true } },
       },
     })
 
-    if (!desk) {
-      return reply.status(404).send({ error: { message: 'Desk not found', code: 'NOT_FOUND' } })
+    if (!asset) {
+      return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
     }
 
-    if (desk.status === 'DISABLED') {
-      return reply.status(409).send({ error: { message: 'Desk is disabled', code: 'DESK_DISABLED' } })
+    if (!asset.isBookable) {
+      return reply.status(409).send({ error: { message: 'Asset is not bookable', code: 'ASSET_NOT_BOOKABLE' } })
     }
 
-    if (desk.status === 'RESTRICTED') {
-      const onList = desk.allowList.some((e) => e.userId === request.user.id)
-      if (!onList && request.user.globalRole !== 'SUPER_ADMIN') {
-        return reply.status(403).send({ error: { message: 'You are not on the allow list for this desk', code: 'NOT_ON_ALLOW_LIST' } })
+    if (asset.bookingStatus === 'DISABLED') {
+      return reply.status(409).send({ error: { message: 'Asset is disabled', code: 'ASSET_DISABLED' } })
+    }
+
+    if (asset.bookingStatus === 'RESTRICTED') {
+      const onList = asset.allowList.some((e) => e.userId === request.user.id)
+      const isAssigned = asset.userAssignments.some((ua) => ua.userId === request.user.id)
+      if (!onList && !isAssigned && request.user.globalRole !== 'SUPER_ADMIN') {
+        return reply.status(403).send({ error: { message: 'You are not on the allow list for this asset', code: 'NOT_ON_ALLOW_LIST' } })
       }
     }
 
-    if (desk.status === 'ASSIGNED') {
-      const isAssignedUser = desk.userAssignments.some((ua) => ua.userId === request.user.id)
+    if (asset.bookingStatus === 'ASSIGNED') {
+      const isAssignedUser = asset.userAssignments.some((ua) => ua.userId === request.user.id)
       if (!isAssignedUser && request.user.globalRole !== 'SUPER_ADMIN') {
-        return reply.status(403).send({ error: { message: 'This desk is permanently assigned to another user', code: 'DESK_ASSIGNED' } })
+        return reply.status(403).send({ error: { message: 'This asset is permanently assigned to another user', code: 'ASSET_ASSIGNED' } })
       }
     }
 
     // Check group-based access restrictions (non-admins only)
-    if (request.user.globalRole !== 'SUPER_ADMIN') {
+    if (request.user.globalRole !== 'SUPER_ADMIN' && asset.floor) {
       const allowed = await checkGroupAccess(
         request.user.id,
-        desk.zone.floor.buildingId,
-        desk.zone.floor.id,
+        asset.floor.buildingId,
+        asset.floor.id,
       )
       if (!allowed) {
         return reply.status(403).send({
@@ -211,14 +224,14 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
-    // Check desk overlap
-    const deskConflict = await checkDeskOverlap(deskId, startsAt, endsAt)
-    if (deskConflict) {
-      return reply.status(409).send({ error: { message: 'Desk is already booked for this time', code: 'DESK_CONFLICT' } })
+    // Check asset overlap
+    const assetConflict = await checkAssetOverlap(assetId, startsAt, endsAt)
+    if (assetConflict) {
+      return reply.status(409).send({ error: { message: 'Asset is already booked for this time', code: 'ASSET_CONFLICT' } })
     }
 
     // Check zone group overlap
-    const zoneGroupConflict = await checkZoneGroupOverlap(request.user.id, deskId, startsAt, endsAt)
+    const zoneGroupConflict = await checkZoneGroupOverlap(request.user.id, assetId, startsAt, endsAt)
     if (zoneGroupConflict) {
       return reply.status(409).send({
         error: { message: 'You already have a booking in the same zone group for this time', code: 'ZONE_GROUP_CONFLICT' },
@@ -228,15 +241,18 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     const booking = await prisma.booking.create({
       data: {
         userId: request.user.id,
-        deskId,
+        assetId,
         startsAt,
         endsAt,
         notes: notes ?? null,
         status: 'CONFIRMED',
       },
       include: {
-        desk: {
-          include: { zone: { include: { floor: { include: { building: { select: { id: true, name: true } } } } } } },
+        asset: {
+          include: {
+            floor: { include: { building: { select: { id: true, name: true } } } },
+            primaryZone: { select: { id: true, name: true } },
+          },
         },
       },
     })
@@ -258,8 +274,11 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       where: { id },
       include: {
         user: { select: { id: true, displayName: true, email: true } },
-        desk: {
-          include: { zone: { include: { floor: { include: { building: { select: { id: true, name: true } } } } } } },
+        asset: {
+          include: {
+            floor: { include: { building: { select: { id: true, name: true } } } },
+            primaryZone: { select: { id: true, name: true } },
+          },
         },
       },
     })
@@ -302,12 +321,12 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     const newStartsAt = result.data.startsAt ? new Date(result.data.startsAt) : booking.startsAt
     const newEndsAt = result.data.endsAt ? new Date(result.data.endsAt) : booking.endsAt
 
-    const deskConflict = await checkDeskOverlap(booking.deskId, newStartsAt, newEndsAt, id)
-    if (deskConflict) {
-      return reply.status(409).send({ error: { message: 'Desk is already booked for this time', code: 'DESK_CONFLICT' } })
+    const assetConflict = await checkAssetOverlap(booking.assetId, newStartsAt, newEndsAt, id)
+    if (assetConflict) {
+      return reply.status(409).send({ error: { message: 'Asset is already booked for this time', code: 'ASSET_CONFLICT' } })
     }
 
-    const zoneGroupConflict = await checkZoneGroupOverlap(booking.userId, booking.deskId, newStartsAt, newEndsAt, id)
+    const zoneGroupConflict = await checkZoneGroupOverlap(booking.userId, booking.assetId, newStartsAt, newEndsAt, id)
     if (zoneGroupConflict) {
       return reply.status(409).send({
         error: { message: 'You already have a booking in the same zone group for this time', code: 'ZONE_GROUP_CONFLICT' },
@@ -332,7 +351,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     const booking = await prisma.booking.findUnique({
       where: { id },
-      include: { desk: { include: { zone: { select: { floorId: true } } } } },
+      include: { asset: { select: { floorId: true } } },
     })
     if (!booking) {
       return reply.status(404).send({ error: { message: 'Booking not found', code: 'NOT_FOUND' } })
@@ -342,7 +361,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     const isAdmin = request.user.globalRole === 'SUPER_ADMIN'
 
     if (!isSelf && !isAdmin) {
-      const floorId = booking.desk?.zone?.floorId
+      const floorId = booking.asset?.floorId
       const directRole = floorId
         ? await prisma.userResourceRole.findFirst({
             where: { userId: request.user.id, scopeType: 'FLOOR', floorId },
@@ -383,7 +402,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     // Promote next queue entry for overlapping slot
     const nextQueued = await prisma.queueEntry.findFirst({
       where: {
-        deskId: booking.deskId,
+        assetId: booking.assetId,
         status: 'WAITING',
         wantedStartsAt: { lt: booking.endsAt },
         wantedEndsAt: { gt: booking.startsAt },

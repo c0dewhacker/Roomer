@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 export const createBookingSchema = z.object({
-  deskId: z.string().min(1, 'Invalid desk ID'),
+  assetId: z.string().min(1, 'Invalid asset ID'),
   startsAt: z.string().datetime('startsAt must be a valid ISO 8601 datetime'),
   endsAt: z.string().datetime('endsAt must be a valid ISO 8601 datetime'),
   notes: z.string().max(1000).optional(),

@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 export const createQueueEntrySchema = z.object({
-  deskId: z.string().min(1, 'Invalid desk ID'),
+  assetId: z.string().min(1, 'Invalid asset ID'),
   wantedStartsAt: z.string().datetime('wantedStartsAt must be a valid ISO 8601 datetime'),
   wantedEndsAt: z.string().datetime('wantedEndsAt must be a valid ISO 8601 datetime'),
   expiresAt: z.string().datetime('expiresAt must be a valid ISO 8601 datetime'),

@@ -57,7 +57,8 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           building: { select: { id: true, name: true } },
           zones: {
             include: {
-              desks: {
+              assets: {
+                where: { isBookable: true },
                 include: {
                   bookings: {
                     where: {
@@ -76,10 +77,10 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
 
       const data = floors.flatMap((floor) =>
         floor.zones.map((zone) => {
-          const bookableDesks = zone.desks.filter((d) => d.status === 'OPEN' || d.status === 'RESTRICTED')
-          const assignedDesks = zone.desks.filter((d) => d.status === 'ASSIGNED')
-          const disabledDesks = zone.desks.filter((d) => d.status === 'DISABLED')
-          const bookingCount = zone.desks.reduce((sum, d) => sum + d.bookings.length, 0)
+          const bookableDesks = zone.assets.filter((a) => a.bookingStatus === 'OPEN' || a.bookingStatus === 'RESTRICTED')
+          const assignedDesks = zone.assets.filter((a) => a.bookingStatus === 'ASSIGNED')
+          const disabledDesks = zone.assets.filter((a) => a.bookingStatus === 'DISABLED')
+          const bookingCount = zone.assets.reduce((sum, a) => sum + a.bookings.length, 0)
           // Capacity = OPEN + RESTRICTED + ASSIGNED (non-disabled); DISABLED are out of service
           const activeDesks = bookableDesks.length + assignedDesks.length
           const capacity = activeDesks * workingDays
@@ -92,7 +93,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
             buildingName: floor.building.name,
             zoneId: zone.id,
             zoneName: zone.name,
-            totalDesks: zone.desks.length,
+            totalDesks: zone.assets.length,
             bookableDesks: bookableDesks.length,
             assignedDesks: assignedDesks.length,
             disabledDesks: disabledDesks.length,
@@ -131,12 +132,11 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         rows = await prisma.$queryRaw<BookingCountRow[]>`
           SELECT DATE(b."startsAt") AS date, COUNT(*)::bigint AS count
           FROM "Booking" b
-          JOIN "Desk" d ON d.id = b."deskId"
-          JOIN "Zone" z ON z.id = d."zoneId"
+          JOIN "Asset" a ON a.id = b."assetId"
           WHERE b."startsAt" >= ${startDate}
             AND b."startsAt" <= ${endDate}
             AND b.status = 'CONFIRMED'
-            AND z."floorId" = ${result.data.floorId}
+            AND a."floorId" = ${result.data.floorId}
           GROUP BY DATE(b."startsAt")
           ORDER BY DATE(b."startsAt") ASC
         `
@@ -144,9 +144,8 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         rows = await prisma.$queryRaw<BookingCountRow[]>`
           SELECT DATE(b."startsAt") AS date, COUNT(*)::bigint AS count
           FROM "Booking" b
-          JOIN "Desk" d ON d.id = b."deskId"
-          JOIN "Zone" z ON z.id = d."zoneId"
-          JOIN "Floor" f ON f.id = z."floorId"
+          JOIN "Asset" a ON a.id = b."assetId"
+          JOIN "Floor" f ON f.id = a."floorId"
           WHERE b."startsAt" >= ${startDate}
             AND b."startsAt" <= ${endDate}
             AND b.status = 'CONFIRMED'
@@ -207,10 +206,10 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           select: { userId: true },
           distinct: ['userId'],
         }),
-        // OPEN + RESTRICTED = freely bookable desks
-        prisma.desk.count({ where: { status: { in: ['OPEN', 'RESTRICTED'] } } }),
-        prisma.desk.count({ where: { status: 'ASSIGNED' } }),
-        prisma.desk.count({ where: { status: 'DISABLED' } }),
+        // OPEN + RESTRICTED = freely bookable assets
+        prisma.asset.count({ where: { isBookable: true, bookingStatus: { in: ['OPEN', 'RESTRICTED'] } } }),
+        prisma.asset.count({ where: { isBookable: true, bookingStatus: 'ASSIGNED' } }),
+        prisma.asset.count({ where: { isBookable: true, bookingStatus: 'DISABLED' } }),
         prisma.queueEntry.count({ where: { status: 'WAITING' } }),
       ])
 
@@ -337,7 +336,8 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           building: { select: { id: true, name: true } },
           zones: {
             include: {
-              desks: {
+              assets: {
+                where: { isBookable: true },
                 include: {
                   bookings: {
                     where: { status: 'CONFIRMED', startsAt: { gte: startDate }, endsAt: { lte: endDate } },
@@ -352,19 +352,19 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       })
 
       const data = floors.map((floor) => {
-        const allDesks = floor.zones.flatMap((z) => z.desks)
-        const bookableDesks = allDesks.filter((d) => d.status === 'OPEN' || d.status === 'RESTRICTED').length
-        const assignedDesks = allDesks.filter((d) => d.status === 'ASSIGNED').length
-        const disabledDesks = allDesks.filter((d) => d.status === 'DISABLED').length
-        const bookingCount = allDesks.reduce((s, d) => s + d.bookings.length, 0)
-        // Capacity = all non-disabled desks; DISABLED are out of service and excluded
+        const allAssets = floor.zones.flatMap((z) => z.assets)
+        const bookableDesks = allAssets.filter((a) => a.bookingStatus === 'OPEN' || a.bookingStatus === 'RESTRICTED').length
+        const assignedDesks = allAssets.filter((a) => a.bookingStatus === 'ASSIGNED').length
+        const disabledDesks = allAssets.filter((a) => a.bookingStatus === 'DISABLED').length
+        const bookingCount = allAssets.reduce((s, a) => s + a.bookings.length, 0)
+        // Capacity = all non-disabled assets; DISABLED are out of service and excluded
         const capacity = (bookableDesks + assignedDesks) * workingDays
         return {
           floorId: floor.id,
           floorName: floor.name,
           buildingId: floor.building.id,
           buildingName: floor.building.name,
-          totalDesks: allDesks.length,
+          totalDesks: allAssets.length,
           bookableDesks,
           assignedDesks,
           disabledDesks,
@@ -402,12 +402,11 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           SELECT b."userId", u."displayName", u.email, COUNT(*)::bigint AS count
           FROM "Booking" b
           JOIN "User" u ON u.id = b."userId"
-          JOIN "Desk" d ON d.id = b."deskId"
-          JOIN "Zone" z ON z.id = d."zoneId"
+          JOIN "Asset" a ON a.id = b."assetId"
           WHERE b."startsAt" >= ${startDate}
             AND b."startsAt" <= ${endDate}
             AND b.status = 'CONFIRMED'
-            AND z."floorId" = ${result.data.floorId}
+            AND a."floorId" = ${result.data.floorId}
           GROUP BY b."userId", u."displayName", u.email
           ORDER BY count DESC
           LIMIT 20
@@ -417,9 +416,8 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           SELECT b."userId", u."displayName", u.email, COUNT(*)::bigint AS count
           FROM "Booking" b
           JOIN "User" u ON u.id = b."userId"
-          JOIN "Desk" d ON d.id = b."deskId"
-          JOIN "Zone" z ON z.id = d."zoneId"
-          JOIN "Floor" f ON f.id = z."floorId"
+          JOIN "Asset" a ON a.id = b."assetId"
+          JOIN "Floor" f ON f.id = a."floorId"
           WHERE b."startsAt" >= ${startDate}
             AND b."startsAt" <= ${endDate}
             AND b.status = 'CONFIRMED'

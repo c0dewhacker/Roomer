@@ -13,11 +13,12 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
         status: { in: ['WAITING', 'PROMOTED'] },
       },
       include: {
-        desk: {
+        asset: {
           include: {
-            zone: {
+            primaryZone: {
               include: { floor: { include: { building: { select: { id: true, name: true } } } } },
             },
+            floor: { include: { building: { select: { id: true, name: true } } } },
           },
         },
       },
@@ -36,25 +37,25 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    const { deskId, expiresAt } = result.data
+    const { assetId, expiresAt } = result.data
     const wantedStartsAt = new Date(result.data.wantedStartsAt)
     const wantedEndsAt = new Date(result.data.wantedEndsAt)
     const expiresAtDate = new Date(expiresAt)
 
-    const desk = await prisma.desk.findUnique({ where: { id: deskId } })
-    if (!desk) {
-      return reply.status(404).send({ error: { message: 'Desk not found', code: 'NOT_FOUND' } })
+    const asset = await prisma.asset.findUnique({ where: { id: assetId } })
+    if (!asset) {
+      return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
     }
 
-    if (desk.status === 'DISABLED') {
-      return reply.status(409).send({ error: { message: 'Desk is disabled', code: 'DESK_DISABLED' } })
+    if (asset.bookingStatus === 'DISABLED') {
+      return reply.status(409).send({ error: { message: 'Asset is disabled', code: 'ASSET_DISABLED' } })
     }
 
     // Check duplicate
     const existing = await prisma.queueEntry.findFirst({
       where: {
         userId: request.user.id,
-        deskId,
+        assetId,
         status: { in: ['WAITING', 'PROMOTED'] },
         wantedStartsAt: { lt: wantedEndsAt },
         wantedEndsAt: { gt: wantedStartsAt },
@@ -63,14 +64,14 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
 
     if (existing) {
       return reply.status(409).send({
-        error: { message: 'You already have a queue entry for this desk and period', code: 'ALREADY_QUEUED' },
+        error: { message: 'You already have a queue entry for this asset and period', code: 'ALREADY_QUEUED' },
       })
     }
 
     // Calculate position: count of WAITING entries for overlapping range + 1
     const position = await prisma.queueEntry.count({
       where: {
-        deskId,
+        assetId,
         status: 'WAITING',
         wantedStartsAt: { lt: wantedEndsAt },
         wantedEndsAt: { gt: wantedStartsAt },
@@ -80,7 +81,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
     const entry = await prisma.queueEntry.create({
       data: {
         userId: request.user.id,
-        deskId,
+        assetId,
         wantedStartsAt,
         wantedEndsAt,
         expiresAt: expiresAtDate,
@@ -88,11 +89,12 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
         status: 'WAITING',
       },
       include: {
-        desk: {
+        asset: {
           include: {
-            zone: {
+            primaryZone: {
               include: { floor: { include: { building: { select: { id: true, name: true } } } } },
             },
+            floor: { include: { building: { select: { id: true, name: true } } } },
           },
         },
       },
@@ -134,13 +136,13 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.status(200).send({ data: { ok: true } })
   })
 
-  // POST /queue/:id/claim — claim promoted desk
+  // POST /queue/:id/claim — claim promoted asset
   fastify.post('/:id/claim', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
 
     const entry = await prisma.queueEntry.findUnique({
       where: { id },
-      include: { desk: true },
+      include: { asset: true },
     })
 
     if (!entry) {
@@ -163,10 +165,10 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    // Check desk is still free for the wanted period
+    // Check asset is still free for the wanted period
     const conflict = await prisma.booking.findFirst({
       where: {
-        deskId: entry.deskId,
+        assetId: entry.assetId,
         status: 'CONFIRMED',
         startsAt: { lt: entry.wantedEndsAt },
         endsAt: { gt: entry.wantedStartsAt },
@@ -175,7 +177,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
 
     if (conflict) {
       return reply.status(409).send({
-        error: { message: 'Desk is no longer available for this period', code: 'DESK_CONFLICT' },
+        error: { message: 'Asset is no longer available for this period', code: 'ASSET_CONFLICT' },
       })
     }
 
@@ -184,7 +186,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       prisma.booking.create({
         data: {
           userId: request.user.id,
-          deskId: entry.deskId,
+          assetId: entry.assetId,
           startsAt: entry.wantedStartsAt,
           endsAt: entry.wantedEndsAt,
           status: 'CONFIRMED',

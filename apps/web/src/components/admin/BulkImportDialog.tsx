@@ -11,13 +11,13 @@ import { Badge } from '@/components/ui/badge'
 
 // ─── CSV template ─────────────────────────────────────────────────────────────
 
-const CSV_HEADERS = 'building_name,building_address,floor_name,floor_level,zone_name,zone_colour,desk_name,desk_status,desk_amenities'
+const CSV_HEADERS = 'building_name,building_address,floor_name,floor_level,zone_name,zone_colour,asset_name,asset_category,is_bookable,asset_status,asset_amenities'
 const CSV_EXAMPLE = [
   CSV_HEADERS,
-  'Head Office,123 Main Street,Ground Floor,0,Open Plan,#6366f1,A-01,OPEN,standing;monitor',
-  'Head Office,123 Main Street,Ground Floor,0,Open Plan,#6366f1,A-02,OPEN,',
-  'Head Office,123 Main Street,Ground Floor,0,Quiet Zone,#10b981,B-01,RESTRICTED,',
-  'Head Office,123 Main Street,First Floor,1,Hot Desks,#f59e0b,C-01,OPEN,dual-monitor',
+  'Head Office,123 Main Street,Ground Floor,0,Open Plan,#6366f1,A-01,Desks,true,OPEN,standing;monitor',
+  'Head Office,123 Main Street,Ground Floor,0,Open Plan,#6366f1,A-02,Desks,true,OPEN,',
+  'Head Office,123 Main Street,Ground Floor,0,Quiet Zone,#10b981,B-01,Desks,true,RESTRICTED,',
+  'Head Office,123 Main Street,First Floor,1,Hot Desks,#f59e0b,C-01,Desks,true,OPEN,dual-monitor',
 ].join('\n')
 
 function downloadTemplate() {
@@ -67,8 +67,8 @@ function parseCSV(text: string): Record<string, string>[] {
 
 // ─── Preview tree ─────────────────────────────────────────────────────────────
 
-interface PreviewDesk { name: string; status: string; amenities: string }
-interface PreviewZone { name: string; colour: string; desks: PreviewDesk[] }
+interface PreviewAsset { name: string; status: string; amenities: string; isBookable?: string }
+interface PreviewZone { name: string; colour: string; assets: PreviewAsset[] }
 interface PreviewFloor { name: string; level: string; zones: Map<string, PreviewZone> }
 interface PreviewBuilding { name: string; address: string; floors: Map<string, PreviewFloor> }
 
@@ -93,10 +93,10 @@ function buildPreview(rows: ImportRow[]): Map<string, PreviewBuilding> {
     const zKey = row.zone_name.trim()
     if (!floor.zones.has(zKey)) {
       const colour = row.zone_colour?.trim() || PALETTE[zoneIndex++ % PALETTE.length]
-      floor.zones.set(zKey, { name: zKey, colour, desks: [] })
+      floor.zones.set(zKey, { name: zKey, colour, assets: [] })
     }
     const zone = floor.zones.get(zKey)!
-    zone.desks.push({ name: row.desk_name, status: row.desk_status ?? 'OPEN', amenities: row.desk_amenities ?? '' })
+    zone.assets.push({ name: row.asset_name, status: row.asset_status ?? 'OPEN', amenities: row.asset_amenities ?? '', isBookable: row.is_bookable })
   }
   return buildings
 }
@@ -115,7 +115,7 @@ function PreviewTree({ buildings }: { buildings: Map<string, PreviewBuilding> })
     <div className="space-y-2 text-sm">
       {[...buildings.values()].map((b) => {
         const floorList = [...b.floors.values()]
-        const totalDesks = floorList.reduce((s, f) => s + [...f.zones.values()].reduce((zs, z) => zs + z.desks.length, 0), 0)
+        const totalDesks = floorList.reduce((s, f) => s + [...f.zones.values()].reduce((zs, z) => zs + z.assets.length, 0), 0)
         const isOpen = expanded.has(b.name)
         return (
           <div key={b.name} className="rounded-lg border">
@@ -128,7 +128,7 @@ function PreviewTree({ buildings }: { buildings: Map<string, PreviewBuilding> })
               <span className="font-semibold">{b.name}</span>
               {b.address && <span className="text-muted-foreground text-xs truncate">{b.address}</span>}
               <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-                {floorList.length} floor{floorList.length !== 1 ? 's' : ''} · {totalDesks} desk{totalDesks !== 1 ? 's' : ''}
+                {floorList.length} floor{floorList.length !== 1 ? 's' : ''} · {totalDesks} asset{totalDesks !== 1 ? 's' : ''}
               </span>
             </button>
 
@@ -136,13 +136,13 @@ function PreviewTree({ buildings }: { buildings: Map<string, PreviewBuilding> })
               <div className="border-t divide-y">
                 {floorList.map((f) => {
                   const zoneList = [...f.zones.values()]
-                  const floorDesks = zoneList.reduce((s, z) => s + z.desks.length, 0)
+                  const floorDesks = zoneList.reduce((s, z) => s + z.assets.length, 0)
                   return (
                     <div key={f.name} className="px-4 py-2">
                       <div className="flex items-center gap-2 mb-1.5">
                         <span className="font-medium">{f.name}</span>
                         <Badge variant="outline" className="text-xs">Level {f.level || '0'}</Badge>
-                        <span className="text-xs text-muted-foreground ml-auto">{floorDesks} desks</span>
+                        <span className="text-xs text-muted-foreground ml-auto">{floorDesks} assets</span>
                       </div>
                       <div className="flex flex-wrap gap-1.5">
                         {zoneList.map((z) => (
@@ -152,7 +152,7 @@ function PreviewTree({ buildings }: { buildings: Map<string, PreviewBuilding> })
                           >
                             <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: z.colour }} />
                             {z.name}
-                            <span className="text-muted-foreground">({z.desks.length})</span>
+                            <span className="text-muted-foreground">({z.assets.length})</span>
                           </span>
                         ))}
                       </div>
@@ -201,7 +201,7 @@ export function BulkImportDialog({ open, onClose }: Props) {
     }
 
     const errs: string[] = []
-    const required = ['building_name', 'floor_name', 'zone_name', 'desk_name']
+    const required = ['building_name', 'floor_name', 'zone_name', 'asset_name']
     const missing = required.filter((h) => !(h in parsed[0]))
     if (missing.length > 0) {
       errs.push(`Missing required columns: ${missing.join(', ')}`)
@@ -234,7 +234,7 @@ export function BulkImportDialog({ open, onClose }: Props) {
       setStep('result')
       qc.invalidateQueries({ queryKey: ['buildings'] })
       if (res.data.errors.length === 0) {
-        toast.success(`Imported ${res.data.created.desks} desks successfully`)
+        toast.success(`Imported ${res.data.created.assets} assets successfully`)
       } else {
         toast.warning(`Import completed with ${res.data.errors.length} error(s)`)
       }
@@ -251,8 +251,8 @@ export function BulkImportDialog({ open, onClose }: Props) {
         <DialogHeader className="px-6 pt-6 pb-4 border-b shrink-0">
           <DialogTitle>Bulk Import</DialogTitle>
           <p className="text-sm text-muted-foreground mt-1">
-            Import buildings, floors, zones and desks from a CSV file. Existing buildings, floors
-            and zones are matched by name — only desks are always created as new entries.
+            Import buildings, floors, zones and assets from a CSV file. Existing buildings, floors
+            and zones are matched by name — only assets are always created as new entries.
           </p>
         </DialogHeader>
 
@@ -301,7 +301,7 @@ export function BulkImportDialog({ open, onClose }: Props) {
               <div className="rounded-lg bg-muted/40 p-4 space-y-2">
                 <p className="text-xs font-medium">CSV format</p>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  One row per desk. Separate multiple amenities with <code className="bg-muted px-1 rounded">;</code> e.g.{' '}
+                  One row per asset. Separate multiple amenities with <code className="bg-muted px-1 rounded">;</code> e.g.{' '}
                   <code className="bg-muted px-1 rounded">standing;monitor</code>. Zone colour is optional — a colour
                   will be auto-assigned if left blank. Download the template to get started.
                 </p>
@@ -335,7 +335,7 @@ export function BulkImportDialog({ open, onClose }: Props) {
                   ['Buildings', preview.size],
                   ['Floors', [...preview.values()].reduce((s, b) => s + b.floors.size, 0)],
                   ['Zones', [...preview.values()].reduce((s, b) => s + [...b.floors.values()].reduce((fs, f) => fs + f.zones.size, 0), 0)],
-                  ['Desks', validRows.length],
+                  ['Assets', validRows.length],
                 ].map(([label, count]) => (
                   <div key={label as string}>
                     <div className="text-xl font-bold">{count}</div>
@@ -347,7 +347,7 @@ export function BulkImportDialog({ open, onClose }: Props) {
               {preview.size > 0 && <PreviewTree buildings={preview} />}
 
               <p className="text-xs text-muted-foreground">
-                All desks will be placed at the centre of their floor plan — you can drag them into
+                All assets will be placed at the centre of their floor plan — you can drag them into
                 position afterwards using the Layout editor.
               </p>
             </>
@@ -361,7 +361,7 @@ export function BulkImportDialog({ open, onClose }: Props) {
                 <div>
                   <p className="font-semibold">Import complete</p>
                   <p className="text-sm text-muted-foreground mt-0.5">
-                    {result.created.desks} desk{result.created.desks !== 1 ? 's' : ''} imported successfully
+                    {result.created.assets} asset{result.created.assets !== 1 ? 's' : ''} imported successfully
                   </p>
                 </div>
               </div>
@@ -371,7 +371,7 @@ export function BulkImportDialog({ open, onClose }: Props) {
                   ['Buildings', result.created.buildings],
                   ['Floors', result.created.floors],
                   ['Zones', result.created.zones],
-                  ['Desks', result.created.desks],
+                  ['Assets', result.created.assets],
                 ].map(([label, count]) => (
                   <div key={label as string}>
                     <div className="text-xl font-bold">{count}</div>
@@ -409,7 +409,7 @@ export function BulkImportDialog({ open, onClose }: Props) {
                 onClick={() => importMutation.mutate()}
                 disabled={validRows.length === 0 || importMutation.isPending}
               >
-                {importMutation.isPending ? 'Importing…' : `Import ${validRows.length} desk${validRows.length !== 1 ? 's' : ''}`}
+                {importMutation.isPending ? 'Importing…' : `Import ${validRows.length} asset${validRows.length !== 1 ? 's' : ''}`}
               </Button>
             </>
           )}

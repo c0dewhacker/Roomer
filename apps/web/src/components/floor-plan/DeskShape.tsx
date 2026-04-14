@@ -59,10 +59,10 @@ export function DeskShape({
 }: DeskShapeProps) {
   const [hovered, setHovered] = useState(false)
 
-  const pixelX = (desk.x / 100) * stageWidth
-  const pixelY = (desk.y / 100) * stageHeight
-  const pixelW = (desk.width / 100) * stageWidth
-  const pixelH = (desk.height / 100) * stageHeight
+  const pixelX = ((desk.x ?? 50) / 100) * stageWidth
+  const pixelY = ((desk.y ?? 50) / 100) * stageHeight
+  const pixelW = ((desk.width ?? 5) / 100) * stageWidth
+  const pixelH = ((desk.height ?? 5) / 100) * stageHeight
 
   // Circle is inscribed in the bounding box
   const radius = (Math.min(pixelW, pixelH) / 2) * 1.5
@@ -92,7 +92,7 @@ export function DeskShape({
     <Group
       x={pixelX}
       y={pixelY}
-      rotation={desk.rotation}
+      rotation={desk.rotation ?? 0}
       draggable={editMode}
       onClick={editMode ? undefined : onClick}
       onTap={editMode ? undefined : onClick}
@@ -167,19 +167,6 @@ export function DeskShape({
         shadowOffsetY={1}
         listening={false}
       />
-
-      {/* Asset indicator — orange dot at top-right */}
-      {desk.assets && desk.assets.length > 0 && (
-        <Circle
-          x={cx + dotOffset}
-          y={cy - dotOffset}
-          radius={dotRadius}
-          fill="#f97316"
-          stroke="#fff"
-          strokeWidth={1.5}
-          listening={false}
-        />
-      )}
 
       {/* Assigned user indicator — blue dot at top-left */}
       {desk.assignedUsers && desk.assignedUsers.length > 0 && (

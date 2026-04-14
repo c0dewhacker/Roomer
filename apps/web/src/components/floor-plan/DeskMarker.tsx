@@ -1,7 +1,7 @@
 import { Monitor } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
-import type { DeskWithStatus } from '@/types'
+import type { AssetWithStatus } from '@/types'
 
 const STATUS_BG: Record<string, string> = {
   available:    'bg-green-500 hover:bg-green-600',
@@ -37,7 +37,7 @@ const STATUS_LABEL: Record<string, string> = {
 }
 
 interface DeskMarkerProps {
-  desk: DeskWithStatus
+  desk: AssetWithStatus
   bgWidth: number
   bgHeight: number
   stageX: number
@@ -56,8 +56,12 @@ export function DeskMarker({
   onClick,
 }: DeskMarkerProps) {
   // Convert percentage world coords → screen pixel coords
-  const cx = stageX + ((desk.x / 100 + desk.width / 200) * bgWidth) * scale
-  const cy = stageY + ((desk.y / 100 + desk.height / 200) * bgHeight) * scale
+  const assetX = desk.x ?? 50
+  const assetY = desk.y ?? 50
+  const assetW = desk.width ?? 5
+  const assetH = desk.height ?? 5
+  const cx = stageX + ((assetX / 100 + assetW / 200) * bgWidth) * scale
+  const cy = stageY + ((assetY / 100 + assetH / 200) * bgHeight) * scale
 
   const bgClass = STATUS_BG[desk.bookingStatus] ?? 'bg-slate-400 hover:bg-slate-500 border-slate-200'
   const dotClass = STATUS_DOT[desk.bookingStatus] ?? 'bg-slate-400'
@@ -104,18 +108,6 @@ export function DeskMarker({
                   style={{ width: iconSize * 0.42, height: iconSize * 0.42 }}
                   strokeWidth={2.2}
                 />
-                {/* Asset dot */}
-                {desk.assets && desk.assets.length > 0 && (
-                  <span
-                    className="absolute rounded-full bg-orange-400 border border-white"
-                    style={{
-                      width: Math.max(6, iconSize * 0.22),
-                      height: Math.max(6, iconSize * 0.22),
-                      top: -Math.max(2, iconSize * 0.06),
-                      right: -Math.max(2, iconSize * 0.06),
-                    }}
-                  />
-                )}
                 {/* Assigned-user dot */}
                 {desk.assignedUsers && desk.assignedUsers.length > 0 && (
                   <span
@@ -177,20 +169,14 @@ export function DeskMarker({
                 </p>
               )}
 
-              {desk.amenities.length > 0 && (
+              {(desk.amenities ?? []).length > 0 && (
                 <div className="flex flex-wrap gap-1 pt-0.5">
-                  {desk.amenities.map((a) => (
+                  {(desk.amenities ?? []).map((a) => (
                     <Badge key={a} variant="secondary" className="text-[10px] px-1.5 py-0">
                       {a}
                     </Badge>
                   ))}
                 </div>
-              )}
-
-              {desk.assets && desk.assets.length > 0 && (
-                <p className="text-xs text-muted-foreground">
-                  {desk.assets.length} asset{desk.assets.length !== 1 ? 's' : ''} assigned
-                </p>
               )}
 
               <p className="text-[10px] text-muted-foreground/70 pt-0.5">Click to open</p>

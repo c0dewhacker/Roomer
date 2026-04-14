@@ -4,11 +4,11 @@ import useImage from 'use-image'
 import * as pdfjs from 'pdfjs-dist'
 import type { KonvaEventObject } from 'konva/lib/Node'
 import { Plus, Minus } from 'lucide-react'
-import { DeskShape } from './DeskShape'
+import { AssetShape } from './AssetShape'
 import { DeskMarker } from './DeskMarker'
 import { useFloorData, useFloorAvailability } from '@/hooks/useFloor'
 import { Skeleton } from '@/components/ui/skeleton'
-import type { DeskWithStatus } from '@/types'
+import type { AssetWithStatus } from '@/types'
 
 // Use the bundled worker from pdfjs-dist
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -23,7 +23,9 @@ interface FloorPlanCanvasProps {
   floorId: string
   date: Date
   editMode?: boolean
-  onDeskClick?: (desk: DeskWithStatus) => void
+  onAssetClick?: (asset: AssetWithStatus) => void
+  /** @deprecated Use onAssetClick */
+  onDeskClick?: (asset: AssetWithStatus) => void
   onLayoutSave?: (
     positions: Array<{ id: string; x: number; y: number; width: number; height: number; rotation: number }>,
   ) => void
@@ -110,9 +112,12 @@ export function FloorPlanCanvas({
   floorId,
   date,
   editMode = false,
+  onAssetClick,
   onDeskClick,
   onLayoutSave,
 }: FloorPlanCanvasProps) {
+  // Support legacy onDeskClick prop
+  const handleAssetClick = onAssetClick ?? onDeskClick
   const containerRef = useRef<HTMLDivElement>(null)
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 })
   const [scale, setScale] = useState(1)
@@ -222,13 +227,13 @@ export function FloorPlanCanvas({
   const handleZoomIn  = useCallback(() => zoomToward(Math.min(scale * 1.3, MAX_SCALE)), [zoomToward, scale])
   const handleZoomOut = useCallback(() => zoomToward(Math.max(scale / 1.3, MIN_SCALE)), [zoomToward, scale])
 
-  // Build merged desk list: availability data takes precedence
-  const desks: DeskWithStatus[] = (() => {
+  // Build merged asset list: availability data takes precedence
+  const assets: AssetWithStatus[] = (() => {
     if (availabilityData) return availabilityData
     if (!floorData) return []
     return floorData.zones.flatMap((zone) =>
-      zone.desks.map((d) => ({
-        ...d,
+      zone.assets.map((a) => ({
+        ...a,
         bookingStatus: 'available' as const,
         zoneColour: zone.colour,
         zoneName: zone.name,
@@ -240,15 +245,15 @@ export function FloorPlanCanvas({
 
   const handleSave = () => {
     if (!onLayoutSave) return
-    const positions = desks.map((d) => {
-      const local = localPositions[d.id]
+    const positions = assets.map((a) => {
+      const local = localPositions[a.id]
       return {
-        id: d.id,
-        x: local ? local.x : d.x,
-        y: local ? local.y : d.y,
-        width: d.width,
-        height: d.height,
-        rotation: d.rotation,
+        id: a.id,
+        x: local ? local.x : (a.x ?? 50),
+        y: local ? local.y : (a.y ?? 50),
+        width: a.width ?? 5,
+        height: a.height ?? 5,
+        rotation: a.rotation ?? 0,
       }
     })
     onLayoutSave(positions)
@@ -315,24 +320,24 @@ export function FloorPlanCanvas({
           )}
         </Layer>
 
-        {/* Desk layer — only rendered in edit mode for drag-and-drop */}
+        {/* Asset layer — rendered in edit mode for all assets (bookable + non-bookable) */}
         {editMode && (
           <Layer>
-            {desks.map((desk) => {
-              const localPos = localPositions[desk.id]
-              const displayDesk = localPos
-                ? { ...desk, x: localPos.x, y: localPos.y }
-                : desk
+            {assets.map((asset) => {
+              const localPos = localPositions[asset.id]
+              const displayAsset = localPos
+                ? { ...asset, x: localPos.x, y: localPos.y }
+                : asset
 
               return (
-                <DeskShape
-                  key={desk.id}
-                  desk={displayDesk}
+                <AssetShape
+                  key={asset.id}
+                  asset={displayAsset}
                   stageWidth={bgImage?.width ?? dimensions.width}
                   stageHeight={bgImage?.height ?? dimensions.height}
                   editMode={editMode}
-                  onClick={() => onDeskClick?.(desk)}
-                  onDragEnd={(x, y) => handleDeskDragEnd(desk.id, x, y)}
+                  onClick={() => handleAssetClick?.(asset)}
+                  onDragEnd={(x, y) => handleDeskDragEnd(asset.id, x, y)}
                 />
               )
             })}
@@ -340,28 +345,28 @@ export function FloorPlanCanvas({
         )}
       </Stage>
 
-      {/* HTML overlay: desk markers in view mode */}
+      {/* HTML overlay: asset markers in view mode — only bookable assets are clickable */}
       {!editMode && (
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
-          {desks.map((desk) => (
+          {assets.map((asset) => (
             <DeskMarker
-              key={desk.id}
-              desk={desk}
+              key={asset.id}
+              desk={asset}
               bgWidth={bgImage?.width ?? dimensions.width}
               bgHeight={bgImage?.height ?? dimensions.height}
               stageX={position.x}
               stageY={position.y}
               scale={scale}
-              onClick={() => onDeskClick?.(desk)}
+              onClick={asset.isBookable !== false ? () => handleAssetClick?.(asset) : () => {}}
             />
           ))}
         </div>
       )}
 
-      {desks.length === 0 && !isLoading && (
+      {assets.length === 0 && !isLoading && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="rounded-md bg-background/80 px-4 py-2 text-sm text-muted-foreground shadow">
-            No desks configured on this floor
+            No assets configured on this floor
           </div>
         </div>
       )}

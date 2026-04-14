@@ -237,8 +237,11 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     const bookings = await prisma.booking.findMany({
       where: { userId: id },
       include: {
-        desk: {
-          include: { zone: { include: { floor: { include: { building: { select: { id: true, name: true } } } } } } },
+        asset: {
+          include: {
+            floor: { include: { building: { select: { id: true, name: true } } } },
+            primaryZone: { select: { id: true, name: true } },
+          },
         },
       },
       orderBy: { startsAt: 'desc' },

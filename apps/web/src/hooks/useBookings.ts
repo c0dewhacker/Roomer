@@ -21,7 +21,7 @@ export function useCreateBooking() {
   const qc = useQueryClient()
 
   return useMutation({
-    mutationFn: (body: { deskId: string; startsAt: string; endsAt: string; notes?: string }) =>
+    mutationFn: (body: { assetId: string; startsAt: string; endsAt: string; notes?: string }) =>
       bookingsApi.create(body),
     onSuccess: () => {
       toast.success('Desk booked successfully')
@@ -77,7 +77,7 @@ export function useJoinQueue() {
 
   return useMutation({
     mutationFn: (body: {
-      deskId: string
+      assetId: string
       wantedStartsAt: string
       wantedEndsAt: string
       expiresAt: string

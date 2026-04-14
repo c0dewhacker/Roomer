@@ -1,8 +1,12 @@
 export type GlobalRole = 'SUPER_ADMIN' | 'USER'
-export type DeskStatus = 'OPEN' | 'RESTRICTED' | 'ASSIGNED' | 'DISABLED'
+export type BookableStatus = 'OPEN' | 'RESTRICTED' | 'ASSIGNED' | 'DISABLED'
+/** @deprecated Use BookableStatus instead */
+export type DeskStatus = BookableStatus
 export type BookingStatus = 'CONFIRMED' | 'CANCELLED' | 'COMPLETED'
 export type QueueEntryStatus = 'WAITING' | 'PROMOTED' | 'CLAIMED' | 'EXPIRED' | 'CANCELLED'
-export type DeskBookingStatus = 'available' | 'mine' | 'booked' | 'restricted' | 'assigned' | 'disabled' | 'queued' | 'promoted' | 'zone_conflict'
+export type AssetBookingStatus = 'available' | 'mine' | 'booked' | 'restricted' | 'assigned' | 'disabled' | 'queued' | 'promoted' | 'zone_conflict'
+/** @deprecated Use AssetBookingStatus instead */
+export type DeskBookingStatus = AssetBookingStatus
 export type ResourceRoleType = 'FLOOR_MANAGER' | 'BUILDING_ADMIN' | 'VIEWER' | 'USER'
 export type ResourceScopeType = 'FLOOR' | 'BUILDING'
 
@@ -81,56 +85,80 @@ export interface Zone {
   floorId: string
   name: string
   colour: string
-  desks: Desk[]
+  assets: Asset[]
 }
 
-export interface Desk {
-  id: string
-  zoneId: string
-  name: string
-  x: number
-  y: number
-  width: number
-  height: number
-  rotation: number
-  status: DeskStatus
-  amenities: string[]
-}
-
-export interface DeskAsset {
-  assignmentId: string
-  assetId: string
-  assetName: string
-  categoryName: string
-}
-
-export interface DeskAssignedUser {
+export interface AssetAssignedUser {
   id: string
   displayName: string
   email: string
   isPrimary: boolean
 }
+/** @deprecated Use AssetAssignedUser instead */
+export type DeskAssignedUser = AssetAssignedUser
 
-export interface DeskWithStatus extends Desk {
-  bookingStatus: DeskBookingStatus
+export interface Asset {
+  id: string
+  name: string
+  description?: string
+  categoryId: string
+  category?: AssetCategory
+  serialNumber?: string
+  assetTag?: string
+  status: AssetStatus
+  // Bookable asset fields
+  isBookable?: boolean
+  bookingLabel?: string
+  bookingStatus?: BookableStatus
+  primaryZoneId?: string
+  floorId?: string
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  rotation?: number
+  amenities?: string[]
+  purchaseDate?: string
+  warrantyExpiry?: string
+  notes?: string
+  createdAt?: string
+  assignments?: AssetAssignment[]
+}
+
+/** @deprecated Use Asset instead — desks are now Asset rows with isBookable: true */
+export type Desk = Asset
+
+export interface AssetWithStatus extends Omit<Asset, 'bookingStatus'> {
+  bookingStatus: AssetBookingStatus
   currentBooking?: Booking & { bookerName?: string }
   bookedBy?: Array<{ userId: string; displayName: string }>
   zoneColour: string
   zoneName: string
-  assets?: DeskAsset[]
-  assignedUsers?: DeskAssignedUser[]
+  assignedUsers?: AssetAssignedUser[]
 }
+/** @deprecated Use AssetWithStatus instead */
+export type DeskWithStatus = AssetWithStatus
 
 export interface Booking {
   id: string
   userId: string
-  deskId: string
+  assetId: string
   startsAt: string
   endsAt: string
   status: BookingStatus
   notes?: string
   user?: User
-  desk?: Desk & {
+  asset?: Asset & {
+    zone?: Zone & {
+      floor?: Floor & {
+        building?: Building
+      }
+    }
+  }
+  /** @deprecated Use assetId */
+  deskId?: string
+  /** @deprecated Use asset */
+  desk?: Asset & {
     zone?: Zone & {
       floor?: Floor & {
         building?: Building
@@ -142,14 +170,18 @@ export interface Booking {
 export interface QueueEntry {
   id: string
   userId: string
-  deskId: string
+  assetId: string
   wantedStartsAt: string
   wantedEndsAt: string
   position: number
   status: QueueEntryStatus
   expiresAt: string
   claimDeadline?: string
-  desk?: Desk & { zone?: Zone }
+  asset?: Asset & { zone?: Zone }
+  /** @deprecated Use assetId */
+  deskId?: string
+  /** @deprecated Use asset */
+  desk?: Asset & { zone?: Zone }
 }
 
 export interface Notification {
@@ -162,41 +194,32 @@ export interface Notification {
   metadata: Record<string, unknown>
 }
 
-export type AssetStatus = 'AVAILABLE' | 'ASSIGNED' | 'MAINTENANCE' | 'RETIRED'
-export type AssetAssigneeType = 'USER' | 'DESK'
+export type AssetStatus = 'AVAILABLE' | 'ASSIGNED' | 'MAINTENANCE' | 'RETIRED' | 'DISABLED'
 
 export interface AssetCategory {
   id: string
   name: string
   description?: string
-}
-
-export interface Asset {
-  id: string
-  name: string
-  description?: string
-  categoryId: string
-  category?: AssetCategory
-  serialNumber?: string
-  assetTag?: string
-  status: AssetStatus
-  purchaseDate?: string
-  warrantyExpiry?: string
-  notes?: string
-  createdAt: string
-  assignments?: AssetAssignment[]
+  defaultIsBookable?: boolean
+  defaultIcon?: string
+  colour?: string
 }
 
 export interface AssetAssignment {
   id: string
   assetId: string
   asset?: Asset
-  assigneeType: AssetAssigneeType
   userId?: string
-  deskId?: string
   user?: User
   assignedAt: string
   returnedAt?: string
+}
+
+export interface AssetZone {
+  id: string
+  name: string
+  colour: string
+  isPrimary: boolean
 }
 
 export interface LeaseDocument {

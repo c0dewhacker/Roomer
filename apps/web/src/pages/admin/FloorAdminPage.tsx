@@ -8,7 +8,7 @@ import {
   ChevronDown, GripVertical, X, Users, UserMinus, UserPlus,
 } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { floorsApi, desksApi, zonesApi, usersApi, groupsApi } from '@/lib/api'
+import { floorsApi, assetsApi, zonesApi, usersApi, groupsApi } from '@/lib/api'
 import { toast } from 'sonner'
 import { FloorPlanCanvas } from '@/components/floor-plan/FloorPlanCanvas'
 import { Button } from '@/components/ui/button'
@@ -30,8 +30,10 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type ZoneData = { id: string; name: string; colour: string; zoneGroupId: string | null; desks: DeskData[] }
-type DeskData = { id: string; name: string; status: string; amenities: string[] }
+type ZoneData = { id: string; name: string; colour: string; zoneGroupId: string | null; assets: AssetData[] }
+type AssetData = { id: string; name: string; status: string; amenities: string[]; isBookable?: boolean }
+/** @deprecated use AssetData */
+type DeskData = AssetData
 
 const DESK_STATUSES = ['OPEN', 'RESTRICTED', 'ASSIGNED', 'DISABLED'] as const
 const STATUS_LABELS: Record<string, string> = {
@@ -142,20 +144,20 @@ function DeskDialog({
 
   // Additional zones (only relevant when editing)
   const { data: additionalZones, refetch: refetchZones } = useQuery({
-    queryKey: ['desks', existing?.id, 'zones'],
-    queryFn: () => desksApi.getZones(existing!.id),
+    queryKey: ['assets', existing?.id, 'zones'],
+    queryFn: () => assetsApi.getZones(existing!.id),
     select: (r) => r.data,
     enabled: !!existing,
   })
 
   const addZone = useMutation({
-    mutationFn: (zId: string) => desksApi.addZone(existing!.id, zId),
+    mutationFn: (zId: string) => assetsApi.addZone(existing!.id, zId),
     onSuccess: () => { toast.success('Zone added'); refetchZones() },
     onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Failed to add zone'),
   })
 
   const removeZone = useMutation({
-    mutationFn: (zId: string) => desksApi.removeZone(existing!.id, zId),
+    mutationFn: (zId: string) => assetsApi.removeZone(existing!.id, zId),
     onSuccess: () => { toast.success('Zone removed'); refetchZones() },
     onError: () => toast.error('Failed to remove zone'),
   })
@@ -166,9 +168,11 @@ function DeskDialog({
   const availableToAdd = zones.filter((z) => z.id !== primaryZoneId && !addedZoneIds.has(z.id))
 
   const create = useMutation({
-    mutationFn: (d: DeskForm) => desksApi.create({
-      zoneId: d.zoneId, name: d.name,
+    mutationFn: (d: DeskForm) => assetsApi.create({
+      primaryZoneId: d.zoneId, name: d.name,
       x: 50, y: 50,
+      isBookable: true,
+      bookingStatus: d.status,
       amenities: d.amenities ? d.amenities.split(',').map((s) => s.trim()).filter(Boolean) : [],
     }),
     onSuccess: () => {
@@ -179,8 +183,8 @@ function DeskDialog({
     onError: () => toast.error('Failed to add desk'),
   })
   const update = useMutation({
-    mutationFn: (d: DeskForm) => desksApi.update(existing!.id, {
-      name: d.name, status: d.status as any,
+    mutationFn: (d: DeskForm) => assetsApi.update(existing!.id, {
+      name: d.name, bookingStatus: d.status,
       amenities: d.amenities ? d.amenities.split(',').map((s) => s.trim()).filter(Boolean) : [],
     }),
     onSuccess: () => {
@@ -314,7 +318,7 @@ function ZoneSection({
     onError: () => toast.error('Failed to delete zone'),
   })
   const deleteDesk = useMutation({
-    mutationFn: (id: string) => desksApi.delete(id),
+    mutationFn: (id: string) => assetsApi.delete(id),
     onSuccess: () => { toast.success('Desk deleted'); qc.invalidateQueries({ queryKey: ['floors', floorId] }) },
     onError: () => toast.error('Failed to delete desk'),
   })
@@ -330,7 +334,7 @@ function ZoneSection({
           {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
           <span className="h-3 w-3 rounded-full shrink-0" style={{ backgroundColor: zone.colour }} />
           {zone.name}
-          <Badge variant="secondary" className="text-xs ml-1">{zone.desks.length} desks</Badge>
+          <Badge variant="secondary" className="text-xs ml-1">{zone.assets.length} assets</Badge>
         </button>
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs"
@@ -350,7 +354,7 @@ function ZoneSection({
               <AlertDialogHeader>
                 <AlertDialogTitle>Delete zone "{zone.name}"?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  This will permanently delete the zone and all {zone.desks.length} desk(s) within it.
+                  This will permanently delete the zone and all {zone.assets.length} desk(s) within it.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -368,13 +372,13 @@ function ZoneSection({
       {/* Desk list */}
       {expanded && (
         <div>
-          {zone.desks.length === 0 ? (
+          {zone.assets.length === 0 ? (
             <p className="px-4 py-3 text-sm text-muted-foreground">
               No desks — <button className="underline" onClick={() => setAddDesk(true)}>add one</button>
             </p>
           ) : (
             <div className="divide-y">
-              {zone.desks.map((desk) => (
+              {zone.assets.map((desk) => (
                 <div key={desk.id} className="flex items-center justify-between px-4 py-2.5">
                   <div className="flex items-center gap-3 min-w-0">
                     <GripVertical className="h-4 w-4 text-muted-foreground shrink-0" />
@@ -383,7 +387,7 @@ function ZoneSection({
                       {STATUS_LABELS[desk.status]}
                     </Badge>
                     <div className="hidden sm:flex gap-1 flex-wrap">
-                      {desk.amenities.map((a) => (
+                      {(desk.amenities ?? []).map((a) => (
                         <Badge key={a} variant="outline" className="text-xs">{a}</Badge>
                       ))}
                     </div>
@@ -720,7 +724,7 @@ export default function FloorAdminPage() {
 
   const updatePositions = useMutation({
     mutationFn: (positions: Array<{ id: string; x: number; y: number; width: number; height: number; rotation: number }>) =>
-      desksApi.updatePositions(positions),
+      assetsApi.updatePositions(positions),
     onSuccess: () => { toast.success('Layout saved'); qc.invalidateQueries({ queryKey: ['floors', floorId] }) },
     onError: () => toast.error('Failed to save layout'),
   })
@@ -735,7 +739,7 @@ export default function FloorAdminPage() {
   const buildingId = (floor as any)?.building?.id
   const buildingName = (floor as any)?.building?.name
   const zones: ZoneData[] = (floor?.zones ?? []) as ZoneData[]
-  const totalDesks = zones.reduce((s, z) => s + z.desks.length, 0)
+  const totalDesks = zones.reduce((s, z) => s + (z.assets?.length ?? 0), 0)
 
   return (
     <div className="flex h-full flex-col">

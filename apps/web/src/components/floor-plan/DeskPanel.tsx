@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react'
 import { format, addHours, startOfDay, addDays } from 'date-fns'
-import { MapPin, Clock, Users, CheckCircle, XCircle, AlertCircle, Package, Shield, UserPlus, UserMinus, ChevronDown, ChevronUp } from 'lucide-react'
+import { MapPin, Clock, Users, CheckCircle, XCircle, AlertCircle, Shield, UserPlus, UserMinus, ChevronDown, ChevronUp, Pencil, X } from 'lucide-react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -15,11 +16,11 @@ import { useCreateBooking, useJoinQueue, useLeaveQueue, useClaimDesk, useCancelB
 import { useQueueEntries } from '@/hooks/useBookings'
 import { formatDateRange } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
-import { assetsApi, desksApi, usersApi, settingsApi } from '@/lib/api'
-import type { DeskWithStatus } from '@/types'
+import { assetsApi, usersApi, settingsApi } from '@/lib/api'
+import type { AssetWithStatus } from '@/types'
 
 interface DeskPanelProps {
-  desk: DeskWithStatus | null
+  desk: AssetWithStatus | null
   date: Date
   floorId?: string
   floorZones?: Array<{ id: string; name: string; colour: string }>
@@ -28,82 +29,6 @@ interface DeskPanelProps {
 }
 
 type TimePreset = 'full' | 'am' | 'pm' | 'custom'
-
-// ─── Assign Asset Dialog ─────────────────────────────────────────────────────
-
-function AssignAssetDialog({
-  open,
-  deskId,
-  onClose,
-}: {
-  open: boolean
-  deskId: string
-  onClose: () => void
-}) {
-  const qc = useQueryClient()
-  const [selectedAssetId, setSelectedAssetId] = useState('')
-
-  const { data: assets } = useQuery({
-    queryKey: ['assets'],
-    queryFn: () => assetsApi.list(),
-    select: (r) => r.data.filter((a) => a.status === 'AVAILABLE'),
-  })
-
-  const assign = useMutation({
-    mutationFn: () =>
-      assetsApi.assign(selectedAssetId, { assigneeType: 'DESK', assigneeId: deskId }),
-    onSuccess: () => {
-      toast.success('Asset assigned to desk')
-      qc.invalidateQueries({ queryKey: ['assets'] })
-      qc.invalidateQueries({ queryKey: ['floors'] })
-      onClose()
-      setSelectedAssetId('')
-    },
-    onError: () => toast.error('Failed to assign asset'),
-  })
-
-  return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Assign Asset to Desk</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-4 py-2">
-          <div>
-            <Label>Available Asset</Label>
-            <Select value={selectedAssetId} onValueChange={setSelectedAssetId}>
-              <SelectTrigger className="mt-1.5">
-                <SelectValue placeholder="Select an asset…" />
-              </SelectTrigger>
-              <SelectContent>
-                {(assets ?? []).length === 0 ? (
-                  <SelectItem value="__none__" disabled>No available assets</SelectItem>
-                ) : (
-                  (assets ?? []).map((a) => (
-                    <SelectItem key={a.id} value={a.id}>
-                      {a.name}
-                      {a.category && <span className="text-muted-foreground ml-1">— {a.category.name}</span>}
-                      {a.assetTag && <span className="text-muted-foreground ml-1">({a.assetTag})</span>}
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button
-            onClick={() => assign.mutate()}
-            disabled={!selectedAssetId || assign.isPending}
-          >
-            {assign.isPending ? 'Assigning…' : 'Assign'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
 
 // ─── Add to Allow-List Dialog ─────────────────────────────────────────────────
 
@@ -128,10 +53,10 @@ function AddAllowListDialog({
   })
 
   const add = useMutation({
-    mutationFn: () => desksApi.addAllowList(deskId, selectedUserId),
+    mutationFn: () => assetsApi.addAllowList(deskId, selectedUserId),
     onSuccess: () => {
       toast.success('User added to allow list')
-      qc.invalidateQueries({ queryKey: ['desks', deskId, 'allow-list'] })
+      qc.invalidateQueries({ queryKey: ['assets', deskId, 'allow-list'] })
       onClose()
       setSearch('')
       setSelectedUserId('')
@@ -212,7 +137,7 @@ function AddAssignmentDialog({
   })
 
   const assign = useMutation({
-    mutationFn: () => desksApi.addAssignment(deskId, selectedUserId, makePrimary),
+    mutationFn: () => assetsApi.addAssignment(deskId, { userId: selectedUserId, isPrimary: makePrimary }),
     onSuccess: () => {
       toast.success('User assigned to desk')
       qc.invalidateQueries({ queryKey: ['floors'] })
@@ -308,10 +233,10 @@ function AddZoneDialog({
   )
 
   const add = useMutation({
-    mutationFn: () => desksApi.addZone(deskId, selectedZoneId),
+    mutationFn: () => assetsApi.addZone(deskId, selectedZoneId),
     onSuccess: () => {
       toast.success('Zone added')
-      qc.invalidateQueries({ queryKey: ['desks', deskId, 'zones'] })
+      qc.invalidateQueries({ queryKey: ['assets', deskId, 'zones'] })
       onClose()
       setSelectedZoneId('')
     },
@@ -360,6 +285,161 @@ function AddZoneDialog({
   )
 }
 
+// ─── Edit Asset Dialog ────────────────────────────────────────────────────────
+
+function EditAssetDialog({
+  open,
+  desk,
+  onClose,
+}: {
+  open: boolean
+  desk: AssetWithStatus
+  onClose: () => void
+}) {
+  const qc = useQueryClient()
+  const [name, setName] = useState(desk.name)
+  const [description, setDescription] = useState(desk.description ?? '')
+  const [bookingLabel, setBookingLabel] = useState(desk.bookingLabel ?? '')
+  const [amenityInput, setAmenityInput] = useState('')
+  const [amenities, setAmenities] = useState<string[]>(desk.amenities ?? [])
+  const [bookingStatus, setBookingStatus] = useState<'OPEN' | 'RESTRICTED' | 'ASSIGNED' | 'DISABLED'>(
+    // desk.bookingStatus here is the UI availability status; the DB status is not directly on AssetWithStatus
+    // We map from the availability status back to a DB value where possible, otherwise default to OPEN
+    desk.bookingStatus === 'restricted' ? 'RESTRICTED'
+    : desk.bookingStatus === 'disabled' ? 'DISABLED'
+    : desk.bookingStatus === 'assigned' ? 'ASSIGNED'
+    : 'OPEN',
+  )
+
+  // Reset form when dialog opens with new desk data
+  useEffect(() => {
+    if (open) {
+      setName(desk.name)
+      setDescription(desk.description ?? '')
+      setBookingLabel(desk.bookingLabel ?? '')
+      setAmenities(desk.amenities ?? [])
+      setBookingStatus(
+        desk.bookingStatus === 'restricted' ? 'RESTRICTED'
+        : desk.bookingStatus === 'disabled' ? 'DISABLED'
+        : desk.bookingStatus === 'assigned' ? 'ASSIGNED'
+        : 'OPEN' as const,
+      )
+    }
+  }, [open, desk])
+
+  const update = useMutation({
+    mutationFn: () =>
+      assetsApi.update(desk.id, {
+        name: name.trim(),
+        description: description.trim() || undefined,
+        bookingLabel: bookingLabel.trim() || undefined,
+        amenities,
+        bookingStatus,
+      }),
+    onSuccess: () => {
+      toast.success('Asset updated')
+      qc.invalidateQueries({ queryKey: ['floors'] })
+      onClose()
+    },
+    onError: () => toast.error('Failed to update asset'),
+  })
+
+  const addAmenity = () => {
+    const val = amenityInput.trim()
+    if (val && !amenities.includes(val)) {
+      setAmenities((prev) => [...prev, val])
+    }
+    setAmenityInput('')
+  }
+
+  const removeAmenity = (a: string) => setAmenities((prev) => prev.filter((x) => x !== a))
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Edit Asset</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 py-1">
+          <div>
+            <Label>Name</Label>
+            <Input className="mt-1.5" value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div>
+            <Label>Description</Label>
+            <Textarea
+              className="mt-1.5 resize-none"
+              rows={2}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Optional description…"
+            />
+          </div>
+          <div>
+            <Label>Booking label</Label>
+            <Input
+              className="mt-1.5"
+              value={bookingLabel}
+              onChange={(e) => setBookingLabel(e.target.value)}
+              placeholder="e.g. Hot desk, Standing desk…"
+            />
+          </div>
+          <div>
+            <Label>Booking status</Label>
+            <Select value={bookingStatus} onValueChange={(v) => setBookingStatus(v as 'OPEN' | 'RESTRICTED' | 'ASSIGNED' | 'DISABLED')}>
+              <SelectTrigger className="mt-1.5">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="OPEN">Open (anyone can book)</SelectItem>
+                <SelectItem value="RESTRICTED">Restricted (allow list only)</SelectItem>
+                <SelectItem value="ASSIGNED">Assigned (permanent user only)</SelectItem>
+                <SelectItem value="DISABLED">Disabled (not bookable)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Amenities</Label>
+            <div className="flex gap-2 mt-1.5">
+              <Input
+                value={amenityInput}
+                onChange={(e) => setAmenityInput(e.target.value)}
+                placeholder="e.g. Monitor, Sit-stand…"
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addAmenity() } }}
+              />
+              <Button type="button" variant="outline" size="sm" onClick={addAmenity} className="shrink-0">
+                Add
+              </Button>
+            </div>
+            {amenities.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {amenities.map((a) => (
+                  <Badge key={a} variant="secondary" className="gap-1 pr-1.5">
+                    {a}
+                    <button
+                      type="button"
+                      onClick={() => removeAmenity(a)}
+                      className="ml-0.5 rounded-full hover:text-destructive"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </Badge>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button onClick={() => update.mutate()} disabled={!name.trim() || update.isPending}>
+            {update.isPending ? 'Saving…' : 'Save changes'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 // ─── Main DeskPanel ───────────────────────────────────────────────────────────
 
 export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onClose, onBookingCreated }: DeskPanelProps) {
@@ -372,7 +452,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   // Keep endDate in sync when the floor page navigates to a different day
   useEffect(() => { setEndDate(date) }, [date])
   const [showAdmin, setShowAdmin] = useState(false)
-  const [assignAssetOpen, setAssignAssetOpen] = useState(false)
+  const [editAssetOpen, setEditAssetOpen] = useState(false)
   const [addAllowListOpen, setAddAllowListOpen] = useState(false)
   const [addAssignmentOpen, setAddAssignmentOpen] = useState(false)
   const [addZoneOpen, setAddZoneOpen] = useState(false)
@@ -416,33 +496,23 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   const { data: queueEntries } = useQueueEntries()
 
   const { data: allowList } = useQuery({
-    queryKey: ['desks', desk?.id, 'allow-list'],
-    queryFn: () => desksApi.getAllowList(desk!.id),
+    queryKey: ['assets', desk?.id, 'allow-list'],
+    queryFn: () => assetsApi.getAllowList(desk!.id),
     select: (r) => r.data,
     enabled: canManageDesk && !!desk && showAdmin,
   })
 
-  const unassignAsset = useMutation({
-    mutationFn: (assetId: string) => assetsApi.unassign(assetId),
-    onSuccess: () => {
-      toast.success('Asset unassigned')
-      qc.invalidateQueries({ queryKey: ['assets'] })
-      qc.invalidateQueries({ queryKey: ['floors'] })
-    },
-    onError: () => toast.error('Failed to unassign asset'),
-  })
-
   const removeAllowList = useMutation({
-    mutationFn: (userId: string) => desksApi.removeAllowList(desk!.id, userId),
+    mutationFn: (userId: string) => assetsApi.removeAllowList(desk!.id, userId),
     onSuccess: () => {
       toast.success('User removed from allow list')
-      qc.invalidateQueries({ queryKey: ['desks', desk?.id, 'allow-list'] })
+      qc.invalidateQueries({ queryKey: ['assets', desk?.id, 'allow-list'] })
     },
     onError: () => toast.error('Failed to remove user'),
   })
 
   const removeAssignment = useMutation({
-    mutationFn: (userId: string) => desksApi.removeAssignment(desk!.id, userId),
+    mutationFn: (userId: string) => assetsApi.removeAssignment(desk!.id, userId),
     onSuccess: () => {
       toast.success('User removed from desk')
       qc.invalidateQueries({ queryKey: ['floors'] })
@@ -451,7 +521,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   })
 
   const setPrimaryAssignment = useMutation({
-    mutationFn: (userId: string) => desksApi.setPrimaryAssignment(desk!.id, userId),
+    mutationFn: (userId: string) => assetsApi.setPrimaryAssignment(desk!.id, userId),
     onSuccess: () => {
       toast.success('Primary user updated')
       qc.invalidateQueries({ queryKey: ['floors'] })
@@ -460,17 +530,17 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   })
 
   const { data: additionalZones } = useQuery({
-    queryKey: ['desks', desk?.id, 'zones'],
-    queryFn: () => desksApi.getZones(desk!.id),
+    queryKey: ['assets', desk?.id, 'zones'],
+    queryFn: () => assetsApi.getZones(desk!.id),
     select: (r) => r.data,
     enabled: canManageDesk && !!desk && showAdmin,
   })
 
   const removeZone = useMutation({
-    mutationFn: (zoneId: string) => desksApi.removeZone(desk!.id, zoneId),
+    mutationFn: (zoneId: string) => assetsApi.removeZone(desk!.id, zoneId),
     onSuccess: () => {
       toast.success('Zone removed')
-      qc.invalidateQueries({ queryKey: ['desks', desk?.id, 'zones'] })
+      qc.invalidateQueries({ queryKey: ['assets', desk?.id, 'zones'] })
     },
     onError: () => toast.error('Failed to remove zone'),
   })
@@ -506,7 +576,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
     }
     try {
       await createBooking.mutateAsync({
-        deskId: desk.id,
+        assetId: desk.id,
         startsAt: start.toISOString(),
         endsAt: end.toISOString(),
       })
@@ -527,7 +597,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
       : new Date(start.getTime() - 2 * 3600000).toISOString()
     try {
       await joinQueue.mutateAsync({
-        deskId: desk.id,
+        assetId: desk.id,
         wantedStartsAt: start.toISOString(),
         wantedEndsAt: end.toISOString(),
         expiresAt: expires,
@@ -539,7 +609,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   }
 
   const myQueueEntry = queueEntries?.find(
-    (q) => q.deskId === desk.id && (q.status === 'WAITING' || q.status === 'PROMOTED'),
+    (q) => (q.assetId ?? q.deskId) === desk.id && (q.status === 'WAITING' || q.status === 'PROMOTED'),
   )
 
   const statusLabel: Record<string, string> = {
@@ -564,8 +634,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
     zone_conflict: 'outline',
   }
 
-  const deskAssets = desk.assets ?? []
-  const needsAllowList = desk.status === 'RESTRICTED' || desk.status === 'ASSIGNED'
+  const needsAllowList = desk.bookingStatus === 'restricted' || desk.bookingStatus === 'assigned'
 
   return (
     <>
@@ -588,11 +657,11 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
 
           <div className="mt-6 space-y-6">
             {/* Amenities */}
-            {desk.amenities.length > 0 && (
+            {(desk.amenities ?? []).length > 0 && (
               <div>
                 <p className="text-sm font-medium mb-2">Amenities</p>
                 <div className="flex flex-wrap gap-1.5">
-                  {desk.amenities.map((a) => (
+                  {(desk.amenities ?? []).map((a) => (
                     <Badge key={a} variant="secondary" className="text-xs">
                       {a}
                     </Badge>
@@ -601,23 +670,22 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
               </div>
             )}
 
-            {/* Assets at this desk */}
-            {deskAssets.length > 0 && (
-              <div>
-                <p className="text-sm font-medium mb-2 flex items-center gap-1.5">
-                  <Package className="h-3.5 w-3.5 text-orange-500" />
-                  Assets at this desk
-                </p>
-                <div className="space-y-1.5">
-                  {deskAssets.map((a) => (
-                    <div key={a.assignmentId} className="flex items-center justify-between rounded-md bg-orange-50 px-3 py-1.5">
-                      <div>
-                        <p className="text-sm font-medium text-orange-900">{a.assetName}</p>
-                        <p className="text-xs text-orange-600">{a.categoryName}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+            {/* Asset details */}
+            {(desk.category?.name || desk.bookingLabel) && (
+              <div className="rounded-md bg-muted/40 px-3 py-2.5 space-y-1">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">Details</p>
+                {desk.category?.name && (
+                  <p className="text-sm">
+                    <span className="text-muted-foreground">Category: </span>
+                    <span className="font-medium">{desk.category.name}</span>
+                  </p>
+                )}
+                {desk.bookingLabel && (
+                  <p className="text-sm">
+                    <span className="text-muted-foreground">Label: </span>
+                    <span className="font-medium">{desk.bookingLabel}</span>
+                  </p>
+                )}
               </div>
             )}
 
@@ -909,47 +977,17 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
 
                   {showAdmin && (
                     <div className="mt-4 space-y-5">
-                      {/* Asset management */}
+                      {/* Edit asset details */}
                       <div>
-                        <div className="flex items-center justify-between mb-2">
-                          <p className="text-sm font-medium flex items-center gap-1.5">
-                            <Package className="h-3.5 w-3.5 text-orange-500" />
-                            Assigned Assets
-                          </p>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-7 text-xs"
-                            onClick={() => setAssignAssetOpen(true)}
-                          >
-                            <UserPlus className="mr-1 h-3 w-3" />
-                            Assign
-                          </Button>
-                        </div>
-                        {deskAssets.length === 0 ? (
-                          <p className="text-xs text-muted-foreground">No assets assigned</p>
-                        ) : (
-                          <div className="space-y-1.5">
-                            {deskAssets.map((a) => (
-                              <div key={a.assignmentId} className="flex items-center justify-between rounded-md border px-3 py-2">
-                                <div>
-                                  <p className="text-sm font-medium">{a.assetName}</p>
-                                  <p className="text-xs text-muted-foreground">{a.categoryName}</p>
-                                </div>
-                                <Button
-                                  size="icon"
-                                  variant="ghost"
-                                  className="h-7 w-7 hover:text-destructive"
-                                  title="Unassign"
-                                  onClick={() => unassignAsset.mutate(a.assetId)}
-                                  disabled={unassignAsset.isPending}
-                                >
-                                  <UserMinus className="h-3.5 w-3.5" />
-                                </Button>
-                              </div>
-                            ))}
-                          </div>
-                        )}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="w-full h-8 text-xs"
+                          onClick={() => setEditAssetOpen(true)}
+                        >
+                          <Pencil className="mr-1.5 h-3 w-3" />
+                          Edit name, amenities &amp; booking status
+                        </Button>
                       </div>
 
                       {/* Permanent user assignment */}
@@ -1109,11 +1147,11 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
         </SheetContent>
       </Sheet>
 
-      {assignAssetOpen && (
-        <AssignAssetDialog
-          open={assignAssetOpen}
-          deskId={desk.id}
-          onClose={() => setAssignAssetOpen(false)}
+      {editAssetOpen && (
+        <EditAssetDialog
+          open={editAssetOpen}
+          desk={desk}
+          onClose={() => setEditAssetOpen(false)}
         />
       )}
 
@@ -1137,7 +1175,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
         <AddZoneDialog
           open={addZoneOpen}
           deskId={desk.id}
-          primaryZoneId={desk.zoneId}
+          primaryZoneId={desk.primaryZoneId ?? ''}
           floorZones={floorZones}
           existingZoneIds={(additionalZones ?? []).map((z) => z.id)}
           onClose={() => setAddZoneOpen(false)}

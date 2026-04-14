@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Layers, Plus, ChevronRight, Upload, Pencil, Trash2 } from 'lucide-react'
+import { Layers, Plus, ChevronRight, Pencil, Trash2 } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { buildingsApi, floorsApi, ApiError } from '@/lib/api'
 import { toast } from 'sonner'
@@ -163,11 +163,11 @@ function FloorCard({ floor, buildingId }: { floor: Floor; buildingId: string }) 
             </div>
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs"
+            {/* <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs"
               onClick={() => fileRef.current?.click()}>
               <Upload className="h-3.5 w-3.5" />
               {upload.isPending ? 'Uploading…' : 'Upload plan'}
-            </Button>
+            </Button> */}
             <input
               ref={fileRef}
               type="file"

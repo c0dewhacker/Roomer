@@ -1,7 +1,7 @@
 import nodemailer from 'nodemailer'
 import type { Transporter } from 'nodemailer'
 import { env } from '../env'
-import type { Booking, User, Desk, QueueEntry } from '@roomer/shared'
+import type { Booking, User, Asset, QueueEntry } from '@roomer/shared'
 
 let transporter: Transporter | null = null
 
@@ -84,16 +84,16 @@ function baseHtml(title: string, body: string): string {
 export function renderBookingConfirmed(
   booking: Pick<Booking, 'id' | 'startsAt' | 'endsAt' | 'notes'>,
   user: Pick<User, 'displayName' | 'email'>,
-  desk: Pick<Desk, 'name'> & { zoneName?: string; floorName?: string },
+  asset: Pick<Asset, 'name'> & { zoneName?: string; floorName?: string },
 ): { subject: string; html: string; text: string } {
-  const subject = `Booking confirmed — ${desk.name}`
+  const subject = `Booking confirmed — ${asset.name}`
   const html = baseHtml(
     subject,
-    `<h1>Your desk is booked</h1>
+    `<h1>Your booking is confirmed</h1>
      <p>Hi ${user.displayName}, your booking has been confirmed.</p>
      <div class="detail">
        <dl>
-         <dt>Desk</dt><dd>${desk.name}${desk.zoneName ? ` — ${desk.zoneName}` : ''}${desk.floorName ? `, ${desk.floorName}` : ''}</dd>
+         <dt>Asset</dt><dd>${asset.name}${asset.zoneName ? ` — ${asset.zoneName}` : ''}${asset.floorName ? `, ${asset.floorName}` : ''}</dd>
          <dt>From</dt><dd>${formatDate(booking.startsAt)}</dd>
          <dt>To</dt><dd>${formatDate(booking.endsAt)}</dd>
          ${booking.notes ? `<dt>Notes</dt><dd>${booking.notes}</dd>` : ''}
@@ -101,7 +101,7 @@ export function renderBookingConfirmed(
      </div>
      <a href="${env.APP_URL}/bookings/${booking.id}" class="btn">View Booking</a>`,
   )
-  const text = `Hi ${user.displayName},\n\nYour booking for ${desk.name} has been confirmed.\nFrom: ${formatDate(booking.startsAt)}\nTo: ${formatDate(booking.endsAt)}\n\nView: ${env.APP_URL}/bookings/${booking.id}`
+  const text = `Hi ${user.displayName},\n\nYour booking for ${asset.name} has been confirmed.\nFrom: ${formatDate(booking.startsAt)}\nTo: ${formatDate(booking.endsAt)}\n\nView: ${env.APP_URL}/bookings/${booking.id}`
   return { subject, html, text }
 }
 
@@ -110,22 +110,22 @@ export function renderBookingConfirmed(
 export function renderBookingCancelled(
   booking: Pick<Booking, 'id' | 'startsAt' | 'endsAt'>,
   user: Pick<User, 'displayName' | 'email'>,
-  desk: Pick<Desk, 'name'>,
+  asset: Pick<Asset, 'name'>,
 ): { subject: string; html: string; text: string } {
-  const subject = `Booking cancelled — ${desk.name}`
+  const subject = `Booking cancelled — ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>Booking cancelled</h1>
      <p>Hi ${user.displayName}, your booking has been cancelled.</p>
      <div class="detail">
        <dl>
-         <dt>Desk</dt><dd>${desk.name}</dd>
+         <dt>Asset</dt><dd>${asset.name}</dd>
          <dt>Was scheduled</dt><dd>${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}</dd>
        </dl>
      </div>
      <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
   )
-  const text = `Hi ${user.displayName},\n\nYour booking for ${desk.name} (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}) has been cancelled.`
+  const text = `Hi ${user.displayName},\n\nYour booking for ${asset.name} (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}) has been cancelled.`
   return { subject, html, text }
 }
 
@@ -134,23 +134,23 @@ export function renderBookingCancelled(
 export function renderQueueJoined(
   queueEntry: Pick<QueueEntry, 'id' | 'wantedStartsAt' | 'wantedEndsAt' | 'position'>,
   user: Pick<User, 'displayName' | 'email'>,
-  desk: Pick<Desk, 'name'>,
+  asset: Pick<Asset, 'name'>,
 ): { subject: string; html: string; text: string } {
-  const subject = `You've joined the queue — ${desk.name}`
+  const subject = `You've joined the queue — ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>You're in the queue</h1>
-     <p>Hi ${user.displayName}, you have been added to the queue for <strong>${desk.name}</strong>.</p>
+     <p>Hi ${user.displayName}, you have been added to the queue for <strong>${asset.name}</strong>.</p>
      <div class="detail">
        <dl>
          <dt>Position</dt><dd>#${queueEntry.position}</dd>
          <dt>Wanted period</dt><dd>${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}</dd>
        </dl>
      </div>
-     <p>We'll notify you immediately if the desk becomes available.</p>
+     <p>We'll notify you immediately if the asset becomes available.</p>
      <a href="${env.APP_URL}/queue" class="btn">View My Queue</a>`,
   )
-  const text = `Hi ${user.displayName},\n\nYou are #${queueEntry.position} in the queue for ${desk.name}.\nWanted: ${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}\n\nWe'll notify you when the desk is available.\n\n${env.APP_URL}/queue`
+  const text = `Hi ${user.displayName},\n\nYou are #${queueEntry.position} in the queue for ${asset.name}.\nWanted: ${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}\n\nWe'll notify you when the asset is available.\n\n${env.APP_URL}/queue`
   return { subject, html, text }
 }
 
@@ -159,24 +159,24 @@ export function renderQueueJoined(
 export function renderQueuePromoted(
   queueEntry: Pick<QueueEntry, 'id' | 'wantedStartsAt' | 'wantedEndsAt'>,
   user: Pick<User, 'displayName' | 'email'>,
-  desk: Pick<Desk, 'name'>,
+  asset: Pick<Asset, 'name'>,
   claimDeadline: Date,
 ): { subject: string; html: string; text: string } {
-  const subject = `Desk available — claim now! ${desk.name}`
+  const subject = `Asset available — claim now! ${asset.name}`
   const html = baseHtml(
     subject,
-    `<h1>Your desk is available!</h1>
-     <p>Hi ${user.displayName}, <strong>${desk.name}</strong> is now available for your requested period.</p>
+    `<h1>Your asset is available!</h1>
+     <p>Hi ${user.displayName}, <strong>${asset.name}</strong> is now available for your requested period.</p>
      <div class="detail">
        <dl>
          <dt>Period</dt><dd>${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}</dd>
          <dt>Claim by</dt><dd><strong>${formatDate(claimDeadline)}</strong></dd>
        </dl>
      </div>
-     <p>You must claim this desk before the deadline or it will be offered to the next person in the queue.</p>
+     <p>You must claim this booking before the deadline or it will be offered to the next person in the queue.</p>
      <a href="${env.APP_URL}/queue" class="btn">Claim Now</a>`,
   )
-  const text = `Hi ${user.displayName},\n\n${desk.name} is now available!\nPeriod: ${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}\nClaim by: ${formatDate(claimDeadline)}\n\nClaim: ${env.APP_URL}/queue`
+  const text = `Hi ${user.displayName},\n\n${asset.name} is now available!\nPeriod: ${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}\nClaim by: ${formatDate(claimDeadline)}\n\nClaim: ${env.APP_URL}/queue`
   return { subject, html, text }
 }
 

@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { floorsApi, desksApi } from '../lib/api'
+import { floorsApi, assetsApi } from '../lib/api'
 import { toISODateString } from '../lib/utils'
 
 export function useFloorData(floorId: string) {
@@ -18,18 +18,18 @@ export function useFloorAvailability(floorId: string, date: Date) {
     queryKey: ['floors', floorId, 'availability', dateStr],
     queryFn: () => floorsApi.getAvailability(floorId, dateStr),
     enabled: !!floorId,
-    select: (res) => res.data.desks,
+    select: (res) => res.data.assets,
     staleTime: 10 * 1000,
   })
 }
 
-export function useUpdateDeskPositions() {
+export function useUpdateAssetPositions() {
   const qc = useQueryClient()
 
   return useMutation({
     mutationFn: (
       positions: Array<{ id: string; x: number; y: number; width: number; height: number; rotation: number }>,
-    ) => desksApi.updatePositions(positions),
+    ) => assetsApi.updatePositions(positions),
     onSuccess: (_, _vars, context: { floorId?: string } | undefined) => {
       toast.success('Layout saved')
       if (context?.floorId) {
@@ -41,3 +41,6 @@ export function useUpdateDeskPositions() {
     },
   })
 }
+
+/** @deprecated Use useUpdateAssetPositions */
+export const useUpdateDeskPositions = useUpdateAssetPositions
