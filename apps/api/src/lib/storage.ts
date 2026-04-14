@@ -1,0 +1,259 @@
+import fs from 'fs'
+import path from 'path'
+import { pipeline } from 'stream/promises'
+import type { MultipartFile } from '@fastify/multipart'
+import sharp from 'sharp'
+import { env } from '../env'
+import { FloorPlanFileType } from '@roomer/shared'
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const DxfParser = require('dxf-parser')
+
+const FLOOR_PLANS_DIR = 'floor-plans'
+const THUMBNAILS_DIR = 'floor-plans/thumbnails'
+
+export function resolveStoragePath(relativePath: string): string {
+  return path.resolve(env.FILE_STORAGE_PATH, relativePath)
+}
+
+export async function ensureUploadDirs(): Promise<void> {
+  const dirs = [
+    env.FILE_STORAGE_PATH,
+    path.join(env.FILE_STORAGE_PATH, FLOOR_PLANS_DIR),
+    path.join(env.FILE_STORAGE_PATH, THUMBNAILS_DIR),
+  ]
+  for (const dir of dirs) {
+    await fs.promises.mkdir(dir, { recursive: true })
+  }
+}
+
+function sanitizeFilename(name: string): string {
+  return name
+    .replace(/[^a-zA-Z0-9_.-]/g, '_')
+    .replace(/\.{2,}/g, '_')
+    .slice(0, 200)
+}
+
+function generateFilename(originalName: string): string {
+  const ext = path.extname(originalName).toLowerCase()
+  const base = path.basename(originalName, ext)
+  const safe = sanitizeFilename(base)
+  const timestamp = Date.now()
+  const rand = Math.random().toString(36).slice(2, 8)
+  return `${safe}_${timestamp}_${rand}${ext}`
+}
+
+function detectFileType(mimetype: string, filename: string): FloorPlanFileType {
+  const ext = path.extname(filename).toLowerCase()
+
+  if (
+    mimetype === 'application/pdf' ||
+    ext === '.pdf'
+  ) {
+    return FloorPlanFileType.PDF
+  }
+
+  if (
+    ext === '.dxf' ||
+    mimetype === 'image/vnd.dxf' ||
+    mimetype === 'application/dxf'
+  ) {
+    return FloorPlanFileType.DXF
+  }
+
+  return FloorPlanFileType.IMAGE
+}
+
+interface FloorPlanSaveResult {
+  originalPath: string
+  renderedPath: string
+  thumbnailPath: string | null
+  width: number
+  height: number
+  fileType: FloorPlanFileType
+}
+
+export async function saveFloorPlan(
+  file: MultipartFile,
+): Promise<FloorPlanSaveResult> {
+  const fileType = detectFileType(file.mimetype, file.filename)
+  const filename = generateFilename(file.filename)
+  const originalRelPath = path.join(FLOOR_PLANS_DIR, filename)
+  const originalAbsPath = resolveStoragePath(originalRelPath)
+
+  // Write original file to disk
+  await pipeline(file.file, fs.createWriteStream(originalAbsPath))
+
+  if (fileType === FloorPlanFileType.IMAGE) {
+    return saveImageFloorPlan(originalAbsPath, originalRelPath, filename)
+  }
+
+  if (fileType === FloorPlanFileType.PDF) {
+    return savePdfFloorPlan(originalAbsPath, originalRelPath)
+  }
+
+  // DXF — convert to SVG for rendering
+  return saveDxfFloorPlan(originalAbsPath, originalRelPath, filename)
+}
+
+async function saveImageFloorPlan(
+  originalAbsPath: string,
+  originalRelPath: string,
+  filename: string,
+): Promise<FloorPlanSaveResult> {
+  const image = sharp(originalAbsPath)
+  const metadata = await image.metadata()
+  const width = metadata.width ?? 1200
+  const height = metadata.height ?? 900
+
+  // Generate thumbnail (max 400×300, webp)
+  const thumbFilename = `thumb_${path.basename(filename, path.extname(filename))}.webp`
+  const thumbRelPath = path.join(FLOOR_PLANS_DIR, 'thumbnails', thumbFilename)
+  const thumbAbsPath = resolveStoragePath(thumbRelPath)
+
+  await sharp(originalAbsPath)
+    .resize(400, 300, { fit: 'inside', withoutEnlargement: true })
+    .webp({ quality: 75 })
+    .toFile(thumbAbsPath)
+
+  return {
+    originalPath: originalRelPath,
+    renderedPath: originalRelPath,
+    thumbnailPath: thumbRelPath,
+    width,
+    height,
+    fileType: FloorPlanFileType.IMAGE,
+  }
+}
+
+async function savePdfFloorPlan(
+  originalAbsPath: string,
+  originalRelPath: string,
+): Promise<FloorPlanSaveResult> {
+  // PDF rendering to image requires pdf2pic or similar; for now store as-is
+  // In a full implementation, use pdf2pic to rasterise first page to PNG
+  // and then call saveImageFloorPlan on the result.
+  return {
+    originalPath: originalRelPath,
+    renderedPath: originalRelPath,
+    thumbnailPath: null,
+    width: 1200,
+    height: 900,
+    fileType: FloorPlanFileType.PDF,
+  }
+}
+
+async function saveDxfFloorPlan(
+  originalAbsPath: string,
+  originalRelPath: string,
+  filename: string,
+): Promise<FloorPlanSaveResult> {
+  try {
+    const content = await fs.promises.readFile(originalAbsPath, 'utf-8')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const parser = new DxfParser() as any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dxf: any = parser.parseSync(content)
+
+    const extMin = dxf?.header?.['$EXTMIN'] ?? { x: 0, y: 0 }
+    const extMax = dxf?.header?.['$EXTMAX'] ?? { x: 1000, y: 1000 }
+    const dxfWidth = extMax.x - extMin.x
+    const dxfHeight = extMax.y - extMin.y
+
+    if (dxfWidth <= 0 || dxfHeight <= 0) {
+      return { originalPath: originalRelPath, renderedPath: originalRelPath, thumbnailPath: null, width: 1200, height: 900, fileType: FloorPlanFileType.DXF }
+    }
+
+    const MAX_DIM = 4000
+    const scale = Math.min(MAX_DIM / dxfWidth, (MAX_DIM * 0.75) / dxfHeight)
+    const svgWidth = Math.round(dxfWidth * scale)
+    const svgHeight = Math.round(dxfHeight * scale)
+
+    const toX = (x: number) => ((x - extMin.x) * scale).toFixed(2)
+    const toY = (y: number) => (svgHeight - (y - extMin.y) * scale).toFixed(2)
+
+    const elems: string[] = []
+    for (const entity of dxf?.entities ?? []) {
+      try {
+        if (entity.type === 'LINE') {
+          const [v0, v1] = entity.vertices
+          elems.push(`<line x1="${toX(v0.x)}" y1="${toY(v0.y)}" x2="${toX(v1.x)}" y2="${toY(v1.y)}"/>`)
+        } else if (entity.type === 'LWPOLYLINE' || entity.type === 'POLYLINE') {
+          const pts = (entity.vertices as Array<{ x: number; y: number }>)
+            .map((v) => `${toX(v.x)},${toY(v.y)}`)
+            .join(' ')
+          elems.push(`<polyline points="${pts}"${entity.shape ? ' fill="none"' : ''}/>`)
+        } else if (entity.type === 'CIRCLE') {
+          elems.push(
+            `<circle cx="${toX(entity.center.x)}" cy="${toY(entity.center.y)}" r="${(entity.radius * scale).toFixed(2)}"/>`,
+          )
+        } else if (entity.type === 'ARC') {
+          const cx = (entity.center.x - extMin.x) * scale
+          const cy = svgHeight - (entity.center.y - extMin.y) * scale
+          const r = entity.radius * scale
+          const a1 = (entity.startAngle * Math.PI) / 180
+          const a2 = (entity.endAngle * Math.PI) / 180
+          const x1 = (cx + r * Math.cos(a1)).toFixed(2)
+          const y1 = (cy - r * Math.sin(a1)).toFixed(2)
+          const x2 = (cx + r * Math.cos(a2)).toFixed(2)
+          const y2 = (cy - r * Math.sin(a2)).toFixed(2)
+          let sweep = a2 - a1
+          if (sweep < 0) sweep += 2 * Math.PI
+          const largeArc = sweep > Math.PI ? 0 : 1
+          elems.push(`<path d="M ${x1} ${y1} A ${r.toFixed(2)} ${r.toFixed(2)} 0 ${largeArc} 0 ${x2} ${y2}"/>`)
+        }
+      } catch {
+        // Skip unparseable entities
+      }
+    }
+
+    const svg = [
+      `<?xml version="1.0" encoding="utf-8"?>`,
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${svgWidth} ${svgHeight}" width="${svgWidth}" height="${svgHeight}">`,
+      `  <g stroke="#334155" stroke-width="1" fill="none">`,
+      ...elems.map((e) => `    ${e}`),
+      `  </g>`,
+      `</svg>`,
+    ].join('\n')
+
+    const svgFilename = path.basename(filename, path.extname(filename)) + '.svg'
+    const svgRelPath = path.join(FLOOR_PLANS_DIR, svgFilename)
+    await fs.promises.writeFile(resolveStoragePath(svgRelPath), svg, 'utf-8')
+
+    return {
+      originalPath: originalRelPath,
+      renderedPath: svgRelPath,
+      thumbnailPath: null,
+      width: svgWidth,
+      height: svgHeight,
+      fileType: FloorPlanFileType.DXF,
+    }
+  } catch (err) {
+    console.error('DXF conversion failed:', err)
+    return {
+      originalPath: originalRelPath,
+      renderedPath: originalRelPath,
+      thumbnailPath: null,
+      width: 1200,
+      height: 900,
+      fileType: FloorPlanFileType.DXF,
+    }
+  }
+}
+
+export function getFloorPlanUrl(relativePath: string): string {
+  // Returns a URL path suitable for serving via the static files / stream endpoint
+  return `/api/v1/files/${encodeURIComponent(relativePath)}`
+}
+
+export async function deleteFile(relativePath: string): Promise<void> {
+  const absPath = resolveStoragePath(relativePath)
+  try {
+    await fs.promises.unlink(absPath)
+  } catch (err: unknown) {
+    // Ignore file-not-found errors
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw err
+    }
+  }
+}

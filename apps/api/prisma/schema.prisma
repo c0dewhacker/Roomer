@@ -1,0 +1,524 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AuthProvider {
+  LOCAL
+  OIDC
+  SAML
+  LDAP
+}
+
+enum AuthConfigProvider {
+  OIDC
+  SAML
+  LDAP
+}
+
+enum GlobalRole {
+  SUPER_ADMIN
+  USER
+}
+
+enum ResourceRoleType {
+  BUILDING_ADMIN
+  FLOOR_MANAGER
+  USER
+  VIEWER
+}
+
+enum ResourceScopeType {
+  BUILDING
+  FLOOR
+}
+
+enum AccountStatus {
+  ACTIVE
+  BLOCKED
+}
+
+enum DeskStatus {
+  OPEN
+  RESTRICTED
+  ASSIGNED
+  DISABLED
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum QueueEntryStatus {
+  WAITING
+  PROMOTED
+  CLAIMED
+  EXPIRED
+  CANCELLED
+}
+
+enum AssetStatus {
+  AVAILABLE
+  ASSIGNED
+  MAINTENANCE
+  RETIRED
+}
+
+enum AssetAssigneeType {
+  USER
+  DESK
+}
+
+enum NotificationType {
+  BOOKING_CONFIRMED
+  BOOKING_CANCELLED
+  BOOKING_CANCELLED_BY_ADMIN
+  BOOKING_REMINDER
+  QUEUE_JOINED
+  QUEUE_PROMOTED
+  QUEUE_EXPIRED
+  QUEUE_CLAIM_EXPIRING
+  ASSET_ASSIGNED
+  ASSET_DUE_RETURN
+  WELCOME
+}
+
+enum FloorPlanFileType {
+  IMAGE
+  PDF
+  DXF
+}
+
+model AuthConfig {
+  id        String             @id @default(cuid())
+  provider  AuthConfigProvider @unique
+  enabled   Boolean            @default(false)
+  config    Json               @default("{}")
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+}
+
+model Organisation {
+  id                          String      @id @default(cuid())
+  name                        String
+  slug                        String      @unique
+  defaultBookingDurationHours Int         @default(8)
+  maxAdvanceBookingDays       Int         @default(14)
+  maxBookingsPerUser          Int         @default(5)
+  createdAt                   DateTime    @default(now())
+  updatedAt                   DateTime    @updatedAt
+  buildings                   Building[]
+  groups                      UserGroup[]
+}
+
+model Building {
+  id             String             @id @default(cuid())
+  organisationId String
+  name           String
+  address        String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  organisation   Organisation       @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  floors         Floor[]
+  resourceRoles       UserResourceRole[]
+  groupResourceRoles  GroupResourceRole[]
+  leases              BuildingLease[]
+  groupAccess         GroupBuildingAccess[]
+}
+
+model BuildingLease {
+  id           String          @id @default(cuid())
+  buildingId   String
+  name         String
+  startDate    DateTime
+  endDate      DateTime?
+  landlord     String?
+  rentAmount   Float?
+  currency     String          @default("GBP")
+  notes        String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  building     Building        @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  documents    LeaseDocument[]
+
+  @@index([buildingId])
+}
+
+model LeaseDocument {
+  id          String        @id @default(cuid())
+  leaseId     String
+  filename    String
+  storagePath String
+  mimeType    String        @default("application/octet-stream")
+  sizeBytes   Int           @default(0)
+  uploadedAt  DateTime      @default(now())
+  lease       BuildingLease @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+
+  @@index([leaseId])
+}
+
+model Floor {
+  id         String             @id @default(cuid())
+  buildingId String
+  name       String
+  level      Int                @default(0)
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+  building   Building           @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  floorPlan  FloorPlan?
+  zoneGroups ZoneGroup[]
+  zones      Zone[]
+  resourceRoles      UserResourceRole[]
+  groupResourceRoles GroupResourceRole[]
+  groupAccess        GroupFloorAccess[]
+}
+
+model FloorPlan {
+  id            String            @id @default(cuid())
+  floorId       String            @unique
+  fileType      FloorPlanFileType
+  originalPath  String
+  renderedPath  String
+  thumbnailPath String?
+  width         Int
+  height        Int
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  floor         Floor             @relation(fields: [floorId], references: [id], onDelete: Cascade)
+}
+
+model ZoneGroup {
+  id        String   @id @default(cuid())
+  floorId   String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  floor     Floor    @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  zones     Zone[]
+}
+
+model Zone {
+  id              String     @id @default(cuid())
+  floorId         String
+  zoneGroupId     String?
+  name            String
+  colour          String     @default("#6366f1")
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  floor           Floor      @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  zoneGroup       ZoneGroup? @relation(fields: [zoneGroupId], references: [id])
+  desks           Desk[]
+  additionalDesks DeskZone[]
+}
+
+model Desk {
+  id               String               @id @default(cuid())
+  zoneId           String
+  name             String
+  x                Float
+  y                Float
+  width            Float                @default(3.0)
+  height           Float                @default(2.0)
+  rotation         Float                @default(0)
+  status           DeskStatus           @default(OPEN)
+  amenities        String[]
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  zone             Zone                 @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  allowList        DeskAllowList[]
+  bookings         Booking[]
+  queueEntries     QueueEntry[]
+  assetAssignments AssetAssignment[]
+  userAssignments  DeskUserAssignment[]
+  additionalZones  DeskZone[]
+}
+
+model DeskUserAssignment {
+  deskId    String
+  userId    String
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+  desk      Desk     @relation(fields: [deskId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([deskId, userId])
+  @@index([deskId])
+  @@index([userId])
+}
+
+model DeskZone {
+  deskId    String
+  zoneId    String
+  createdAt DateTime @default(now())
+  desk      Desk     @relation(fields: [deskId], references: [id], onDelete: Cascade)
+  zone      Zone     @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@id([deskId, zoneId])
+  @@index([deskId])
+  @@index([zoneId])
+}
+
+model AssetUserAssignment {
+  assetId   String
+  userId    String
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+  asset     Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([assetId, userId])
+  @@index([assetId])
+  @@index([userId])
+}
+
+model DeskAllowList {
+  deskId    String
+  userId    String
+  createdAt DateTime @default(now())
+  desk      Desk     @relation(fields: [deskId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([deskId, userId])
+}
+
+model User {
+  id            String        @id @default(cuid())
+  email         String        @unique
+  displayName   String
+  passwordHash  String?
+  provider      AuthProvider  @default(LOCAL)
+  externalId    String?
+  accountStatus AccountStatus @default(ACTIVE)
+  globalRole    GlobalRole    @default(USER)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  resourceRoles        UserResourceRole[]
+  bookings             Booking[]
+  queueEntries         QueueEntry[]
+  assetAssignments     AssetAssignment[]
+  notifications        Notification[]
+  auditLogsAsActor     AuditLog[]           @relation("actor")
+  deskAllowList        DeskAllowList[]
+  groupMemberships     UserGroupMember[]
+  deskUserAssignments  DeskUserAssignment[]
+  assetUserAssignments AssetUserAssignment[]
+
+  @@index([email])
+  @@index([provider, externalId])
+}
+
+model UserGroup {
+  id             String            @id @default(cuid())
+  organisationId String
+  name           String
+  description    String?
+  globalRole     GlobalRole        @default(USER)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  organisation   Organisation      @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  members        UserGroupMember[]
+  buildingAccess GroupBuildingAccess[]
+  floorAccess    GroupFloorAccess[]
+  groupResourceRoles GroupResourceRole[]
+
+  @@unique([organisationId, name])
+  @@index([organisationId])
+}
+
+model UserGroupMember {
+  groupId   String
+  userId    String
+  createdAt DateTime  @default(now())
+  group     UserGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, userId])
+}
+
+model GroupBuildingAccess {
+  groupId    String
+  buildingId String
+  createdAt  DateTime  @default(now())
+  group      UserGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  building   Building  @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, buildingId])
+}
+
+model GroupFloorAccess {
+  groupId   String
+  floorId   String
+  createdAt DateTime  @default(now())
+  group     UserGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  floor     Floor     @relation(fields: [floorId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, floorId])
+}
+
+model UserResourceRole {
+  id         String            @id @default(cuid())
+  userId     String
+  role       ResourceRoleType
+  scopeType  ResourceScopeType
+  buildingId String?
+  floorId    String?
+  createdAt  DateTime          @default(now())
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  building   Building?         @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  floor      Floor?            @relation(fields: [floorId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, scopeType, buildingId, floorId])
+  @@index([userId])
+}
+
+model GroupResourceRole {
+  id         String            @id @default(cuid())
+  groupId    String
+  role       ResourceRoleType
+  scopeType  ResourceScopeType
+  buildingId String?
+  floorId    String?
+  createdAt  DateTime          @default(now())
+  group      UserGroup         @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  building   Building?         @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  floor      Floor?            @relation(fields: [floorId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, scopeType, buildingId, floorId])
+  @@index([groupId])
+}
+
+model Booking {
+  id        String        @id @default(cuid())
+  userId    String
+  deskId    String
+  startsAt  DateTime
+  endsAt    DateTime
+  status    BookingStatus @default(CONFIRMED)
+  notes     String?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  desk      Desk          @relation(fields: [deskId], references: [id], onDelete: Cascade)
+
+  @@index([deskId, startsAt, endsAt])
+  @@index([userId, startsAt])
+  @@index([status])
+}
+
+model QueueEntry {
+  id             String           @id @default(cuid())
+  userId         String
+  deskId         String
+  wantedStartsAt DateTime
+  wantedEndsAt   DateTime
+  position       Int
+  status         QueueEntryStatus @default(WAITING)
+  expiresAt      DateTime
+  claimDeadline  DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  desk           Desk             @relation(fields: [deskId], references: [id], onDelete: Cascade)
+
+  @@index([deskId, status, wantedStartsAt, wantedEndsAt])
+  @@index([userId, status])
+  @@index([expiresAt, status])
+}
+
+model AssetCategory {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  assets      Asset[]
+}
+
+model Asset {
+  id             String            @id @default(cuid())
+  categoryId     String
+  name           String
+  description    String?
+  serialNumber   String?
+  assetTag       String?           @unique
+  status         AssetStatus       @default(AVAILABLE)
+  purchaseDate   DateTime?
+  warrantyExpiry DateTime?
+  notes          String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  category         AssetCategory        @relation(fields: [categoryId], references: [id])
+  assignments      AssetAssignment[]
+  userAssignments  AssetUserAssignment[]
+}
+
+model AssetAssignment {
+  id           String            @id @default(cuid())
+  assetId      String
+  assigneeType AssetAssigneeType
+  userId       String?
+  deskId       String?
+  assignedById String?
+  assignedAt   DateTime          @default(now())
+  returnedAt   DateTime?
+  notes        String?
+  asset        Asset             @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  user         User?             @relation(fields: [userId], references: [id])
+  desk         Desk?             @relation(fields: [deskId], references: [id])
+
+  @@index([assetId])
+  @@index([userId])
+  @@index([deskId])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  read      Boolean          @default(false)
+  metadata  Json             @default("{}")
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read])
+  @@index([userId, createdAt])
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  actorId      String
+  action       String
+  resourceType String
+  resourceId   String
+  before       Json?
+  after        Json?
+  ipAddress    String?
+  createdAt    DateTime @default(now())
+  actor        User     @relation("actor", fields: [actorId], references: [id])
+
+  @@index([actorId])
+  @@index([resourceType, resourceId])
+  @@index([createdAt])
+}
+
+/// JWT revocation blocklist.
+/// A row is inserted on logout. requireAuth checks this table after signature
+/// verification so that logged-out tokens cannot be replayed before their exp.
+/// Rows are pruned by pruneExpiredBlocklistEntries() once the JWT has expired.
+model RevokedToken {
+  /// The jti claim from the JWT — a UUID assigned at sign time.
+  jti       String   @id
+  /// Unix epoch at which the original JWT expires. Used for pruning only;
+  /// the blocklist check ignores this field (the JWT exp check already handles expiry).
+  expiresAt DateTime
+
+  @@index([expiresAt])
+}
