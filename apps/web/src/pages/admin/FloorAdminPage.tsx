@@ -5,7 +5,8 @@ import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
 import {
   Plus, Upload, List, LayoutTemplate, Pencil, Trash2, ChevronRight,
-  ChevronDown, GripVertical, X, Users, UserMinus, UserPlus,
+  ChevronDown, GripVertical, X, Users, UserMinus, UserPlus, FileText, Download,
+  AlertCircle, CheckCircle2,
 } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { floorsApi, assetsApi, zonesApi, usersApi, groupsApi } from '@/lib/api'
@@ -113,97 +114,67 @@ function ZoneDialog({
   )
 }
 
-// ─── Desk Dialog ──────────────────────────────────────────────────────────────
+// ─── Add Asset to Floor Dialog ────────────────────────────────────────────────
 
-const deskSchema = z.object({
-  name: z.string().min(1, 'Name is required'),
-  zoneId: z.string().min(1, 'Zone is required'),
-  status: z.enum(DESK_STATUSES),
-  amenities: z.string().optional(),
-})
-type DeskForm = z.infer<typeof deskSchema>
-
-function DeskDialog({
-  open, onClose, floorId, zones, defaultZoneId, existing,
+function AddAssetToFloorDialog({
+  open, onClose, floorId, zones, defaultZoneId,
 }: {
   open: boolean; onClose: () => void; floorId: string
-  zones: ZoneData[]; defaultZoneId?: string; existing?: DeskData & { zoneId: string }
+  zones: ZoneData[]; defaultZoneId?: string
 }) {
   const qc = useQueryClient()
-  const { register, handleSubmit, formState: { errors }, watch, setValue } = useForm<DeskForm>({
-    resolver: zodResolver(deskSchema),
-    defaultValues: {
-      name: existing?.name ?? '',
-      zoneId: existing?.zoneId ?? defaultZoneId ?? '',
-      status: (existing?.status as typeof DESK_STATUSES[number]) ?? 'OPEN',
-      amenities: existing?.amenities.join(', ') ?? '',
-    },
-  })
-  const zoneId = watch('zoneId')
-  const status = watch('status')
+  const [search, setSearch] = useState('')
+  const [selectedAssetId, setSelectedAssetId] = useState('')
+  const [selectedZoneId, setSelectedZoneId] = useState(defaultZoneId ?? zones[0]?.id ?? '')
 
-  // Additional zones (only relevant when editing)
-  const { data: additionalZones, refetch: refetchZones } = useQuery({
-    queryKey: ['assets', existing?.id, 'zones'],
-    queryFn: () => assetsApi.getZones(existing!.id),
+  const { data: allAssets } = useQuery({
+    queryKey: ['assets'],
+    queryFn: () => assetsApi.list(),
     select: (r) => r.data,
-    enabled: !!existing,
+    enabled: open,
   })
 
-  const addZone = useMutation({
-    mutationFn: (zId: string) => assetsApi.addZone(existing!.id, zId),
-    onSuccess: () => { toast.success('Zone added'); refetchZones() },
-    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Failed to add zone'),
-  })
+  // Unplaced bookable assets not yet on any floor
+  const unplacedAssets = (allAssets ?? []).filter((a) => a.isBookable && !a.floorId)
+  const filteredAssets = search.trim()
+    ? unplacedAssets.filter((a) => a.name.toLowerCase().includes(search.toLowerCase()))
+    : unplacedAssets
 
-  const removeZone = useMutation({
-    mutationFn: (zId: string) => assetsApi.removeZone(existing!.id, zId),
-    onSuccess: () => { toast.success('Zone removed'); refetchZones() },
-    onError: () => toast.error('Failed to remove zone'),
-  })
-
-  // Zones available to add (not primary, not already added)
-  const primaryZoneId = existing?.zoneId ?? zoneId
-  const addedZoneIds = useMemo(() => new Set((additionalZones ?? []).map((z) => z.id)), [additionalZones])
-  const availableToAdd = zones.filter((z) => z.id !== primaryZoneId && !addedZoneIds.has(z.id))
-
-  const create = useMutation({
-    mutationFn: (d: DeskForm) => assetsApi.create({
-      primaryZoneId: d.zoneId, name: d.name,
-      x: 50, y: 50,
-      isBookable: true,
-      bookingStatus: d.status,
-      amenities: d.amenities ? d.amenities.split(',').map((s) => s.trim()).filter(Boolean) : [],
+  const place = useMutation({
+    mutationFn: () => assetsApi.update(selectedAssetId, {
+      floorId, primaryZoneId: selectedZoneId, x: 50, y: 50, width: 3, height: 2,
     }),
     onSuccess: () => {
-      toast.success('Desk added — drag it to position on the floor plan')
+      toast.success('Asset added to floor plan — drag it to position')
       qc.invalidateQueries({ queryKey: ['floors', floorId] })
+      qc.invalidateQueries({ queryKey: ['assets'] })
       onClose()
     },
-    onError: () => toast.error('Failed to add desk'),
+    onError: () => toast.error('Failed to add asset to floor plan'),
   })
-  const update = useMutation({
-    mutationFn: (d: DeskForm) => assetsApi.update(existing!.id, {
-      name: d.name, bookingStatus: d.status,
-      amenities: d.amenities ? d.amenities.split(',').map((s) => s.trim()).filter(Boolean) : [],
-    }),
-    onSuccess: () => {
-      toast.success('Desk updated')
-      qc.invalidateQueries({ queryKey: ['floors', floorId] })
-      onClose()
-    },
-    onError: () => toast.error('Failed to update desk'),
-  })
-  const isPending = create.isPending || update.isPending
+
+  // Reset selections when dialog opens
+  useMemo(() => {
+    if (open) {
+      setSearch('')
+      setSelectedAssetId('')
+      setSelectedZoneId(defaultZoneId ?? zones[0]?.id ?? '')
+    }
+  }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-h-[90vh] overflow-y-auto">
-        <DialogHeader><DialogTitle>{existing ? 'Edit Desk' : 'Add Desk'}</DialogTitle></DialogHeader>
-        <form onSubmit={handleSubmit((d) => existing ? update.mutate(d) : create.mutate(d))} className="space-y-4">
+        <DialogHeader><DialogTitle>Add Asset to Floor Plan</DialogTitle></DialogHeader>
+        <div className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Select an existing asset from the asset list to place it on this floor.
+            To create new assets, use the <strong>Assets</strong> admin page or{' '}
+            <strong>Bulk Import</strong>.
+          </p>
           <div>
-            <Label>Primary Zone *</Label>
-            <Select value={zoneId} onValueChange={(v) => setValue('zoneId', v)} disabled={!!existing}>
+            <Label>Zone *</Label>
+            <Select value={selectedZoneId} onValueChange={setSelectedZoneId}>
               <SelectTrigger className="mt-1.5"><SelectValue placeholder="Select zone" /></SelectTrigger>
               <SelectContent>
                 {zones.map((z) => (
@@ -216,65 +187,113 @@ function DeskDialog({
                 ))}
               </SelectContent>
             </Select>
-            {errors.zoneId && <p className="text-xs text-destructive mt-1">{errors.zoneId.message}</p>}
           </div>
-
-          {/* Additional zones — only when editing */}
-          {existing && zones.length > 1 && (
-            <div>
-              <Label>Additional Zones</Label>
-              <p className="text-xs text-muted-foreground mb-2 mt-0.5">
-                Desk appears in these zones too (zone conflict only applies to the primary zone).
-              </p>
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {(additionalZones ?? []).map((z) => (
-                  <span
-                    key={z.id}
-                    className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium"
-                  >
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: z.colour }} />
-                    {z.name}
-                    <button
-                      type="button"
-                      className="ml-0.5 hover:text-destructive transition-colors"
-                      onClick={() => removeZone.mutate(z.id)}
-                      disabled={removeZone.isPending}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </span>
-                ))}
-                {(!additionalZones || additionalZones.length === 0) && (
-                  <span className="text-xs text-muted-foreground">None</span>
-                )}
-              </div>
-              {availableToAdd.length > 0 && (
-                <Select onValueChange={(zId) => addZone.mutate(zId)} value="">
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue placeholder="+ Add to another zone…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableToAdd.map((z) => (
-                      <SelectItem key={z.id} value={z.id}>
-                        <div className="flex items-center gap-2">
-                          <span className="h-2.5 w-2.5 rounded-full inline-block" style={{ backgroundColor: z.colour }} />
-                          {z.name}
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            </div>
-          )}
-
           <div>
-            <Label htmlFor="dname">Desk name *</Label>
-            <Input id="dname" {...register('name')} className="mt-1.5" placeholder="e.g. A-01" />
+            <Label>Asset *</Label>
+            <Input
+              className="mt-1.5 mb-2"
+              placeholder="Search by name…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            {unplacedAssets.length === 0 ? (
+              <div className="rounded-md border border-dashed p-4 text-center">
+                <p className="text-sm text-muted-foreground">
+                  No unplaced bookable assets available.
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Create assets in the Assets admin page first, or use Bulk Import.
+                </p>
+              </div>
+            ) : filteredAssets.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-3 text-center">No assets match your search.</p>
+            ) : (
+              <div className="rounded-md border divide-y max-h-56 overflow-y-auto">
+                {filteredAssets.map((a) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    className={`w-full text-left px-3 py-2.5 hover:bg-muted transition-colors ${selectedAssetId === a.id ? 'bg-muted' : ''}`}
+                    onClick={() => setSelectedAssetId(a.id)}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium">{a.name}</p>
+                      {selectedAssetId === a.id && <CheckCircle2 className="h-4 w-4 text-primary shrink-0" />}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {a.category?.name ?? 'No category'} · {a.bookingStatus ?? 'OPEN'}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <DialogFooter className="mt-2">
+          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button
+            onClick={() => place.mutate()}
+            disabled={!selectedAssetId || !selectedZoneId || place.isPending}
+          >
+            {place.isPending ? 'Adding…' : 'Add to floor plan'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ─── Edit Asset Dialog (inline from zone list) ────────────────────────────────
+
+const editAssetSchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+  status: z.enum(DESK_STATUSES),
+  amenities: z.string().optional(),
+})
+type EditAssetForm = z.infer<typeof editAssetSchema>
+
+function EditAssetDialog({
+  open, onClose, floorId, asset,
+}: {
+  open: boolean; onClose: () => void; floorId: string
+  asset: DeskData & { zoneId: string }
+}) {
+  const qc = useQueryClient()
+  const { register, handleSubmit, formState: { errors }, watch, setValue } = useForm<EditAssetForm>({
+    resolver: zodResolver(editAssetSchema),
+    defaultValues: {
+      name: asset.name,
+      status: (asset.status as typeof DESK_STATUSES[number]) ?? 'OPEN',
+      amenities: asset.amenities.join(', '),
+    },
+  })
+  const status = watch('status')
+
+  const update = useMutation({
+    mutationFn: (d: EditAssetForm) => assetsApi.update(asset.id, {
+      name: d.name, bookingStatus: d.status,
+      amenities: d.amenities ? d.amenities.split(',').map((s) => s.trim()).filter(Boolean) : [],
+    }),
+    onSuccess: () => {
+      toast.success('Asset updated')
+      qc.invalidateQueries({ queryKey: ['floors', floorId] })
+      onClose()
+    },
+    onError: () => toast.error('Failed to update asset'),
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Edit Asset</DialogTitle></DialogHeader>
+        <form onSubmit={handleSubmit((d) => update.mutate(d))} className="space-y-4">
+          <div>
+            <Label htmlFor="aname">Name *</Label>
+            <Input id="aname" {...register('name')} className="mt-1.5" />
             {errors.name && <p className="text-xs text-destructive mt-1">{errors.name.message}</p>}
           </div>
           <div>
-            <Label>Status</Label>
+            <Label>Booking Status</Label>
             <Select value={status} onValueChange={(v) => setValue('status', v as typeof DESK_STATUSES[number])}>
               <SelectTrigger className="mt-1.5"><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -287,15 +306,252 @@ function DeskDialog({
           <div>
             <Label htmlFor="amenities">Amenities</Label>
             <Input id="amenities" {...register('amenities')} className="mt-1.5"
-              placeholder="standing, dual-monitor, quiet (comma-separated)" />
+              placeholder="monitor, standing-desk (comma-separated)" />
           </div>
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={isPending}>
-              {isPending ? 'Saving…' : existing ? 'Save changes' : 'Add desk'}
+            <Button type="submit" disabled={update.isPending}>
+              {update.isPending ? 'Saving…' : 'Save changes'}
             </Button>
           </DialogFooter>
         </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ─── Bulk Import Dialog ───────────────────────────────────────────────────────
+
+const CSV_TEMPLATE = [
+  'name,category,bookingStatus,bookingLabel,amenities,serialNumber,assetTag,notes,zoneName',
+  'A-01,Desk,OPEN,Desk,monitor;docking-station,,,, Open Plan',
+  'A-02,Desk,OPEN,Desk,monitor,,SN-002,,Open Plan',
+  'B-01,Desk,RESTRICTED,Desk,monitor;standing-desk,,,Quiet area,Quiet Zone',
+].join('\n')
+
+type ImportRow = {
+  name: string; categoryName: string; bookingStatus?: string; bookingLabel?: string
+  amenities?: string[]; serialNumber?: string; assetTag?: string; notes?: string; zoneName?: string
+}
+
+function parseCsv(text: string): { rows: ImportRow[]; parseErrors: string[] } {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
+  if (lines.length < 2) return { rows: [], parseErrors: ['CSV must have a header row and at least one data row'] }
+
+  const header = lines[0].toLowerCase().split(',').map((h) => h.trim())
+  const required = ['name', 'category']
+  const missing = required.filter((r) => !header.includes(r))
+  if (missing.length) return { rows: [], parseErrors: [`Missing required columns: ${missing.join(', ')}`] }
+
+  const idx = (col: string) => header.indexOf(col)
+  const rows: ImportRow[] = []
+  const parseErrors: string[] = []
+
+  for (let i = 1; i < lines.length; i++) {
+    const cells = lines[i].split(',').map((c) => c.trim())
+    const name = cells[idx('name')]
+    if (!name) { parseErrors.push(`Row ${i + 1}: missing name`); continue }
+    const categoryName = cells[idx('category')]
+    if (!categoryName) { parseErrors.push(`Row ${i + 1}: missing category`); continue }
+
+    const amenitiesRaw = idx('amenities') >= 0 ? cells[idx('amenities')] : ''
+    rows.push({
+      name,
+      categoryName,
+      bookingStatus: idx('bookingstatus') >= 0 ? cells[idx('bookingstatus')] || undefined : undefined,
+      bookingLabel: idx('bookinglabel') >= 0 ? cells[idx('bookinglabel')] || undefined : undefined,
+      amenities: amenitiesRaw ? amenitiesRaw.split(';').map((a) => a.trim()).filter(Boolean) : [],
+      serialNumber: idx('serialnumber') >= 0 ? cells[idx('serialnumber')] || undefined : undefined,
+      assetTag: idx('assettag') >= 0 ? cells[idx('assettag')] || undefined : undefined,
+      notes: idx('notes') >= 0 ? cells[idx('notes')] || undefined : undefined,
+      zoneName: idx('zonename') >= 0 ? cells[idx('zonename')] || undefined : undefined,
+    })
+  }
+
+  return { rows, parseErrors }
+}
+
+function BulkImportDialog({
+  open, onClose, floorId, floorName,
+}: {
+  open: boolean; onClose: () => void; floorId: string; floorName: string
+}) {
+  const qc = useQueryClient()
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [rows, setRows] = useState<ImportRow[]>([])
+  const [parseErrors, setParseErrors] = useState<string[]>([])
+  const [importResult, setImportResult] = useState<{ created: number; errors: Array<{ row: number; name: string; error: string }> } | null>(null)
+
+  const importMutation = useMutation({
+    mutationFn: () => assetsApi.bulkImport(floorId, rows),
+    onSuccess: (res) => {
+      setImportResult(res.data)
+      qc.invalidateQueries({ queryKey: ['floors', floorId] })
+      qc.invalidateQueries({ queryKey: ['assets'] })
+    },
+    onError: () => toast.error('Import failed — check your CSV and try again'),
+  })
+
+  const handleFile = (file: File) => {
+    setImportResult(null)
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const text = e.target?.result as string
+      const { rows: parsed, parseErrors: errs } = parseCsv(text)
+      setRows(parsed)
+      setParseErrors(errs)
+    }
+    reader.readAsText(file)
+  }
+
+  const handleClose = () => {
+    setRows([])
+    setParseErrors([])
+    setImportResult(null)
+    if (fileRef.current) fileRef.current.value = ''
+    onClose()
+  }
+
+  const downloadTemplate = () => {
+    const blob = new Blob([CSV_TEMPLATE], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'asset-import-template.csv'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && handleClose()}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Bulk Import Assets</DialogTitle>
+        </DialogHeader>
+
+        {!importResult ? (
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Import assets via CSV. All assets will be placed on <strong>{floorName}</strong>.
+              Assign to zones using the <code className="text-xs bg-muted px-1 rounded">zoneName</code> column.
+            </p>
+
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={downloadTemplate}>
+                <Download className="mr-1.5 h-3.5 w-3.5" /> Download template
+              </Button>
+            </div>
+
+            <div>
+              <Label>CSV File *</Label>
+              <div className="mt-1.5 border-2 border-dashed rounded-lg p-6 text-center cursor-pointer hover:border-primary/50 transition-colors"
+                onClick={() => fileRef.current?.click()}>
+                <FileText className="mx-auto h-8 w-8 text-muted-foreground/50 mb-2" />
+                <p className="text-sm text-muted-foreground">
+                  {rows.length > 0
+                    ? `${rows.length} row${rows.length !== 1 ? 's' : ''} ready to import`
+                    : 'Click to select a CSV file'}
+                </p>
+              </div>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".csv,text/csv"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) handleFile(file)
+                }}
+              />
+            </div>
+
+            {parseErrors.length > 0 && (
+              <div className="rounded-md bg-destructive/10 border border-destructive/20 p-3 space-y-1">
+                <p className="text-sm font-medium text-destructive flex items-center gap-1.5">
+                  <AlertCircle className="h-4 w-4" /> Parse errors
+                </p>
+                {parseErrors.map((e, i) => (
+                  <p key={i} className="text-xs text-destructive">{e}</p>
+                ))}
+              </div>
+            )}
+
+            {rows.length > 0 && (
+              <div>
+                <p className="text-sm font-medium mb-2">Preview ({rows.length} assets)</p>
+                <div className="rounded-md border overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead className="bg-muted">
+                      <tr>
+                        <th className="text-left px-3 py-2 font-medium">Name</th>
+                        <th className="text-left px-3 py-2 font-medium">Category</th>
+                        <th className="text-left px-3 py-2 font-medium">Status</th>
+                        <th className="text-left px-3 py-2 font-medium">Zone</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {rows.slice(0, 10).map((r, i) => (
+                        <tr key={i}>
+                          <td className="px-3 py-2">{r.name}</td>
+                          <td className="px-3 py-2">{r.categoryName}</td>
+                          <td className="px-3 py-2">{r.bookingStatus ?? 'OPEN'}</td>
+                          <td className="px-3 py-2">{r.zoneName ?? '—'}</td>
+                        </tr>
+                      ))}
+                      {rows.length > 10 && (
+                        <tr>
+                          <td colSpan={4} className="px-3 py-2 text-muted-foreground text-center">
+                            …and {rows.length - 10} more
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="rounded-md bg-green-50 border border-green-200 p-4 flex items-start gap-3">
+              <CheckCircle2 className="h-5 w-5 text-green-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-green-800">
+                  Import complete — {importResult.created} asset{importResult.created !== 1 ? 's' : ''} created
+                </p>
+                {importResult.errors.length > 0 && (
+                  <p className="text-xs text-green-700 mt-0.5">
+                    {importResult.errors.length} row{importResult.errors.length !== 1 ? 's' : ''} failed
+                  </p>
+                )}
+              </div>
+            </div>
+            {importResult.errors.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Failed rows</p>
+                {importResult.errors.map((e) => (
+                  <p key={e.row} className="text-xs text-destructive">
+                    Row {e.row} ({e.name}): {e.error}
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={handleClose}>
+            {importResult ? 'Close' : 'Cancel'}
+          </Button>
+          {!importResult && (
+            <Button
+              onClick={() => importMutation.mutate()}
+              disabled={rows.length === 0 || parseErrors.length > 0 || importMutation.isPending}
+            >
+              {importMutation.isPending ? `Importing…` : `Import ${rows.length} asset${rows.length !== 1 ? 's' : ''}`}
+            </Button>
+          )}
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   )
@@ -309,18 +565,18 @@ function ZoneSection({
   const qc = useQueryClient()
   const [expanded, setExpanded] = useState(true)
   const [editZone, setEditZone] = useState(false)
-  const [addDesk, setAddDesk] = useState(false)
-  const [editDesk, setEditDesk] = useState<(DeskData & { zoneId: string }) | undefined>()
+  const [addAsset, setAddAsset] = useState(false)
+  const [editAsset, setEditAsset] = useState<(DeskData & { zoneId: string }) | undefined>()
 
   const deleteZone = useMutation({
     mutationFn: () => zonesApi.delete(zone.id),
     onSuccess: () => { toast.success('Zone deleted'); qc.invalidateQueries({ queryKey: ['floors', floorId] }) },
     onError: () => toast.error('Failed to delete zone'),
   })
-  const deleteDesk = useMutation({
-    mutationFn: (id: string) => assetsApi.delete(id),
-    onSuccess: () => { toast.success('Desk deleted'); qc.invalidateQueries({ queryKey: ['floors', floorId] }) },
-    onError: () => toast.error('Failed to delete desk'),
+  const removeFromFloor = useMutation({
+    mutationFn: (id: string) => assetsApi.update(id, { floorId: null, primaryZoneId: null, x: null, y: null } as Parameters<typeof assetsApi.update>[1]),
+    onSuccess: () => { toast.success('Asset removed from floor plan'); qc.invalidateQueries({ queryKey: ['floors', floorId] }); qc.invalidateQueries({ queryKey: ['assets'] }) },
+    onError: () => toast.error('Failed to remove asset from floor plan'),
   })
 
   return (
@@ -338,8 +594,8 @@ function ZoneSection({
         </button>
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs"
-            onClick={() => setAddDesk(true)}>
-            <Plus className="h-3 w-3" /> Add desk
+            onClick={() => setAddAsset(true)}>
+            <Plus className="h-3 w-3" /> Add asset
           </Button>
           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setEditZone(true)}>
             <Pencil className="h-3.5 w-3.5" />
@@ -354,7 +610,7 @@ function ZoneSection({
               <AlertDialogHeader>
                 <AlertDialogTitle>Delete zone "{zone.name}"?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  This will permanently delete the zone and all {zone.assets.length} desk(s) within it.
+                  This will permanently delete the zone. Assets in this zone will be unlinked from the floor plan but not deleted.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -374,48 +630,49 @@ function ZoneSection({
         <div>
           {zone.assets.length === 0 ? (
             <p className="px-4 py-3 text-sm text-muted-foreground">
-              No desks — <button className="underline" onClick={() => setAddDesk(true)}>add one</button>
+              No assets — <button className="underline" onClick={() => setAddAsset(true)}>add one</button>
             </p>
           ) : (
             <div className="divide-y">
-              {zone.assets.map((desk) => (
-                <div key={desk.id} className="flex items-center justify-between px-4 py-2.5">
+              {zone.assets.map((asset) => (
+                <div key={asset.id} className="flex items-center justify-between px-4 py-2.5">
                   <div className="flex items-center gap-3 min-w-0">
                     <GripVertical className="h-4 w-4 text-muted-foreground shrink-0" />
-                    <span className="font-medium text-sm">{desk.name}</span>
-                    <Badge variant={STATUS_VARIANTS[desk.status]} className="text-xs shrink-0">
-                      {STATUS_LABELS[desk.status]}
+                    <span className="font-medium text-sm">{asset.name}</span>
+                    <Badge variant={STATUS_VARIANTS[asset.status]} className="text-xs shrink-0">
+                      {STATUS_LABELS[asset.status]}
                     </Badge>
                     <div className="hidden sm:flex gap-1 flex-wrap">
-                      {(desk.amenities ?? []).map((a) => (
+                      {(asset.amenities ?? []).map((a) => (
                         <Badge key={a} variant="outline" className="text-xs">{a}</Badge>
                       ))}
                     </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     <Button variant="ghost" size="icon" className="h-7 w-7"
-                      onClick={() => setEditDesk({ ...desk, zoneId: zone.id })}>
+                      onClick={() => setEditAsset({ ...asset, zoneId: zone.id })}>
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive">
-                          <Trash2 className="h-3.5 w-3.5" />
+                        <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive"
+                          title="Remove from floor plan">
+                          <X className="h-3.5 w-3.5" />
                         </Button>
                       </AlertDialogTrigger>
                       <AlertDialogContent>
                         <AlertDialogHeader>
-                          <AlertDialogTitle>Delete desk "{desk.name}"?</AlertDialogTitle>
+                          <AlertDialogTitle>Remove "{asset.name}" from floor plan?</AlertDialogTitle>
                           <AlertDialogDescription>
-                            All future bookings for this desk will also be cancelled.
+                            The asset will be unlinked from this floor plan but not deleted. You can re-add it later.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
                           <AlertDialogCancel>Cancel</AlertDialogCancel>
                           <AlertDialogAction
-                            onClick={() => deleteDesk.mutate(desk.id)}
+                            onClick={() => removeFromFloor.mutate(asset.id)}
                             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                          >Delete</AlertDialogAction>
+                          >Remove</AlertDialogAction>
                         </AlertDialogFooter>
                       </AlertDialogContent>
                     </AlertDialog>
@@ -430,11 +687,11 @@ function ZoneSection({
       {editZone && (
         <ZoneDialog open floorId={floorId} existing={zone} onClose={() => setEditZone(false)} />
       )}
-      {addDesk && (
-        <DeskDialog open floorId={floorId} zones={zones} defaultZoneId={zone.id} onClose={() => setAddDesk(false)} />
+      {addAsset && (
+        <AddAssetToFloorDialog open floorId={floorId} zones={zones} defaultZoneId={zone.id} onClose={() => setAddAsset(false)} />
       )}
-      {editDesk && (
-        <DeskDialog open floorId={floorId} zones={zones} existing={editDesk} onClose={() => setEditDesk(undefined)} />
+      {editAsset && (
+        <EditAssetDialog open floorId={floorId} asset={editAsset} onClose={() => setEditAsset(undefined)} />
       )}
     </div>
   )
@@ -535,7 +792,7 @@ function FloorManagersPanel({ floorId }: { floorId: string }) {
         <div>
           <h2 className="text-base font-semibold">Floor Managers</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Floor managers can assign permanent users, edit desk amenities, and cancel bookings on this floor.
+            Floor managers can assign permanent users, edit asset amenities, and cancel bookings on this floor.
           </p>
         </div>
 
@@ -697,7 +954,8 @@ export default function FloorAdminPage() {
   const qc = useQueryClient()
   const [view, setView] = useState<'layout' | 'manage' | 'managers'>('layout')
   const [addZoneOpen, setAddZoneOpen] = useState(false)
-  const [addDeskOpen, setAddDeskOpen] = useState(false)
+  const [addAssetOpen, setAddAssetOpen] = useState(false)
+  const [bulkImportOpen, setBulkImportOpen] = useState(false)
   const [pendingUploadFile, setPendingUploadFile] = useState<File | null>(null)
   const [replaceConfirmOpen, setReplaceConfirmOpen] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -786,8 +1044,11 @@ export default function FloorAdminPage() {
           <Button variant="outline" size="sm" onClick={() => setAddZoneOpen(true)}>
             <Plus className="mr-1.5 h-3.5 w-3.5" /> Add Zone
           </Button>
-          <Button variant="outline" size="sm" onClick={() => setAddDeskOpen(true)}>
-            <Plus className="mr-1.5 h-3.5 w-3.5" /> Add Desk
+          <Button variant="outline" size="sm" onClick={() => setAddAssetOpen(true)}>
+            <Plus className="mr-1.5 h-3.5 w-3.5" /> Add Asset
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setBulkImportOpen(true)}>
+            <FileText className="mr-1.5 h-3.5 w-3.5" /> Bulk Import
           </Button>
 
           <div className="flex rounded-md border overflow-hidden">
@@ -819,7 +1080,7 @@ export default function FloorAdminPage() {
                   <div className="bg-background border rounded-lg px-6 py-5 text-center shadow-sm pointer-events-auto">
                     <Upload className="mx-auto h-10 w-10 text-muted-foreground/50 mb-3" />
                     <p className="font-medium text-sm">No floor plan uploaded</p>
-                    <p className="text-xs text-muted-foreground mt-1 mb-4">Upload an image to enable visual desk positioning</p>
+                    <p className="text-xs text-muted-foreground mt-1 mb-4">Upload an image to enable visual asset positioning</p>
                     <Button size="sm" onClick={() => fileRef.current?.click()}>
                       <Upload className="mr-1.5 h-3.5 w-3.5" /> Upload Floor Plan
                     </Button>
@@ -840,7 +1101,7 @@ export default function FloorAdminPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-muted-foreground">
-                    {zones.length} zone{zones.length !== 1 ? 's' : ''} · {totalDesks} desk{totalDesks !== 1 ? 's' : ''}
+                    {zones.length} zone{zones.length !== 1 ? 's' : ''} · {totalDesks} asset{totalDesks !== 1 ? 's' : ''}
                   </p>
                 </div>
               </div>
@@ -867,8 +1128,16 @@ export default function FloorAdminPage() {
       {addZoneOpen && (
         <ZoneDialog open floorId={floorId!} onClose={() => setAddZoneOpen(false)} />
       )}
-      {addDeskOpen && (
-        <DeskDialog open floorId={floorId!} zones={zones} onClose={() => setAddDeskOpen(false)} />
+      {addAssetOpen && (
+        <AddAssetToFloorDialog open floorId={floorId!} zones={zones} onClose={() => setAddAssetOpen(false)} />
+      )}
+      {bulkImportOpen && (
+        <BulkImportDialog
+          open
+          floorId={floorId!}
+          floorName={floor?.name ?? 'this floor'}
+          onClose={() => setBulkImportOpen(false)}
+        />
       )}
 
       <AlertDialog open={replaceConfirmOpen} onOpenChange={setReplaceConfirmOpen}>

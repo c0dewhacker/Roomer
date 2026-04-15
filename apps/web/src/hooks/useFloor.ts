@@ -18,7 +18,7 @@ export function useFloorAvailability(floorId: string, date: Date) {
     queryKey: ['floors', floorId, 'availability', dateStr],
     queryFn: () => floorsApi.getAvailability(floorId, dateStr),
     enabled: !!floorId,
-    select: (res) => res.data.assets,
+    select: (res) => res.data.zones?.flatMap((z) => z.assets) ?? [],
     staleTime: 10 * 1000,
   })
 }

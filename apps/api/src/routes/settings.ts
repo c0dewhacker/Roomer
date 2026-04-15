@@ -1,3 +1,4 @@
+import fs from 'fs'
 import type { FastifyInstance } from 'fastify'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
@@ -6,10 +7,29 @@ import { sendEmail } from '../lib/mailer'
 import { env } from '../env'
 import { prisma } from '../lib/prisma'
 import { invalidateOidcCache } from '../lib/oidc'
+import { saveBrandingImage, resolveStoragePath } from '../lib/storage'
 import { z } from 'zod'
 
 const ALLOWED_PROVIDERS = ['OIDC', 'SAML', 'LDAP'] as const
 type ProviderKey = (typeof ALLOWED_PROVIDERS)[number]
+
+const bannerSchema = z.object({
+  enabled: z.boolean(),
+  text: z.string().max(500),
+  bgColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+  textColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+})
+
+const brandingSchema = z.object({
+  appName: z.string().max(100).optional(),
+  sidebarTitle: z.string().max(100).optional(),
+  sidebarSubtitle: z.string().max(100).optional(),
+  primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().nullable(),
+  primaryColorDark: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().nullable(),
+  borderRadius: z.enum(['sharp', 'medium', 'large']).optional().nullable(),
+  headerBanner: bannerSchema.optional(),
+  footerBanner: bannerSchema.optional(),
+})
 
 const updateOrgSchema = z.object({
   name: z.string().min(1).max(255).optional(),
@@ -158,6 +178,110 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
       }
     },
   )
+
+  // GET /settings/branding — public (needed for login page theming)
+  fastify.get('/branding', async (_request, reply) => {
+    const org = await prisma.organisation.findFirst({ select: { branding: true } })
+    return reply.status(200).send({ data: (org?.branding ?? {}) as object })
+  })
+
+  // PATCH /settings/branding — update branding config (SUPER_ADMIN)
+  fastify.patch(
+    '/branding',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const result = brandingSchema.safeParse(request.body)
+      if (!result.success) {
+        return reply.status(400).send({
+          error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
+        })
+      }
+      const org = await prisma.organisation.findFirst()
+      if (!org) {
+        return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
+      }
+      const current = (org.branding ?? {}) as Record<string, unknown>
+      const merged = { ...current, ...result.data }
+      const updated = await prisma.organisation.update({ where: { id: org.id }, data: { branding: merged } })
+      return reply.status(200).send({ data: updated.branding })
+    },
+  )
+
+  // POST /settings/branding/logo — upload logo image (SUPER_ADMIN)
+  fastify.post(
+    '/branding/logo',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const file = await request.file()
+      if (!file) {
+        return reply.status(400).send({ error: { message: 'No file uploaded', code: 'NO_FILE' } })
+      }
+      const relPath = await saveBrandingImage(file, 'logo')
+      const org = await prisma.organisation.findFirst()
+      if (!org) {
+        return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
+      }
+      const current = (org.branding ?? {}) as Record<string, unknown>
+      await prisma.organisation.update({ where: { id: org.id }, data: { branding: { ...current, logoPath: relPath } } })
+      return reply.status(200).send({ data: { logoPath: relPath } })
+    },
+  )
+
+  // POST /settings/branding/favicon — upload favicon image (SUPER_ADMIN)
+  fastify.post(
+    '/branding/favicon',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const file = await request.file()
+      if (!file) {
+        return reply.status(400).send({ error: { message: 'No file uploaded', code: 'NO_FILE' } })
+      }
+      const relPath = await saveBrandingImage(file, 'favicon')
+      const org = await prisma.organisation.findFirst()
+      if (!org) {
+        return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
+      }
+      const current = (org.branding ?? {}) as Record<string, unknown>
+      await prisma.organisation.update({ where: { id: org.id }, data: { branding: { ...current, faviconPath: relPath } } })
+      return reply.status(200).send({ data: { faviconPath: relPath } })
+    },
+  )
+
+  // GET /settings/branding/logo/image — serve logo file (public)
+  fastify.get('/branding/logo/image', async (_request, reply) => {
+    const org = await prisma.organisation.findFirst({ select: { branding: true } })
+    const branding = (org?.branding ?? {}) as Record<string, unknown>
+    if (!branding.logoPath) {
+      return reply.status(404).send({ error: { message: 'Logo not set', code: 'NOT_FOUND' } })
+    }
+    const absPath = resolveStoragePath(branding.logoPath as string)
+    try {
+      await fs.promises.access(absPath, fs.constants.R_OK)
+    } catch {
+      return reply.status(404).send({ error: { message: 'Logo file not found', code: 'FILE_NOT_FOUND' } })
+    }
+    reply.header('Content-Type', 'image/png')
+    reply.header('Cache-Control', 'public, max-age=300')
+    return reply.send(fs.createReadStream(absPath))
+  })
+
+  // GET /settings/branding/favicon/image — serve favicon file (public)
+  fastify.get('/branding/favicon/image', async (_request, reply) => {
+    const org = await prisma.organisation.findFirst({ select: { branding: true } })
+    const branding = (org?.branding ?? {}) as Record<string, unknown>
+    if (!branding.faviconPath) {
+      return reply.status(404).send({ error: { message: 'Favicon not set', code: 'NOT_FOUND' } })
+    }
+    const absPath = resolveStoragePath(branding.faviconPath as string)
+    try {
+      await fs.promises.access(absPath, fs.constants.R_OK)
+    } catch {
+      return reply.status(404).send({ error: { message: 'Favicon file not found', code: 'FILE_NOT_FOUND' } })
+    }
+    reply.header('Content-Type', 'image/png')
+    reply.header('Cache-Control', 'public, max-age=300')
+    return reply.send(fs.createReadStream(absPath))
+  })
 
   // GET /settings/auth-config — list all provider configs (secrets redacted)
   fastify.get(

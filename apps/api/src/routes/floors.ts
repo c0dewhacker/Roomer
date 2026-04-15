@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma'
 import { createFloorSchema, updateFloorSchema, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
-import { requireGlobalRole } from '../middleware/requireRole'
+import { requireGlobalRole, isFloorManagerForFloor } from '../middleware/requireRole'
 import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage'
 import { env } from '../env'
 
@@ -163,12 +163,20 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // PUT /floors/:id — update floor
+  // PUT /floors/:id — update floor (SUPER_ADMIN or floor manager for that floor)
   fastify.put(
     '/:id',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isFloorManagerForFloor(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+
       const result = updateFloorSchema.safeParse(request.body)
       if (!result.success) {
         return reply.status(400).send({
@@ -200,12 +208,19 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // POST /floors/:id/floor-plan — upload floor plan
+  // POST /floors/:id/floor-plan — upload floor plan (SUPER_ADMIN or floor manager for that floor)
   fastify.post(
     '/:id/floor-plan',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isFloorManagerForFloor(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       const floor = await prisma.floor.findUnique({ where: { id } })
       if (!floor) {
@@ -358,6 +373,13 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
                   },
                   select: { id: true, status: true, position: true, claimDeadline: true },
                 },
+                availabilityWindows: {
+                  where: {
+                    startsAt: { lte: dayEnd },
+                    endsAt: { gte: dayStart },
+                  },
+                  select: { id: true, startsAt: true, endsAt: true, ownerId: true },
+                },
               },
             },
           },
@@ -389,6 +411,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         const myQueueEntry = asset.queueEntries[0] ?? null
         const isOnAllowList = asset.allowList.some((a) => a.userId === currentUserId)
         const isAssignedUser = asset.userAssignments.some((ua) => ua.user.id === currentUserId)
+        const hasAvailabilityWindow = (asset.availabilityWindows ?? []).length > 0
 
         let bookingStatus: AvailabilityStatus
 
@@ -405,16 +428,15 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
             bookingStatus = 'booked'
           }
         } else if (
-          asset.bookingStatus === 'ASSIGNED' &&
+          (asset.bookingStatus === 'ASSIGNED' || asset.userAssignments.length > 0) &&
           !isAssignedUser &&
-          request.user.globalRole !== 'SUPER_ADMIN'
+          !hasAvailabilityWindow
         ) {
           bookingStatus = 'assigned'
         } else if (
           asset.bookingStatus === 'RESTRICTED' &&
           !isOnAllowList &&
-          !isAssignedUser &&
-          request.user.globalRole !== 'SUPER_ADMIN'
+          !isAssignedUser
         ) {
           bookingStatus = 'restricted'
         } else {
@@ -442,7 +464,8 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           width: asset.width,
           height: asset.height,
           rotation: asset.rotation,
-          bookingStatus: asset.bookingStatus,
+          bookingStatus: bookingStatus,
+          rawBookingStatus: asset.bookingStatus,
           amenities: asset.amenities,
           availabilityStatus: bookingStatus,
           currentBooking: myBooking

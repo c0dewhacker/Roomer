@@ -123,6 +123,7 @@ export interface Asset {
   notes?: string
   createdAt?: string
   assignments?: AssetAssignment[]
+  userAssignments?: Array<{ isPrimary: boolean; user: { id: string; displayName: string; email: string } }>
 }
 
 /** @deprecated Use Asset instead — desks are now Asset rows with isBookable: true */
@@ -130,6 +131,7 @@ export type Desk = Asset
 
 export interface AssetWithStatus extends Omit<Asset, 'bookingStatus'> {
   bookingStatus: AssetBookingStatus
+  rawBookingStatus?: BookableStatus
   currentBooking?: Booking & { bookerName?: string }
   bookedBy?: Array<{ userId: string; displayName: string }>
   zoneColour: string

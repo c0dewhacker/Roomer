@@ -11,12 +11,14 @@ import {
   BarChart3,
   FileText,
   Shield,
+  Layers,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
 import { useQuery } from '@tanstack/react-query'
 import { buildingsApi } from '@/lib/api'
+import { useBranding } from '@/hooks/useBranding'
 
 interface SidebarProps {
   onNavigate?: () => void
@@ -24,7 +26,26 @@ interface SidebarProps {
 
 export function Sidebar({ onNavigate }: SidebarProps) {
   const user = useAuthStore((s) => s.user)
-  const isAdmin = user?.globalRole === 'SUPER_ADMIN'
+  const isSuperAdmin = user?.globalRole === 'SUPER_ADMIN'
+  const branding = useBranding()
+
+  // Compute floors this user manages (direct + via group), for the floor manager nav section
+  const managedFloors = useMemo(() => {
+    if (!user || isSuperAdmin) return []
+    const direct = (user.resourceRoles ?? [])
+      .filter((r) => r.role === 'FLOOR_MANAGER' && r.floorId && r.floor)
+      .map((r) => ({ id: r.floorId!, name: r.floor!.name }))
+    const viaGroup = (user.groupMemberships ?? []).flatMap((m) =>
+      (m.group.groupResourceRoles ?? [])
+        .filter((r) => r.role === 'FLOOR_MANAGER' && r.floorId && r.floor)
+        .map((r) => ({ id: r.floorId!, name: r.floor!.name })),
+    )
+    const byId = new Map<string, { id: string; name: string }>()
+    ;[...direct, ...viaGroup].forEach((f) => byId.set(f.id, f))
+    return [...byId.values()]
+  }, [user, isSuperAdmin])
+
+  const isFloorManager = managedFloors.length > 0
   const [buildingsOpen, setBuildingsOpen] = useState(false)
 
   const { data: buildingsData } = useQuery({
@@ -58,8 +79,8 @@ export function Sidebar({ onNavigate }: SidebarProps) {
   return (
     <div className="flex h-full flex-col gap-1 px-2 py-4">
       <div className="mb-2 px-3">
-        <h2 className="text-lg font-bold text-foreground">Roomer</h2>
-        <p className="text-xs text-muted-foreground">Desk Booking</p>
+        <h2 className="text-lg font-bold text-foreground">{branding?.sidebarTitle ?? 'Roomer'}</h2>
+        <p className="text-xs text-muted-foreground">{branding?.sidebarSubtitle ?? 'Desk Booking'}</p>
       </div>
 
       <nav className="flex flex-col gap-1">
@@ -99,7 +120,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           )}
         </div>
 
-        {isAdmin && (
+        {isSuperAdmin && (
           <>
             <div className="my-2 border-t" />
             <p className="px-3 py-1 text-xs font-semibold uppercase text-muted-foreground">
@@ -112,6 +133,17 @@ export function Sidebar({ onNavigate }: SidebarProps) {
             {navItem('/admin/groups', Shield, 'Access Groups')}
             {navItem('/admin/reports', BarChart3, 'Reports')}
             {navItem('/admin/settings', Settings, 'Settings')}
+          </>
+        )}
+
+        {!isSuperAdmin && isFloorManager && (
+          <>
+            <div className="my-2 border-t" />
+            <p className="px-3 py-1 text-xs font-semibold uppercase text-muted-foreground">
+              Floor Manager
+            </p>
+            {navItem('/admin/assets', Package, 'Assets')}
+            {managedFloors.map((f) => navItem(`/admin/floors/${f.id}`, Layers, f.name))}
           </>
         )}
       </nav>

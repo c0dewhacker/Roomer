@@ -3,15 +3,50 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Send, ChevronDown, ChevronUp, Plus, Trash2, Zap } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { Send, ChevronDown, ChevronUp, Plus, Trash2, Zap, Upload, Image as ImageIcon } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
-import { settingsApi, groupsApi } from '@/lib/api'
+import { settingsApi, groupsApi, brandingApi, type Branding, type BrandingBanner } from '@/lib/api'
+
+// ─── Collapsible card wrapper ─────────────────────────────────────────────────
+
+function CollapsibleCard({
+  title,
+  description,
+  children,
+}: {
+  title: string
+  description: string
+  children: React.ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <Card>
+      <CardHeader
+        className="cursor-pointer select-none"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <div className="flex items-center justify-between">
+          <div className="space-y-1">
+            <CardTitle>{title}</CardTitle>
+            <CardDescription>{description}</CardDescription>
+          </div>
+          <ChevronDown
+            className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200', open && 'rotate-180')}
+          />
+        </div>
+      </CardHeader>
+      {open && <CardContent>{children}</CardContent>}
+    </Card>
+  )
+}
 
 const orgSchema = z.object({
   name: z.string().min(1, 'Organisation name is required'),
@@ -71,47 +106,41 @@ function OrgSettingsCard() {
   })
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Organisation</CardTitle>
-        <CardDescription>General settings for your Roomer workspace</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={handleSubmit((d) => save.mutate(d))} className="space-y-4">
+    <CollapsibleCard title="Organisation" description="General settings for your Roomer workspace">
+      <form onSubmit={handleSubmit((d) => save.mutate(d))} className="space-y-4">
+        <div>
+          <Label htmlFor="orgName">Organisation name *</Label>
+          <Input id="orgName" {...register('name')} className="mt-1.5 max-w-sm" />
+          {errors.name && <p className="text-xs text-destructive mt-1">{errors.name.message}</p>}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
-            <Label htmlFor="orgName">Organisation name *</Label>
-            <Input id="orgName" {...register('name')} className="mt-1.5 max-w-sm" />
-            {errors.name && <p className="text-xs text-destructive mt-1">{errors.name.message}</p>}
+            <Label htmlFor="defaultDuration">Default booking (hours)</Label>
+            <Input id="defaultDuration" type="number" min={1} max={24} {...register('defaultBookingDurationHours')} className="mt-1.5" />
+            {errors.defaultBookingDurationHours && (
+              <p className="text-xs text-destructive mt-1">{errors.defaultBookingDurationHours.message}</p>
+            )}
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div>
-              <Label htmlFor="defaultDuration">Default booking (hours)</Label>
-              <Input id="defaultDuration" type="number" min={1} max={24} {...register('defaultBookingDurationHours')} className="mt-1.5" />
-              {errors.defaultBookingDurationHours && (
-                <p className="text-xs text-destructive mt-1">{errors.defaultBookingDurationHours.message}</p>
-              )}
-            </div>
-            <div>
-              <Label htmlFor="advanceDays">Max advance booking (days)</Label>
-              <Input id="advanceDays" type="number" min={1} max={365} {...register('maxAdvanceBookingDays')} className="mt-1.5" />
-              {errors.maxAdvanceBookingDays && (
-                <p className="text-xs text-destructive mt-1">{errors.maxAdvanceBookingDays.message}</p>
-              )}
-            </div>
-            <div>
-              <Label htmlFor="maxBookings">Max bookings per user</Label>
-              <Input id="maxBookings" type="number" min={1} max={100} {...register('maxBookingsPerUser')} className="mt-1.5" />
-              {errors.maxBookingsPerUser && (
-                <p className="text-xs text-destructive mt-1">{errors.maxBookingsPerUser.message}</p>
-              )}
-            </div>
+          <div>
+            <Label htmlFor="advanceDays">Max advance booking (days)</Label>
+            <Input id="advanceDays" type="number" min={1} max={365} {...register('maxAdvanceBookingDays')} className="mt-1.5" />
+            {errors.maxAdvanceBookingDays && (
+              <p className="text-xs text-destructive mt-1">{errors.maxAdvanceBookingDays.message}</p>
+            )}
           </div>
-          <Button type="submit" size="sm" disabled={!isDirty || save.isPending}>
-            {save.isPending ? 'Saving…' : 'Save changes'}
-          </Button>
-        </form>
-      </CardContent>
-    </Card>
+          <div>
+            <Label htmlFor="maxBookings">Max bookings per user</Label>
+            <Input id="maxBookings" type="number" min={1} max={100} {...register('maxBookingsPerUser')} className="mt-1.5" />
+            {errors.maxBookingsPerUser && (
+              <p className="text-xs text-destructive mt-1">{errors.maxBookingsPerUser.message}</p>
+            )}
+          </div>
+        </div>
+        <Button type="submit" size="sm" disabled={!isDirty || save.isPending}>
+          {save.isPending ? 'Saving…' : 'Save changes'}
+        </Button>
+      </form>
+    </CollapsibleCard>
   )
 }
 
@@ -144,13 +173,8 @@ function EmailSettingsCard() {
   })
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Email</CardTitle>
-        <CardDescription>SMTP configuration for outbound notifications</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={handleSubmit((d) => save.mutate(d))} className="space-y-4">
+    <CollapsibleCard title="Email" description="SMTP configuration for outbound notifications">
+      <form onSubmit={handleSubmit((d) => save.mutate(d))} className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
             <div className="sm:col-span-3">
               <Label htmlFor="smtpHost">SMTP host *</Label>
@@ -202,8 +226,7 @@ function EmailSettingsCard() {
             </Button>
           </div>
         </form>
-      </CardContent>
-    </Card>
+    </CollapsibleCard>
   )
 }
 
@@ -429,14 +452,11 @@ function AuthProvidersCard() {
   const ldap = authConfig?.['LDAP']
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Authentication Providers</CardTitle>
-        <CardDescription>
-          Configure enterprise SSO. Local email/password auth is always available as a fallback.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
+    <CollapsibleCard
+      title="Authentication Providers"
+      description="Configure enterprise SSO. Local email/password auth is always available as a fallback."
+    >
+      <div className="space-y-3">
         {/* Local */}
         <div className="flex items-center justify-between rounded-md border px-3 py-2.5">
           <span className="text-sm font-medium">Local (email + password)</span>
@@ -487,8 +507,8 @@ function AuthProvidersCard() {
             saving={save.isPending}
           />
         </ProviderRow>
-      </CardContent>
-    </Card>
+      </div>
+    </CollapsibleCard>
   )
 }
 
@@ -864,6 +884,367 @@ function LdapConfigForm({
   )
 }
 
+// ─── Branding helpers ─────────────────────────────────────────────────────────
+
+function ColorPicker({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+}) {
+  return (
+    <div>
+      <Label className="text-xs">{label}</Label>
+      <div className="flex items-center gap-2 mt-1.5">
+        <input
+          type="color"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="h-9 w-10 cursor-pointer rounded border border-input bg-background p-0.5"
+        />
+        <Input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="h-9 w-28 font-mono text-sm"
+          placeholder="#6366f1"
+          maxLength={7}
+        />
+      </div>
+    </div>
+  )
+}
+
+function ImageUpload({
+  label,
+  hint,
+  hasImage,
+  imageUrl,
+  onUpload,
+  uploading,
+}: {
+  label: string
+  hint: string
+  hasImage: boolean
+  imageUrl: string
+  onUpload: (file: File) => void
+  uploading: boolean
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  return (
+    <div>
+      <Label className="text-xs">{label}</Label>
+      <div className="flex items-center gap-3 mt-1.5">
+        <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-md border bg-muted">
+          {hasImage ? (
+            <img
+              src={`${imageUrl}?t=${Date.now()}`}
+              alt={label}
+              className="max-h-full max-w-full object-contain"
+            />
+          ) : (
+            <ImageIcon className="h-6 w-6 text-muted-foreground" />
+          )}
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 text-xs"
+            disabled={uploading}
+            onClick={() => inputRef.current?.click()}
+          >
+            <Upload className="mr-1.5 h-3.5 w-3.5" />
+            {uploading ? 'Uploading…' : hasImage ? 'Replace' : 'Upload'}
+          </Button>
+          <p className="text-[11px] text-muted-foreground">{hint}</p>
+        </div>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/svg+xml,image/webp"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            if (f) {
+              onUpload(f)
+              e.target.value = ''
+            }
+          }}
+        />
+      </div>
+    </div>
+  )
+}
+
+function BannerSection({
+  title,
+  value,
+  onChange,
+}: {
+  title: string
+  value: BrandingBanner
+  onChange: (v: BrandingBanner) => void
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <Label className="text-sm font-medium">{title}</Label>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={value.enabled}
+          onClick={() => onChange({ ...value, enabled: !value.enabled })}
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+            value.enabled ? 'bg-primary' : 'bg-input'
+          }`}
+        >
+          <span
+            className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+              value.enabled ? 'translate-x-4' : 'translate-x-0.5'
+            }`}
+          />
+        </button>
+      </div>
+
+      {value.enabled && (
+        <div className="space-y-3 rounded-md border p-3">
+          <div>
+            <Label className="text-xs">Banner text</Label>
+            <Input
+              value={value.text}
+              onChange={(e) => onChange({ ...value, text: e.target.value })}
+              placeholder="Enter banner message…"
+              className="mt-1.5"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <ColorPicker
+              label="Background color"
+              value={value.bgColor}
+              onChange={(bgColor) => onChange({ ...value, bgColor })}
+            />
+            <ColorPicker
+              label="Text color"
+              value={value.textColor}
+              onChange={(textColor) => onChange({ ...value, textColor })}
+            />
+          </div>
+          {value.text && (
+            <div>
+              <Label className="text-xs text-muted-foreground">Preview</Label>
+              <div
+                className="mt-1.5 rounded px-4 py-2 text-center text-sm font-medium"
+                style={{ backgroundColor: value.bgColor, color: value.textColor }}
+              >
+                {value.text}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Branding card ────────────────────────────────────────────────────────────
+
+function BrandingCard() {
+  const qc = useQueryClient()
+
+  const { data: brandingData } = useQuery({
+    queryKey: ['branding'],
+    queryFn: () => brandingApi.get(),
+    select: (r) => r.data,
+  })
+
+  // Local form state
+  const [appName, setAppName] = useState('')
+  const [sidebarTitle, setSidebarTitle] = useState('')
+  const [sidebarSubtitle, setSidebarSubtitle] = useState('')
+  const [primaryColor, setPrimaryColor] = useState('#6366f1')
+  const [primaryColorDark, setPrimaryColorDark] = useState('#818cf8')
+  const [borderRadius, setBorderRadius] = useState<Branding['borderRadius']>('medium')
+  const [headerBanner, setHeaderBanner] = useState<BrandingBanner>({
+    enabled: false, text: '', bgColor: '#f59e0b', textColor: '#ffffff',
+  })
+  const [footerBanner, setFooterBanner] = useState<BrandingBanner>({
+    enabled: false, text: '', bgColor: '#6366f1', textColor: '#ffffff',
+  })
+
+  useEffect(() => {
+    if (!brandingData) return
+    setAppName(brandingData.appName ?? '')
+    setSidebarTitle(brandingData.sidebarTitle ?? '')
+    setSidebarSubtitle(brandingData.sidebarSubtitle ?? '')
+    setPrimaryColor(brandingData.primaryColor ?? '#6366f1')
+    setPrimaryColorDark(brandingData.primaryColorDark ?? '#818cf8')
+    setBorderRadius(brandingData.borderRadius ?? 'medium')
+    if (brandingData.headerBanner) setHeaderBanner(brandingData.headerBanner)
+    if (brandingData.footerBanner) setFooterBanner(brandingData.footerBanner)
+  }, [brandingData])
+
+  const save = useMutation({
+    mutationFn: () =>
+      brandingApi.update({
+        appName: appName || undefined,
+        sidebarTitle: sidebarTitle || undefined,
+        sidebarSubtitle: sidebarSubtitle || undefined,
+        primaryColor,
+        primaryColorDark,
+        borderRadius,
+        headerBanner,
+        footerBanner,
+      }),
+    onSuccess: () => {
+      toast.success('Branding saved')
+      qc.invalidateQueries({ queryKey: ['branding'] })
+    },
+    onError: () => toast.error('Failed to save branding'),
+  })
+
+  const uploadLogo = useMutation({
+    mutationFn: (file: File) => brandingApi.uploadLogo(file),
+    onSuccess: () => {
+      toast.success('Logo uploaded')
+      qc.invalidateQueries({ queryKey: ['branding'] })
+    },
+    onError: () => toast.error('Failed to upload logo'),
+  })
+
+  const uploadFavicon = useMutation({
+    mutationFn: (file: File) => brandingApi.uploadFavicon(file),
+    onSuccess: () => {
+      toast.success('Favicon uploaded')
+      qc.invalidateQueries({ queryKey: ['branding'] })
+    },
+    onError: () => toast.error('Failed to upload favicon'),
+  })
+
+  const radiusOptions: { value: Branding['borderRadius']; label: string; preview: string }[] = [
+    { value: 'sharp', label: 'Sharp', preview: '2px' },
+    { value: 'medium', label: 'Medium', preview: '8px' },
+    { value: 'large', label: 'Large', preview: '12px' },
+  ]
+
+  return (
+    <CollapsibleCard title="Branding & Theme" description="Customise the look and feel of your workspace">
+      <div className="space-y-6">
+
+        {/* App Identity */}
+        <div className="space-y-4">
+          <p className="text-sm font-semibold">App Identity</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <Label htmlFor="appName" className="text-xs">App name</Label>
+              <Input
+                id="appName"
+                value={appName}
+                onChange={(e) => setAppName(e.target.value)}
+                placeholder="Roomer"
+                className="mt-1.5"
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">Shown in the top bar</p>
+            </div>
+            <div>
+              <Label htmlFor="sidebarTitle" className="text-xs">Sidebar title</Label>
+              <Input
+                id="sidebarTitle"
+                value={sidebarTitle}
+                onChange={(e) => setSidebarTitle(e.target.value)}
+                placeholder="Roomer"
+                className="mt-1.5"
+              />
+            </div>
+            <div>
+              <Label htmlFor="sidebarSubtitle" className="text-xs">Sidebar subtitle</Label>
+              <Input
+                id="sidebarSubtitle"
+                value={sidebarSubtitle}
+                onChange={(e) => setSidebarSubtitle(e.target.value)}
+                placeholder="Desk Booking"
+                className="mt-1.5"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            <ImageUpload
+              label="Logo"
+              hint="PNG, JPG or SVG · max 512×128 px"
+              hasImage={!!brandingData?.logoPath}
+              imageUrl={brandingApi.getLogoUrl()}
+              onUpload={(f) => uploadLogo.mutate(f)}
+              uploading={uploadLogo.isPending}
+            />
+            <ImageUpload
+              label="Favicon"
+              hint="PNG or ICO · displayed as 64×64 px"
+              hasImage={!!brandingData?.faviconPath}
+              imageUrl={brandingApi.getFaviconUrl()}
+              onUpload={(f) => uploadFavicon.mutate(f)}
+              uploading={uploadFavicon.isPending}
+            />
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* Colors */}
+        <div className="space-y-4">
+          <p className="text-sm font-semibold">Theme Colors</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <ColorPicker label="Primary color (light mode)" value={primaryColor} onChange={setPrimaryColor} />
+            <ColorPicker label="Primary color (dark mode)" value={primaryColorDark} onChange={setPrimaryColorDark} />
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* Border radius */}
+        <div className="space-y-3">
+          <p className="text-sm font-semibold">Shape</p>
+          <div className="flex gap-3">
+            {radiusOptions.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setBorderRadius(opt.value)}
+                className={`flex flex-col items-center gap-1.5 rounded-lg border px-4 py-3 text-xs transition-colors ${
+                  borderRadius === opt.value
+                    ? 'border-primary bg-primary/5 text-primary font-medium'
+                    : 'border-input text-muted-foreground hover:border-muted-foreground'
+                }`}
+              >
+                <div
+                  className="h-8 w-14 border-2 border-current bg-muted/50"
+                  style={{ borderRadius: opt.preview }}
+                />
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* Banners */}
+        <div className="space-y-4">
+          <p className="text-sm font-semibold">Banners</p>
+          <BannerSection title="Header banner" value={headerBanner} onChange={setHeaderBanner} />
+          <BannerSection title="Footer banner" value={footerBanner} onChange={setFooterBanner} />
+        </div>
+
+        <Button size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
+          {save.isPending ? 'Saving…' : 'Save branding'}
+        </Button>
+      </div>
+    </CollapsibleCard>
+  )
+}
+
 export default function SettingsAdminPage() {
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
@@ -872,6 +1253,7 @@ export default function SettingsAdminPage() {
         <p className="text-muted-foreground text-sm mt-1">Configure your Roomer workspace</p>
       </div>
       <OrgSettingsCard />
+      <BrandingCard />
       <EmailSettingsCard />
       <AuthProvidersCard />
     </div>

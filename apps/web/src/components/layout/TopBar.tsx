@@ -2,6 +2,8 @@ import { useNavigate } from 'react-router-dom'
 import { User, LogOut, Settings, Menu, Sun, Moon } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { useThemeStore } from '@/stores/theme'
+import { useBranding } from '@/hooks/useBranding'
+import { brandingApi } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import {
@@ -22,6 +24,7 @@ export function TopBar({ onMenuClick }: TopBarProps) {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
   const { theme, setTheme } = useThemeStore()
+  const branding = useBranding()
   const isDark =
     theme === 'dark' ||
     (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
@@ -39,9 +42,17 @@ export function TopBar({ onMenuClick }: TopBarProps) {
         <Button variant="ghost" size="icon" className="md:hidden" onClick={onMenuClick}>
           <Menu className="h-5 w-5" />
         </Button>
-        <span className="hidden text-sm font-semibold text-muted-foreground md:block">
-          Roomer
-        </span>
+        {branding?.logoPath ? (
+          <img
+            src={`${brandingApi.getLogoUrl()}?t=${branding.logoPath}`}
+            alt={branding.appName ?? 'Logo'}
+            className="hidden md:block h-7 max-w-[120px] object-contain"
+          />
+        ) : (
+          <span className="hidden text-sm font-semibold text-muted-foreground md:block">
+            {branding?.appName ?? 'Roomer'}
+          </span>
+        )}
       </div>
 
       <div className="flex items-center gap-2">

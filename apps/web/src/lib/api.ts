@@ -124,7 +124,7 @@ export const floorsApi = {
     )
   },
   getAvailability: (id: string, date: string) =>
-    api.get<{ data: { assets: AssetWithStatus[] } }>(`/floors/${id}/availability?date=${date}`),
+    api.get<{ data: { floorId: string; date: string; zones: Array<{ id: string; name: string; colour: string; assets: AssetWithStatus[] }> } }>(`/floors/${id}/availability?date=${date}`),
   getManagers: (id: string) =>
     api.get<{ data: Array<{ roleId: string; id: string; displayName: string; email: string }> }>(
       `/floors/${id}/managers`,
@@ -161,6 +161,33 @@ export const zoneGroupsApi = {
 // --- Assets (bookable) ---
 export type PositionUpdate = { id: string; x: number; y: number; width: number; height: number; rotation: number }
 
+export interface AvailabilityWindow {
+  id: string
+  assetId: string
+  ownerId: string
+  startsAt: string
+  endsAt: string
+  note?: string | null
+  createdAt: string
+}
+
+export interface MyAssignment {
+  assetId: string
+  userId: string
+  isPrimary: boolean
+  createdAt: string
+  asset: {
+    id: string
+    name: string
+    bookingLabel?: string | null
+    floorId?: string | null
+    floor?: { id: string; name: string; building: { id: string; name: string } } | null
+    primaryZone?: { id: string; name: string } | null
+    category: { id: string; name: string }
+    availabilityWindows: AvailabilityWindow[]
+  }
+}
+
 export const assetsApi = {
   list: () => api.get<{ data: Asset[] }>('/assets'),
   listCategories: () => api.get<{ data: AssetCategory[] }>('/assets/categories'),
@@ -180,19 +207,19 @@ export const assetsApi = {
   }) => api.post<{ data: Asset }>('/assets', body),
   update: (id: string, body: Partial<Asset> & {
     isBookable?: boolean
-    bookingLabel?: string
+    bookingLabel?: string | null
     amenities?: string[]
     bookingStatus?: string
-    primaryZoneId?: string
-    floorId?: string
-    x?: number
-    y?: number
-    width?: number
-    height?: number
-    rotation?: number
+    primaryZoneId?: string | null
+    floorId?: string | null
+    x?: number | null
+    y?: number | null
+    width?: number | null
+    height?: number | null
+    rotation?: number | null
   }) => api.patch<{ data: Asset }>(`/assets/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/assets/${id}`),
-  assign: (id: string, body: { assigneeType: string; assigneeId: string }) =>
+  assign: (id: string, body: { userId: string; notes?: string }) =>
     api.post<{ data: AssetAssignment }>(`/assets/${id}/assign`, body),
   unassign: (id: string) => api.post<{ data: AssetAssignment }>(`/assets/${id}/unassign`, {}),
   history: (id: string) => api.get<{ data: AssetAssignment[] }>(`/assets/${id}/history`),
@@ -208,13 +235,13 @@ export const assetsApi = {
     api.delete<{ data: { ok: true } }>(`/assets/${id}/allow-list/${userId}`),
   // Permanent user assignments
   getAssignments: (id: string) =>
-    api.get<{ data: AssetAssignedUser[] }>(`/assets/${id}/assignments`),
+    api.get<{ data: AssetAssignedUser[] }>(`/assets/${id}/user-assignments`),
   addAssignment: (id: string, data: { userId: string; isPrimary?: boolean }) =>
-    api.post<{ data: AssetAssignedUser }>(`/assets/${id}/assignments`, data),
+    api.post<{ data: AssetAssignedUser }>(`/assets/${id}/user-assignments`, data),
   removeAssignment: (id: string, userId: string) =>
-    api.delete<{ data: { ok: true } }>(`/assets/${id}/assignments/${userId}`),
+    api.delete<{ data: { ok: true } }>(`/assets/${id}/user-assignments/${userId}`),
   setPrimaryAssignment: (id: string, userId: string) =>
-    api.patch<{ data: { ok: true } }>(`/assets/${id}/assignments/${userId}/primary`),
+    api.patch<{ data: { ok: true } }>(`/assets/${id}/user-assignments/${userId}/primary`),
   // Additional zones
   getZones: (id: string) =>
     api.get<{ data: AssetZone[] }>(`/assets/${id}/zones`),
@@ -222,6 +249,21 @@ export const assetsApi = {
     api.post<{ data: { ok: true } }>(`/assets/${id}/zones`, { zoneId }),
   removeZone: (id: string, zoneId: string) =>
     api.delete<{ data: { ok: true } }>(`/assets/${id}/zones/${zoneId}`),
+  // Bulk import — create multiple assets from CSV rows and place them on a floor
+  bulkImport: (floorId: string, assets: Array<{
+    name: string
+    categoryName: string
+    bookingStatus?: string
+    bookingLabel?: string
+    amenities?: string[]
+    serialNumber?: string
+    assetTag?: string
+    notes?: string
+    zoneName?: string
+  }>) => api.post<{ data: { created: number; errors: Array<{ row: number; name: string; error: string }> } }>(
+    '/assets/bulk-import',
+    { floorId, assets },
+  ),
   // Bookings for an asset
   getBookings: (id: string, params?: { status?: string; date?: string }) => {
     const qs = new URLSearchParams()
@@ -231,6 +273,16 @@ export const assetsApi = {
   },
   createCategory: (body: { name: string; description?: string; defaultIsBookable?: boolean; defaultIcon?: string; colour?: string }) =>
     api.post<{ data: AssetCategory }>('/assets/categories', body),
+  // Permanent assignments for current user
+  getMyAssignments: () =>
+    api.get<{ data: MyAssignment[] }>('/assets/my-assignments'),
+  // Availability windows
+  listAvailabilityWindows: (id: string) =>
+    api.get<{ data: AvailabilityWindow[] }>(`/assets/${id}/availability-windows`),
+  createAvailabilityWindow: (id: string, body: { startsAt: string; endsAt: string; note?: string }) =>
+    api.post<{ data: AvailabilityWindow }>(`/assets/${id}/availability-windows`, body),
+  deleteAvailabilityWindow: (id: string, windowId: string) =>
+    api.delete<{ data: { ok: true } }>(`/assets/${id}/availability-windows/${windowId}`),
 }
 
 // --- Bookings ---
@@ -288,6 +340,43 @@ type OrgSettings = {
   defaultBookingDurationHours: number
   maxAdvanceBookingDays: number
   maxBookingsPerUser: number
+}
+
+export interface BrandingBanner {
+  enabled: boolean
+  text: string
+  bgColor: string
+  textColor: string
+}
+
+export interface Branding {
+  appName?: string
+  sidebarTitle?: string
+  sidebarSubtitle?: string
+  primaryColor?: string
+  primaryColorDark?: string
+  logoPath?: string
+  faviconPath?: string
+  borderRadius?: 'sharp' | 'medium' | 'large'
+  headerBanner?: BrandingBanner
+  footerBanner?: BrandingBanner
+}
+
+export const brandingApi = {
+  get: () => api.get<{ data: Branding }>('/settings/branding'),
+  update: (body: Partial<Branding>) => api.patch<{ data: Branding }>('/settings/branding', body),
+  uploadLogo: (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request<{ data: { logoPath: string } }>('POST', '/settings/branding/logo', form)
+  },
+  uploadFavicon: (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request<{ data: { faviconPath: string } }>('POST', '/settings/branding/favicon', form)
+  },
+  getLogoUrl: () => `${BASE}/settings/branding/logo/image`,
+  getFaviconUrl: () => `${BASE}/settings/branding/favicon/image`,
 }
 
 export const settingsApi = {

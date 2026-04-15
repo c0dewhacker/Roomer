@@ -16,6 +16,7 @@ const STATUS_LEGEND: Array<{ label: string; colour: string; status: string }> = 
   { label: 'Available', colour: 'bg-green-500', status: 'available' },
   { label: 'Your booking', colour: 'bg-blue-500', status: 'mine' },
   { label: 'Booked', colour: 'bg-red-400', status: 'booked' },
+  { label: 'Assigned', colour: 'bg-slate-400', status: 'assigned' },
   { label: 'Queued', colour: 'bg-yellow-400', status: 'queued' },
   { label: 'Restricted', colour: 'bg-orange-400', status: 'restricted' },
   { label: 'Disabled', colour: 'bg-gray-300', status: 'disabled' },
@@ -24,12 +25,19 @@ const STATUS_LEGEND: Array<{ label: string; colour: string; status: string }> = 
 export default function FloorPage() {
   const { floorId } = useParams<{ floorId: string }>()
   const [selectedDate, setSelectedDate] = useState(new Date())
-  const [selectedDesk, setSelectedDesk] = useState<AssetWithStatus | null>(null)
+  const [selectedDeskId, setSelectedDeskId] = useState<string | null>(null)
   const qc = useQueryClient()
 
   const [showWhoIsIn, setShowWhoIsIn] = useState(false)
   const { data: floor, isLoading } = useFloorData(floorId!)
   const { data: desks } = useFloorAvailability(floorId!, selectedDate)
+
+  // Keep selectedDesk in sync with fresh availability data so mutations (e.g. add permanent user)
+  // are reflected immediately in the panel without re-clicking the desk.
+  const selectedDesk = useMemo(
+    () => (selectedDeskId && desks ? desks.find((d) => d.id === selectedDeskId) ?? null : null),
+    [selectedDeskId, desks],
+  )
 
   const whoIsIn = useMemo(() => {
     if (!desks) return []
@@ -53,12 +61,12 @@ export default function FloorPage() {
   const handleNextDay = () => setSelectedDate((d) => addDays(d, 1))
 
   const handleDeskClick = useCallback((desk: AssetWithStatus) => {
-    setSelectedDesk(desk)
+    setSelectedDeskId(desk.id)
   }, [])
 
   const handleBookingCreated = useCallback(() => {
     qc.invalidateQueries({ queryKey: ['floors', floorId, 'availability'] })
-    setSelectedDesk(null)
+    setSelectedDeskId(null)
   }, [qc, floorId])
 
   const today = new Date()
@@ -215,7 +223,7 @@ export default function FloorPage() {
         date={selectedDate}
         floorId={floorId}
         floorZones={floor?.zones?.map((z) => ({ id: z.id, name: z.name, colour: z.colour })) ?? []}
-        onClose={() => setSelectedDesk(null)}
+        onClose={() => setSelectedDeskId(null)}
         onBookingCreated={handleBookingCreated}
       />
     </div>

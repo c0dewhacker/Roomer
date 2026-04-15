@@ -108,6 +108,7 @@ model Organisation {
   defaultBookingDurationHours Int         @default(8)
   maxAdvanceBookingDays       Int         @default(14)
   maxBookingsPerUser          Int         @default(5)
+  branding                    Json        @default("{}")
   createdAt                   DateTime    @default(now())
   updatedAt                   DateTime    @updatedAt
   buildings                   Building[]
@@ -306,7 +307,8 @@ model Asset {
   floor           Floor?                @relation(fields: [floorId], references: [id], onDelete: SetNull)
   additionalZones AssetZone[]
   allowList       AssetAllowList[]
-  userAssignments AssetUserAssignment[]
+  userAssignments       AssetUserAssignment[]
+  availabilityWindows   AssetAvailabilityWindow[]
   /// Temporary assignments (checked-out to a user with a return date).
   assignments     AssetAssignment[]
   /// Bookings made against this asset (only populated when isBookable=true).
@@ -317,6 +319,23 @@ model Asset {
   @@index([primaryZoneId])
   @@index([categoryId])
   @@index([isBookable])
+}
+
+/// Availability window: a permanently assigned user can offer their asset for
+/// temporary booking by others during a specific time range.
+model AssetAvailabilityWindow {
+  id        String   @id @default(cuid())
+  assetId   String
+  ownerId   String
+  startsAt  DateTime
+  endsAt    DateTime
+  note      String?
+  createdAt DateTime @default(now())
+  asset     Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  owner     User     @relation("AvailabilityWindowOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([assetId, startsAt, endsAt])
+  @@index([ownerId])
 }
 
 /// Permanent user assignment — records which user "owns" or is primarily responsible
@@ -372,6 +391,7 @@ model User {
   assetAllowList       AssetAllowList[]
   groupMemberships     UserGroupMember[]
   assetUserAssignments AssetUserAssignment[]
+  availabilityWindows  AssetAvailabilityWindow[] @relation("AvailabilityWindowOwner")
 
   @@index([email])
   @@index([provider, externalId])

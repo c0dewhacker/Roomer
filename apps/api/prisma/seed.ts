@@ -1,4 +1,4 @@
-import { PrismaClient, DeskStatus } from '@prisma/client'
+import { PrismaClient, BookableStatus, AssetStatus } from '@prisma/client'
 import bcryptjs from 'bcryptjs'
 
 const prisma = new PrismaClient()
@@ -109,87 +109,123 @@ async function main() {
   })
   console.log(`Zones: ${zoneA.name}, ${zoneB.name}`)
 
+  // Ensure a desk category exists for seeded desks
+  const deskCategory = await prisma.assetCategory.upsert({
+    where: { name: 'Desk' },
+    update: {},
+    create: {
+      name: 'Desk',
+      description: 'Bookable desk space on the floor plan',
+      defaultIsBookable: true,
+      defaultIcon: 'monitor',
+    },
+  })
+
   // 7. Six desks spread across the two zones (x/y as % of floor plan)
   const desksData = [
     {
       id: 'seed-desk-001',
-      zoneId: zoneA.id,
+      primaryZoneId: zoneA.id,
+      floorId: floor.id,
       name: 'A1',
       x: 20,
       y: 30,
       width: 3,
       height: 2,
       rotation: 0,
-      status: DeskStatus.OPEN,
+      isBookable: true,
+      bookingLabel: 'Desk',
+      bookingStatus: BookableStatus.OPEN,
+      status: AssetStatus.AVAILABLE,
       amenities: ['monitor', 'docking-station'],
     },
     {
       id: 'seed-desk-002',
-      zoneId: zoneA.id,
+      primaryZoneId: zoneA.id,
+      floorId: floor.id,
       name: 'A2',
       x: 30,
       y: 30,
       width: 3,
       height: 2,
       rotation: 0,
-      status: DeskStatus.OPEN,
+      isBookable: true,
+      bookingLabel: 'Desk',
+      bookingStatus: BookableStatus.OPEN,
+      status: AssetStatus.AVAILABLE,
       amenities: ['monitor'],
     },
     {
       id: 'seed-desk-003',
-      zoneId: zoneA.id,
+      primaryZoneId: zoneA.id,
+      floorId: floor.id,
       name: 'A3',
       x: 40,
       y: 30,
       width: 3,
       height: 2,
       rotation: 0,
-      status: DeskStatus.RESTRICTED,
+      isBookable: true,
+      bookingLabel: 'Desk',
+      bookingStatus: BookableStatus.RESTRICTED,
+      status: AssetStatus.AVAILABLE,
       amenities: ['monitor', 'standing-desk'],
     },
     {
       id: 'seed-desk-004',
-      zoneId: zoneB.id,
+      primaryZoneId: zoneB.id,
+      floorId: floor.id,
       name: 'B1',
       x: 60,
       y: 50,
       width: 3,
       height: 2,
       rotation: 0,
-      status: DeskStatus.OPEN,
+      isBookable: true,
+      bookingLabel: 'Desk',
+      bookingStatus: BookableStatus.OPEN,
+      status: AssetStatus.AVAILABLE,
       amenities: ['monitor', 'keyboard', 'mouse'],
     },
     {
       id: 'seed-desk-005',
-      zoneId: zoneB.id,
+      primaryZoneId: zoneB.id,
+      floorId: floor.id,
       name: 'B2',
       x: 70,
       y: 50,
       width: 3,
       height: 2,
       rotation: 0,
-      status: DeskStatus.OPEN,
+      isBookable: true,
+      bookingLabel: 'Desk',
+      bookingStatus: BookableStatus.OPEN,
+      status: AssetStatus.AVAILABLE,
       amenities: ['monitor'],
     },
     {
       id: 'seed-desk-006',
-      zoneId: zoneB.id,
+      primaryZoneId: zoneB.id,
+      floorId: floor.id,
       name: 'B3',
       x: 80,
       y: 50,
       width: 3,
       height: 2,
       rotation: 0,
-      status: DeskStatus.DISABLED,
+      isBookable: true,
+      bookingLabel: 'Desk',
+      bookingStatus: BookableStatus.DISABLED,
+      status: AssetStatus.DISABLED,
       amenities: [],
     },
   ]
 
   for (const desk of desksData) {
-    await prisma.desk.upsert({
+    await prisma.asset.upsert({
       where: { id: desk.id },
       update: {},
-      create: desk,
+      create: { ...desk, categoryId: deskCategory.id },
     })
   }
   console.log(`Created ${desksData.length} desks`)

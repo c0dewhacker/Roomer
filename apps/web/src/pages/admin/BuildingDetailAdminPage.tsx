@@ -197,7 +197,7 @@ function FloorCard({ floor, buildingId }: { floor: Floor; buildingId: string }) 
                 <AlertDialogHeader>
                   <AlertDialogTitle>Delete floor?</AlertDialogTitle>
                   <AlertDialogDescription>
-                    This will permanently delete <strong>{floor.name}</strong>, all its zones, desks, and bookings.
+                    This will permanently delete <strong>{floor.name}</strong>, all its zones, assets, and bookings.
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
@@ -213,7 +213,7 @@ function FloorCard({ floor, buildingId }: { floor: Floor; buildingId: string }) 
             </AlertDialog>
             <Button size="sm" className="h-8 gap-1.5 text-xs"
               onClick={() => navigate(`/admin/floors/${floor.id}`)}>
-              Manage zones & desks
+              Manage zones & assets
               <ChevronRight className="h-3.5 w-3.5" />
             </Button>
           </div>

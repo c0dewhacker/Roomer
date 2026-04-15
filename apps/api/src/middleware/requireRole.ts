@@ -86,6 +86,52 @@ export function requireResourceRole(
   }
 }
 
+/**
+ * Returns true if the user holds FLOOR_MANAGER access on the given floor,
+ * either via a direct UserResourceRole or through a GroupResourceRole.
+ */
+export async function isFloorManagerForFloor(userId: string, floorId: string): Promise<boolean> {
+  const direct = await prisma.userResourceRole.findFirst({
+    where: { userId, scopeType: 'FLOOR', floorId, role: 'FLOOR_MANAGER' },
+  })
+  if (direct) return true
+  const via = await prisma.groupResourceRole.findFirst({
+    where: {
+      scopeType: 'FLOOR',
+      floorId,
+      role: 'FLOOR_MANAGER',
+      group: { members: { some: { userId } } },
+    },
+  })
+  return !!via
+}
+
+/**
+ * Returns all floorIds on which the user has FLOOR_MANAGER access,
+ * combining direct UserResourceRole rows and GroupResourceRole memberships.
+ */
+export async function getManagedFloorIds(userId: string): Promise<string[]> {
+  const [direct, via] = await Promise.all([
+    prisma.userResourceRole.findMany({
+      where: { userId, scopeType: 'FLOOR', role: 'FLOOR_MANAGER' },
+      select: { floorId: true },
+    }),
+    prisma.groupResourceRole.findMany({
+      where: {
+        scopeType: 'FLOOR',
+        role: 'FLOOR_MANAGER',
+        group: { members: { some: { userId } } },
+      },
+      select: { floorId: true },
+    }),
+  ])
+  const ids = [
+    ...(direct.map((r) => r.floorId).filter(Boolean) as string[]),
+    ...(via.map((r) => r.floorId).filter(Boolean) as string[]),
+  ]
+  return [...new Set(ids)]
+}
+
 // Middleware for asset endpoints: resolves asset → floorId directly, then checks floor-level role.
 // Also passes for SUPER_ADMIN.
 export function requireFloorRoleForAsset(minimumRole: ResourceRoleType) {

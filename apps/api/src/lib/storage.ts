@@ -11,6 +11,7 @@ const DxfParser = require('dxf-parser')
 
 const FLOOR_PLANS_DIR = 'floor-plans'
 const THUMBNAILS_DIR = 'floor-plans/thumbnails'
+const BRANDING_DIR = 'branding'
 
 export function resolveStoragePath(relativePath: string): string {
   return path.resolve(env.FILE_STORAGE_PATH, relativePath)
@@ -21,6 +22,7 @@ export async function ensureUploadDirs(): Promise<void> {
     env.FILE_STORAGE_PATH,
     path.join(env.FILE_STORAGE_PATH, FLOOR_PLANS_DIR),
     path.join(env.FILE_STORAGE_PATH, THUMBNAILS_DIR),
+    path.join(env.FILE_STORAGE_PATH, BRANDING_DIR),
   ]
   for (const dir of dirs) {
     await fs.promises.mkdir(dir, { recursive: true })
@@ -239,6 +241,30 @@ async function saveDxfFloorPlan(
       fileType: FloorPlanFileType.DXF,
     }
   }
+}
+
+// ─── Branding image storage ────────────────────────────────────────────────
+
+/**
+ * Save a logo or favicon upload, converting it to PNG with appropriate dimensions.
+ * Returns the relative storage path.
+ */
+export async function saveBrandingImage(
+  file: MultipartFile,
+  slot: 'logo' | 'favicon',
+): Promise<string> {
+  await fs.promises.mkdir(path.join(env.FILE_STORAGE_PATH, BRANDING_DIR), { recursive: true })
+  const relPath = path.join(BRANDING_DIR, `${slot}.png`)
+  const absPath = resolveStoragePath(relPath)
+
+  const buffer = await file.toBuffer()
+  if (slot === 'favicon') {
+    await sharp(buffer).resize(64, 64, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toFile(absPath)
+  } else {
+    // logo: max 512 wide, max 128 tall, preserve aspect ratio
+    await sharp(buffer).resize(512, 128, { fit: 'inside', withoutEnlargement: true }).png().toFile(absPath)
+  }
+  return relPath
 }
 
 export function getFloorPlanUrl(relativePath: string): string {

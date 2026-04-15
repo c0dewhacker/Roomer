@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma'
 import { GlobalRole, BookableStatus, bulkUpdateAssetPositionsSchema } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
-import { requireGlobalRole } from '../middleware/requireRole'
+import { requireGlobalRole, getManagedFloorIds, isFloorManagerForFloor } from '../middleware/requireRole'
 import { z } from 'zod'
 
 const createCategorySchema = z.object({
@@ -17,8 +17,8 @@ const createAssetSchema = z.object({
   categoryId: z.string().min(1),
   name: z.string().min(1).max(255),
   description: z.string().optional(),
-  serialNumber: z.string().optional(),
-  assetTag: z.string().optional(),
+  serialNumber: z.string().optional().transform((v) => v === '' ? undefined : v),
+  assetTag: z.string().optional().transform((v) => v === '' ? undefined : v),
   purchaseDate: z.string().datetime().optional(),
   warrantyExpiry: z.string().datetime().optional(),
   notes: z.string().optional(),
@@ -40,8 +40,8 @@ const updateAssetSchema = z.object({
   categoryId: z.string().min(1).optional(),
   name: z.string().min(1).max(255).optional(),
   description: z.string().optional(),
-  serialNumber: z.string().optional(),
-  assetTag: z.string().optional(),
+  serialNumber: z.string().optional().transform((v) => v === '' ? undefined : v),
+  assetTag: z.string().optional().transform((v) => v === '' ? undefined : v),
   status: z.enum(['AVAILABLE', 'ASSIGNED', 'MAINTENANCE', 'RETIRED', 'DISABLED']).optional(),
   purchaseDate: z.string().datetime().optional(),
   warrantyExpiry: z.string().datetime().optional(),
@@ -73,17 +73,130 @@ const addZoneSchema = z.object({
   zoneId: z.string().min(1, 'Invalid zone ID'),
 })
 
+const bulkImportRowSchema = z.object({
+  name: z.string().min(1).max(255),
+  categoryName: z.string().min(1).max(255),
+  bookingStatus: z.nativeEnum(BookableStatus).optional().default(BookableStatus.OPEN),
+  bookingLabel: z.string().max(255).optional().default('Desk'),
+  amenities: z.array(z.string()).optional().default([]),
+  serialNumber: z.string().optional(),
+  assetTag: z.string().optional(),
+  notes: z.string().optional(),
+  zoneName: z.string().optional(),
+})
+
+const bulkImportSchema = z.object({
+  floorId: z.string().min(1),
+  assets: z.array(bulkImportRowSchema).min(1).max(500),
+})
+
 export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
+  // POST /bulk-import — create multiple bookable assets and place them on a floor
+  fastify.post(
+    '/bulk-import',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const result = bulkImportSchema.safeParse(request.body)
+      if (!result.success) {
+        return reply.status(400).send({
+          error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
+        })
+      }
+
+      const { floorId, assets } = result.data
+
+      const floor = await prisma.floor.findUnique({
+        where: { id: floorId },
+        include: { zones: true },
+      })
+      if (!floor) {
+        return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+      }
+
+      const created: { id: string; name: string }[] = []
+      const errors: { row: number; name: string; error: string }[] = []
+
+      for (const [index, row] of assets.entries()) {
+        try {
+          // Look up or create category by name
+          let category = await prisma.assetCategory.findFirst({ where: { name: row.categoryName } })
+          if (!category) {
+            category = await prisma.assetCategory.create({
+              data: { name: row.categoryName, defaultIsBookable: true, defaultIcon: 'monitor' },
+            })
+          }
+
+          // Resolve zone: match by name on this floor, fall back to first zone
+          let primaryZoneId: string | undefined
+          if (row.zoneName) {
+            const zone = floor.zones.find((z) => z.name.toLowerCase() === row.zoneName!.toLowerCase())
+            if (zone) primaryZoneId = zone.id
+          }
+          if (!primaryZoneId && floor.zones.length > 0) {
+            primaryZoneId = floor.zones[0].id
+          }
+
+          const asset = await prisma.asset.create({
+            data: {
+              categoryId: category.id,
+              name: row.name,
+              isBookable: true,
+              bookingLabel: row.bookingLabel ?? 'Desk',
+              bookingStatus: row.bookingStatus ?? BookableStatus.OPEN,
+              amenities: row.amenities ?? [],
+              serialNumber: row.serialNumber ?? null,
+              assetTag: row.assetTag ?? null,
+              notes: row.notes ?? null,
+              floorId,
+              primaryZoneId: primaryZoneId ?? null,
+              x: 50,
+              y: 50,
+              width: 3,
+              height: 2,
+            },
+          })
+          created.push({ id: asset.id, name: asset.name })
+        } catch (err) {
+          errors.push({
+            row: index + 1,
+            name: row.name,
+            error: err instanceof Error ? err.message : 'Unknown error',
+          })
+        }
+      }
+
+      return reply.status(200).send({ data: { created: created.length, errors } })
+    },
+  )
+
   // PATCH /positions — bulk update positions (must be before /:id)
+  // Accessible to SUPER_ADMIN and FLOOR_MANAGERs (restricted to their managed floors).
   fastify.patch(
     '/positions',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const result = bulkUpdateAssetPositionsSchema.safeParse(request.body)
       if (!result.success) {
         return reply.status(400).send({
           error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
         })
+      }
+
+      const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      if (!isAdmin) {
+        const managedFloorIds = await getManagedFloorIds(request.user.id)
+        if (managedFloorIds.length === 0) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        const assetIds = result.data.assets.map((a) => a.id)
+        const assets = await prisma.asset.findMany({
+          where: { id: { in: assetIds } },
+          select: { id: true, floorId: true },
+        })
+        const unauthorized = assets.filter((a) => !a.floorId || !managedFloorIds.includes(a.floorId))
+        if (unauthorized.length > 0) {
+          return reply.status(403).send({ error: { message: 'One or more assets are not on your managed floors', code: 'FORBIDDEN' } })
+        }
       }
 
       const updates = await prisma.$transaction(
@@ -131,7 +244,30 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(200).send({ data: assets })
     }
 
-    // Non-admin: return only assets assigned to this user
+    // Floor manager: return assets on all managed floors
+    const managedFloorIds = await getManagedFloorIds(request.user.id)
+    if (managedFloorIds.length > 0) {
+      const assets = await prisma.asset.findMany({
+        where: { floorId: { in: managedFloorIds } },
+        include: {
+          category: true,
+          assignments: {
+            where: { returnedAt: null },
+            include: { user: { select: { id: true, displayName: true, email: true } } },
+          },
+          userAssignments: {
+            include: { user: { select: { id: true, displayName: true, email: true } } },
+          },
+          allowList: {
+            include: { user: { select: { id: true, displayName: true, email: true } } },
+          },
+        },
+        orderBy: { name: 'asc' },
+      })
+      return reply.status(200).send({ data: assets })
+    }
+
+    // Regular user: return only personally assigned assets
     const assignments = await prisma.assetAssignment.findMany({
       where: { userId: request.user.id, returnedAt: null },
       include: {
@@ -176,6 +312,100 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
+  // GET /my-assignments — assets permanently assigned to the current user
+  fastify.get('/my-assignments', { preHandler: [requireAuth] }, async (request, reply) => {
+    const userId = request.user.id
+    const now = new Date()
+
+    const assignments = await prisma.assetUserAssignment.findMany({
+      where: { userId },
+      include: {
+        asset: {
+          include: {
+            category: { select: { id: true, name: true } },
+            floor: {
+              select: {
+                id: true, name: true,
+                building: { select: { id: true, name: true } },
+              },
+            },
+            primaryZone: { select: { id: true, name: true } },
+            availabilityWindows: {
+              where: { ownerId: userId, endsAt: { gt: now } },
+              orderBy: { startsAt: 'asc' },
+            },
+          },
+        },
+      },
+    })
+
+    return reply.status(200).send({ data: assignments })
+  })
+
+  // POST /assets/:id/availability-windows — create an availability window
+  fastify.post('/:id/availability-windows', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = request.body as { startsAt?: string; endsAt?: string; note?: string }
+
+    if (!body.startsAt || !body.endsAt) {
+      return reply.status(400).send({ error: { message: 'startsAt and endsAt are required', code: 'VALIDATION_ERROR' } })
+    }
+
+    const startsAt = new Date(body.startsAt)
+    const endsAt = new Date(body.endsAt)
+
+    if (isNaN(startsAt.getTime()) || isNaN(endsAt.getTime()) || endsAt <= startsAt) {
+      return reply.status(400).send({ error: { message: 'Invalid time range', code: 'VALIDATION_ERROR' } })
+    }
+
+    // Only the permanently assigned user (or SUPER_ADMIN) may create a window
+    const assignment = await prisma.assetUserAssignment.findUnique({
+      where: { assetId_userId: { assetId: id, userId: request.user.id } },
+    })
+    if (!assignment && request.user.globalRole !== 'SUPER_ADMIN') {
+      return reply.status(403).send({ error: { message: 'You are not permanently assigned to this asset', code: 'FORBIDDEN' } })
+    }
+
+    const asset = await prisma.asset.findUnique({ where: { id }, select: { id: true } })
+    if (!asset) {
+      return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+    }
+
+    const window = await prisma.assetAvailabilityWindow.create({
+      data: { assetId: id, ownerId: request.user.id, startsAt, endsAt, note: body.note ?? null },
+    })
+    return reply.status(201).send({ data: window })
+  })
+
+  // GET /assets/:id/availability-windows — list active windows
+  fastify.get('/:id/availability-windows', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const now = new Date()
+
+    const windows = await prisma.assetAvailabilityWindow.findMany({
+      where: { assetId: id, endsAt: { gt: now } },
+      orderBy: { startsAt: 'asc' },
+      include: { owner: { select: { id: true, displayName: true } } },
+    })
+    return reply.status(200).send({ data: windows })
+  })
+
+  // DELETE /assets/:id/availability-windows/:windowId — remove a window
+  fastify.delete('/:id/availability-windows/:windowId', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id, windowId } = request.params as { id: string; windowId: string }
+
+    const window = await prisma.assetAvailabilityWindow.findUnique({ where: { id: windowId } })
+    if (!window || window.assetId !== id) {
+      return reply.status(404).send({ error: { message: 'Availability window not found', code: 'NOT_FOUND' } })
+    }
+    if (window.ownerId !== request.user.id && request.user.globalRole !== 'SUPER_ADMIN') {
+      return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+    }
+
+    await prisma.assetAvailabilityWindow.delete({ where: { id: windowId } })
+    return reply.status(200).send({ data: { ok: true } })
+  })
+
   // GET /:id — get asset detail
   fastify.get('/:id', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
@@ -205,10 +435,11 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
     const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
     if (!isAdmin) {
-      const hasAccess = asset.assignments.some(
+      const hasPersonalAccess = asset.assignments.some(
         (a) => a.userId === request.user.id && a.returnedAt === null,
       )
-      if (!hasAccess) {
+      const hasFloorAccess = !!asset.floorId && await isFloorManagerForFloor(request.user.id, asset.floorId)
+      if (!hasPersonalAccess && !hasFloorAccess) {
         return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
       }
     }
@@ -310,8 +541,12 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           include: { category: true },
         })
         return reply.status(200).send({ data: asset })
-      } catch {
-        return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+      } catch (err) {
+        if ((err as { code?: string }).code === 'P2025') {
+          return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+        }
+        fastify.log.error(err, 'Failed to update asset')
+        return reply.status(500).send({ error: { message: 'Internal server error', code: 'INTERNAL_ERROR' } })
       }
     },
   )
@@ -399,6 +634,11 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       })
 
       if (!activeAssignment) {
+        // Status is stuck as ASSIGNED with no active record — reset it
+        if (asset.status === 'ASSIGNED') {
+          await prisma.asset.update({ where: { id }, data: { status: 'AVAILABLE' } })
+          return reply.status(200).send({ data: { ok: true } })
+        }
         return reply.status(409).send({
           error: { message: 'Asset is not currently assigned', code: 'CONFLICT' },
         })
@@ -470,6 +710,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         create: { assetId: id, userId: result.data.userId, isPrimary: result.data.isPrimary },
         include: { user: { select: { id: true, displayName: true, email: true } } },
       })
+      await prisma.asset.update({ where: { id }, data: { bookingStatus: 'ASSIGNED' } })
       return reply.status(201).send({ data: { ...assignment.user, isPrimary: assignment.isPrimary } })
     },
   )
@@ -484,6 +725,10 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         await prisma.assetUserAssignment.delete({
           where: { assetId_userId: { assetId: id, userId } },
         })
+        const remaining = await prisma.assetUserAssignment.count({ where: { assetId: id } })
+        if (remaining === 0) {
+          await prisma.asset.update({ where: { id }, data: { bookingStatus: 'OPEN' } })
+        }
         return reply.status(200).send({ data: { ok: true } })
       } catch {
         return reply.status(404).send({ error: { message: 'Assignment not found', code: 'NOT_FOUND' } })

@@ -206,7 +206,17 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (asset.bookingStatus === 'ASSIGNED') {
       const isAssignedUser = asset.userAssignments.some((ua) => ua.userId === request.user.id)
       if (!isAssignedUser && request.user.globalRole !== 'SUPER_ADMIN') {
-        return reply.status(403).send({ error: { message: 'This asset is permanently assigned to another user', code: 'ASSET_ASSIGNED' } })
+        // Allow if there is an active availability window covering the requested slot
+        const window = await prisma.assetAvailabilityWindow.findFirst({
+          where: {
+            assetId,
+            startsAt: { lte: startsAt },
+            endsAt: { gte: endsAt },
+          },
+        })
+        if (!window) {
+          return reply.status(403).send({ error: { message: 'This asset is permanently assigned to another user', code: 'ASSET_ASSIGNED' } })
+        }
       }
     }
 

@@ -48,13 +48,23 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import type { Asset, AssetCategory } from '@/types'
+import { useAuthStore } from '@/stores/auth'
 
-const statusVariant: Record<string, 'default' | 'secondary' | 'destructive' | 'outline'> = {
-  AVAILABLE: 'default',
-  ASSIGNED: 'secondary',
-  MAINTENANCE: 'outline',
-  RETIRED: 'destructive',
-  DISABLED: 'outline',
+// Physical status badge colours (asset.status)
+const statusClass: Record<string, string> = {
+  AVAILABLE:   'bg-green-100 text-green-800 border-green-200',
+  ASSIGNED:    'bg-slate-100 text-slate-700 border-slate-200',
+  MAINTENANCE: 'bg-amber-100 text-amber-800 border-amber-200',
+  RETIRED:     'bg-red-100 text-red-700 border-red-200',
+  DISABLED:    'bg-slate-200 text-slate-500 border-slate-300',
+}
+
+// Booking-policy badge colours (asset.bookingStatus)
+const bookingStatusClass: Record<string, string> = {
+  OPEN:       'bg-green-100 text-green-800 border-green-200',
+  RESTRICTED: 'bg-orange-100 text-orange-800 border-orange-200',
+  ASSIGNED:   'bg-slate-100 text-slate-700 border-slate-200',
+  DISABLED:   'bg-slate-200 text-slate-500 border-slate-300',
 }
 
 const AVAILABLE_ICONS = [
@@ -193,11 +203,11 @@ function AssetDialog({
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label htmlFor="serialNumber">Serial Number</Label>
+              <Label htmlFor="serialNumber">Serial Number <span className="text-muted-foreground font-normal text-xs">(optional)</span></Label>
               <Input id="serialNumber" {...register('serialNumber')} className="mt-1.5" placeholder="SN-12345" />
             </div>
             <div>
-              <Label htmlFor="assetTag">Asset Tag</Label>
+              <Label htmlFor="assetTag">Asset Tag <span className="text-muted-foreground font-normal text-xs">(optional)</span></Label>
               <Input id="assetTag" {...register('assetTag')} className="mt-1.5" placeholder="TAG-001" />
             </div>
           </div>
@@ -296,12 +306,13 @@ function AssetDialog({
   )
 }
 
-// --- Assign Dialog ---
+// --- Assign Permanent User Dialog ---
 
 function AssignDialog({ open, onClose, assetId }: { open: boolean; onClose: () => void; assetId: string }) {
   const qc = useQueryClient()
   const [userSearch, setUserSearch] = useState('')
   const [selectedUser, setSelectedUser] = useState<{ id: string; displayName: string; email: string } | null>(null)
+  const [isPrimary, setIsPrimary] = useState(false)
 
   const { data: userResults } = useQuery({
     queryKey: ['users', 'search', userSearch],
@@ -311,22 +322,24 @@ function AssignDialog({ open, onClose, assetId }: { open: boolean; onClose: () =
   })
 
   const assign = useMutation({
-    mutationFn: () => assetsApi.assign(assetId, { assigneeType: 'USER', assigneeId: selectedUser!.id }),
+    mutationFn: () => assetsApi.addAssignment(assetId, { userId: selectedUser!.id, isPrimary }),
     onSuccess: () => {
-      toast.success('Asset assigned')
+      toast.success('User permanently assigned')
       qc.invalidateQueries({ queryKey: ['assets'] })
+      qc.invalidateQueries({ queryKey: ['floors'] })
       onClose()
       setSelectedUser(null)
       setUserSearch('')
+      setIsPrimary(false)
     },
-    onError: () => toast.error('Failed to assign asset'),
+    onError: () => toast.error('Failed to assign user'),
   })
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Assign Asset to User</DialogTitle>
+          <DialogTitle>Add Permanent User</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-1">
           <div className="space-y-2">
@@ -358,6 +371,18 @@ function AssignDialog({ open, onClose, assetId }: { open: boolean; onClose: () =
                 ))}
               </div>
             )}
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              id="isPrimary"
+              type="checkbox"
+              checked={isPrimary}
+              onChange={(e) => setIsPrimary(e.target.checked)}
+              className="h-4 w-4 rounded border-input accent-primary"
+            />
+            <Label htmlFor="isPrimary" className="font-normal cursor-pointer">
+              Set as primary user
+            </Label>
           </div>
         </div>
         <DialogFooter>
@@ -474,7 +499,7 @@ function CategoryDialog({ open, onClose }: { open: boolean; onClose: () => void 
 }
 
 // --- Assets Tab ---
-function AssetsTab({ categories }: { categories: AssetCategory[] }) {
+function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; isSuperAdmin: boolean }) {
   const qc = useQueryClient()
   const [search, setSearch] = useState('')
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -493,10 +518,15 @@ function AssetsTab({ categories }: { categories: AssetCategory[] }) {
     onError: () => toast.error('Failed to delete asset'),
   })
 
-  const unassign = useMutation({
-    mutationFn: (id: string) => assetsApi.unassign(id),
-    onSuccess: () => { toast.success('Asset unassigned'); qc.invalidateQueries({ queryKey: ['assets'] }) },
-    onError: () => toast.error('Failed to unassign asset'),
+  const removeUser = useMutation({
+    mutationFn: ({ assetId, userId }: { assetId: string; userId: string }) =>
+      assetsApi.removeAssignment(assetId, userId),
+    onSuccess: () => {
+      toast.success('User removed')
+      qc.invalidateQueries({ queryKey: ['assets'] })
+      qc.invalidateQueries({ queryKey: ['floors'] })
+    },
+    onError: () => toast.error('Failed to remove user'),
   })
 
   const filtered = (assets ?? []).filter((a) =>
@@ -514,9 +544,11 @@ function AssetsTab({ categories }: { categories: AssetCategory[] }) {
           onChange={(e) => setSearch(e.target.value)}
           className="max-w-sm"
         />
-        <Button onClick={() => { setEditTarget(undefined); setDialogOpen(true) }}>
-          <Plus className="mr-2 h-4 w-4" /> Add Asset
-        </Button>
+        {isSuperAdmin && (
+          <Button onClick={() => { setEditTarget(undefined); setDialogOpen(true) }}>
+            <Plus className="mr-2 h-4 w-4" /> Add Asset
+          </Button>
+        )}
       </div>
 
       {isLoading ? (
@@ -543,7 +575,15 @@ function AssetsTab({ categories }: { categories: AssetCategory[] }) {
             </TableHeader>
             <TableBody>
               {filtered.map((asset) => {
-                const currentAssignment = asset.assignments?.find((a) => !a.returnedAt)
+                const permUsers = asset.userAssignments ?? []
+                const primaryUser = permUsers.find((ua) => ua.isPrimary)?.user ?? permUsers[0]?.user
+                const extraCount = permUsers.length > 1 ? permUsers.length - 1 : 0
+                const hasPermUsers = permUsers.length > 0
+                // Derive effective booking status: if there are permanent users but bookingStatus
+                // is still OPEN (pre-fix legacy data), treat as ASSIGNED
+                const effectiveBookingStatus = hasPermUsers && (!asset.bookingStatus || asset.bookingStatus === 'OPEN')
+                  ? 'ASSIGNED'
+                  : (asset.bookingStatus ?? 'OPEN')
                 return (
                   <TableRow key={asset.id}>
                     <TableCell className="font-medium">{asset.name}</TableCell>
@@ -551,21 +591,39 @@ function AssetsTab({ categories }: { categories: AssetCategory[] }) {
                     <TableCell className="text-muted-foreground text-sm">{asset.serialNumber ?? '—'}</TableCell>
                     <TableCell className="text-muted-foreground text-sm">{asset.assetTag ?? '—'}</TableCell>
                     <TableCell>
-                      <Badge variant={statusVariant[asset.status] ?? 'secondary'} className="text-xs">
+                      <Badge
+                        variant="outline"
+                        className={`text-xs border ${statusClass[asset.status] ?? 'bg-slate-100 text-slate-700 border-slate-200'}`}
+                      >
                         {asset.status}
                       </Badge>
                     </TableCell>
                     <TableCell>
                       {asset.isBookable ? (
-                        <Badge variant="default" className="text-xs">
-                          {asset.bookingStatus ?? 'OPEN'}
+                        <Badge
+                          variant="outline"
+                          className={`text-xs border ${bookingStatusClass[effectiveBookingStatus] ?? 'bg-slate-100 text-slate-700 border-slate-200'}`}
+                        >
+                          {effectiveBookingStatus}
                         </Badge>
                       ) : (
                         <span className="text-xs text-muted-foreground">No</span>
                       )}
                     </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {currentAssignment?.user?.displayName ?? (currentAssignment ? '—' : '—')}
+                    <TableCell className="text-sm">
+                      {primaryUser ? (
+                        <span className="flex items-center gap-1.5">
+                          <span>{primaryUser.displayName}</span>
+                          {permUsers.find((ua) => ua.isPrimary) && (
+                            <Badge variant="secondary" className="text-[10px] px-1 py-0">Primary</Badge>
+                          )}
+                          {extraCount > 0 && (
+                            <span className="text-muted-foreground text-xs">+{extraCount}</span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1">
@@ -578,51 +636,56 @@ function AssetsTab({ categories }: { categories: AssetCategory[] }) {
                         >
                           <Pencil className="h-4 w-4" />
                         </Button>
-                        {currentAssignment ? (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            title="Unassign"
-                            onClick={() => unassign.mutate(asset.id)}
-                          >
-                            <UserX className="h-4 w-4" />
-                          </Button>
-                        ) : (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            title="Assign"
-                            onClick={() => setAssignTarget(asset.id)}
-                          >
-                            <UserCheck className="h-4 w-4" />
-                          </Button>
-                        )}
-                        <AlertDialog>
-                          <AlertDialogTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive">
-                              <Trash2 className="h-4 w-4" />
+                        {isSuperAdmin && (
+                          hasPermUsers ? (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              title="Remove primary user"
+                              onClick={() => primaryUser && removeUser.mutate({ assetId: asset.id, userId: primaryUser.id })}
+                              disabled={removeUser.isPending || !primaryUser}
+                            >
+                              <UserX className="h-4 w-4" />
                             </Button>
-                          </AlertDialogTrigger>
-                          <AlertDialogContent>
-                            <AlertDialogHeader>
-                              <AlertDialogTitle>Delete asset?</AlertDialogTitle>
-                              <AlertDialogDescription>
-                                This will permanently delete <strong>{asset.name}</strong> and all its history.
-                              </AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                              <AlertDialogCancel>Cancel</AlertDialogCancel>
-                              <AlertDialogAction
-                                onClick={() => deleteAsset.mutate(asset.id)}
-                                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                              >
-                                Delete
-                              </AlertDialogAction>
-                            </AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
+                          ) : (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              title="Add permanent user"
+                              onClick={() => setAssignTarget(asset.id)}
+                            >
+                              <UserCheck className="h-4 w-4" />
+                            </Button>
+                          )
+                        )}
+                        {isSuperAdmin && (
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive">
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>Delete asset?</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  This will permanently delete <strong>{asset.name}</strong> and all its history.
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogAction
+                                  onClick={() => deleteAsset.mutate(asset.id)}
+                                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                >
+                                  Delete
+                                </AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>
@@ -745,6 +808,9 @@ function CategoriesTab() {
 
 // --- Main Page ---
 export default function AssetsAdminPage() {
+  const user = useAuthStore((s) => s.user)
+  const isSuperAdmin = user?.globalRole === 'SUPER_ADMIN'
+
   const { data: categories = [] } = useQuery({
     queryKey: ['asset-categories'],
     queryFn: () => assetsApi.listCategories(),
@@ -755,20 +821,24 @@ export default function AssetsAdminPage() {
     <div className="p-6 max-w-6xl mx-auto">
       <div className="mb-6">
         <h1 className="text-2xl font-bold">Asset Register</h1>
-        <p className="text-muted-foreground text-sm mt-1">Manage all company assets and their assignments</p>
+        <p className="text-muted-foreground text-sm mt-1">
+          {isSuperAdmin ? 'Manage all company assets and their assignments' : 'Assets on your managed floors'}
+        </p>
       </div>
 
       <Tabs defaultValue="assets">
         <TabsList className="mb-4">
           <TabsTrigger value="assets">Assets</TabsTrigger>
-          <TabsTrigger value="categories">Categories</TabsTrigger>
+          {isSuperAdmin && <TabsTrigger value="categories">Categories</TabsTrigger>}
         </TabsList>
         <TabsContent value="assets">
-          <AssetsTab categories={categories} />
+          <AssetsTab categories={categories} isSuperAdmin={isSuperAdmin} />
         </TabsContent>
-        <TabsContent value="categories">
-          <CategoriesTab />
-        </TabsContent>
+        {isSuperAdmin && (
+          <TabsContent value="categories">
+            <CategoriesTab />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   )

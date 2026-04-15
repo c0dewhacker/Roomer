@@ -303,12 +303,7 @@ function EditAssetDialog({
   const [amenityInput, setAmenityInput] = useState('')
   const [amenities, setAmenities] = useState<string[]>(desk.amenities ?? [])
   const [bookingStatus, setBookingStatus] = useState<'OPEN' | 'RESTRICTED' | 'ASSIGNED' | 'DISABLED'>(
-    // desk.bookingStatus here is the UI availability status; the DB status is not directly on AssetWithStatus
-    // We map from the availability status back to a DB value where possible, otherwise default to OPEN
-    desk.bookingStatus === 'restricted' ? 'RESTRICTED'
-    : desk.bookingStatus === 'disabled' ? 'DISABLED'
-    : desk.bookingStatus === 'assigned' ? 'ASSIGNED'
-    : 'OPEN',
+    desk.rawBookingStatus ?? 'OPEN',
   )
 
   // Reset form when dialog opens with new desk data
@@ -318,12 +313,7 @@ function EditAssetDialog({
       setDescription(desk.description ?? '')
       setBookingLabel(desk.bookingLabel ?? '')
       setAmenities(desk.amenities ?? [])
-      setBookingStatus(
-        desk.bookingStatus === 'restricted' ? 'RESTRICTED'
-        : desk.bookingStatus === 'disabled' ? 'DISABLED'
-        : desk.bookingStatus === 'assigned' ? 'ASSIGNED'
-        : 'OPEN' as const,
-      )
+      setBookingStatus(desk.rawBookingStatus ?? 'OPEN')
     }
   }, [open, desk])
 
@@ -616,6 +606,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
     available: 'Available',
     mine: 'Your booking',
     booked: 'Booked',
+    assigned: 'Assigned',
     restricted: 'Restricted',
     disabled: 'Disabled',
     queued: 'You are queued',
@@ -627,6 +618,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
     available: 'default',
     mine: 'secondary',
     booked: 'destructive',
+    assigned: 'secondary',
     restricted: 'outline',
     disabled: 'outline',
     queued: 'secondary',
@@ -927,6 +919,26 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                   <CheckCircle className="mr-2 h-4 w-4" />
                   {claimDesk.isPending ? 'Claiming…' : 'Claim Desk'}
                 </Button>
+              </div>
+            )}
+
+            {/* Assigned */}
+            {desk.bookingStatus === 'assigned' && (
+              <div className="rounded-md bg-slate-50 border border-slate-200 p-3">
+                <AlertCircle className="h-4 w-4 text-slate-500 mb-1" />
+                <p className="text-sm font-medium text-slate-800">Permanently assigned</p>
+                {desk.assignedUsers && desk.assignedUsers.length > 0 ? (
+                  <p className="text-xs text-slate-600 mt-1">
+                    Assigned to{' '}
+                    <span className="font-medium">
+                      {desk.assignedUsers.find((u) => u.isPrimary)?.displayName ?? desk.assignedUsers[0].displayName}
+                    </span>
+                    {desk.assignedUsers.length > 1 && ` +${desk.assignedUsers.length - 1} more`}.
+                    {' '}This desk is not available for booking.
+                  </p>
+                ) : (
+                  <p className="text-xs text-slate-600 mt-1">This desk is not available for booking.</p>
+                )}
               </div>
             )}
 

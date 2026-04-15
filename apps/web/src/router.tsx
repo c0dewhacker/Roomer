@@ -49,6 +49,25 @@ function AdminRoute() {
   return <Outlet />
 }
 
+// Admits SUPER_ADMIN or any user with at least one FLOOR_MANAGER resource role
+// (direct or via group). Used for routes floor managers should be able to access.
+function FloorManagerOrAdminRoute() {
+  const user = useAuthStore((s) => s.user)
+
+  const isSuperAdmin = user?.globalRole === 'SUPER_ADMIN'
+  const isFloorManager =
+    (user?.resourceRoles ?? []).some((r) => r.role === 'FLOOR_MANAGER') ||
+    (user?.groupMemberships ?? []).some((m) =>
+      (m.group.groupResourceRoles ?? []).some((r) => r.role === 'FLOOR_MANAGER'),
+    )
+
+  if (!isSuperAdmin && !isFloorManager) {
+    return <Navigate to="/bookings" replace />
+  }
+
+  return <Outlet />
+}
+
 function RootRedirect() {
   const { isLoading, isAuthenticated } = useAuth()
 
@@ -79,16 +98,21 @@ export function AppRouter() {
           <Route path="/buildings" element={<BuildingsPage />} />
           <Route path="/buildings/:buildingId" element={<BuildingPage />} />
 
+          {/* Strictly SUPER_ADMIN routes */}
           <Route element={<AdminRoute />}>
             <Route path="/admin/buildings" element={<BuildingsAdminPage />} />
             <Route path="/admin/buildings/:buildingId" element={<BuildingDetailAdminPage />} />
-            <Route path="/admin/floors/:floorId" element={<FloorAdminPage />} />
             <Route path="/admin/users" element={<UsersAdminPage />} />
             <Route path="/admin/settings" element={<SettingsAdminPage />} />
-            <Route path="/admin/assets" element={<AssetsAdminPage />} />
             <Route path="/admin/reports" element={<ReportsAdminPage />} />
             <Route path="/admin/leases" element={<LeasesAdminPage />} />
             <Route path="/admin/groups" element={<GroupsAdminPage />} />
+          </Route>
+
+          {/* SUPER_ADMIN or FLOOR_MANAGER routes */}
+          <Route element={<FloorManagerOrAdminRoute />}>
+            <Route path="/admin/floors/:floorId" element={<FloorAdminPage />} />
+            <Route path="/admin/assets" element={<AssetsAdminPage />} />
           </Route>
         </Route>
       </Route>
