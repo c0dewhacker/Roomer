@@ -222,20 +222,87 @@ All API environment variables with their defaults:
 | Role | Scope | Permissions |
 |---|---|---|
 | `SUPER_ADMIN` | Global | Full access to all resources and settings |
-| `BUILDING_ADMIN` | Per building | Manage floors, zones, and assets within a building |
 | `FLOOR_MANAGER` | Per floor | Manage assets and bookings on assigned floors |
 | `USER` | Global | Book available assets, manage own bookings |
 
 ---
 
+## Docker — Full Stack
+
+The included Dockerfiles build production-ready images for both apps. The `docker-compose.yml` starts all four services together: `postgres`, `mailpit`, `api`, and `web`.
+
+### Images
+
+| Image | Dockerfile | Description |
+|---|---|---|
+| `roomer-api` | `apps/api/Dockerfile` | Multi-stage Node 22 Alpine build. Runs Prisma migrations then starts the Fastify server. |
+| `roomer-web` | `apps/web/Dockerfile` | Multi-stage Vite build served by nginx 1.27. Proxies `/api` to the API service. |
+
+Both Dockerfiles use the monorepo root as the build context so they can access `packages/shared`.
+
+### Run the full stack
+
+Create a `.env` file in the project root:
+
+```env
+SESSION_SECRET=<openssl rand -hex 32>
+APP_ORIGIN=http://localhost
+COOKIE_SECURE=false
+WEB_PORT=80
+EMAIL_FROM=noreply@roomer.local
+```
+
+Then build and start everything:
+
+```bash
+docker compose up --build
+```
+
+The web app will be available at `http://localhost` (or `WEB_PORT` if overridden).
+
+On first start, the API container automatically runs `prisma migrate deploy` before the server starts, so the database schema is always up to date.
+
+To seed demo data after the first start:
+
+```bash
+docker compose exec api npx prisma db seed
+```
+
+### Environment variables passed to containers
+
+The `docker-compose.yml` reads the following from the host environment or a root-level `.env` file:
+
+| Variable | Default | Description |
+|---|---|---|
+| `SESSION_SECRET` | — | Required. 32+ character random string. |
+| `APP_ORIGIN` | `http://localhost` | Public URL of the web app (used in CORS and email links). |
+| `COOKIE_SECURE` | `false` | Set to `true` when serving over HTTPS. |
+| `WEB_PORT` | `80` | Host port to expose the web container on. |
+| `EMAIL_FROM` | `noreply@roomer.local` | Sender address for system emails. |
+
+### Build images individually
+
+```bash
+# API image only
+docker build -f apps/api/Dockerfile -t roomer-api .
+
+# Web image only
+docker build -f apps/web/Dockerfile -t roomer-web .
+```
+
+Note: both builds must be run from the **monorepo root** (`.`) so the build context includes `packages/shared`.
+
+---
+
 ## Production Deployment
 
-1. Set `NODE_ENV=production`, `COOKIE_SECURE=true`, and `TRUST_PROXY=true`
-2. Set `CORS_ORIGIN` to your frontend's public URL
-3. Set `ALLOW_BEARER_AUTH=false` unless you need programmatic API access
-4. Run `pnpm --filter api build` and start with `pnpm --filter api start`
-5. Point a reverse proxy (nginx, Caddy, etc.) at port `3001` for the API and serve the Vite build (`apps/web/dist`) as static files
-6. Use a managed PostgreSQL instance or run the Docker image behind a persistent volume
+The Docker images are production-ready as-is. Key points for a production environment:
+
+1. Set `COOKIE_SECURE=true` and serve over HTTPS
+2. Set `APP_ORIGIN` to your public domain (e.g. `https://roomer.example.com`)
+3. Use a managed PostgreSQL instance by overriding `DATABASE_URL` in the API service environment
+4. Mount a persistent volume at `/app/uploads` in the API container for floor plan storage (already configured in `docker-compose.yml`)
+5. To scale the API horizontally, ensure `FILE_STORAGE_PATH` points to shared network storage rather than a local volume
 
 ---
 

@@ -1,4 +1,7 @@
 services:
+
+  # ── Infrastructure ────────────────────────────────────────────────────────
+
   postgres:
     image: postgres:18
     restart: unless-stopped
@@ -9,9 +12,9 @@ services:
     ports:
       - "5435:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U roomer" ]
+      test: ["CMD-SHELL", "pg_isready -U roomer"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -20,8 +23,61 @@ services:
     image: axllent/mailpit
     restart: unless-stopped
     ports:
-      - "1025:1025"
-      - "8025:8025"
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+
+  # ── Application ───────────────────────────────────────────────────────────
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://roomer:roomer@postgres:5432/roomer
+      # Generate a strong secret: openssl rand -hex 32
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      PORT: "3001"
+      HOST: "0.0.0.0"
+      CORS_ORIGIN: ${APP_ORIGIN:-http://localhost}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      TRUST_PROXY: "true"
+      ALLOW_BEARER_AUTH: "false"
+      FILE_STORAGE_PATH: /app/uploads
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_SECURE: "false"
+      EMAIL_FROM: ${EMAIL_FROM:-noreply@roomer.local}
+      APP_URL: ${APP_ORIGIN:-http://localhost}
+    volumes:
+      - uploads_data:/app/uploads
+    expose:
+      - "3001"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # Points nginx to the API service by its docker-compose service name
+      API_URL: http://api:3001
+    ports:
+      - "${WEB_PORT:-80}:80"
 
 volumes:
   postgres_data:
+  uploads_data:

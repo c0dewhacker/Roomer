@@ -1,0 +1,35 @@
+# Dependencies — installed fresh inside the build stage
+node_modules
+**/node_modules
+
+# Build outputs — produced inside the build stage
+dist
+**/dist
+apps/web/dist
+
+# Local environment and secrets — never bake into images
+**/.env
+**/.env.*
+!**/.env.example
+
+# Prisma shadow database and local migrations state
+apps/api/prisma/migrations/**/*.lock
+
+# Dev tooling
+.turbo
+**/.turbo
+*.log
+**/*.log
+
+# Editor and OS noise
+.DS_Store
+.idea
+.vscode
+**/.DS_Store
+
+# Test and lint artefacts
+coverage
+**/.eslintcache
+
+# Upload files (mounted as a named volume in production)
+apps/api/uploads
