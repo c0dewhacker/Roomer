@@ -3,14 +3,17 @@ name: Release Please
 # Opens/updates a "Release PR" whenever conventional commits land on main.
 # Merging the Release PR creates the GitHub Release and pushes the version tag,
 # which in turn triggers the Docker workflow.
+#
+# Required secret:
+#   RELEASE_PAT — a Personal Access Token with Contents: write and Pull requests: write.
+#   A PAT (not GITHUB_TOKEN) is required so that the tag push release-please creates
+#   is treated as a user action and triggers the Docker workflow.
+#   Create at: GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens
+#   Permissions needed: Contents (read/write), Pull requests (read/write)
 
 on:
   push:
     branches: [main]
-
-permissions:
-  contents: write
-  pull-requests: write
 
 jobs:
   release-please:
@@ -19,5 +22,6 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
+          token: ${{ secrets.RELEASE_PAT }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
