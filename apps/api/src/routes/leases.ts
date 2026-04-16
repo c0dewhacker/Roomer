@@ -33,6 +33,8 @@ const updateLeaseSchema = z.object({
 const adminHandlers = [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)]
 
 export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Leases'], ...route.schema } })
+
   // GET /leases?buildingId= — list leases
   fastify.get('/', { preHandler: adminHandlers }, async (request, reply) => {
     const { buildingId } = request.query as { buildingId?: string }

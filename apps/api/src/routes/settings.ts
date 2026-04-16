@@ -99,6 +99,8 @@ function redactSecrets(provider: ProviderKey, config: Record<string, unknown>): 
 }
 
 export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Settings'], ...route.schema } })
+
   // GET /settings/organisation — return org settings
   fastify.get(
     '/organisation',
