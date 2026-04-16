@@ -1,23 +1,30 @@
 import { PrismaClient, BookableStatus, AssetStatus } from '@prisma/client'
+import { PrismaPg } from '@prisma/adapter-pg'
+import { Pool } from 'pg'
 import bcryptjs from 'bcryptjs'
 
-const prisma = new PrismaClient()
+const pool = new Pool({ connectionString: process.env['DATABASE_URL'] })
+const adapter = new PrismaPg(pool)
+const prisma = new PrismaClient({ adapter })
 
-async function main() {
-  console.log('Seeding database...')
+// ─── Core seed (always runs) ──────────────────────────────────────────────────
+// Creates the default organisation and super-admin account. Both are idempotent
+// (upsert by stable slug/email) so re-running on an existing database is safe.
 
-  // 1. Organisation
+async function seedCore() {
+  // Default organisation — needed for buildings/floors, also creates a sensible
+  // default for single-tenant deployments.
   const org = await prisma.organisation.upsert({
-    where: { slug: 'acme' },
+    where: { slug: 'default' },
     update: {},
     create: {
-      name: 'Acme Corp',
-      slug: 'acme',
+      name: 'My Organisation',
+      slug: 'default',
     },
   })
-  console.log(`Organisation: ${org.name} (${org.id})`)
+  console.log(`[seed] Organisation: ${org.name} (${org.id})`)
 
-  // 2. Super admin user
+  // Super-admin — credentials can be changed via the admin UI after first login.
   const adminHash = bcryptjs.hashSync('admin123', 10)
   const admin = await prisma.user.upsert({
     where: { email: 'admin@roomer.local' },
@@ -30,9 +37,17 @@ async function main() {
       accountStatus: 'ACTIVE',
     },
   })
-  console.log(`Admin user: ${admin.email} (${admin.id})`)
+  console.log(`[seed] Admin: ${admin.email}`)
 
-  // 3. Regular user
+  return { org }
+}
+
+// ─── Demo seed (runs when SEED_DEMO_DATA=true) ────────────────────────────────
+// Populates a realistic-looking workspace with one building, one floor, two
+// zones, six desks and a regular test user. Useful for demos and development.
+
+async function seedDemoData(orgId: string) {
+  // Regular test user
   const userHash = bcryptjs.hashSync('user123', 10)
   const regularUser = await prisma.user.upsert({
     where: { email: 'user@roomer.local' },
@@ -45,22 +60,26 @@ async function main() {
       accountStatus: 'ACTIVE',
     },
   })
-  console.log(`Regular user: ${regularUser.email} (${regularUser.id})`)
+  console.log(`[seed] Test user: ${regularUser.email}`)
 
-  // 4. Building
+  // Update org to demo name
+  await prisma.organisation.update({
+    where: { id: orgId },
+    data: { name: 'Acme Corp', slug: 'acme' },
+  })
+
   const building = await prisma.building.upsert({
     where: { id: 'seed-building-001' },
     update: {},
     create: {
       id: 'seed-building-001',
-      organisationId: org.id,
+      organisationId: orgId,
       name: 'Acme HQ',
       address: '1 Acme Street, London, EC1A 1BB',
     },
   })
-  console.log(`Building: ${building.name} (${building.id})`)
+  console.log(`[seed] Building: ${building.name}`)
 
-  // 5. Floor
   const floor = await prisma.floor.upsert({
     where: { id: 'seed-floor-001' },
     update: {},
@@ -71,192 +90,93 @@ async function main() {
       level: 0,
     },
   })
-  console.log(`Floor: ${floor.name} (${floor.id})`)
 
-  // Zone group for enforcing single booking per group
   const zoneGroup = await prisma.zoneGroup.upsert({
     where: { id: 'seed-zone-group-001' },
     update: {},
-    create: {
-      id: 'seed-zone-group-001',
-      floorId: floor.id,
-      name: 'Main Office',
-    },
+    create: { id: 'seed-zone-group-001', floorId: floor.id, name: 'Main Office' },
   })
 
-  // 6. Two zones
   const zoneA = await prisma.zone.upsert({
     where: { id: 'seed-zone-001' },
     update: {},
-    create: {
-      id: 'seed-zone-001',
-      floorId: floor.id,
-      zoneGroupId: zoneGroup.id,
-      name: 'Open Plan',
-      colour: '#6366f1',
-    },
+    create: { id: 'seed-zone-001', floorId: floor.id, zoneGroupId: zoneGroup.id, name: 'Open Plan', colour: '#6366f1' },
   })
 
   const zoneB = await prisma.zone.upsert({
     where: { id: 'seed-zone-002' },
     update: {},
-    create: {
-      id: 'seed-zone-002',
-      floorId: floor.id,
-      name: 'Quiet Zone',
-      colour: '#10b981',
-    },
+    create: { id: 'seed-zone-002', floorId: floor.id, name: 'Quiet Zone', colour: '#10b981' },
   })
-  console.log(`Zones: ${zoneA.name}, ${zoneB.name}`)
+  console.log(`[seed] Zones: ${zoneA.name}, ${zoneB.name}`)
 
-  // Ensure a desk category exists for seeded desks
   const deskCategory = await prisma.assetCategory.upsert({
     where: { name: 'Desk' },
     update: {},
-    create: {
-      name: 'Desk',
-      description: 'Bookable desk space on the floor plan',
-      defaultIsBookable: true,
-      defaultIcon: 'monitor',
-    },
+    create: { name: 'Desk', description: 'Bookable desk space on the floor plan', defaultIsBookable: true, defaultIcon: 'monitor' },
   })
 
-  // 7. Six desks spread across the two zones (x/y as % of floor plan)
+  await prisma.assetCategory.upsert({
+    where: { name: 'IT Equipment' },
+    update: {},
+    create: { name: 'IT Equipment', description: 'Laptops, monitors, keyboards, mice, docking stations' },
+  })
+
+  await prisma.assetCategory.upsert({
+    where: { name: 'Furniture' },
+    update: {},
+    create: { name: 'Furniture', description: 'Chairs, desks, standing desk converters' },
+  })
+
   const desksData = [
-    {
-      id: 'seed-desk-001',
-      primaryZoneId: zoneA.id,
-      floorId: floor.id,
-      name: 'A1',
-      x: 20,
-      y: 30,
-      width: 3,
-      height: 2,
-      rotation: 0,
-      isBookable: true,
-      bookingLabel: 'Desk',
-      bookingStatus: BookableStatus.OPEN,
-      status: AssetStatus.AVAILABLE,
-      amenities: ['monitor', 'docking-station'],
-    },
-    {
-      id: 'seed-desk-002',
-      primaryZoneId: zoneA.id,
-      floorId: floor.id,
-      name: 'A2',
-      x: 30,
-      y: 30,
-      width: 3,
-      height: 2,
-      rotation: 0,
-      isBookable: true,
-      bookingLabel: 'Desk',
-      bookingStatus: BookableStatus.OPEN,
-      status: AssetStatus.AVAILABLE,
-      amenities: ['monitor'],
-    },
-    {
-      id: 'seed-desk-003',
-      primaryZoneId: zoneA.id,
-      floorId: floor.id,
-      name: 'A3',
-      x: 40,
-      y: 30,
-      width: 3,
-      height: 2,
-      rotation: 0,
-      isBookable: true,
-      bookingLabel: 'Desk',
-      bookingStatus: BookableStatus.RESTRICTED,
-      status: AssetStatus.AVAILABLE,
-      amenities: ['monitor', 'standing-desk'],
-    },
-    {
-      id: 'seed-desk-004',
-      primaryZoneId: zoneB.id,
-      floorId: floor.id,
-      name: 'B1',
-      x: 60,
-      y: 50,
-      width: 3,
-      height: 2,
-      rotation: 0,
-      isBookable: true,
-      bookingLabel: 'Desk',
-      bookingStatus: BookableStatus.OPEN,
-      status: AssetStatus.AVAILABLE,
-      amenities: ['monitor', 'keyboard', 'mouse'],
-    },
-    {
-      id: 'seed-desk-005',
-      primaryZoneId: zoneB.id,
-      floorId: floor.id,
-      name: 'B2',
-      x: 70,
-      y: 50,
-      width: 3,
-      height: 2,
-      rotation: 0,
-      isBookable: true,
-      bookingLabel: 'Desk',
-      bookingStatus: BookableStatus.OPEN,
-      status: AssetStatus.AVAILABLE,
-      amenities: ['monitor'],
-    },
-    {
-      id: 'seed-desk-006',
-      primaryZoneId: zoneB.id,
-      floorId: floor.id,
-      name: 'B3',
-      x: 80,
-      y: 50,
-      width: 3,
-      height: 2,
-      rotation: 0,
-      isBookable: true,
-      bookingLabel: 'Desk',
-      bookingStatus: BookableStatus.DISABLED,
-      status: AssetStatus.DISABLED,
-      amenities: [],
-    },
+    { id: 'seed-desk-001', primaryZoneId: zoneA.id, name: 'A1', x: 20, y: 30, bookingStatus: BookableStatus.OPEN,       status: AssetStatus.AVAILABLE, amenities: ['monitor', 'docking-station'] },
+    { id: 'seed-desk-002', primaryZoneId: zoneA.id, name: 'A2', x: 30, y: 30, bookingStatus: BookableStatus.OPEN,       status: AssetStatus.AVAILABLE, amenities: ['monitor'] },
+    { id: 'seed-desk-003', primaryZoneId: zoneA.id, name: 'A3', x: 40, y: 30, bookingStatus: BookableStatus.RESTRICTED, status: AssetStatus.AVAILABLE, amenities: ['monitor', 'standing-desk'] },
+    { id: 'seed-desk-004', primaryZoneId: zoneB.id, name: 'B1', x: 60, y: 50, bookingStatus: BookableStatus.OPEN,       status: AssetStatus.AVAILABLE, amenities: ['monitor', 'keyboard', 'mouse'] },
+    { id: 'seed-desk-005', primaryZoneId: zoneB.id, name: 'B2', x: 70, y: 50, bookingStatus: BookableStatus.OPEN,       status: AssetStatus.AVAILABLE, amenities: ['monitor'] },
+    { id: 'seed-desk-006', primaryZoneId: zoneB.id, name: 'B3', x: 80, y: 50, bookingStatus: BookableStatus.DISABLED,   status: AssetStatus.DISABLED,  amenities: [] },
   ]
 
   for (const desk of desksData) {
     await prisma.asset.upsert({
       where: { id: desk.id },
       update: {},
-      create: { ...desk, categoryId: deskCategory.id },
+      create: {
+        ...desk,
+        floorId: floor.id,
+        categoryId: deskCategory.id,
+        isBookable: true,
+        bookingLabel: 'Desk',
+        width: 3,
+        height: 2,
+        rotation: 0,
+      },
     })
   }
-  console.log(`Created ${desksData.length} desks`)
+  console.log(`[seed] Created ${desksData.length} desks`)
+}
 
-  // Asset category seed
-  await prisma.assetCategory.upsert({
-    where: { name: 'IT Equipment' },
-    update: {},
-    create: {
-      name: 'IT Equipment',
-      description: 'Laptops, monitors, keyboards, mice, docking stations',
-    },
-  })
+// ─── Entry point ──────────────────────────────────────────────────────────────
 
-  await prisma.assetCategory.upsert({
-    where: { name: 'Furniture' },
-    update: {},
-    create: {
-      name: 'Furniture',
-      description: 'Chairs, desks, standing desk converters',
-    },
-  })
+async function main() {
+  const seedDemo = process.env['SEED_DEMO_DATA'] === 'true'
+  console.log(`[seed] Starting (demo data: ${seedDemo})`)
 
-  console.log('Seed complete.')
+  const { org } = await seedCore()
+
+  if (seedDemo) {
+    await seedDemoData(org.id)
+  }
+
+  console.log('[seed] Done.')
 }
 
 main()
   .catch((e) => {
-    console.error(e)
+    console.error('[seed] Error:', e)
     process.exit(1)
   })
   .finally(async () => {
     await prisma.$disconnect()
+    await pool.end()
   })

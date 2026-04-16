@@ -1,10 +1,12 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // Include the Alpine/musl binary so the client works in node:alpine Docker images.
+  // "native" covers local development on macOS/Linux glibc.
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 enum AuthProvider {
@@ -187,6 +189,7 @@ model FloorPlan {
   thumbnailPath String?
   width         Int
   height        Int
+  displayScale  Float             @default(1.0)
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
   floor         Floor             @relation(fields: [floorId], references: [id], onDelete: Cascade)

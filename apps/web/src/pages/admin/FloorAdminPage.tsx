@@ -994,6 +994,16 @@ export default function FloorAdminPage() {
     [updatePositions],
   )
 
+  const updateTransform = useMutation({
+    mutationFn: (displayScale: number) => floorsApi.updateFloorPlanTransform(floorId!, displayScale),
+    onError: () => toast.error('Failed to save image scale'),
+  })
+
+  const handleDisplayScaleChange = useCallback(
+    (displayScale: number) => { updateTransform.mutate(displayScale) },
+    [updateTransform],
+  )
+
   const buildingId = (floor as any)?.building?.id
   const buildingName = (floor as any)?.building?.name
   const zones: ZoneData[] = (floor?.zones ?? []) as ZoneData[]
@@ -1092,6 +1102,7 @@ export default function FloorAdminPage() {
                 date={new Date()}
                 editMode={true}
                 onLayoutSave={handleLayoutSave}
+                onDisplayScaleChange={handleDisplayScaleChange}
               />
             </div>
           )

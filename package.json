@@ -12,6 +12,6 @@
     "typescript": "^5.4.0"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["@prisma/client", "@prisma/engines", "esbuild", "prisma", "sharp"]
+    "onlyBuiltDependencies": ["@prisma/client", "@prisma/engines", "esbuild", "sharp"]
   }
 }

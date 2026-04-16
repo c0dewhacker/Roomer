@@ -317,6 +317,45 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.send(stream)
   })
 
+  // PATCH /floors/:id/floor-plan/transform — update display scale (SUPER_ADMIN or floor manager)
+  fastify.patch(
+    '/:id/floor-plan/transform',
+    {
+      preHandler: [
+        requireAuth,
+        async (request, reply) => {
+          const { id } = request.params as { id: string }
+          const user = (request as any).user
+          if (user.globalRole === 'SUPER_ADMIN') return
+          const isManager = await isFloorManagerForFloor(user.id, id)
+          if (!isManager) {
+            return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+          }
+        },
+      ],
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const { displayScale } = request.body as { displayScale: unknown }
+
+      if (typeof displayScale !== 'number' || displayScale < 0.1 || displayScale > 10) {
+        return reply.status(400).send({ error: { message: 'displayScale must be a number between 0.1 and 10', code: 'VALIDATION_ERROR' } })
+      }
+
+      const floorPlan = await prisma.floorPlan.findUnique({ where: { floorId: id } })
+      if (!floorPlan) {
+        return reply.status(404).send({ error: { message: 'No floor plan uploaded for this floor', code: 'NOT_FOUND' } })
+      }
+
+      const updated = await prisma.floorPlan.update({
+        where: { floorId: id },
+        data: { displayScale },
+      })
+
+      return reply.send({ data: updated })
+    },
+  )
+
   // GET /floors/:id/availability?date=YYYY-MM-DD
   // Returns zones with nested bookable assets and computed bookingStatus for the requesting user.
   fastify.get('/:id/availability', { preHandler: [requireAuth] }, async (request, reply) => {

@@ -23,7 +23,10 @@
     "@fastify/swagger": "^8.14.0",
     "@fastify/swagger-ui": "^3.1.0",
     "@node-saml/node-saml": "^5.1.0",
-    "@prisma/client": "^5.14.0",
+    "@prisma/adapter-pg": "^7.0.0",
+    "@prisma/client": "^7.0.0",
+    "pg": "^8.12.0",
+    "prisma": "^7.0.0",
     "@roomer/shared": "workspace:*",
     "bcryptjs": "^2.4.3",
     "connect-pg-simple": "^9.0.1",
@@ -46,7 +49,7 @@
     "@types/node": "^20.14.0",
     "@types/nodemailer": "^6.4.15",
     "pino-pretty": "^11.0.0",
-    "prisma": "^5.14.0",
+    "@types/pg": "^8.11.6",
     "tsx": "^4.15.0",
     "typescript": "^5.4.0"
   }

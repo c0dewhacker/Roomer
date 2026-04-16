@@ -107,7 +107,7 @@ export const buildingsApi = {
 // --- Floors ---
 export const floorsApi = {
   get: (id: string) =>
-    api.get<{ data: Floor & { zones: Array<{ id: string; name: string; colour: string; zoneGroupId: string | null; assets: Asset[] }>; zoneGroups: Array<{ id: string; name: string; floorId: string }>; floorPlan: { id: string; floorId: string; fileType: 'IMAGE' | 'PDF' | 'DXF'; renderedPath: string; thumbnailPath?: string; width: number; height: number; updatedAt: string } | null } }>(
+    api.get<{ data: Floor & { zones: Array<{ id: string; name: string; colour: string; zoneGroupId: string | null; assets: Asset[] }>; zoneGroups: Array<{ id: string; name: string; floorId: string }>; floorPlan: { id: string; floorId: string; fileType: 'IMAGE' | 'PDF' | 'DXF'; renderedPath: string; thumbnailPath?: string; width: number; height: number; displayScale: number; updatedAt: string } | null } }>(
       `/floors/${id}`,
     ),
   create: (body: { buildingId: string; name: string; level?: number }) =>
@@ -140,6 +140,8 @@ export const floorsApi = {
     ),
   removeGroupManager: (id: string, groupId: string) =>
     api.delete<{ data: { ok: true } }>(`/floors/${id}/group-managers/${groupId}`),
+  updateFloorPlanTransform: (id: string, displayScale: number) =>
+    api.patch<{ data: { displayScale: number } }>(`/floors/${id}/floor-plan/transform`, { displayScale }),
 }
 
 // --- Zones ---

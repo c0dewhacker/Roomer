@@ -60,11 +60,12 @@ export default function Layout() {
           <main className="flex-1 overflow-auto">
             <Outlet />
           </main>
-          {footerBanner && (
-            <Banner text={footerBanner.text} bgColor={footerBanner.bgColor} textColor={footerBanner.textColor} />
-          )}
         </div>
       </div>
+
+      {footerBanner && (
+        <Banner text={footerBanner.text} bgColor={footerBanner.bgColor} textColor={footerBanner.textColor} />
+      )}
     </div>
   )
 }

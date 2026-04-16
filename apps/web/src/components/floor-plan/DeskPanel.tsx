@@ -626,7 +626,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
     zone_conflict: 'outline',
   }
 
-  const needsAllowList = desk.bookingStatus === 'restricted' || desk.bookingStatus === 'assigned'
+  const needsAllowList = desk.rawBookingStatus === 'RESTRICTED' || desk.rawBookingStatus === 'ASSIGNED'
 
   return (
     <>
@@ -1065,22 +1065,23 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                       </div>
 
                       {/* Additional zones */}
-                      {floorZones.length > 1 && (
-                        <div>
+                      <div>
                           <div className="flex items-center justify-between mb-2">
                             <p className="text-sm font-medium flex items-center gap-1.5">
                               <MapPin className="h-3.5 w-3.5 text-violet-500" />
                               Additional Zones
                             </p>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs"
-                              onClick={() => setAddZoneOpen(true)}
-                            >
-                              <UserPlus className="mr-1 h-3 w-3" />
-                              Add zone
-                            </Button>
+                            {floorZones.length > 1 && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 text-xs"
+                                onClick={() => setAddZoneOpen(true)}
+                              >
+                                <UserPlus className="mr-1 h-3 w-3" />
+                                Add zone
+                              </Button>
+                            )}
                           </div>
                           {!additionalZones || additionalZones.length === 0 ? (
                             <p className="text-xs text-muted-foreground">No additional zones assigned</p>
@@ -1106,8 +1107,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                               ))}
                             </div>
                           )}
-                        </div>
-                      )}
+                      </div>
 
                       {/* Allow-list management (only for RESTRICTED or ASSIGNED desks) */}
                       {needsAllowList && (

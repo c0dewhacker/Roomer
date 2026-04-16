@@ -2,8 +2,9 @@ import { useRef, useState, useEffect, useCallback } from 'react'
 import { Stage, Layer, Image as KonvaImage } from 'react-konva'
 import useImage from 'use-image'
 import * as pdfjs from 'pdfjs-dist'
+import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { KonvaEventObject } from 'konva/lib/Node'
-import { Plus, Minus } from 'lucide-react'
+import { Plus, Minus, Maximize2, ZoomIn, ZoomOut } from 'lucide-react'
 import { AssetShape } from './AssetShape'
 import { DeskMarker } from './DeskMarker'
 import { useFloorData, useFloorAvailability } from '@/hooks/useFloor'
@@ -11,13 +12,12 @@ import { Skeleton } from '@/components/ui/skeleton'
 import type { AssetWithStatus } from '@/types'
 
 // Use the bundled worker from pdfjs-dist
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url,
-).toString()
+pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl
 
-const MIN_SCALE = 0.3
-const MAX_SCALE = 5
+const MIN_SCALE = 0.05
+const MAX_SCALE = 10
+const MIN_DISPLAY_SCALE = 0.1
+const MAX_DISPLAY_SCALE = 10
 
 interface FloorPlanCanvasProps {
   floorId: string
@@ -29,6 +29,8 @@ interface FloorPlanCanvasProps {
   onLayoutSave?: (
     positions: Array<{ id: string; x: number; y: number; width: number; height: number; rotation: number }>,
   ) => void
+  /** Called when the user adjusts the floor plan display scale in edit mode. */
+  onDisplayScaleChange?: (scale: number) => void
 }
 
 // ─── Hook: load a PDF URL and rasterize page 1 to HTMLImageElement ────────────
@@ -93,7 +95,6 @@ function useFloorPlanImage(
 ): [HTMLImageElement | undefined, 'loading' | 'loaded' | 'failed'] {
   const isPdf = fileType === 'PDF'
 
-  // Always call both hooks — conditionally skipping one via the enabled flag equivalent
   const [rasterImage, rasterStatus] = useImage(isPdf ? '' : url, 'anonymous')
   const [pdfImage, pdfStatus] = usePdfAsImage(isPdf ? url : '')
 
@@ -115,8 +116,8 @@ export function FloorPlanCanvas({
   onAssetClick,
   onDeskClick,
   onLayoutSave,
+  onDisplayScaleChange,
 }: FloorPlanCanvasProps) {
-  // Support legacy onDeskClick prop
   const handleAssetClick = onAssetClick ?? onDeskClick
   const containerRef = useRef<HTMLDivElement>(null)
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 })
@@ -129,6 +130,16 @@ export function FloorPlanCanvas({
   const { data: floorData, isLoading: floorLoading } = useFloorData(floorId)
   const { data: availabilityData, isLoading: availLoading } = useFloorAvailability(floorId, date)
 
+  // Display scale: how large the floor plan image is rendered in the coordinate
+  // space. Initialized from the server value; updated locally as the slider moves.
+  const serverDisplayScale = floorData?.floorPlan?.displayScale ?? 1
+  const [displayScale, setDisplayScale] = useState(serverDisplayScale)
+
+  // Sync if server value changes (e.g. after a save or fresh load)
+  useEffect(() => {
+    setDisplayScale(serverDisplayScale)
+  }, [serverDisplayScale])
+
   const updatedAt = floorData?.floorPlan?.updatedAt
   const floorPlanUrl = updatedAt
     ? `/api/v1/floors/${floorId}/floor-plan/image?v=${encodeURIComponent(updatedAt)}`
@@ -140,6 +151,14 @@ export function FloorPlanCanvas({
     hasFloorPlan ? floorPlanUrl : '',
     fileType,
   )
+
+  // Effective canvas coordinate space — scaled version of the native image.
+  // Use naturalWidth/naturalHeight (intrinsic SVG/image dimensions) rather than
+  // .width/.height, which can be 0 for SVGs that haven't been laid out in the DOM.
+  const imgNativeW = bgImage ? (bgImage.naturalWidth  || bgImage.width)  : 0
+  const imgNativeH = bgImage ? (bgImage.naturalHeight || bgImage.height) : 0
+  const effectiveWidth  = imgNativeW > 0 ? imgNativeW * displayScale : dimensions.width
+  const effectiveHeight = imgNativeH > 0 ? imgNativeH * displayScale : dimensions.height
 
   // Track container size via ResizeObserver
   useEffect(() => {
@@ -158,17 +177,24 @@ export function FloorPlanCanvas({
     return () => ro.disconnect()
   }, [])
 
-  // Fit floor plan on load
-  useEffect(() => {
+  // Fit the floor plan to fill the canvas when the image (or display scale) loads/changes.
+  // No artificial 1× cap — small images scale up, large images scale down.
+  const fitToCanvas = useCallback(() => {
     if (!bgImage || !dimensions.width || !dimensions.height) return
-    const scaleX = dimensions.width / bgImage.width
-    const scaleY = dimensions.height / bgImage.height
-    const fitScale = Math.min(scaleX, scaleY, 1)
-    const centreX = (dimensions.width - bgImage.width * fitScale) / 2
-    const centreY = (dimensions.height - bgImage.height * fitScale) / 2
+    const scaleX = dimensions.width  / effectiveWidth
+    const scaleY = dimensions.height / effectiveHeight
+    const fitScale = Math.min(scaleX, scaleY)
+    const centreX = (dimensions.width  - effectiveWidth  * fitScale) / 2
+    const centreY = (dimensions.height - effectiveHeight * fitScale) / 2
     setScale(fitScale)
     setPosition({ x: centreX, y: centreY })
-  }, [bgImage, dimensions.width, dimensions.height])
+  }, [bgImage, dimensions.width, dimensions.height, effectiveWidth, effectiveHeight])
+
+  useEffect(() => {
+    fitToCanvas()
+  // Only auto-fit when the image first loads or displayScale changes — not on every pan/zoom
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bgImage, effectiveWidth, effectiveHeight, dimensions.width, dimensions.height])
 
   const handleWheel = useCallback(
     (e: KonvaEventObject<WheelEvent>) => {
@@ -208,8 +234,7 @@ export function FloorPlanCanvas({
 
   const zoomToward = useCallback(
     (newScale: number) => {
-      // Zoom toward the canvas centre so the view doesn't jump
-      const cx = dimensions.width / 2
+      const cx = dimensions.width  / 2
       const cy = dimensions.height / 2
       const pointTo = {
         x: (cx - position.x) / scale,
@@ -227,7 +252,13 @@ export function FloorPlanCanvas({
   const handleZoomIn  = useCallback(() => zoomToward(Math.min(scale * 1.3, MAX_SCALE)), [zoomToward, scale])
   const handleZoomOut = useCallback(() => zoomToward(Math.max(scale / 1.3, MIN_SCALE)), [zoomToward, scale])
 
-  // Build merged asset list: availability data takes precedence
+  const handleDisplayScaleChange = useCallback((newDs: number) => {
+    const clamped = Math.min(Math.max(newDs, MIN_DISPLAY_SCALE), MAX_DISPLAY_SCALE)
+    setDisplayScale(clamped)
+    onDisplayScaleChange?.(clamped)
+  }, [onDisplayScaleChange])
+
+  // Build merged asset list
   const assets: AssetWithStatus[] = (() => {
     if (availabilityData) return availabilityData
     if (!floorData) return []
@@ -261,16 +292,18 @@ export function FloorPlanCanvas({
 
   const hasUnsavedChanges = Object.keys(localPositions).length > 0
 
-  if (isLoading) {
-    return (
-      <div className="flex h-full w-full items-center justify-center">
-        <Skeleton className="h-full w-full" />
-      </div>
-    )
-  }
-
+  // NOTE: do NOT early-return for isLoading here. The containerRef div must
+  // always be mounted so the ResizeObserver fires and `dimensions` gets set to
+  // the actual container size. If we return a different element tree while
+  // loading, containerRef.current is null when the effect runs ([] deps) and
+  // dimensions stays stuck at the initial { 800, 600 } default.
   return (
-    <div className="relative h-full w-full" ref={containerRef} style={{ cursor: 'grab' }}>
+    <div className="relative h-full w-full" ref={containerRef} style={{ cursor: isLoading ? 'default' : 'grab' }}>
+      {isLoading && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center">
+          <Skeleton className="h-full w-full" />
+        </div>
+      )}
       {editMode && hasUnsavedChanges && onLayoutSave && (
         <div className="absolute right-4 top-4 z-10">
           <button
@@ -300,27 +333,31 @@ export function FloorPlanCanvas({
         draggable
         onWheel={handleWheel}
         onDragStart={(e) => {
-          // Only show grabbing cursor when the stage itself is being panned
           if (e.target === e.target.getStage() && containerRef.current) {
             containerRef.current.style.cursor = 'grabbing'
           }
         }}
         onDragEnd={(e) => {
           if (containerRef.current) containerRef.current.style.cursor = 'grab'
-          // Only update pan position when the stage (not a desk) was dragged
           if (e.target === e.target.getStage()) {
             setPosition({ x: e.target.x(), y: e.target.y() })
           }
         }}
       >
-        {/* Background layer: floor plan image */}
+        {/* Background layer: floor plan image scaled by displayScale */}
         <Layer>
           {bgImage && bgStatus === 'loaded' && (
-            <KonvaImage image={bgImage} x={0} y={0} />
+            <KonvaImage
+              image={bgImage}
+              x={0}
+              y={0}
+              width={effectiveWidth}
+              height={effectiveHeight}
+            />
           )}
         </Layer>
 
-        {/* Asset layer — rendered in edit mode for all assets (bookable + non-bookable) */}
+        {/* Asset layer — edit mode only */}
         {editMode && (
           <Layer>
             {assets.map((asset) => {
@@ -333,8 +370,8 @@ export function FloorPlanCanvas({
                 <AssetShape
                   key={asset.id}
                   asset={displayAsset}
-                  stageWidth={bgImage?.width ?? dimensions.width}
-                  stageHeight={bgImage?.height ?? dimensions.height}
+                  stageWidth={effectiveWidth}
+                  stageHeight={effectiveHeight}
                   editMode={editMode}
                   onClick={() => handleAssetClick?.(asset)}
                   onDragEnd={(x, y) => handleDeskDragEnd(asset.id, x, y)}
@@ -345,15 +382,15 @@ export function FloorPlanCanvas({
         )}
       </Stage>
 
-      {/* HTML overlay: asset markers in view mode — only bookable assets are clickable */}
+      {/* HTML overlay: asset markers in view mode */}
       {!editMode && (
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
           {assets.map((asset) => (
             <DeskMarker
               key={asset.id}
               desk={asset}
-              bgWidth={bgImage?.width ?? dimensions.width}
-              bgHeight={bgImage?.height ?? dimensions.height}
+              bgWidth={effectiveWidth}
+              bgHeight={effectiveHeight}
               stageX={position.x}
               stageY={position.y}
               scale={scale}
@@ -371,8 +408,57 @@ export function FloorPlanCanvas({
         </div>
       )}
 
-      {/* Zoom controls */}
+      {/* ── Floor plan scale controls — edit mode only ──────────────────────── */}
+      {editMode && hasFloorPlan && bgStatus === 'loaded' && (
+        <div className="absolute bottom-4 left-4 z-10 flex flex-col gap-1 rounded-lg bg-background/90 border border-border shadow-sm p-2">
+          <p className="text-[10px] font-medium text-muted-foreground text-center px-1 leading-tight">
+            Image scale
+          </p>
+          <div className="flex items-center gap-1.5">
+            <button
+              title="Decrease image scale"
+              onClick={() => handleDisplayScaleChange(displayScale / 1.25)}
+              style={{ cursor: 'default' }}
+              className="w-6 h-6 rounded flex items-center justify-center hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+            >
+              <ZoomOut className="h-3.5 w-3.5" />
+            </button>
+            <input
+              type="range"
+              min={Math.log(MIN_DISPLAY_SCALE)}
+              max={Math.log(MAX_DISPLAY_SCALE)}
+              step={0.01}
+              value={Math.log(displayScale)}
+              onChange={(e) => handleDisplayScaleChange(Math.exp(parseFloat(e.target.value)))}
+              className="w-24 accent-primary"
+              style={{ cursor: 'default' }}
+              title={`Image scale: ${displayScale.toFixed(2)}×`}
+            />
+            <button
+              title="Increase image scale"
+              onClick={() => handleDisplayScaleChange(displayScale * 1.25)}
+              style={{ cursor: 'default' }}
+              className="w-6 h-6 rounded flex items-center justify-center hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+            >
+              <ZoomIn className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <p className="text-[10px] text-muted-foreground text-center tabular-nums">
+            {displayScale.toFixed(2)}×
+          </p>
+        </div>
+      )}
+
+      {/* ── View controls ─────────────────────────────────────────────────────── */}
       <div className="absolute bottom-4 right-4 z-10 flex flex-col gap-1">
+        <button
+          onClick={fitToCanvas}
+          title="Fit to screen"
+          style={{ cursor: 'default' }}
+          className="w-8 h-8 rounded-lg bg-background/90 border border-border shadow-sm flex items-center justify-center hover:bg-muted transition-colors"
+        >
+          <Maximize2 className="h-3.5 w-3.5" />
+        </button>
         <button
           onClick={handleZoomIn}
           title="Zoom in"
