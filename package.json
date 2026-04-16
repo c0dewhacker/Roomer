@@ -1,6 +1,6 @@
 {
   "name": "roomer",
-  "version": "0.9.0",
+  "version": "0.1.1",
   "private": true,
   "scripts": {
     "dev": "turbo dev",
@@ -13,6 +13,11 @@
     "typescript": "^5.4.0"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["@prisma/client", "@prisma/engines", "esbuild", "sharp"]
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "esbuild",
+      "sharp"
+    ]
   }
 }
