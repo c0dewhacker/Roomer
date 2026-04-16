@@ -30,6 +30,12 @@ const envSchema = z.object({
   ALLOW_BEARER_AUTH: z.string()
     .default(process.env.NODE_ENV === 'production' ? 'false' : 'true')
     .transform((v) => v === 'true'),
+  // Set to "true" to expose the Swagger UI and OpenAPI schema endpoint.
+  // Defaults to enabled in development/test and disabled in production.
+  // Override with SWAGGER_ENABLED=true to enable in production (e.g. for internal tooling).
+  SWAGGER_ENABLED: z.string()
+    .default(process.env.NODE_ENV === 'production' ? 'false' : 'true')
+    .transform((v) => v === 'true'),
   FILE_STORAGE_PATH: z.string().default('./uploads'),
   MAX_FILE_SIZE_MB: z.coerce.number().default(20),
   SMTP_HOST: z.string().default('localhost'),

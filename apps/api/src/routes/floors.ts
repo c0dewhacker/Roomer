@@ -9,6 +9,8 @@ import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage'
 import { env } from '../env'
 
 export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Floors'], ...route.schema } })
+
   // GET /floors/:id — floor with zones, bookable assets, floorPlan
   fastify.get('/:id', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }

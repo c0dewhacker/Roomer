@@ -71,6 +71,8 @@ async function checkZoneGroupOverlap(
 }
 
 export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Bookings'], ...route.schema } })
+
   // GET /bookings/report — admin paginated report (must be before /:id)
   fastify.get(
     '/report',

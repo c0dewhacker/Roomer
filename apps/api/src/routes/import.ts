@@ -53,6 +53,8 @@ const importBodySchema = z.object({
 // ─── Route ────────────────────────────────────────────────────────────────────
 
 export async function importRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Import'], ...route.schema } })
+
   fastify.post(
     '/bulk',
     { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },

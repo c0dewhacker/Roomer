@@ -9,6 +9,8 @@ import { signAccessToken, verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TO
 import { blockToken } from '../lib/token-blocklist'
 
 export async function authRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Auth'], ...route.schema } })
+
   // POST /auth/login
   fastify.post('/login', async (request, reply) => {
     const result = loginSchema.safeParse(request.body)
