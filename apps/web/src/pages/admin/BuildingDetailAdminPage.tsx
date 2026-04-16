@@ -3,9 +3,9 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Layers, Plus, ChevronRight, Pencil, Trash2 } from 'lucide-react'
+import { Layers, Plus, ChevronRight, Pencil, Trash2, Shield } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { buildingsApi, floorsApi, ApiError } from '@/lib/api'
+import { buildingsApi, floorsApi, groupsApi, ApiError } from '@/lib/api'
 import { toast } from 'sonner'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -13,6 +13,13 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import {
   Dialog,
   DialogContent,
@@ -262,6 +269,148 @@ function FloorCard({ floor, buildingId }: { floor: Floor; buildingId: string }) 
   )
 }
 
+// ─── Building access management ───────────────────────────────────────────────
+
+function BuildingAccessSection({ buildingId }: { buildingId: string }) {
+  const qc = useQueryClient()
+  const [selectedGroupId, setSelectedGroupId] = useState('')
+
+  const { data: accessGroups, isLoading } = useQuery({
+    queryKey: ['buildings', buildingId, 'access-groups'],
+    queryFn: () => buildingsApi.getAccessGroups(buildingId),
+    select: (r) => r.data,
+  })
+
+  const { data: allGroups, isLoading: loadingGroups } = useQuery({
+    queryKey: ['groups'],
+    queryFn: () => groupsApi.list(),
+    select: (r) => r.data,
+  })
+
+  const assignedIds = new Set((accessGroups ?? []).map((g) => g.id))
+  const available = (allGroups ?? []).filter((g) => !assignedIds.has(g.id))
+
+  const add = useMutation({
+    mutationFn: (groupId: string) => buildingsApi.addAccessGroup(buildingId, groupId),
+    onSuccess: () => {
+      toast.success('Access group added')
+      qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'access-groups'] })
+      setSelectedGroupId('')
+    },
+    onError: () => toast.error('Failed to add group'),
+  })
+
+  const remove = useMutation({
+    mutationFn: (groupId: string) => buildingsApi.removeAccessGroup(buildingId, groupId),
+    onSuccess: () => {
+      toast.success('Access group removed')
+      qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'access-groups'] })
+    },
+    onError: () => toast.error('Failed to remove group'),
+  })
+
+  const isOpen = !isLoading && (accessGroups?.length ?? 0) === 0
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Shield className="h-4 w-4 text-muted-foreground" />
+            <span className="font-medium text-sm">Building Access</span>
+          </div>
+          {isOpen && !isLoading && (
+            <Badge variant="secondary" className="text-xs">Open — all users can access</Badge>
+          )}
+        </div>
+
+        {isLoading ? (
+          <Skeleton className="h-8 w-full" />
+        ) : (
+          <div className="space-y-3">
+            {(accessGroups ?? []).length > 0 && (
+              <div className="space-y-1.5">
+                {accessGroups!.map((group) => (
+                  <div key={group.id} className="flex items-center justify-between rounded-md border px-3 py-2">
+                    <div className="min-w-0">
+                      <span className="text-sm font-medium">{group.name}</span>
+                      <span className="text-xs text-muted-foreground ml-2">
+                        {group._count.members} {group._count.members === 1 ? 'member' : 'members'}
+                      </span>
+                      {group.description && (
+                        <p className="text-xs text-muted-foreground truncate">{group.description}</p>
+                      )}
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 hover:text-destructive shrink-0"
+                      onClick={() => remove.mutate(group.id)}
+                      disabled={remove.isPending}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {isOpen && (
+              <p className="text-xs text-muted-foreground">
+                No access groups assigned. Add a group below to restrict this building to specific users.
+              </p>
+            )}
+
+            {/* Add group row — always rendered so it's visible even before groups load */}
+            {loadingGroups ? (
+              <Skeleton className="h-8 w-full" />
+            ) : allGroups && allGroups.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No access groups exist yet. Create groups in{' '}
+                <a href="/admin/groups" className="underline underline-offset-2 hover:text-foreground">
+                  Admin → Access Groups
+                </a>{' '}
+                first.
+              </p>
+            ) : available.length > 0 ? (
+              <div className="flex gap-2">
+                <Select value={selectedGroupId} onValueChange={setSelectedGroupId}>
+                  <SelectTrigger className="h-8 text-xs flex-1">
+                    <SelectValue placeholder="Select a group to add…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {available.map((g) => (
+                      <SelectItem key={g.id} value={g.id} className="text-xs">
+                        {g.name}
+                        {g._count && (
+                          <span className="text-muted-foreground ml-1">
+                            ({g._count.members})
+                          </span>
+                        )}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  size="sm"
+                  className="h-8 text-xs shrink-0"
+                  disabled={!selectedGroupId || add.isPending}
+                  onClick={() => selectedGroupId && add.mutate(selectedGroupId)}
+                >
+                  <Plus className="h-3.5 w-3.5 mr-1" />
+                  Add
+                </Button>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">All groups have been assigned.</p>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function BuildingDetailAdminPage() {
   const { buildingId } = useParams<{ buildingId: string }>()
   const [addFloorOpen, setAddFloorOpen] = useState(false)
@@ -293,6 +442,12 @@ export default function BuildingDetailAdminPage() {
         <Button onClick={() => setAddFloorOpen(true)}>
           <Plus className="mr-2 h-4 w-4" /> Add Floor
         </Button>
+      </div>
+
+      <BuildingAccessSection buildingId={buildingId!} />
+
+      <div className="mt-6 mb-3 flex items-center justify-between">
+        <h2 className="text-base font-semibold">Floors</h2>
       </div>
 
       {isLoading ? (

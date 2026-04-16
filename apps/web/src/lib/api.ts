@@ -102,6 +102,14 @@ export const buildingsApi = {
   update: (id: string, body: Partial<{ name: string; address: string }>) =>
     api.put<{ data: Building }>(`/buildings/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/buildings/${id}`),
+  getAccessGroups: (id: string) =>
+    api.get<{ data: Array<{ id: string; name: string; description?: string; _count: { members: number } }> }>(
+      `/buildings/${id}/access-groups`,
+    ),
+  addAccessGroup: (id: string, groupId: string) =>
+    api.post<{ data: { groupId: string; buildingId: string } }>(`/buildings/${id}/access-groups`, { groupId }),
+  removeAccessGroup: (id: string, groupId: string) =>
+    api.delete<{ data: { ok: true } }>(`/buildings/${id}/access-groups/${groupId}`),
 }
 
 // --- Floors ---

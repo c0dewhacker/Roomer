@@ -249,58 +249,69 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
   })
 }
 
-// ─── Access check helper (used by booking validation) ────────────────────────
+// ─── Access check helpers (used by building routes and booking validation) ────
 
 /**
- * Returns true if the user is allowed to book a desk in the given building/floor.
- * Logic: if the user belongs to ANY group that has building/floor restrictions, they
- * must match at least one allowed building OR floor rule.
- * Users with no group restrictions, or not in any restricted group, pass freely.
+ * Building-centric access check.
+ *
+ * A building is "restricted" when at least one GroupBuildingAccess row points to it.
+ * If restricted, the user must be a member of at least one of those groups.
+ * If unrestricted (no rows), any authenticated user can access it.
+ *
+ * SUPER_ADMINs bypass this check at the route level — this function does not
+ * special-case the admin role so it can be used in general queries safely.
+ */
+export async function canUserAccessBuilding(userId: string, buildingId: string): Promise<boolean> {
+  const accessCount = await prisma.groupBuildingAccess.count({ where: { buildingId } })
+  if (accessCount === 0) return true  // open building — no restrictions configured
+
+  // Restricted: user must be in at least one of the groups that have access
+  const userGroupIds = (
+    await prisma.userGroupMember.findMany({ where: { userId }, select: { groupId: true } })
+  ).map((m) => m.groupId)
+
+  if (userGroupIds.length === 0) return false
+
+  const match = await prisma.groupBuildingAccess.findFirst({
+    where: { buildingId, groupId: { in: userGroupIds } },
+  })
+  return match !== null
+}
+
+/**
+ * Returns true if the user is allowed to book in the given building/floor.
+ *
+ * Two-stage check:
+ *   1. Building-centric: if the building has GroupBuildingAccess rows, the user
+ *      must be in at least one of those groups.
+ *   2. Floor-centric (user-driven): for each of the user's groups that carries
+ *      explicit floor restrictions, the target floor must be listed.
  */
 export async function checkGroupAccess(
   userId: string,
   buildingId: string,
   floorId: string,
 ): Promise<boolean> {
-  // Get all groups the user belongs to that have any access rules
+  // Stage 1 — building-level gate
+  const buildingOk = await canUserAccessBuilding(userId, buildingId)
+  if (!buildingOk) return false
+
+  // Stage 2 — floor-level gate (user-centric: only applies when the user's own
+  // groups carry explicit floor restrictions)
   const memberships = await prisma.userGroupMember.findMany({
     where: { userId },
-    include: {
-      group: {
-        include: {
-          buildingAccess: true,
-          floorAccess: true,
-        },
-      },
-    },
+    include: { group: { include: { floorAccess: true } } },
   })
 
-  // Filter to groups that have at least one access rule
-  const restrictedGroups = memberships
+  const groupsWithFloorRules = memberships
     .map((m) => m.group)
-    .filter((g) => g.buildingAccess.length > 0 || g.floorAccess.length > 0)
+    .filter((g) => g.floorAccess.length > 0)
 
-  if (restrictedGroups.length === 0) {
-    // User has no group restrictions
-    return true
-  }
+  if (groupsWithFloorRules.length === 0) return true  // no floor restrictions
 
-  // User must be allowed in ALL restricted groups (intersection semantics)
-  for (const group of restrictedGroups) {
-    const allowedBuildings = group.buildingAccess.map((b) => b.buildingId)
+  for (const group of groupsWithFloorRules) {
     const allowedFloors = group.floorAccess.map((f) => f.floorId)
-
-    const buildingOk = allowedBuildings.length === 0 || allowedBuildings.includes(buildingId)
-    const floorOk = allowedFloors.length === 0 || allowedFloors.includes(floorId)
-
-    if (!buildingOk && !floorOk) {
-      return false
-    }
-
-    // If building rules exist but this building isn't in them, check if a floor rule grants access
-    if (allowedBuildings.length > 0 && !allowedBuildings.includes(buildingId)) {
-      if (!floorOk) return false
-    }
+    if (!allowedFloors.includes(floorId)) return false
   }
 
   return true

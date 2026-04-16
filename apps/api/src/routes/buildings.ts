@@ -4,11 +4,42 @@ import { createBuildingSchema, updateBuildingSchema } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
 import { requireGlobalRole } from '../middleware/requireRole'
 import { GlobalRole } from '@roomer/shared'
+import { canUserAccessBuilding } from './groups'
 
 export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
-  // GET /buildings — list all buildings with floor count
-  fastify.get('/', { preHandler: [requireAuth] }, async (_request, reply) => {
+  // GET /buildings — list buildings the requesting user can access
+  // SUPER_ADMINs see every building. Regular users only see buildings that are
+  // either unrestricted (no GroupBuildingAccess rows) or have a matching group.
+  fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
+    const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+
+    if (isAdmin) {
+      const buildings = await prisma.building.findMany({
+        include: {
+          organisation: { select: { id: true, name: true, slug: true } },
+          _count: { select: { floors: true } },
+        },
+        orderBy: { name: 'asc' },
+      })
+      return reply.status(200).send({ data: buildings })
+    }
+
+    // For regular users: return open buildings plus any restricted buildings
+    // their groups grant access to.
+    const userGroupIds = (
+      await prisma.userGroupMember.findMany({
+        where: { userId: request.user.id },
+        select: { groupId: true },
+      })
+    ).map((m) => m.groupId)
+
     const buildings = await prisma.building.findMany({
+      where: {
+        OR: [
+          { groupAccess: { none: {} } },                                    // open
+          { groupAccess: { some: { groupId: { in: userGroupIds } } } },     // user's group has access
+        ],
+      },
       include: {
         organisation: { select: { id: true, name: true, slug: true } },
         _count: { select: { floors: true } },
@@ -52,9 +83,19 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // GET /buildings/:id — get building with floors
+  // GET /buildings/:id — get building with floors (access-gated)
   fastify.get('/:id', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+
+    const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+
+    // Check building-level access for non-admins
+    if (!isAdmin) {
+      const hasAccess = await canUserAccessBuilding(request.user.id, id)
+      if (!hasAccess) {
+        return reply.status(404).send({ error: { message: 'Building not found', code: 'NOT_FOUND' } })
+      }
+    }
 
     const building = await prisma.building.findUnique({
       where: { id },
@@ -78,6 +119,81 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
 
     return reply.status(200).send({ data: building })
   })
+
+  // ─── Building access group management (SUPER_ADMIN) ───────────────────────
+
+  // GET /buildings/:id/access-groups — list groups with access to this building
+  fastify.get(
+    '/:id/access-groups',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+
+      const building = await prisma.building.findUnique({ where: { id } })
+      if (!building) {
+        return reply.status(404).send({ error: { message: 'Building not found', code: 'NOT_FOUND' } })
+      }
+
+      const rows = await prisma.groupBuildingAccess.findMany({
+        where: { buildingId: id },
+        include: {
+          group: {
+            select: { id: true, name: true, description: true, _count: { select: { members: true } } },
+          },
+        },
+        orderBy: { group: { name: 'asc' } },
+      })
+
+      return reply.status(200).send({ data: rows.map((r) => r.group) })
+    },
+  )
+
+  // POST /buildings/:id/access-groups — grant a group access to this building
+  fastify.post(
+    '/:id/access-groups',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const { groupId } = request.body as { groupId?: string }
+
+      if (!groupId) {
+        return reply.status(400).send({ error: { message: 'groupId required', code: 'VALIDATION_ERROR' } })
+      }
+
+      const [building, group] = await Promise.all([
+        prisma.building.findUnique({ where: { id } }),
+        prisma.userGroup.findUnique({ where: { id: groupId } }),
+      ])
+
+      if (!building) return reply.status(404).send({ error: { message: 'Building not found', code: 'NOT_FOUND' } })
+      if (!group) return reply.status(404).send({ error: { message: 'Group not found', code: 'NOT_FOUND' } })
+
+      try {
+        await prisma.groupBuildingAccess.create({ data: { groupId, buildingId: id } })
+        return reply.status(201).send({ data: { groupId, buildingId: id } })
+      } catch {
+        return reply.status(409).send({ error: { message: 'Access rule already exists', code: 'ALREADY_EXISTS' } })
+      }
+    },
+  )
+
+  // DELETE /buildings/:id/access-groups/:groupId — revoke a group's access
+  fastify.delete(
+    '/:id/access-groups/:groupId',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { id, groupId } = request.params as { id: string; groupId: string }
+
+      try {
+        await prisma.groupBuildingAccess.delete({
+          where: { groupId_buildingId: { groupId, buildingId: id } },
+        })
+        return reply.status(200).send({ data: { ok: true } })
+      } catch {
+        return reply.status(404).send({ error: { message: 'Access rule not found', code: 'NOT_FOUND' } })
+      }
+    },
+  )
 
   // PUT /buildings/:id — update building (SUPER_ADMIN)
   fastify.put(
