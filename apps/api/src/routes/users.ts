@@ -35,6 +35,8 @@ const listUsersQuerySchema = z.object({
 })
 
 export async function userRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Users'], ...route.schema } })
+
   // POST /users — create user (admin)
   fastify.post(
     '/',

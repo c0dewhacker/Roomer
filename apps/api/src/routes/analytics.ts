@@ -20,6 +20,8 @@ function defaultDateRange(): { startDate: Date; endDate: Date } {
 }
 
 export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Analytics'], ...route.schema } })
+
   // GET /utilisation — desk utilisation by floor/zone for a date range
   fastify.get(
     '/utilisation',

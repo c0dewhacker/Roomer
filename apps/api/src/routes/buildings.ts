@@ -7,6 +7,8 @@ import { GlobalRole } from '@roomer/shared'
 import { canUserAccessBuilding } from './groups'
 
 export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Buildings'], ...route.schema } })
+
   // GET /buildings — list buildings the requesting user can access
   // SUPER_ADMINs see every building. Regular users only see buildings that are
   // either unrestricted (no GroupBuildingAccess rows) or have a matching group.

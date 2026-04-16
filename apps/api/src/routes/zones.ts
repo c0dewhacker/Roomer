@@ -5,6 +5,8 @@ import { requireAuth } from '../middleware/requireAuth'
 import { requireGlobalRole, isFloorManagerForFloor } from '../middleware/requireRole'
 
 export async function zoneRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Zones'], ...route.schema } })
+
   // POST /zones — create zone (SUPER_ADMIN or floor manager for the target floor)
   fastify.post(
     '/',
@@ -113,6 +115,8 @@ export async function zoneRoutes(fastify: FastifyInstance): Promise<void> {
 }
 
 export async function zoneGroupRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Zones'], ...route.schema } })
+
   // POST /zone-groups — create zone group (SUPER_ADMIN or floor manager for the target floor)
   fastify.post(
     '/',

@@ -76,10 +76,9 @@ export async function buildApp(): Promise<FastifyInstance> {
   await fastify.register(authPlugin)
 
   // ─── Swagger / OpenAPI ─────────────────────────────────────────────────────
-  // Only expose the OpenAPI schema and UI in non-production environments.
-  // In production, both the schema endpoint and the interactive UI are disabled
-  // to avoid leaking API surface to attackers.
-  if (env.NODE_ENV !== 'production') {
+  // Disabled in production by default to avoid leaking API surface.
+  // Enable in any environment by setting SWAGGER_ENABLED=true.
+  if (env.SWAGGER_ENABLED) {
     await fastify.register(swagger, {
       openapi: {
         info: {
@@ -88,6 +87,22 @@ export async function buildApp(): Promise<FastifyInstance> {
           version: '1.0.0',
         },
         servers: [{ url: `http://${env.HOST}:${env.PORT}` }],
+        tags: [
+          { name: 'Auth', description: 'Authentication — login, logout, token refresh, SSO (OIDC / SAML / LDAP)' },
+          { name: 'Buildings', description: 'Building management and building-level access control' },
+          { name: 'Floors', description: 'Floor management, floor plans, and desk availability' },
+          { name: 'Zones', description: 'Zone and zone group management' },
+          { name: 'Assets', description: 'Desk and equipment asset management' },
+          { name: 'Bookings', description: 'Desk booking lifecycle' },
+          { name: 'Queue', description: 'Waitlist queue for booked assets' },
+          { name: 'Users', description: 'User management and resource roles' },
+          { name: 'Groups', description: 'Access-control groups and floor/building permissions' },
+          { name: 'Notifications', description: 'In-app notifications' },
+          { name: 'Analytics', description: 'Utilisation and booking analytics (admin only)' },
+          { name: 'Leases', description: 'Building lease management (admin only)' },
+          { name: 'Settings', description: 'System configuration — branding, SSO, email (admin only)' },
+          { name: 'Import', description: 'Bulk data import (admin only)' },
+        ],
         components: {
           securitySchemes: {
             bearerAuth: {
