@@ -13,6 +13,15 @@ RUN pnpm install --frozen-lockfile
 
 # ─── Stage 3: build ───────────────────────────────────────────────────────────
 FROM base AS build
+
+# Build-time args injected by the Docker workflow (e.g. from docker/metadata-action)
+ARG VITE_APP_VERSION=dev
+ARG VITE_APP_REPO_URL=
+
+# Expose as env vars so Vite picks them up during the build
+ENV VITE_APP_VERSION=$VITE_APP_VERSION
+ENV VITE_APP_REPO_URL=$VITE_APP_REPO_URL
+
 COPY --from=install /repo/node_modules ./node_modules
 COPY --from=install /repo/packages/shared/node_modules ./packages/shared/node_modules
 COPY --from=install /repo/apps/web/node_modules ./apps/web/node_modules
