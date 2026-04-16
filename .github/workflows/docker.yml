@@ -2,7 +2,10 @@ name: Docker
 
 # Triggers:
 #   - Push to main → images tagged :edge + short SHA (rolling dev build)
-#   - Push of a version tag (v*.*.*) → images tagged :1.2.3, :1.2, :1, :latest
+#   - GitHub Release published → images tagged :1.2.3, :1.2, :1, :latest
+#
+# Note: tag pushes from GITHUB_TOKEN (release-please) do not re-trigger workflows,
+# so we listen on `release: published` instead of `tags: ['v*.*.*']`.
 #
 # Required secrets:
 #   DOCKERHUB_USERNAME  — your Docker Hub username
@@ -11,7 +14,8 @@ name: Docker
 on:
   push:
     branches: [main]
-    tags: ['v*.*.*']
+  release:
+    types: [published]
 
 jobs:
   # ── API image ────────────────────────────────────────────────────────────────
