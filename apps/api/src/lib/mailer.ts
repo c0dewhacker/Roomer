@@ -40,6 +40,15 @@ export async function sendEmail(opts: SendEmailOptions): Promise<void> {
 
 // ─── Template helpers ─────────────────────────────────────────────────────────
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 function formatDate(date: Date | string): string {
   return new Date(date).toLocaleString('en-GB', {
     weekday: 'short',
@@ -86,17 +95,22 @@ export function renderBookingConfirmed(
   user: Pick<User, 'displayName' | 'email'>,
   asset: Pick<Asset, 'name'> & { zoneName?: string; floorName?: string },
 ): { subject: string; html: string; text: string } {
-  const subject = `Booking confirmed — ${asset.name}`
+  const subject = `Booking confirmed — ${escapeHtml(asset.name)}`
+  const safeUser = escapeHtml(user.displayName)
+  const safeAsset = escapeHtml(asset.name)
+  const safeZone = asset.zoneName ? escapeHtml(asset.zoneName) : ''
+  const safeFloor = asset.floorName ? escapeHtml(asset.floorName) : ''
+  const safeNotes = booking.notes ? escapeHtml(booking.notes) : ''
   const html = baseHtml(
     subject,
     `<h1>Your booking is confirmed</h1>
-     <p>Hi ${user.displayName}, your booking has been confirmed.</p>
+     <p>Hi ${safeUser}, your booking has been confirmed.</p>
      <div class="detail">
        <dl>
-         <dt>Asset</dt><dd>${asset.name}${asset.zoneName ? ` — ${asset.zoneName}` : ''}${asset.floorName ? `, ${asset.floorName}` : ''}</dd>
+         <dt>Asset</dt><dd>${safeAsset}${safeZone ? ` — ${safeZone}` : ''}${safeFloor ? `, ${safeFloor}` : ''}</dd>
          <dt>From</dt><dd>${formatDate(booking.startsAt)}</dd>
          <dt>To</dt><dd>${formatDate(booking.endsAt)}</dd>
-         ${booking.notes ? `<dt>Notes</dt><dd>${booking.notes}</dd>` : ''}
+         ${safeNotes ? `<dt>Notes</dt><dd>${safeNotes}</dd>` : ''}
        </dl>
      </div>
      <a href="${env.APP_URL}/bookings/${booking.id}" class="btn">View Booking</a>`,
@@ -112,14 +126,14 @@ export function renderBookingCancelled(
   user: Pick<User, 'displayName' | 'email'>,
   asset: Pick<Asset, 'name'>,
 ): { subject: string; html: string; text: string } {
-  const subject = `Booking cancelled — ${asset.name}`
+  const subject = `Booking cancelled — ${escapeHtml(asset.name)}`
   const html = baseHtml(
     subject,
     `<h1>Booking cancelled</h1>
-     <p>Hi ${user.displayName}, your booking has been cancelled.</p>
+     <p>Hi ${escapeHtml(user.displayName)}, your booking has been cancelled.</p>
      <div class="detail">
        <dl>
-         <dt>Asset</dt><dd>${asset.name}</dd>
+         <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
          <dt>Was scheduled</dt><dd>${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}</dd>
        </dl>
      </div>
@@ -136,11 +150,11 @@ export function renderQueueJoined(
   user: Pick<User, 'displayName' | 'email'>,
   asset: Pick<Asset, 'name'>,
 ): { subject: string; html: string; text: string } {
-  const subject = `You've joined the queue — ${asset.name}`
+  const subject = `You've joined the queue — ${escapeHtml(asset.name)}`
   const html = baseHtml(
     subject,
     `<h1>You're in the queue</h1>
-     <p>Hi ${user.displayName}, you have been added to the queue for <strong>${asset.name}</strong>.</p>
+     <p>Hi ${escapeHtml(user.displayName)}, you have been added to the queue for <strong>${escapeHtml(asset.name)}</strong>.</p>
      <div class="detail">
        <dl>
          <dt>Position</dt><dd>#${queueEntry.position}</dd>
@@ -162,11 +176,11 @@ export function renderQueuePromoted(
   asset: Pick<Asset, 'name'>,
   claimDeadline: Date,
 ): { subject: string; html: string; text: string } {
-  const subject = `Asset available — claim now! ${asset.name}`
+  const subject = `Asset available — claim now! ${escapeHtml(asset.name)}`
   const html = baseHtml(
     subject,
     `<h1>Your asset is available!</h1>
-     <p>Hi ${user.displayName}, <strong>${asset.name}</strong> is now available for your requested period.</p>
+     <p>Hi ${escapeHtml(user.displayName)}, <strong>${escapeHtml(asset.name)}</strong> is now available for your requested period.</p>
      <div class="detail">
        <dl>
          <dt>Period</dt><dd>${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}</dd>
@@ -189,7 +203,7 @@ export function renderWelcome(
   const html = baseHtml(
     subject,
     `<h1>Welcome to Roomer!</h1>
-     <p>Hi ${user.displayName}, your account has been created.</p>
+     <p>Hi ${escapeHtml(user.displayName)}, your account has been created.</p>
      <p>Roomer lets you book hot-desks, manage your workspace and keep track of assets — all in one place.</p>
      <a href="${env.APP_URL}" class="btn">Get Started</a>`,
   )

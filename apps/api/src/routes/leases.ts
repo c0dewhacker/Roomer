@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
 import { requireGlobalRole } from '../middleware/requireRole'
-import { resolveStoragePath } from '../lib/storage'
+import { resolveStoragePath, checkFileMagic } from '../lib/storage'
 import { env } from '../env'
 import path from 'path'
 import { z } from 'zod'
@@ -196,6 +196,11 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
     const relPath = path.join(relDir, safeFilename)
     const absPath = resolveStoragePath(relPath)
     const buffer = await data.toBuffer()
+    if (!checkFileMagic(buffer, data.mimetype)) {
+      return reply.status(400).send({
+        error: { message: 'File content does not match the declared type', code: 'INVALID_FILE_TYPE' },
+      })
+    }
     await fs.promises.writeFile(absPath, buffer)
 
     const doc = await prisma.leaseDocument.create({
@@ -213,10 +218,10 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
 
   // GET /leases/:id/documents/:docId — download document
   fastify.get('/:id/documents/:docId', { preHandler: adminHandlers }, async (request, reply) => {
-    const { docId } = request.params as { id: string; docId: string }
+    const { id, docId } = request.params as { id: string; docId: string }
 
     const doc = await prisma.leaseDocument.findUnique({ where: { id: docId } })
-    if (!doc) {
+    if (!doc || doc.leaseId !== id) {
       return reply.status(404).send({ error: { message: 'Document not found', code: 'NOT_FOUND' } })
     }
 
@@ -235,10 +240,10 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
 
   // DELETE /leases/:id/documents/:docId — delete document
   fastify.delete('/:id/documents/:docId', { preHandler: adminHandlers }, async (request, reply) => {
-    const { docId } = request.params as { id: string; docId: string }
+    const { id, docId } = request.params as { id: string; docId: string }
 
     const doc = await prisma.leaseDocument.findUnique({ where: { id: docId } })
-    if (!doc) {
+    if (!doc || doc.leaseId !== id) {
       return reply.status(404).send({ error: { message: 'Document not found', code: 'NOT_FOUND' } })
     }
 

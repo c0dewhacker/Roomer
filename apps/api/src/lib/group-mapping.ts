@@ -27,17 +27,15 @@ function normaliseDn(s: string): string {
 /**
  * Return true when the IdP group value `g` matches the configured `idpGroup`.
  *
- * Rules (in order):
- *  1. Exact match (after DN normalisation)
- *  2. Either string is a substring of the other (handles short CN vs full DN)
+ * Only exact DN match (after normalisation) is accepted. Substring matching
+ * was removed because it is a privilege escalation vector: an attacker who
+ * controls a group named e.g. "Admins" could match a configured pattern of
+ * "cn=Admins,dc=example,dc=com" via substring containment.
  */
 function groupMatches(g: string, idpGroup: string): boolean {
   const ng = normaliseDn(g)
   const ni = normaliseDn(idpGroup)
-  if (ng === ni) return true
-  if (ng.includes(ni)) return true  // full DN contains the configured short value
-  if (ni.includes(ng)) return true  // configured full DN contains the LDAP short value
-  return false
+  return ng === ni
 }
 
 /**

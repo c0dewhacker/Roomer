@@ -6,9 +6,9 @@ services:
     image: postgres:18
     restart: unless-stopped
     environment:
-      POSTGRES_USER: roomer
-      POSTGRES_PASSWORD: roomer
-      POSTGRES_DB: roomer
+      POSTGRES_USER: ${POSTGRES_USER:-roomer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-roomer}
+      POSTGRES_DB: ${POSTGRES_DB:-roomer}
     ports:
       - "5435:5432"
     volumes:
@@ -38,13 +38,13 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://roomer:roomer@postgres:5432/roomer
+      DATABASE_URL: postgresql://${POSTGRES_USER:-roomer}:${POSTGRES_PASSWORD:-roomer}@postgres:5432/${POSTGRES_DB:-roomer}
       # Generate a strong secret: openssl rand -hex 32
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
       PORT: "3001"
       HOST: "0.0.0.0"
       CORS_ORIGIN: ${APP_ORIGIN:-http://localhost}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
       TRUST_PROXY: "true"
       # Set to true to seed demo buildings, floors, zones, desks and a test user.
       # The admin user (admin@roomer.local / admin123) is always seeded regardless.

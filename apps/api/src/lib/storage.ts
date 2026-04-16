@@ -267,6 +267,38 @@ export async function saveBrandingImage(
   return relPath
 }
 
+// ─── Magic byte validation ────────────────────────────────────────────────────
+
+/**
+ * Map of MIME types to their expected leading magic bytes.
+ * Each entry is an array of alternatives (e.g. JPEG has multiple valid SOI markers).
+ */
+const MAGIC_SIGNATURES: Record<string, number[][]> = {
+  'application/pdf': [[0x25, 0x50, 0x44, 0x46]],                              // %PDF
+  'application/msword': [[0xD0, 0xCF, 0x11, 0xE0]],                           // OLE2
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': [
+    [0x50, 0x4B, 0x03, 0x04],                                                  // ZIP (DOCX/XLSX/PPTX)
+  ],
+  'image/png': [[0x89, 0x50, 0x4E, 0x47]],                                     // PNG
+  'image/jpeg': [[0xFF, 0xD8, 0xFF]],                                           // JPEG
+  'image/jpg': [[0xFF, 0xD8, 0xFF]],                                            // JPEG (alt MIME)
+}
+
+/**
+ * Validate that `buffer` starts with the expected magic bytes for `mimeType`.
+ * Returns true when the MIME type is unknown (no signature on record) to avoid
+ * blocking legitimate new types.  Returns false only when a signature IS known
+ * but the buffer does not match any of its alternatives.
+ */
+export function checkFileMagic(buffer: Buffer, mimeType: string): boolean {
+  const signatures = MAGIC_SIGNATURES[mimeType]
+  if (!signatures) return true
+  return signatures.some((sig) => {
+    if (buffer.length < sig.length) return false
+    return sig.every((byte, i) => buffer[i] === byte)
+  })
+}
+
 export function getFloorPlanUrl(relativePath: string): string {
   // Returns a URL path suitable for serving via the static files / stream endpoint
   return `/api/v1/files/${encodeURIComponent(relativePath)}`

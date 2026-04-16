@@ -47,7 +47,10 @@ const oidcConfigSchema = z.object({
   issuerUrl: z.string().url(),
   clientId: z.string().min(1),
   clientSecret: z.string().min(1).optional(),
-  redirectUri: z.string().url(),
+  redirectUri: z.string().url().refine(
+    (uri) => uri.startsWith(env.APP_URL),
+    { message: 'redirectUri must originate from the application URL' },
+  ),
   scope: z.string().optional(),
   label: z.string().optional(),
   groupsClaimName: z.string().optional(),
@@ -63,6 +66,9 @@ const samlConfigSchema = z.object({
   label: z.string().optional(),
   groupAttribute: z.string().optional(),
   groupMappings: z.array(groupMappingSchema).optional(),
+  wantAuthnResponseSigned: z.boolean().optional(),
+  wantAssertionsSigned: z.boolean().optional(),
+  allowClockSkewMs: z.number().int().min(0).max(300000).optional(),
 })
 
 const ldapConfigSchema = z.object({
@@ -131,8 +137,7 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
     '/test-email',
     { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
     async (request, reply) => {
-      const body = request.body as { to?: string }
-      const recipient = body?.to ?? request.user.email
+      const recipient = request.user.email
 
       try {
         await sendEmail({

@@ -3,7 +3,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Send, ChevronDown, ChevronUp, Plus, Trash2, Zap, Upload, Image as ImageIcon } from 'lucide-react'
+import { Send, ChevronDown, ChevronUp, Plus, Trash2, Zap, Upload, Image as ImageIcon, AlertTriangle } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
@@ -613,9 +613,18 @@ function SamlConfigForm({
   const [groupMappings, setGroupMappings] = useState<GroupMapping[]>(
     (current.groupMappings as GroupMapping[]) ?? [],
   )
+  const [wantAuthnResponseSigned, setWantAuthnResponseSigned] = useState(
+    (current.wantAuthnResponseSigned as boolean) ?? true,
+  )
+  const [wantAssertionsSigned, setWantAssertionsSigned] = useState(
+    (current.wantAssertionsSigned as boolean) ?? true,
+  )
+  const [allowClockSkewMs, setAllowClockSkewMs] = useState(
+    (current.allowClockSkewMs as number) ?? 0,
+  )
 
   function handleSave() {
-    onSave({ entryPoint, issuer, cert, callbackUrl, label, groupAttribute, groupMappings })
+    onSave({ entryPoint, issuer, cert, callbackUrl, label, groupAttribute, groupMappings, wantAuthnResponseSigned, wantAssertionsSigned, allowClockSkewMs })
   }
 
   return (
@@ -655,6 +664,49 @@ function SamlConfigForm({
             placeholder="MIIC..."
             className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
+        </div>
+      </div>
+      <Separator />
+      <div>
+        <p className="text-xs font-medium mb-2">Security options</p>
+        <div className="space-y-2">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={wantAuthnResponseSigned}
+              onChange={(e) => setWantAuthnResponseSigned(e.target.checked)}
+              className="h-4 w-4 rounded border-border"
+            />
+            <span className="text-xs font-medium">Require signed SAML response envelope</span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={wantAssertionsSigned}
+              onChange={(e) => setWantAssertionsSigned(e.target.checked)}
+              className="h-4 w-4 rounded border-border"
+            />
+            <span className="text-xs font-medium">Require signed SAML assertion</span>
+          </label>
+          {(!wantAuthnResponseSigned || !wantAssertionsSigned) && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 px-3 py-2 flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
+              <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <span><strong>Security warning:</strong> Disabling signature verification allows unsigned SAML responses to be accepted. Only do this if your IdP cannot sign responses.</span>
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <label className="text-xs font-medium whitespace-nowrap">Clock skew tolerance (ms)</label>
+            <input
+              type="number"
+              min={0}
+              max={300000}
+              step={1000}
+              value={allowClockSkewMs}
+              onChange={(e) => setAllowClockSkewMs(Number(e.target.value))}
+              className="h-8 w-28 rounded-md border border-input bg-background px-3 py-1 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+            <span className="text-xs text-muted-foreground">0 = strict (recommended)</span>
+          </div>
         </div>
       </div>
       <Separator />
@@ -874,6 +926,12 @@ function LdapConfigForm({
             </label>
           )}
         </div>
+        {tlsEnabled && !tlsRejectUnauthorized && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 px-3 py-2 flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <span><strong>Security warning:</strong> TLS certificate verification is disabled. LDAP connections are vulnerable to man-in-the-middle attacks. Only use this in trusted, isolated networks.</span>
+          </div>
+        )}
       </div>
       <Separator />
       <GroupMappingsEditor mappings={groupMappings} onChange={setGroupMappings} />

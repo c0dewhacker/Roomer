@@ -12,6 +12,12 @@ export interface SamlConfig {
   /** SAML attribute name containing group membership (default: groups) */
   groupAttribute?: string
   groupMappings?: GroupMapping[]
+  /** Whether the outer SAML response envelope must be signed (default: true) */
+  wantAuthnResponseSigned?: boolean
+  /** Whether the SAML assertion element must be signed (default: true) */
+  wantAssertionsSigned?: boolean
+  /** Accepted clock skew in milliseconds for timestamp validation (default: 0) */
+  allowClockSkewMs?: number
 }
 
 export async function getSamlConfig(): Promise<SamlConfig | null> {
@@ -29,7 +35,9 @@ export function buildSaml(cfg: SamlConfig): SAML {
     idpCert: cfg.cert,
     callbackUrl: cfg.callbackUrl,
     signatureAlgorithm: cfg.signatureAlgorithm ?? 'sha256',
-    wantAuthnResponseSigned: false,
+    wantAuthnResponseSigned: cfg.wantAuthnResponseSigned ?? true,
+    wantAssertionsSigned: cfg.wantAssertionsSigned ?? true,
+    acceptedClockSkewMs: cfg.allowClockSkewMs ?? 0,
   })
 }
 

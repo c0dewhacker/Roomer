@@ -440,7 +440,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       )
       const hasFloorAccess = !!asset.floorId && await isFloorManagerForFloor(request.user.id, asset.floorId)
       if (!hasPersonalAccess && !hasFloorAccess) {
-        return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+        return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
       }
     }
 

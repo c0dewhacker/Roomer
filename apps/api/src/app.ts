@@ -76,42 +76,54 @@ export async function buildApp(): Promise<FastifyInstance> {
   await fastify.register(authPlugin)
 
   // ─── Swagger / OpenAPI ─────────────────────────────────────────────────────
-  await fastify.register(swagger, {
-    openapi: {
-      info: {
-        title: 'Roomer API',
-        description: 'Desk allocation, hot-desking & asset management',
-        version: '1.0.0',
-      },
-      servers: [{ url: `http://${env.HOST}:${env.PORT}` }],
-      components: {
-        securitySchemes: {
-          bearerAuth: {
-            type: 'http',
-            scheme: 'bearer',
-            bearerFormat: 'JWT',
-            description: 'HS256-signed JWT. Issued as an httpOnly cookie on login; also accepted as Authorization: Bearer <token>.',
-          },
-          cookieAuth: {
-            type: 'apiKey',
-            in: 'cookie',
-            name: 'access_token',
-            description: 'httpOnly JWT cookie set by POST /auth/login.',
+  // Only expose the OpenAPI schema and UI in non-production environments.
+  // In production, both the schema endpoint and the interactive UI are disabled
+  // to avoid leaking API surface to attackers.
+  if (env.NODE_ENV !== 'production') {
+    await fastify.register(swagger, {
+      openapi: {
+        info: {
+          title: 'Roomer API',
+          description: 'Desk allocation, hot-desking & asset management',
+          version: '1.0.0',
+        },
+        servers: [{ url: `http://${env.HOST}:${env.PORT}` }],
+        components: {
+          securitySchemes: {
+            bearerAuth: {
+              type: 'http',
+              scheme: 'bearer',
+              bearerFormat: 'JWT',
+              description: 'HS256-signed JWT. Issued as an httpOnly cookie on login; also accepted as Authorization: Bearer <token>.',
+            },
+            cookieAuth: {
+              type: 'apiKey',
+              in: 'cookie',
+              name: 'access_token',
+              description: 'httpOnly JWT cookie set by POST /auth/login.',
+            },
           },
         },
       },
-    },
-  })
-
-  // Only expose Swagger UI in non-production environments.
-  // In production, the API schema is available but the interactive UI should be
-  // restricted to internal networks via a reverse proxy rule.
-  if (env.NODE_ENV !== 'production') {
+    })
     await fastify.register(swaggerUi, {
       routePrefix: '/docs',
       uiConfig: { docExpansion: 'list', deepLinking: true },
     })
   }
+
+  // ─── Global rate limiting ──────────────────────────────────────────────────
+  // Apply a broad limit to all routes to protect against scraping and DoS.
+  // The auth sub-context below imposes a tighter limit (20 req/15 min) on
+  // credential-accepting endpoints, which takes precedence for those routes.
+  await fastify.register(rateLimit, {
+    global: true,
+    max: 300,
+    timeWindow: '1 minute',
+    errorResponseBuilder: () => ({
+      error: { message: 'Too many requests, please try again later', code: 'RATE_LIMITED' },
+    }),
+  })
 
   // ─── Rate limiting on auth endpoints ───────────────────────────────────────
   // /me and /providers are read-only endpoints hit on every page load — exempt
