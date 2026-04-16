@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { User, LogOut, Settings, Menu, Sun, Moon } from 'lucide-react'
+import { User, LogOut, Settings, Menu, Sun, Moon, Info, ExternalLink } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { useThemeStore } from '@/stores/theme'
 import { useBranding } from '@/hooks/useBranding'
@@ -14,7 +15,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { NotificationBell } from './NotificationBell'
+
+const APP_VERSION = import.meta.env.VITE_APP_VERSION || 'dev'
+const APP_REPO_URL = import.meta.env.VITE_APP_REPO_URL || ''
 
 interface TopBarProps {
   onMenuClick?: () => void
@@ -23,6 +33,7 @@ interface TopBarProps {
 export function TopBar({ onMenuClick }: TopBarProps) {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
+  const [aboutOpen, setAboutOpen] = useState(false)
   const { theme, setTheme } = useThemeStore()
   const branding = useBranding()
   const isDark =
@@ -97,6 +108,11 @@ export function TopBar({ onMenuClick }: TopBarProps) {
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => setAboutOpen(true)}>
+              <Info className="mr-2 h-4 w-4" />
+              About
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem onClick={logout} className="text-destructive">
               <LogOut className="mr-2 h-4 w-4" />
               Log out
@@ -104,6 +120,34 @@ export function TopBar({ onMenuClick }: TopBarProps) {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      <Dialog open={aboutOpen} onOpenChange={setAboutOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>About Roomer</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2 text-sm">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Version</span>
+              <span className="font-mono font-medium">{APP_VERSION}</span>
+            </div>
+            {APP_REPO_URL && (
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground">Source</span>
+                <a
+                  href={APP_REPO_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 text-primary hover:underline"
+                >
+                  GitHub
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </header>
   )
 }
