@@ -57,6 +57,8 @@ function issueSsoToken(reply: FastifyReply, user: User, redirectPath = '/booking
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Auth'], ...route.schema } })
+
   // GET /auth/providers — public: which SSO providers are enabled
   fastify.get('/providers', async (_request, reply) => {
     const configs = await prisma.authConfig.findMany()

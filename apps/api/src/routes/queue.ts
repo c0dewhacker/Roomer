@@ -5,6 +5,8 @@ import { requireAuth } from '../middleware/requireAuth'
 import { enqueueNotification } from '../lib/queue'
 
 export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Queue'], ...route.schema } })
+
   // GET /queue — current user's WAITING and PROMOTED entries
   fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
     const entries = await prisma.queueEntry.findMany({

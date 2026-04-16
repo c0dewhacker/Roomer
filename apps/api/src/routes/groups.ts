@@ -29,6 +29,8 @@ async function getOrgId(): Promise<string> {
 }
 
 export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Groups'], ...route.schema } })
+
   // GET /groups — list all groups
   fastify.get('/', { preHandler: adminHandlers }, async (_request, reply) => {
     const groups = await prisma.userGroup.findMany({

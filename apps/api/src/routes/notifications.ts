@@ -9,6 +9,8 @@ const paginationSchema = z.object({
 })
 
 export async function notificationRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Notifications'], ...route.schema } })
+
   // GET /notifications/unread-count — must be before /:id to avoid route conflict
   fastify.get('/unread-count', { preHandler: [requireAuth] }, async (request, reply) => {
     const count = await prisma.notification.count({
