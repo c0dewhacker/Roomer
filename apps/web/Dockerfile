@@ -42,6 +42,9 @@ FROM nginx:1.27-alpine AS runner
 # Install envsubst (part of gettext) to substitute ${API_URL} in the nginx config
 RUN apk add --no-cache gettext
 
+# nginx's default mime.types predates .mjs — add it to the javascript entry
+RUN sed -i '/application\/javascript/s/js;/js mjs;/' /etc/nginx/mime.types
+
 # Copy the built SPA
 COPY --from=build /repo/apps/web/dist /usr/share/nginx/html
 
