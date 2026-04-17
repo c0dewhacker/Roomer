@@ -337,6 +337,11 @@ export function FloorPlanCanvas({
             containerRef.current.style.cursor = 'grabbing'
           }
         }}
+        onDragMove={(e) => {
+          if (e.target === e.target.getStage()) {
+            setPosition({ x: e.target.x(), y: e.target.y() })
+          }
+        }}
         onDragEnd={(e) => {
           if (containerRef.current) containerRef.current.style.cursor = 'grab'
           if (e.target === e.target.getStage()) {
