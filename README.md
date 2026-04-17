@@ -25,7 +25,7 @@ Roomer is a self-hosted platform for managing desk and asset reservations across
 | **Queue & waitlist** | Users join a waitlist and are automatically promoted when a desk frees up |
 | **Bulk CSV import** | Import buildings, floors, zones, and assets in a single pass |
 | **Asset registry** | Track non-bookable inventory (laptops, monitors, etc.) alongside bookable space |
-| **Role-based access** | Super admin, building admin, floor manager, and user roles |
+| **Role-based access** | Super admin, floor manager, and user roles |
 | **Enterprise auth** | LDAP, SAML, and OpenID Connect alongside local accounts |
 | **Email notifications** | Booking confirmations and queue promotions via SMTP |
 
@@ -254,7 +254,6 @@ All API environment variables:
 | Role | Scope | Permissions |
 |---|---|---|
 | `SUPER_ADMIN` | Global | Full access to all resources and settings |
-| `BUILDING_ADMIN` | Per building | Manage floors, zones, assets, and bookings within a building |
 | `FLOOR_MANAGER` | Per floor | Manage assets and bookings on assigned floors |
 | `USER` | Global | Book available assets, manage own bookings |
 
