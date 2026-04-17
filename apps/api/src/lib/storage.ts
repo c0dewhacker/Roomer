@@ -13,8 +13,20 @@ const FLOOR_PLANS_DIR = 'floor-plans'
 const THUMBNAILS_DIR = 'floor-plans/thumbnails'
 const BRANDING_DIR = 'branding'
 
+/**
+ * Resolve a path relative to FILE_STORAGE_PATH and reject anything that
+ * escapes the root (e.g. `../../etc/passwd`). All paths currently stored in
+ * the DB come from sanitising code paths, so this is defence-in-depth: it
+ * blocks a write-side compromise (SQL injection, malicious admin) from
+ * turning into an arbitrary file read/write.
+ */
 export function resolveStoragePath(relativePath: string): string {
-  return path.resolve(env.FILE_STORAGE_PATH, relativePath)
+  const root = path.resolve(env.FILE_STORAGE_PATH)
+  const resolved = path.resolve(root, relativePath)
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    throw new Error(`Path escapes storage root: ${relativePath}`)
+  }
+  return resolved
 }
 
 export async function ensureUploadDirs(): Promise<void> {
@@ -91,7 +103,7 @@ export async function saveFloorPlan(
   }
 
   if (fileType === FloorPlanFileType.PDF) {
-    return savePdfFloorPlan(originalAbsPath, originalRelPath)
+    return savePdfFloorPlan(originalRelPath)
   }
 
   // DXF — convert to SVG for rendering
@@ -129,12 +141,11 @@ async function saveImageFloorPlan(
 }
 
 async function savePdfFloorPlan(
-  originalAbsPath: string,
   originalRelPath: string,
 ): Promise<FloorPlanSaveResult> {
-  // PDF rendering to image requires pdf2pic or similar; for now store as-is
-  // In a full implementation, use pdf2pic to rasterise first page to PNG
-  // and then call saveImageFloorPlan on the result.
+  // PDFs are stored as-is and rasterised client-side by pdfjs-dist.
+  // Width/height are nominal placeholders; the actual viewport comes from
+  // the PDF itself when the browser renders page 1.
   return {
     originalPath: originalRelPath,
     renderedPath: originalRelPath,
