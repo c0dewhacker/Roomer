@@ -76,7 +76,7 @@ function ZoneDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+      <DialogContent aria-describedby={undefined}>
         <DialogHeader><DialogTitle>{existing ? 'Edit Zone' : 'Add Zone'}</DialogTitle></DialogHeader>
         <form onSubmit={handleSubmit((d) => existing ? update.mutate(d) : create.mutate(d))} className="space-y-4">
           <div>
@@ -164,7 +164,7 @@ function AddAssetToFloorDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-h-[90vh] overflow-y-auto" aria-describedby={undefined}>
         <DialogHeader><DialogTitle>Add Asset to Floor Plan</DialogTitle></DialogHeader>
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
@@ -284,7 +284,7 @@ function EditAssetDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+      <DialogContent aria-describedby={undefined}>
         <DialogHeader><DialogTitle>Edit Asset</DialogTitle></DialogHeader>
         <form onSubmit={handleSubmit((d) => update.mutate(d))} className="space-y-4">
           <div>
@@ -424,7 +424,7 @@ function BulkImportDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && handleClose()}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto" aria-describedby={undefined}>
         <DialogHeader>
           <DialogTitle>Bulk Import Assets</DialogTitle>
         </DialogHeader>
@@ -457,7 +457,7 @@ function BulkImportDialog({
                 ref={fileRef}
                 type="file"
                 accept=".csv,text/csv"
-                className="hidden"
+                className="absolute opacity-0 w-px h-px overflow-hidden pointer-events-none"
                 onChange={(e) => {
                   const file = e.target.files?.[0]
                   if (file) handleFile(file)
@@ -1038,7 +1038,7 @@ export default function FloorAdminPage() {
             ref={fileRef}
             type="file"
             accept="image/*,.pdf,.dxf"
-            className="hidden"
+            className="absolute opacity-0 w-px h-px overflow-hidden pointer-events-none"
             onChange={(e) => {
               const file = e.target.files?.[0]
               if (!file) return
