@@ -22,6 +22,7 @@ Roomer is a self-hosted platform for managing desk and asset reservations across
 | **Desk & asset booking** | Book by date with live availability (available, booked, assigned, queued, restricted) |
 | **Permanent assignments** | Assign desks to users with primary/secondary ownership |
 | **Zone management** | Group assets into colour-coded zones with optional conflict rules |
+| **Floor Management** | Assign individuals or Access groups to manage individual floors |
 | **Queue & waitlist** | Users join a waitlist and are automatically promoted when a desk frees up |
 | **Bulk CSV import** | Import buildings, floors, zones, and assets in a single pass |
 | **Asset registry** | Track non-bookable inventory (laptops, monitors, etc.) alongside bookable space |
