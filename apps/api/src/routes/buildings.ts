@@ -5,7 +5,6 @@ import { requireAuth } from '../middleware/requireAuth'
 import { requireGlobalRole } from '../middleware/requireRole'
 import { GlobalRole } from '@roomer/shared'
 import { canUserAccessBuilding } from './groups'
-
 export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Buildings'], ...route.schema } })
 
@@ -197,7 +196,158 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // PUT /buildings/:id — update building (SUPER_ADMIN)
+  // ─── Building manager management (SUPER_ADMIN) ───────────────────────────
+
+  // GET /buildings/:id/managers — list individual building managers
+  fastify.get(
+    '/:id/managers',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+
+      const roles = await prisma.userResourceRole.findMany({
+        where: { scopeType: 'BUILDING', buildingId: id, role: 'BUILDING_ADMIN' },
+        include: {
+          user: { select: { id: true, displayName: true, email: true } },
+        },
+        orderBy: { createdAt: 'asc' },
+      })
+
+      return reply.status(200).send({ data: roles.map((r) => ({ roleId: r.id, ...r.user })) })
+    },
+  )
+
+  // POST /buildings/:id/managers — assign a user as building manager
+  fastify.post(
+    '/:id/managers',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const { userId } = request.body as { userId?: string }
+
+      if (!userId) {
+        return reply.status(400).send({ error: { message: 'userId is required', code: 'VALIDATION_ERROR' } })
+      }
+
+      const [building, user] = await Promise.all([
+        prisma.building.findUnique({ where: { id } }),
+        prisma.user.findUnique({ where: { id: userId } }),
+      ])
+
+      if (!building) return reply.status(404).send({ error: { message: 'Building not found', code: 'NOT_FOUND' } })
+      if (!user) return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })
+
+      try {
+        const role = await prisma.userResourceRole.create({
+          data: { userId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id },
+        })
+        return reply.status(201).send({ data: { roleId: role.id, id: user.id, displayName: user.displayName, email: user.email } })
+      } catch {
+        return reply.status(409).send({ error: { message: 'User is already a building manager', code: 'ALREADY_EXISTS' } })
+      }
+    },
+  )
+
+  // DELETE /buildings/:id/managers/:userId — remove a user building manager
+  fastify.delete(
+    '/:id/managers/:userId',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { id, userId } = request.params as { id: string; userId: string }
+
+      const role = await prisma.userResourceRole.findFirst({
+        where: { userId, scopeType: 'BUILDING', buildingId: id, role: 'BUILDING_ADMIN' },
+      })
+      if (!role) {
+        return reply.status(404).send({ error: { message: 'Manager role not found', code: 'NOT_FOUND' } })
+      }
+
+      await prisma.userResourceRole.delete({ where: { id: role.id } })
+      return reply.status(200).send({ data: { ok: true } })
+    },
+  )
+
+  // GET /buildings/:id/group-managers — list group building managers
+  fastify.get(
+    '/:id/group-managers',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+
+      const roles = await prisma.groupResourceRole.findMany({
+        where: { scopeType: 'BUILDING', buildingId: id, role: 'BUILDING_ADMIN' },
+        include: {
+          group: { select: { id: true, name: true, _count: { select: { members: true } } } },
+        },
+        orderBy: { createdAt: 'asc' },
+      })
+
+      return reply.status(200).send({
+        data: roles.map((r) => ({
+          roleId: r.id,
+          id: r.group.id,
+          name: r.group.name,
+          memberCount: r.group._count.members,
+        })),
+      })
+    },
+  )
+
+  // POST /buildings/:id/group-managers — assign a group as building manager
+  fastify.post(
+    '/:id/group-managers',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const { groupId } = request.body as { groupId?: string }
+
+      if (!groupId) {
+        return reply.status(400).send({ error: { message: 'groupId is required', code: 'VALIDATION_ERROR' } })
+      }
+
+      const [building, group] = await Promise.all([
+        prisma.building.findUnique({ where: { id } }),
+        prisma.userGroup.findUnique({ where: { id: groupId } }),
+      ])
+
+      if (!building) return reply.status(404).send({ error: { message: 'Building not found', code: 'NOT_FOUND' } })
+      if (!group) return reply.status(404).send({ error: { message: 'Group not found', code: 'NOT_FOUND' } })
+
+      const existing = await prisma.groupResourceRole.findFirst({
+        where: { groupId, scopeType: 'BUILDING', buildingId: id },
+      })
+      if (existing) {
+        return reply.status(409).send({ error: { message: 'Group is already a building manager', code: 'ALREADY_EXISTS' } })
+      }
+
+      const role = await prisma.groupResourceRole.create({
+        data: { groupId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id },
+      })
+
+      return reply.status(201).send({ data: { roleId: role.id, id: group.id, name: group.name, memberCount: 0 } })
+    },
+  )
+
+  // DELETE /buildings/:id/group-managers/:groupId — remove a group building manager
+  fastify.delete(
+    '/:id/group-managers/:groupId',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { id, groupId } = request.params as { id: string; groupId: string }
+
+      const role = await prisma.groupResourceRole.findFirst({
+        where: { groupId, scopeType: 'BUILDING', buildingId: id, role: 'BUILDING_ADMIN' },
+      })
+      if (!role) {
+        return reply.status(404).send({ error: { message: 'Group role not found', code: 'NOT_FOUND' } })
+      }
+
+      await prisma.groupResourceRole.delete({ where: { id: role.id } })
+      return reply.status(200).send({ data: { ok: true } })
+    },
+  )
+
+  // PUT /buildings/:id — update building (SUPER_ADMIN)  
   fastify.put(
     '/:id',
     { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },

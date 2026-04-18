@@ -110,6 +110,28 @@ export const buildingsApi = {
     api.post<{ data: { groupId: string; buildingId: string } }>(`/buildings/${id}/access-groups`, { groupId }),
   removeAccessGroup: (id: string, groupId: string) =>
     api.delete<{ data: { ok: true } }>(`/buildings/${id}/access-groups/${groupId}`),
+  getManagers: (id: string) =>
+    api.get<{ data: Array<{ roleId: string; id: string; displayName: string; email: string }> }>(
+      `/buildings/${id}/managers`,
+    ),
+  addManager: (id: string, userId: string) =>
+    api.post<{ data: { roleId: string; id: string; displayName: string; email: string } }>(
+      `/buildings/${id}/managers`,
+      { userId },
+    ),
+  removeManager: (id: string, userId: string) =>
+    api.delete<{ data: { ok: true } }>(`/buildings/${id}/managers/${userId}`),
+  getGroupManagers: (id: string) =>
+    api.get<{ data: Array<{ roleId: string; id: string; name: string; memberCount: number }> }>(
+      `/buildings/${id}/group-managers`,
+    ),
+  addGroupManager: (id: string, groupId: string) =>
+    api.post<{ data: { roleId: string; id: string; name: string; memberCount: number } }>(
+      `/buildings/${id}/group-managers`,
+      { groupId },
+    ),
+  removeGroupManager: (id: string, groupId: string) =>
+    api.delete<{ data: { ok: true } }>(`/buildings/${id}/group-managers/${groupId}`),
 }
 
 // --- Floors ---

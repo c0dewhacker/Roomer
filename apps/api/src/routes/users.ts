@@ -169,6 +169,9 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
             floor: { select: { id: true, name: true } },
           },
         },
+        groupMemberships: {
+          include: { group: { select: { id: true, name: true, globalRole: true } } },
+        },
       },
     })
 
