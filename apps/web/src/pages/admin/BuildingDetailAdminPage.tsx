@@ -3,9 +3,9 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Layers, Plus, ChevronRight, Pencil, Trash2, Shield } from 'lucide-react'
+import { Layers, Plus, ChevronRight, Pencil, Trash2, Shield, Users, UserMinus, UserPlus } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { buildingsApi, floorsApi, groupsApi, ApiError } from '@/lib/api'
+import { buildingsApi, floorsApi, groupsApi, usersApi, ApiError } from '@/lib/api'
 import { toast } from 'sonner'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -269,6 +269,245 @@ function FloorCard({ floor, buildingId }: { floor: Floor; buildingId: string }) 
   )
 }
 
+// ─── Building managers management ────────────────────────────────────────────
+
+function BuildingManagersPanel({ buildingId }: { buildingId: string }) {
+  const qc = useQueryClient()
+  const [tab, setTab] = useState<'users' | 'groups'>('users')
+
+  // ── User managers ──────────────────────────────────────────────────────────
+  const [search, setSearch] = useState('')
+  const [selectedUserId, setSelectedUserId] = useState('')
+
+  const { data: managers, isLoading } = useQuery({
+    queryKey: ['buildings', buildingId, 'managers'],
+    queryFn: () => buildingsApi.getManagers(buildingId),
+    select: (r) => r.data,
+  })
+
+  const { data: searchResults } = useQuery({
+    queryKey: ['users', 'search', search],
+    queryFn: () => usersApi.list({ q: search, limit: 20 }),
+    select: (r) => r.data,
+    enabled: search.length >= 2,
+  })
+
+  const addUser = useMutation({
+    mutationFn: () => buildingsApi.addManager(buildingId, selectedUserId),
+    onSuccess: () => {
+      toast.success('Building manager assigned')
+      qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'managers'] })
+      setSearch('')
+      setSelectedUserId('')
+    },
+    onError: () => toast.error('Failed to assign building manager'),
+  })
+
+  const removeUser = useMutation({
+    mutationFn: (userId: string) => buildingsApi.removeManager(buildingId, userId),
+    onSuccess: () => {
+      toast.success('Building manager removed')
+      qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'managers'] })
+    },
+    onError: () => toast.error('Failed to remove building manager'),
+  })
+
+  const existingUserIds = new Set((managers ?? []).map((m) => m.id))
+  const filteredResults = (searchResults ?? []).filter((u) => !existingUserIds.has(u.id))
+
+  // ── Group managers ─────────────────────────────────────────────────────────
+  const [selectedGroupId, setSelectedGroupId] = useState('')
+
+  const { data: groupManagers, isLoading: groupManagersLoading } = useQuery({
+    queryKey: ['buildings', buildingId, 'group-managers'],
+    queryFn: () => buildingsApi.getGroupManagers(buildingId),
+    select: (r) => r.data,
+  })
+
+  const { data: allGroups } = useQuery({
+    queryKey: ['groups'],
+    queryFn: () => groupsApi.list(),
+    select: (r) => r.data,
+  })
+
+  const addGroup = useMutation({
+    mutationFn: () => buildingsApi.addGroupManager(buildingId, selectedGroupId),
+    onSuccess: () => {
+      toast.success('Group assigned as building manager')
+      qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'group-managers'] })
+      setSelectedGroupId('')
+    },
+    onError: () => toast.error('Failed to assign group'),
+  })
+
+  const removeGroup = useMutation({
+    mutationFn: (groupId: string) => buildingsApi.removeGroupManager(buildingId, groupId),
+    onSuccess: () => {
+      toast.success('Group manager removed')
+      qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'group-managers'] })
+    },
+    onError: () => toast.error('Failed to remove group manager'),
+  })
+
+  const existingGroupIds = new Set((groupManagers ?? []).map((g) => g.id))
+  const availableGroups = (allGroups ?? []).filter((g) => !existingGroupIds.has(g.id))
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Users className="h-4 w-4 text-muted-foreground" />
+          <span className="font-medium text-sm">Building Managers</span>
+        </div>
+        <p className="text-xs text-muted-foreground mb-4">
+          Building managers can manage all floors, zones, and assets in this building. They inherit floor manager permissions for every floor.
+        </p>
+
+        {/* Tab toggle */}
+        <div className="flex gap-1 border rounded-lg p-1 w-fit mb-4">
+          <button
+            onClick={() => setTab('users')}
+            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${tab === 'users' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            Users
+          </button>
+          <button
+            onClick={() => setTab('groups')}
+            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${tab === 'groups' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            Groups
+          </button>
+        </div>
+
+        {tab === 'users' && (
+          <div className="space-y-3">
+            {isLoading ? (
+              <Skeleton className="h-10 w-full" />
+            ) : (managers ?? []).length === 0 ? (
+              <div className="rounded-lg border border-dashed p-4 flex flex-col items-center text-center">
+                <Users className="h-6 w-6 text-muted-foreground/30 mb-1" />
+                <p className="text-xs text-muted-foreground">No individual building managers assigned</p>
+              </div>
+            ) : (
+              <div className="rounded-lg border divide-y">
+                {managers!.map((m) => (
+                  <div key={m.id} className="flex items-center justify-between px-3 py-2.5">
+                    <div>
+                      <p className="text-sm font-medium">{m.displayName}</p>
+                      <p className="text-xs text-muted-foreground">{m.email}</p>
+                    </div>
+                    <Button
+                      size="icon" variant="ghost" className="h-7 w-7 hover:text-destructive"
+                      onClick={() => removeUser.mutate(m.id)}
+                      disabled={removeUser.isPending}
+                    >
+                      <UserMinus className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Input
+                placeholder="Search by name or email…"
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setSelectedUserId('') }}
+                className="h-8 text-xs"
+              />
+              {search.length >= 2 && filteredResults.length > 0 && (
+                <div className="rounded-md border divide-y max-h-40 overflow-y-auto">
+                  {filteredResults.map((u) => (
+                    <button
+                      key={u.id}
+                      type="button"
+                      className={`w-full text-left px-3 py-2 hover:bg-muted transition-colors ${selectedUserId === u.id ? 'bg-muted' : ''}`}
+                      onClick={() => setSelectedUserId(u.id)}
+                    >
+                      <p className="text-xs font-medium">{u.displayName}</p>
+                      <p className="text-xs text-muted-foreground">{u.email}</p>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {search.length >= 2 && filteredResults.length === 0 && (
+                <p className="text-xs text-muted-foreground">No users found</p>
+              )}
+              <Button
+                size="sm" className="h-7 text-xs"
+                onClick={() => addUser.mutate()}
+                disabled={!selectedUserId || addUser.isPending}
+              >
+                <UserPlus className="mr-1.5 h-3 w-3" />
+                {addUser.isPending ? 'Assigning…' : 'Assign as manager'}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {tab === 'groups' && (
+          <div className="space-y-3">
+            {groupManagersLoading ? (
+              <Skeleton className="h-10 w-full" />
+            ) : (groupManagers ?? []).length === 0 ? (
+              <div className="rounded-lg border border-dashed p-4 flex flex-col items-center text-center">
+                <Users className="h-6 w-6 text-muted-foreground/30 mb-1" />
+                <p className="text-xs text-muted-foreground">No groups assigned as building managers</p>
+              </div>
+            ) : (
+              <div className="rounded-lg border divide-y">
+                {groupManagers!.map((g) => (
+                  <div key={g.id} className="flex items-center justify-between px-3 py-2.5">
+                    <div>
+                      <p className="text-sm font-medium">{g.name}</p>
+                      <p className="text-xs text-muted-foreground">{g.memberCount} member{g.memberCount !== 1 ? 's' : ''}</p>
+                    </div>
+                    <Button
+                      size="icon" variant="ghost" className="h-7 w-7 hover:text-destructive"
+                      onClick={() => removeGroup.mutate(g.id)}
+                      disabled={removeGroup.isPending}
+                    >
+                      <UserMinus className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="space-y-2">
+              {availableGroups.length === 0 ? (
+                <p className="text-xs text-muted-foreground">All groups are already assigned, or no groups exist.</p>
+              ) : (
+                <Select value={selectedGroupId} onValueChange={setSelectedGroupId}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue placeholder="Select a group…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableGroups.map((g) => (
+                      <SelectItem key={g.id} value={g.id} className="text-xs">
+                        {g.name}
+                        {g._count && <span className="text-muted-foreground ml-1">({g._count.members})</span>}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              <Button
+                size="sm" className="h-7 text-xs"
+                onClick={() => addGroup.mutate()}
+                disabled={!selectedGroupId || addGroup.isPending}
+              >
+                <UserPlus className="mr-1.5 h-3 w-3" />
+                {addGroup.isPending ? 'Assigning…' : 'Assign group as manager'}
+              </Button>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 // ─── Building access management ───────────────────────────────────────────────
 
 function BuildingAccessSection({ buildingId }: { buildingId: string }) {
@@ -443,6 +682,8 @@ export default function BuildingDetailAdminPage() {
           <Plus className="mr-2 h-4 w-4" /> Add Floor
         </Button>
       </div>
+
+      <BuildingManagersPanel buildingId={buildingId!} />
 
       <BuildingAccessSection buildingId={buildingId!} />
 
