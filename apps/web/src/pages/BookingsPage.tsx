@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { format, parseISO } from 'date-fns'
+import { format, parseISO, isToday } from 'date-fns'
 import { Calendar, MapPin, Clock, Trash2, Pencil, CalendarPlus, X, Armchair } from 'lucide-react'
 import { useMyBookings, useCancelBooking, useUpdateBooking } from '@/hooks/useBookings'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -363,7 +363,8 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
   const navigate = useNavigate()
   const cancel = useCancelBooking()
   const bookingAsset = booking.asset ?? booking.desk
-  const floorId = bookingAsset?.zone?.floor?.id
+  const floorId = bookingAsset?.floor?.id ?? bookingAsset?.zone?.floor?.id
+  const todayBooking = isToday(parseISO(booking.startsAt))
   const [editOpen, setEditOpen] = useState(false)
   const canModify = showCancel && booking.status === 'CONFIRMED'
 
@@ -376,8 +377,11 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
               className="flex-1 min-w-0 cursor-pointer"
               onClick={() => floorId && navigate(`/floors/${floorId}`)}
             >
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <p className="font-medium truncate">{bookingAsset?.name ?? 'Unknown asset'}</p>
+                {todayBooking && (
+                  <Badge variant="outline" className="shrink-0 text-xs border-green-500 text-green-600">Today</Badge>
+                )}
                 <Badge variant={statusVariant[booking.status] ?? 'secondary'} className="shrink-0 text-xs">
                   {booking.status}
                 </Badge>
@@ -385,9 +389,9 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
               <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
                 <MapPin className="h-3 w-3 shrink-0" />
                 {[
-                  bookingAsset?.zone?.floor?.building?.name,
-                  bookingAsset?.zone?.floor?.name,
-                  bookingAsset?.zone?.name,
+                  bookingAsset?.floor?.building?.name ?? bookingAsset?.zone?.floor?.building?.name,
+                  bookingAsset?.floor?.name ?? bookingAsset?.zone?.floor?.name,
+                  bookingAsset?.primaryZone?.name ?? bookingAsset?.zone?.name,
                 ].filter(Boolean).join(' › ')}
               </p>
               <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
