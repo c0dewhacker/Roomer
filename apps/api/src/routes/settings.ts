@@ -7,6 +7,8 @@ import { sendEmail } from '../lib/mailer'
 import { env } from '../env'
 import { prisma } from '../lib/prisma'
 import { invalidateOidcCache } from '../lib/oidc'
+import { syncLdapUsers, getLdapConfig } from '../lib/ldap'
+import { hashScimToken, generateScimToken } from '../lib/scim-helpers'
 import { saveBrandingImage, resolveStoragePath } from '../lib/storage'
 import { z } from 'zod'
 
@@ -83,6 +85,11 @@ const ldapConfigSchema = z.object({
   tlsRejectUnauthorized: z.boolean().optional(),
   groupAttribute: z.string().optional(),
   groupMappings: z.array(groupMappingSchema).optional(),
+  // Directory sync settings
+  syncBase: z.string().optional(),
+  syncFilter: z.string().optional(),
+  syncScope: z.enum(['sub', 'one']).optional(),
+  deactivateMissing: z.boolean().optional(),
 })
 
 const configSchemas: Record<ProviderKey, z.ZodTypeAny> = {
@@ -371,6 +378,90 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
           config: redactSecrets(upperProvider, row.config as Record<string, unknown>),
         },
       })
+    },
+  )
+
+  // POST /settings/auth-config/ldap/sync — run LDAP directory sync (SUPER_ADMIN)
+  fastify.post(
+    '/auth-config/ldap/sync',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (_request, reply) => {
+      const cfg = await getLdapConfig()
+      if (!cfg) {
+        return reply.status(400).send({ error: { message: 'LDAP is not configured or not enabled', code: 'LDAP_NOT_CONFIGURED' } })
+      }
+      try {
+        const result = await syncLdapUsers(cfg)
+        return reply.status(200).send({ data: result })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error'
+        return reply.status(502).send({ error: { message: `LDAP sync failed: ${message}`, code: 'LDAP_SYNC_ERROR' } })
+      }
+    },
+  )
+
+  // GET /settings/scim — get SCIM provisioning status (SUPER_ADMIN)
+  fastify.get(
+    '/scim',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (_request, reply) => {
+      const cfg = await prisma.scimConfig.findFirst()
+      return reply.status(200).send({
+        data: {
+          enabled: cfg?.enabled ?? false,
+          hasToken: !!cfg?.tokenHash,
+          endpointUrl: `${process.env.APP_URL ?? 'http://localhost:3001'}/scim/v2`,
+        },
+      })
+    },
+  )
+
+  // PATCH /settings/scim — enable or disable SCIM (SUPER_ADMIN)
+  fastify.patch(
+    '/scim',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { enabled } = request.body as { enabled?: boolean }
+      const cfg = await prisma.scimConfig.findFirst()
+      const updated = cfg
+        ? await prisma.scimConfig.update({ where: { id: cfg.id }, data: { enabled: enabled ?? cfg.enabled } })
+        : await prisma.scimConfig.create({ data: { enabled: enabled ?? false } })
+      return reply.status(200).send({ data: { enabled: updated.enabled, hasToken: !!updated.tokenHash } })
+    },
+  )
+
+  // POST /settings/scim/token — generate a new bearer token (SUPER_ADMIN, returns plaintext once)
+  fastify.post(
+    '/scim/token',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (_request, reply) => {
+      const token = generateScimToken()
+      const tokenHash = hashScimToken(token)
+      const cfg = await prisma.scimConfig.findFirst()
+      if (cfg) {
+        await prisma.scimConfig.update({ where: { id: cfg.id }, data: { tokenHash, enabled: true } })
+      } else {
+        await prisma.scimConfig.create({ data: { tokenHash, enabled: true } })
+      }
+      return reply.status(201).send({
+        data: {
+          token,
+          note: 'Store this token now — it will not be shown again.',
+        },
+      })
+    },
+  )
+
+  // DELETE /settings/scim/token — revoke the current bearer token (SUPER_ADMIN)
+  fastify.delete(
+    '/scim/token',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (_request, reply) => {
+      const cfg = await prisma.scimConfig.findFirst()
+      if (cfg) {
+        await prisma.scimConfig.update({ where: { id: cfg.id }, data: { tokenHash: null, enabled: false } })
+      }
+      return reply.status(200).send({ data: { ok: true } })
     },
   )
 }

@@ -15,6 +15,22 @@ export interface LdapConfig {
   /** LDAP attribute to read group membership from (default: memberOf) */
   groupAttribute?: string
   groupMappings?: GroupMapping[]
+  /** Base DN for directory sync (defaults to searchBase if omitted) */
+  syncBase?: string
+  /** LDAP filter used during directory sync (default: (objectClass=person)) */
+  syncFilter?: string
+  /** Scope for sync search: sub (subtree) or one (one-level). Default: sub */
+  syncScope?: 'sub' | 'one'
+  /** When true, deactivate LDAP-provider users absent from the sync results */
+  deactivateMissing?: boolean
+}
+
+export interface LdapSyncResult {
+  created: number
+  updated: number
+  deactivated: number
+  skipped: number
+  errors: Array<{ dn: string; message: string }>
 }
 
 export async function getLdapConfig(): Promise<LdapConfig | null> {
@@ -71,6 +87,80 @@ export interface LdapAuthResult {
   dn: string
   /** Raw group values (e.g. memberOf DNs) for group mapping */
   groups: string[]
+}
+
+export async function syncLdapUsers(cfg: LdapConfig): Promise<LdapSyncResult> {
+  const result: LdapSyncResult = { created: 0, updated: 0, deactivated: 0, skipped: 0, errors: [] }
+
+  const emailAttr = cfg.emailAttribute ?? 'mail'
+  const nameAttr = cfg.displayNameAttribute ?? 'displayName'
+  const groupAttr = cfg.groupAttribute ?? 'memberOf'
+  const syncBase = cfg.syncBase?.trim() || cfg.searchBase
+  const syncFilter = cfg.syncFilter?.trim() || '(objectClass=person)'
+  const syncScope = cfg.syncScope ?? 'sub'
+
+  const client = createLdapClient(cfg)
+  try {
+    await bindAsync(client, cfg.bindDN, cfg.bindCredentials)
+
+    const entries = await searchAsync(client, syncBase, {
+      filter: syncFilter,
+      scope: syncScope,
+      attributes: ['dn', emailAttr, nameAttr, groupAttr],
+    })
+
+    const seenEmails = new Set<string>()
+
+    for (const entry of entries) {
+      const attrs = entry.attributes as Array<{ type: string; values: string[] }>
+      const getAttr = (name: string) => attrs.find((a) => a.type.toLowerCase() === name.toLowerCase())
+
+      const email = getAttr(emailAttr)?.values[0]?.trim().toLowerCase()
+      if (!email) { result.skipped++; continue }
+
+      const displayName = getAttr(nameAttr)?.values[0]?.trim() || email
+      const groups = (getAttr(groupAttr)?.values ?? []).map((g) => g.trim())
+      const dn = entry.dn.toString()
+
+      seenEmails.add(email)
+
+      try {
+        const existing = await prisma.user.findUnique({ where: { email } })
+        if (existing) {
+          await prisma.user.update({
+            where: { email },
+            data: { displayName, accountStatus: 'ACTIVE', provider: 'LDAP' },
+          })
+          result.updated++
+        } else {
+          await prisma.user.create({
+            data: { email, displayName, provider: 'LDAP', externalId: dn },
+          })
+          result.created++
+        }
+
+        const userId = existing?.id ?? (await prisma.user.findUnique({ where: { email }, select: { id: true } }))!.id
+        if (cfg.groupMappings?.length && groups.length) {
+          const { applyGroupMappings } = await import('./group-mapping')
+          await applyGroupMappings(userId, groups, cfg.groupMappings)
+        }
+      } catch (err) {
+        result.errors.push({ dn, message: err instanceof Error ? err.message : 'Unknown error' })
+      }
+    }
+
+    if (cfg.deactivateMissing && seenEmails.size > 0) {
+      const deactivated = await prisma.user.updateMany({
+        where: { provider: 'LDAP', accountStatus: 'ACTIVE', email: { notIn: [...seenEmails] } },
+        data: { accountStatus: 'BLOCKED' },
+      })
+      result.deactivated = deactivated.count
+    }
+  } finally {
+    unbind(client)
+  }
+
+  return result
 }
 
 export async function authenticateWithLdap(

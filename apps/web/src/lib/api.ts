@@ -362,6 +362,11 @@ export const usersApi = {
   ) => api.post<{ data: { id: string } }>(`/users/${userId}/resource-roles`, body),
   removeResourceRole: (userId: string, roleId: string) =>
     api.delete<{ data: { ok: true } }>(`/users/${userId}/resource-roles/${roleId}`),
+  bulkImport: (rows: Array<Record<string, string>>) =>
+    api.post<{ data: { created: number; updated: number; errors: Array<{ row: number; message: string }> } }>(
+      '/users/bulk-import',
+      { rows },
+    ),
 }
 
 // --- Settings ---
@@ -426,6 +431,16 @@ export const settingsApi = {
   getOrg: () => api.get<{ data: OrgSettings }>('/settings/organisation'),
   updateOrg: (body: Partial<Omit<OrgSettings, 'id'>>) =>
     api.patch<{ data: OrgSettings }>('/settings/organisation', body),
+  getScim: () =>
+    api.get<{ data: { enabled: boolean; hasToken: boolean; endpointUrl: string } }>('/settings/scim'),
+  patchScim: (body: { enabled: boolean }) =>
+    api.patch<{ data: { enabled: boolean } }>('/settings/scim', body),
+  generateScimToken: () =>
+    api.post<{ data: { token: string; endpointUrl: string } }>('/settings/scim/token', {}),
+  revokeScimToken: () =>
+    api.delete<{ data: { ok: boolean } }>('/settings/scim/token'),
+  syncLdap: () =>
+    api.post<{ data: { created: number; updated: number; deactivated: number; skipped: number; errors: Array<{ dn: string; message: string }> } }>('/settings/auth-config/ldap/sync', {}),
 }
 
 // --- Auth Providers (public) ---

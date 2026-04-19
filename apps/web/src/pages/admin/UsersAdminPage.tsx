@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, Shield, UserX, UserCheck, ChevronDown, UserPlus } from 'lucide-react'
+import { Search, Shield, UserX, UserCheck, ChevronDown, UserPlus, Upload } from 'lucide-react'
 import { usersApi } from '@/lib/api'
+import { UserImportDialog } from '@/components/admin/UserImportDialog'
 import { toast } from 'sonner'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -59,7 +60,7 @@ function InviteUserDialog({ open, onClose, onCreated }: { open: boolean; onClose
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="max-w-sm">
         <DialogHeader>
-          <DialogTitle>Invite user</DialogTitle>
+          <DialogTitle>Create user</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-2">
           <div>
@@ -71,7 +72,7 @@ function InviteUserDialog({ open, onClose, onCreated }: { open: boolean; onClose
             <Input id="inv-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="mt-1.5" placeholder="jane@example.com" />
           </div>
           <div>
-            <Label htmlFor="inv-pass">Temporary password *</Label>
+            <Label htmlFor="inv-pass">Password *</Label>
             <Input id="inv-pass" type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1.5" placeholder="Min. 8 characters" />
           </div>
         </div>
@@ -207,6 +208,7 @@ export default function UsersAdminPage() {
   const qc = useQueryClient()
   const [search, setSearch] = useState('')
   const [inviteOpen, setInviteOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
 
   const { data: users, isLoading } = useQuery({
     queryKey: ['admin', 'users'],
@@ -228,16 +230,26 @@ export default function UsersAdminPage() {
           <h1 className="text-2xl font-bold">Users</h1>
           <p className="text-muted-foreground text-sm mt-1">Manage user accounts and roles</p>
         </div>
-        <Button onClick={() => setInviteOpen(true)} size="sm">
-          <UserPlus className="mr-2 h-4 w-4" />
-          Invite user
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+            <Upload className="mr-2 h-4 w-4" />
+            Import CSV
+          </Button>
+          <Button onClick={() => setInviteOpen(true)} size="sm">
+            <UserPlus className="mr-2 h-4 w-4" />
+            Create user
+          </Button>
+        </div>
       </div>
 
       <InviteUserDialog
         open={inviteOpen}
         onClose={() => setInviteOpen(false)}
         onCreated={refresh}
+      />
+      <UserImportDialog
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
       />
 
       <div className="relative mb-4">
