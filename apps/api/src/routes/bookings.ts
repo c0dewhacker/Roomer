@@ -134,16 +134,17 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
     const { status } = request.query as { status?: string }
     const now = new Date()
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
 
     const where: Record<string, unknown> = { userId: request.user.id }
 
     if (status === 'past') {
-      where['endsAt'] = { lt: now }
+      where['endsAt'] = { lt: startOfToday }
     } else if (status === 'all') {
       // No filter
     } else {
-      // Default: upcoming
-      where['endsAt'] = { gte: now }
+      // Default: upcoming — include all of today regardless of time
+      where['endsAt'] = { gte: startOfToday }
       where['status'] = 'CONFIRMED'
     }
 
