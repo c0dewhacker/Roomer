@@ -32,6 +32,10 @@ Roomer is a self-hosted platform for managing desk and asset reservations across
 
 ---
 
+![Roomer-demo](demo.gif)
+
+---
+
 ## Stack
 
 | Layer | Technology |
