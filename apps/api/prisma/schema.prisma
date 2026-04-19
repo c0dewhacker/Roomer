@@ -554,6 +554,18 @@ model AuditLog {
 /// A row is inserted on logout. requireAuth checks this table after signature
 /// verification so that logged-out tokens cannot be replayed before their exp.
 /// Rows are pruned by pruneExpiredBlocklistEntries() once the JWT has expired.
+/// Singleton config for SCIM 2.0 outbound provisioning.
+/// Entra ID / Okta authenticates to the SCIM endpoint with a bearer token
+/// whose SHA-256 hash is stored here. Generate via Admin → Settings → SCIM.
+model ScimConfig {
+  id        String   @id @default(cuid())
+  enabled   Boolean  @default(false)
+  /// SHA-256 hex of the bearer token. Never store the plaintext.
+  tokenHash String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model RevokedToken {
   /// The jti claim from the JWT — a UUID assigned at sign time.
   jti       String   @id
