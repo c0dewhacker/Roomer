@@ -151,6 +151,8 @@ export interface Booking {
   notes?: string
   user?: User
   asset?: Asset & {
+    floor?: Floor & { building?: Building }
+    primaryZone?: { id: string; name: string }
     zone?: Zone & {
       floor?: Floor & {
         building?: Building
@@ -161,6 +163,8 @@ export interface Booking {
   deskId?: string
   /** @deprecated Use asset */
   desk?: Asset & {
+    floor?: Floor & { building?: Building }
+    primaryZone?: { id: string; name: string }
     zone?: Zone & {
       floor?: Floor & {
         building?: Building
