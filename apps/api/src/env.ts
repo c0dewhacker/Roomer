@@ -48,6 +48,9 @@ const envSchema = z.object({
   SMTP_PASS: z.string().optional(),
   EMAIL_FROM: z.string().default('noreply@roomer.local'),
   APP_URL: z.string().default('http://localhost:5173'),
+  // Public-facing base URL for the API itself (used for SCIM endpoint URLs shown in the admin UI).
+  // Defaults to localhost in development; set to e.g. https://api.example.com in production.
+  API_PUBLIC_URL: z.string().url().default('http://localhost:3001'),
 })
 
 const parsed = envSchema.safeParse(process.env)

@@ -367,6 +367,10 @@ export const usersApi = {
       '/users/bulk-import',
       { rows },
     ),
+  changePassword: (body: { currentPassword: string; newPassword: string }) =>
+    api.post<{ data: { ok: boolean } }>('/users/me/password', body),
+  resetPassword: (id: string, body: { password: string }) =>
+    api.post<{ data: { ok: boolean } }>(`/users/${id}/password/reset`, body),
 }
 
 // --- Settings ---

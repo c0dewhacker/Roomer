@@ -1,6 +1,5 @@
 import fs from 'fs'
 import path from 'path'
-import { pipeline } from 'stream/promises'
 import type { MultipartFile } from '@fastify/multipart'
 import sharp from 'sharp'
 import { env } from '../env'
@@ -95,8 +94,15 @@ export async function saveFloorPlan(
   const originalRelPath = path.join(FLOOR_PLANS_DIR, filename)
   const originalAbsPath = resolveStoragePath(originalRelPath)
 
-  // Write original file to disk
-  await pipeline(file.file, fs.createWriteStream(originalAbsPath))
+  // Buffer the entire upload so we can validate magic bytes before persisting
+  const buffer = await file.toBuffer()
+
+  // Validate magic bytes for all non-DXF types (DXF is plaintext — no magic signature)
+  if (fileType !== FloorPlanFileType.DXF && !checkFileMagic(buffer, file.mimetype)) {
+    throw Object.assign(new Error('File content does not match the declared MIME type'), { code: 'INVALID_MAGIC' })
+  }
+
+  await fs.promises.writeFile(originalAbsPath, buffer)
 
   if (fileType === FloorPlanFileType.IMAGE) {
     return saveImageFloorPlan(originalAbsPath, originalRelPath, filename)
@@ -293,6 +299,8 @@ const MAGIC_SIGNATURES: Record<string, number[][]> = {
   'image/png': [[0x89, 0x50, 0x4E, 0x47]],                                     // PNG
   'image/jpeg': [[0xFF, 0xD8, 0xFF]],                                           // JPEG
   'image/jpg': [[0xFF, 0xD8, 0xFF]],                                            // JPEG (alt MIME)
+  'image/webp': [[0x52, 0x49, 0x46, 0x46]],                                    // RIFF (WebP container)
+  'image/gif': [[0x47, 0x49, 0x46, 0x38]],                                     // GIF8 (GIF87a/GIF89a)
 }
 
 /**
@@ -303,7 +311,7 @@ const MAGIC_SIGNATURES: Record<string, number[][]> = {
  */
 export function checkFileMagic(buffer: Buffer, mimeType: string): boolean {
   const signatures = MAGIC_SIGNATURES[mimeType]
-  if (!signatures) return true
+  if (!signatures) return false
   return signatures.some((sig) => {
     if (buffer.length < sig.length) return false
     return sig.every((byte, i) => buffer[i] === byte)

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { User, Mail, Shield, Building2, Layers, Users } from 'lucide-react'
+import { User, Mail, Shield, Building2, Layers, Users, KeyRound } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { usersApi } from '@/lib/api'
@@ -19,6 +19,16 @@ const profileSchema = z.object({
   displayName: z.string().min(2, 'Name must be at least 2 characters'),
 })
 type ProfileForm = z.infer<typeof profileSchema>
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, 'Current password is required'),
+  newPassword: z.string().min(12, 'Password must be at least 12 characters'),
+  confirmPassword: z.string().min(1, 'Please confirm your password'),
+}).refine((d) => d.newPassword === d.confirmPassword, {
+  message: 'Passwords do not match',
+  path: ['confirmPassword'],
+})
+type ChangePasswordForm = z.infer<typeof changePasswordSchema>
 
 const PROVIDER_LABELS: Record<string, string> = {
   LOCAL: 'Local account',
@@ -39,11 +49,19 @@ export default function ProfilePage() {
   const setUser = useAuthStore((s) => s.setUser)
   const qc = useQueryClient()
   const [editing, setEditing] = useState(false)
+  const [changingPassword, setChangingPassword] = useState(false)
 
   const { register, handleSubmit, formState: { errors, isDirty }, reset } = useForm<ProfileForm>({
     resolver: zodResolver(profileSchema),
     defaultValues: { displayName: user?.displayName ?? '' },
   })
+
+  const {
+    register: regPw,
+    handleSubmit: handlePw,
+    formState: { errors: pwErrors },
+    reset: resetPw,
+  } = useForm<ChangePasswordForm>({ resolver: zodResolver(changePasswordSchema) })
 
   const updateProfile = useMutation({
     mutationFn: (data: ProfileForm) => usersApi.update(user!.id, data),
@@ -54,6 +72,17 @@ export default function ProfilePage() {
       qc.invalidateQueries({ queryKey: ['auth', 'me'] })
     },
     onError: () => toast.error('Failed to update profile'),
+  })
+
+  const changePassword = useMutation({
+    mutationFn: (data: ChangePasswordForm) =>
+      usersApi.changePassword({ currentPassword: data.currentPassword, newPassword: data.newPassword }),
+    onSuccess: () => {
+      toast.success('Password changed successfully')
+      setChangingPassword(false)
+      resetPw()
+    },
+    onError: (err: Error) => toast.error(err.message ?? 'Failed to change password'),
   })
 
   if (!user) return null
@@ -181,6 +210,63 @@ export default function ProfilePage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Change password — local accounts only */}
+      {!isIdpUser && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <KeyRound className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-base">Password</CardTitle>
+            </div>
+            <CardDescription>Change your account password</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {changingPassword ? (
+              <form onSubmit={handlePw((d) => changePassword.mutate(d))} className="space-y-4">
+                <div>
+                  <Label htmlFor="cur-pass">Current password</Label>
+                  <Input id="cur-pass" type="password" {...regPw('currentPassword')} className="mt-1.5" autoComplete="current-password" />
+                  {pwErrors.currentPassword && (
+                    <p className="text-xs text-destructive mt-1">{pwErrors.currentPassword.message}</p>
+                  )}
+                </div>
+                <div>
+                  <Label htmlFor="new-pass">New password</Label>
+                  <Input id="new-pass" type="password" {...regPw('newPassword')} className="mt-1.5" autoComplete="new-password" />
+                  {pwErrors.newPassword && (
+                    <p className="text-xs text-destructive mt-1">{pwErrors.newPassword.message}</p>
+                  )}
+                </div>
+                <div>
+                  <Label htmlFor="conf-pass">Confirm new password</Label>
+                  <Input id="conf-pass" type="password" {...regPw('confirmPassword')} className="mt-1.5" autoComplete="new-password" />
+                  {pwErrors.confirmPassword && (
+                    <p className="text-xs text-destructive mt-1">{pwErrors.confirmPassword.message}</p>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <Button type="submit" size="sm" disabled={changePassword.isPending}>
+                    {changePassword.isPending ? 'Updating…' : 'Update password'}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => { setChangingPassword(false); resetPw() }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </form>
+            ) : (
+              <Button variant="outline" size="sm" onClick={() => setChangingPassword(true)}>
+                Change password
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Group memberships */}
       {groupMemberships.length > 0 && (

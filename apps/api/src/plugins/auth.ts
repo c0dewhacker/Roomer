@@ -26,7 +26,7 @@ async function authPlugin(fastify: FastifyInstance): Promise<void> {
     conString: env.DATABASE_URL,
     tableName: 'sessions',
     createTableIfMissing: true,
-    pruneSessionInterval: 60 * 60,
+    pruneSessionInterval: 15 * 60,
   })
 
   await fastify.register(fastifySession, {

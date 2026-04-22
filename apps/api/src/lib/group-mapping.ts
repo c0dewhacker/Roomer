@@ -43,16 +43,28 @@ function groupMatches(g: string, idpGroup: string): boolean {
  *
  * For each mapping whose idpGroup matches one of the user's IdP groups, the user is:
  *   1. Added to the corresponding Roomer UserGroup (if roomerGroupId is set)
- *   2. Elevated to the targetGlobalRole (if set) OR elevated via the group's globalRole
+ *   2. Granted the targetGlobalRole (if set) OR granted via the group's globalRole
  *
- * Roles are only elevated, never downgraded — existing higher roles are preserved.
+ * When `sync` is true (recommended on every login):
+ *   - The user is removed from any Roomer groups referenced by mappings that no longer match.
+ *   - The user's globalRole is re-derived from current matches and may be downgraded to USER.
+ *
+ * When `sync` is false (legacy default):
+ *   - Roles are only elevated, never downgraded — existing higher roles are preserved.
  */
 export async function applyGroupMappings(
   userId: string,
   idpGroups: string[],
   mappings: GroupMapping[],
+  sync = false,
 ): Promise<void> {
-  if (!mappings.length || !idpGroups.length) return
+  if (!mappings.length) return
+
+  // Collect all Roomer group IDs referenced by any mapping (for sync eviction)
+  const allMappedGroupIds = new Set<string>()
+  for (const m of mappings) {
+    if (m.roomerGroupId) allMappedGroupIds.add(m.roomerGroupId)
+  }
 
   const matchedGroupIds: string[] = []
   let directAdminGrant = false
@@ -72,15 +84,15 @@ export async function applyGroupMappings(
     }
   }
 
-  // Apply direct role grant immediately
-  if (directAdminGrant) {
-    await prisma.user.update({
-      where: { id: userId },
-      data: { globalRole: GlobalRole.SUPER_ADMIN },
-    })
+  if (sync) {
+    // Remove user from mapped groups they no longer match
+    const staleGroupIds = [...allMappedGroupIds].filter((gid) => !matchedGroupIds.includes(gid))
+    if (staleGroupIds.length) {
+      await prisma.userGroupMember.deleteMany({
+        where: { userId, groupId: { in: staleGroupIds } },
+      })
+    }
   }
-
-  if (!matchedGroupIds.length) return
 
   // Add user to each matched Roomer group
   for (const groupId of matchedGroupIds) {
@@ -95,14 +107,24 @@ export async function applyGroupMappings(
     }
   }
 
-  // Derive the highest globalRole from the matched groups and elevate user if needed
-  const groups = await prisma.userGroup.findMany({
-    where: { id: { in: matchedGroupIds } },
-    select: { globalRole: true },
-  })
+  // Derive the effective globalRole from matched groups + direct grants
+  const effectiveGroups = matchedGroupIds.length
+    ? await prisma.userGroup.findMany({
+        where: { id: { in: matchedGroupIds } },
+        select: { globalRole: true },
+      })
+    : []
 
-  const hasAdminRole = groups.some((g) => g.globalRole === GlobalRole.SUPER_ADMIN)
-  if (hasAdminRole && !directAdminGrant) {
+  const hasAdminRole = directAdminGrant || effectiveGroups.some((g) => g.globalRole === GlobalRole.SUPER_ADMIN)
+
+  if (sync) {
+    // Re-derive role; may downgrade from SUPER_ADMIN → USER if no matching grants remain
+    await prisma.user.update({
+      where: { id: userId },
+      data: { globalRole: hasAdminRole ? GlobalRole.SUPER_ADMIN : GlobalRole.USER },
+    })
+  } else if (hasAdminRole) {
+    // Legacy: only elevate, never downgrade
     await prisma.user.update({
       where: { id: userId },
       data: { globalRole: GlobalRole.SUPER_ADMIN },
