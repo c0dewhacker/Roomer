@@ -74,7 +74,7 @@ const samlConfigSchema = z.object({
 })
 
 const ldapConfigSchema = z.object({
-  url: z.string().min(1),
+  url: z.string().regex(/^ldaps?:\/\//, 'Must be a valid LDAP URL (ldap:// or ldaps://)'),
   bindDN: z.string().min(1),
   bindCredentials: z.string().min(1).optional(),
   searchBase: z.string().min(1),
@@ -410,7 +410,7 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
         data: {
           enabled: cfg?.enabled ?? false,
           hasToken: !!cfg?.tokenHash,
-          endpointUrl: `${process.env.APP_URL ?? 'http://localhost:3001'}/scim/v2`,
+          endpointUrl: `${env.API_PUBLIC_URL}/scim/v2`,
         },
       })
     },

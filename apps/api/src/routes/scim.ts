@@ -53,7 +53,7 @@ function registerDiscovery(fastify: FastifyInstance): void {
       }],
       meta: {
         resourceType: 'ServiceProviderConfig',
-        location: `${env.APP_URL}/scim/v2/ServiceProviderConfig`,
+        location: `${env.API_PUBLIC_URL}/scim/v2/ServiceProviderConfig`,
       },
     })
   })
@@ -65,14 +65,14 @@ function registerDiscovery(fastify: FastifyInstance): void {
         id: 'User', name: 'User', endpoint: '/Users',
         description: 'User accounts',
         schema: SCIM_SCHEMAS.USER,
-        meta: { resourceType: 'ResourceType', location: `${env.APP_URL}/scim/v2/ResourceTypes/User` },
+        meta: { resourceType: 'ResourceType', location: `${env.API_PUBLIC_URL}/scim/v2/ResourceTypes/User` },
       },
       {
         schemas: [SCIM_SCHEMAS.RESOURCE_TYPE],
         id: 'Group', name: 'Group', endpoint: '/Groups',
         description: 'User groups',
         schema: SCIM_SCHEMAS.GROUP,
-        meta: { resourceType: 'ResourceType', location: `${env.APP_URL}/scim/v2/ResourceTypes/Group` },
+        meta: { resourceType: 'ResourceType', location: `${env.API_PUBLIC_URL}/scim/v2/ResourceTypes/Group` },
       },
     ], 2, 1))
   })
@@ -124,6 +124,13 @@ function registerUsers(fastify: FastifyInstance): void {
     if (!email) {
       return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
         .send(scimError(400, 'userName is required'))
+    }
+
+    // Validate email format — SCIM userName must be a valid email address
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(email)) {
+      return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(400, 'userName must be a valid email address'))
     }
 
     const existing = await prisma.user.findUnique({ where: { email }, select: userSelect })

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, Shield, UserX, UserCheck, ChevronDown, UserPlus, Upload } from 'lucide-react'
+import { Search, Shield, UserX, UserCheck, ChevronDown, UserPlus, Upload, KeyRound } from 'lucide-react'
 import { usersApi } from '@/lib/api'
 import { UserImportDialog } from '@/components/admin/UserImportDialog'
 import { toast } from 'sonner'
@@ -73,13 +73,80 @@ function InviteUserDialog({ open, onClose, onCreated }: { open: boolean; onClose
           </div>
           <div>
             <Label htmlFor="inv-pass">Password *</Label>
-            <Input id="inv-pass" type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1.5" placeholder="Min. 8 characters" />
+            <Input id="inv-pass" type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1.5" placeholder="Min. 12 characters" />
           </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={create.isPending}>Cancel</Button>
-          <Button onClick={() => create.mutate()} disabled={!email || !displayName || password.length < 8 || create.isPending}>
+          <Button onClick={() => create.mutate()} disabled={!email || !displayName || password.length < 12 || create.isPending}>
             {create.isPending ? 'Creating…' : 'Create user'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function ResetPasswordDialog({ open, user, onClose }: { open: boolean; user: User; onClose: () => void }) {
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+
+  const resetPw = useMutation({
+    mutationFn: () => usersApi.resetPassword(user.id, { password }),
+    onSuccess: () => {
+      toast.success(`Password reset for ${user.displayName}`)
+      setPassword('')
+      setConfirm('')
+      onClose()
+    },
+    onError: (err: Error) => toast.error(err.message ?? 'Failed to reset password'),
+  })
+
+  const mismatch = confirm.length > 0 && password !== confirm
+  const valid = password.length >= 12 && password === confirm
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) { setPassword(''); setConfirm(''); onClose() } }}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Reset password</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground -mt-2">
+          Set a new password for <span className="font-medium text-foreground">{user.displayName}</span>.
+        </p>
+        <div className="space-y-4 py-2">
+          <div>
+            <Label htmlFor="rp-pass">New password</Label>
+            <Input
+              id="rp-pass"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="mt-1.5"
+              placeholder="Min. 12 characters"
+              autoComplete="new-password"
+            />
+          </div>
+          <div>
+            <Label htmlFor="rp-conf">Confirm new password</Label>
+            <Input
+              id="rp-conf"
+              type="password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              className="mt-1.5"
+              placeholder="Repeat password"
+              autoComplete="new-password"
+            />
+            {mismatch && <p className="text-xs text-destructive mt-1">Passwords do not match</p>}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => { setPassword(''); setConfirm(''); onClose() }} disabled={resetPw.isPending}>
+            Cancel
+          </Button>
+          <Button onClick={() => resetPw.mutate()} disabled={!valid || resetPw.isPending}>
+            {resetPw.isPending ? 'Resetting…' : 'Reset password'}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -99,6 +166,8 @@ const statusConfig: Record<string, { label: string; variant: 'default' | 'second
 }
 
 function UserRow({ user, onRefresh }: { user: User; onRefresh: () => void }) {
+  const [resetPasswordOpen, setResetPasswordOpen] = useState(false)
+
   const updateStatus = useMutation({
     mutationFn: (accountStatus: string) => usersApi.update(user.id, { accountStatus } as any),
     onSuccess: () => { toast.success('User updated'); onRefresh() },
@@ -119,88 +188,107 @@ function UserRow({ user, onRefresh }: { user: User; onRefresh: () => void }) {
     .slice(0, 2)
 
   const statusCfg = statusConfig[user.accountStatus] ?? { label: user.accountStatus, variant: 'outline' as const }
+  const isLocalUser = !user.provider || user.provider === 'LOCAL'
 
   return (
-    <Card>
-      <CardContent className="p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <Avatar className="h-9 w-9 shrink-0">
-              <AvatarFallback className="text-sm bg-primary text-primary-foreground">
-                {initials}
-              </AvatarFallback>
-            </Avatar>
-            <div className="min-w-0">
-              <p className="font-medium text-sm truncate">{user.displayName}</p>
-              <p className="text-xs text-muted-foreground truncate">{user.email}</p>
+    <>
+      {isLocalUser && (
+        <ResetPasswordDialog
+          open={resetPasswordOpen}
+          user={user}
+          onClose={() => setResetPasswordOpen(false)}
+        />
+      )}
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <Avatar className="h-9 w-9 shrink-0">
+                <AvatarFallback className="text-sm bg-primary text-primary-foreground">
+                  {initials}
+                </AvatarFallback>
+              </Avatar>
+              <div className="min-w-0">
+                <p className="font-medium text-sm truncate">{user.displayName}</p>
+                <p className="text-xs text-muted-foreground truncate">{user.email}</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <Badge variant={user.globalRole === 'SUPER_ADMIN' ? 'default' : 'secondary'} className="text-xs hidden sm:inline-flex">
+                {roleLabels[user.globalRole] ?? user.globalRole}
+              </Badge>
+              <Badge variant={statusCfg.variant} className="text-xs hidden sm:inline-flex">
+                {statusCfg.label}
+              </Badge>
+
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs">
+                    Actions <ChevronDown className="h-3 w-3" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {user.globalRole !== 'SUPER_ADMIN' ? (
+                    <DropdownMenuItem onClick={() => updateRole.mutate('SUPER_ADMIN')}>
+                      <Shield className="mr-2 h-3.5 w-3.5" />
+                      Make Administrator
+                    </DropdownMenuItem>
+                  ) : (
+                    <DropdownMenuItem onClick={() => updateRole.mutate('USER')}>
+                      <Shield className="mr-2 h-3.5 w-3.5" />
+                      Remove Administrator
+                    </DropdownMenuItem>
+                  )}
+                  {isLocalUser && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onSelect={(e) => e.preventDefault()} onClick={() => setResetPasswordOpen(true)}>
+                        <KeyRound className="mr-2 h-3.5 w-3.5" />
+                        Reset password
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                  <DropdownMenuSeparator />
+                  {user.accountStatus === 'ACTIVE' ? (
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <DropdownMenuItem onSelect={(e) => e.preventDefault()} className="text-destructive focus:text-destructive">
+                          <UserX className="mr-2 h-3.5 w-3.5" />
+                          Suspend user
+                        </DropdownMenuItem>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Suspend {user.displayName}?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            The user will not be able to log in until their account is reactivated.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={() => updateStatus.mutate('SUSPENDED')}
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          >
+                            Suspend
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  ) : (
+                    <DropdownMenuItem onClick={() => updateStatus.mutate('ACTIVE')}>
+                      <UserCheck className="mr-2 h-3.5 w-3.5" />
+                      Reactivate user
+                    </DropdownMenuItem>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            <Badge variant={user.globalRole === 'SUPER_ADMIN' ? 'default' : 'secondary'} className="text-xs hidden sm:inline-flex">
-              {roleLabels[user.globalRole] ?? user.globalRole}
-            </Badge>
-            <Badge variant={statusCfg.variant} className="text-xs hidden sm:inline-flex">
-              {statusCfg.label}
-            </Badge>
-
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs">
-                  Actions <ChevronDown className="h-3 w-3" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {user.globalRole !== 'SUPER_ADMIN' ? (
-                  <DropdownMenuItem onClick={() => updateRole.mutate('SUPER_ADMIN')}>
-                    <Shield className="mr-2 h-3.5 w-3.5" />
-                    Make Administrator
-                  </DropdownMenuItem>
-                ) : (
-                  <DropdownMenuItem onClick={() => updateRole.mutate('USER')}>
-                    <Shield className="mr-2 h-3.5 w-3.5" />
-                    Remove Administrator
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuSeparator />
-                {user.accountStatus === 'ACTIVE' ? (
-                  <AlertDialog>
-                    <AlertDialogTrigger asChild>
-                      <DropdownMenuItem onSelect={(e) => e.preventDefault()} className="text-destructive focus:text-destructive">
-                        <UserX className="mr-2 h-3.5 w-3.5" />
-                        Suspend user
-                      </DropdownMenuItem>
-                    </AlertDialogTrigger>
-                    <AlertDialogContent>
-                      <AlertDialogHeader>
-                        <AlertDialogTitle>Suspend {user.displayName}?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                          The user will not be able to log in until their account is reactivated.
-                        </AlertDialogDescription>
-                      </AlertDialogHeader>
-                      <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction
-                          onClick={() => updateStatus.mutate('SUSPENDED')}
-                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                        >
-                          Suspend
-                        </AlertDialogAction>
-                      </AlertDialogFooter>
-                    </AlertDialogContent>
-                  </AlertDialog>
-                ) : (
-                  <DropdownMenuItem onClick={() => updateStatus.mutate('ACTIVE')}>
-                    <UserCheck className="mr-2 h-3.5 w-3.5" />
-                    Reactivate user
-                  </DropdownMenuItem>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+    </>
   )
 }
 

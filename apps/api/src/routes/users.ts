@@ -12,8 +12,17 @@ import { z } from 'zod'
 const createUserSchema = z.object({
   email: z.string().email(),
   displayName: z.string().min(1).max(255),
-  password: z.string().min(8),
+  password: z.string().min(12),
   globalRole: z.nativeEnum(GlobalRole).optional(),
+})
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(12),
+})
+
+const adminSetPasswordSchema = z.object({
+  password: z.string().min(12),
 })
 
 const updateUserSchema = z.object({
@@ -38,7 +47,7 @@ const listUsersQuerySchema = z.object({
 const userImportRowSchema = z.object({
   email: z.string().email('Invalid email'),
   display_name: z.string().min(1, 'display_name is required').max(255),
-  password: z.string().optional(),
+  password: z.string().min(12).optional(),
   global_role: z.enum(['USER', 'SUPER_ADMIN']).default('USER'),
   access_groups: z.string().optional(),
   send_welcome_email: z.string().optional().transform((v) => v !== 'false' && v !== '0'),
@@ -160,7 +169,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string }
 
     const isSelf = request.user.id === id
-    const isAdmin = request.user.globalRole === 'SUPER_ADMIN'
+    const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
 
     if (!isSelf && !isAdmin) {
       return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
@@ -201,7 +210,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string }
 
     const isSelf = request.user.id === id
-    const isAdmin = request.user.globalRole === 'SUPER_ADMIN'
+    const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
 
     if (!isSelf && !isAdmin) {
       return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
@@ -242,12 +251,62 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     }
   })
 
+  // POST /users/me/password — self-service password change (local auth users only)
+  fastify.post('/me/password', { preHandler: [requireAuth] }, async (request, reply) => {
+    const result = changePasswordSchema.safeParse(request.body)
+    if (!result.success) {
+      return reply.status(400).send({
+        error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
+      })
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: request.user.id }, select: { id: true, passwordHash: true } })
+    if (!user?.passwordHash) {
+      return reply.status(409).send({
+        error: { message: 'Password change is not available for SSO accounts', code: 'SSO_ACCOUNT' },
+      })
+    }
+
+    const valid = await bcryptjs.compare(result.data.currentPassword, user.passwordHash)
+    if (!valid) {
+      return reply.status(401).send({ error: { message: 'Current password is incorrect', code: 'INVALID_CREDENTIALS' } })
+    }
+
+    const newHash = await bcryptjs.hash(result.data.newPassword, 12)
+    await prisma.user.update({ where: { id: request.user.id }, data: { passwordHash: newHash } })
+    return reply.status(200).send({ data: { ok: true } })
+  })
+
+  // POST /users/:id/password/reset — admin sets a new password for any user
+  fastify.post(
+    '/:id/password/reset',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const result = adminSetPasswordSchema.safeParse(request.body)
+      if (!result.success) {
+        return reply.status(400).send({
+          error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
+        })
+      }
+
+      const user = await prisma.user.findUnique({ where: { id } })
+      if (!user) {
+        return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })
+      }
+
+      const newHash = await bcryptjs.hash(result.data.password, 12)
+      await prisma.user.update({ where: { id }, data: { passwordHash: newHash } })
+      return reply.status(200).send({ data: { ok: true } })
+    },
+  )
+
   // GET /users/:id/bookings — get user's bookings
   fastify.get('/:id/bookings', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
 
     const isSelf = request.user.id === id
-    const isAdmin = request.user.globalRole === 'SUPER_ADMIN'
+    const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
 
     if (!isSelf && !isAdmin) {
       return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })

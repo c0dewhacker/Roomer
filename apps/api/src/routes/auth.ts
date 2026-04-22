@@ -42,7 +42,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         const ldapCfg = await getLdapConfig()
         const mappings = ldapCfg?.groupMappings ?? []
         if (ldapResult.groups.length && mappings.length) {
-          await applyGroupMappings(user.id, ldapResult.groups, mappings)
+          await applyGroupMappings(user.id, ldapResult.groups, mappings, true)
         }
       } else if (!user || !user.passwordHash) {
         return reply.status(401).send({
