@@ -59,10 +59,14 @@ function issueSsoToken(reply: FastifyReply, user: User, redirectPath = '/booking
 export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Auth'], ...route.schema } })
 
-  // GET /auth/providers — public: which SSO providers are enabled
+  // GET /auth/providers — public: which providers are enabled + login display settings
   fastify.get('/providers', async (_request, reply) => {
-    const configs = await prisma.authConfig.findMany()
+    const [configs, org] = await Promise.all([
+      prisma.authConfig.findMany(),
+      prisma.organisation.findFirst({ select: { branding: true } }),
+    ])
     const byProvider = Object.fromEntries(configs.map((c) => [c.provider, c]))
+    const branding = (org?.branding ?? {}) as Record<string, unknown>
 
     const oidcCfg = byProvider['OIDC']
     const samlCfg = byProvider['SAML']
@@ -79,6 +83,9 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
           label: ((samlCfg?.config as Record<string, string> | null)?.label) ?? 'Sign in with SAML SSO',
         },
         ldap: { enabled: ldapCfg?.enabled ?? false },
+        local: { enabled: true },
+        defaultProvider: (branding.defaultLoginProvider as string) ?? null,
+        showProviderSelector: branding.showLoginProviderSelector !== false,
       },
     })
   })

@@ -381,6 +381,34 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
+  // PATCH /settings/login-settings — update login display preferences (SUPER_ADMIN)
+  fastify.patch(
+    '/login-settings',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const loginSettingsSchema = z.object({
+        defaultProvider: z.enum(['local', 'ldap', 'oidc', 'saml']).nullable().optional(),
+        showProviderSelector: z.boolean().optional(),
+      })
+      const result = loginSettingsSchema.safeParse(request.body)
+      if (!result.success) {
+        return reply.status(400).send({
+          error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
+        })
+      }
+      const org = await prisma.organisation.findFirst()
+      if (!org) {
+        return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
+      }
+      const current = (org.branding ?? {}) as Record<string, unknown>
+      const patch: Record<string, unknown> = {}
+      if ('defaultProvider' in result.data) patch.defaultLoginProvider = result.data.defaultProvider
+      if ('showProviderSelector' in result.data) patch.showLoginProviderSelector = result.data.showProviderSelector
+      await prisma.organisation.update({ where: { id: org.id }, data: { branding: { ...current, ...patch } as Record<string, string | boolean | null> } })
+      return reply.status(200).send({ data: { ok: true } })
+    },
+  )
+
   // POST /settings/auth-config/ldap/sync — run LDAP directory sync (SUPER_ADMIN)
   fastify.post(
     '/auth-config/ldap/sync',
