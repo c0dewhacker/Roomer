@@ -35,6 +35,9 @@ export async function buildApp(): Promise<FastifyInstance> {
     // Only trust X-Forwarded-For when explicitly enabled via TRUST_PROXY=true.
     // Without this, an attacker can spoof X-Forwarded-For to bypass IP-keyed rate limits.
     trustProxy: env.TRUST_PROXY,
+    // Explicit body size cap. Fastify's default is 1 MiB; we set it explicitly
+    // so future changes to route-level limits are deliberate rather than implicit.
+    bodyLimit: 1_048_576,
   })
 
   // ─── Security ──────────────────────────────────────────────────────────────
@@ -46,7 +49,9 @@ export async function buildApp(): Promise<FastifyInstance> {
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
+        // 'unsafe-inline' is only needed when the Swagger UI is enabled (it injects inline styles).
+        // When Swagger is disabled (production default), we tighten to 'self' only.
+        styleSrc: env.SWAGGER_ENABLED ? ["'self'", "'unsafe-inline'"] : ["'self'"],
         imgSrc: ["'self'", 'data:'],
         connectSrc: ["'self'"],
         fontSrc: ["'self'"],
@@ -54,6 +59,7 @@ export async function buildApp(): Promise<FastifyInstance> {
         frameAncestors: ["'none'"],
       },
     } : false,
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   })
 
   await fastify.register(cors, {
@@ -198,8 +204,11 @@ export async function buildApp(): Promise<FastifyInstance> {
     }
 
     if (error.statusCode) {
+      // Only surface the original message for 4xx client errors.
+      // For 5xx, use a generic message to avoid leaking internal details.
+      const message = error.statusCode < 500 ? error.message : 'Internal server error'
       return reply.status(error.statusCode).send({
-        error: { message: error.message, code: 'REQUEST_ERROR' },
+        error: { message, code: 'REQUEST_ERROR' },
       })
     }
 

@@ -6,6 +6,7 @@ import { createFloorSchema, updateFloorSchema, GlobalRole } from '@roomer/shared
 import { requireAuth } from '../middleware/requireAuth'
 import { requireGlobalRole, isFloorManagerForFloor } from '../middleware/requireRole'
 import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage'
+import { canUserAccessBuilding } from './groups'
 import { env } from '../env'
 
 export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
@@ -35,6 +36,13 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
 
     if (!floor) {
       return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+    }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const hasAccess = await canUserAccessBuilding(request.user.id, floor.building.id)
+      if (!hasAccess) {
+        return reply.status(403).send({ error: { message: 'You do not have access to this building', code: 'FORBIDDEN' } })
+      }
     }
 
     return reply.status(200).send({ data: floor })
@@ -258,7 +266,15 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      const saved = await saveFloorPlan(data)
+      let saved: Awaited<ReturnType<typeof saveFloorPlan>>
+      try {
+        saved = await saveFloorPlan(data)
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'INVALID_MAGIC') {
+          return reply.status(400).send({ error: { message: 'File content does not match the declared MIME type', code: 'INVALID_FILE_TYPE' } })
+        }
+        throw err
+      }
 
       const floorPlan = await prisma.floorPlan.upsert({
         where: { floorId: id },
@@ -289,9 +305,19 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/:id/floor-plan/image', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
 
-    const floorPlan = await prisma.floorPlan.findUnique({ where: { floorId: id } })
+    const floorPlan = await prisma.floorPlan.findUnique({
+      where: { floorId: id },
+      include: { floor: { select: { buildingId: true } } },
+    })
     if (!floorPlan) {
       return reply.status(404).send({ error: { message: 'Floor plan not found', code: 'NOT_FOUND' } })
+    }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const hasAccess = await canUserAccessBuilding(request.user.id, floorPlan.floor.buildingId)
+      if (!hasAccess) {
+        return reply.status(403).send({ error: { message: 'You do not have access to this building', code: 'FORBIDDEN' } })
+      }
     }
 
     const absPath = resolveStoragePath(floorPlan.renderedPath)
@@ -430,6 +456,13 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
 
     if (!floor) {
       return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+    }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const hasAccess = await canUserAccessBuilding(request.user.id, floor.buildingId)
+      if (!hasAccess) {
+        return reply.status(403).send({ error: { message: 'You do not have access to this building', code: 'FORBIDDEN' } })
+      }
     }
 
     type AvailabilityStatus = 'available' | 'mine' | 'booked' | 'restricted' | 'assigned' | 'disabled' | 'queued' | 'promoted' | 'zone_conflict'

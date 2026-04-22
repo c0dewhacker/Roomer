@@ -158,7 +158,7 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
       const rawGroups = (userinfo as Record<string, unknown>)[groupsClaimName]
       const idpGroups = Array.isArray(rawGroups) ? rawGroups.map(String) : []
       if (idpGroups.length && cfg.groupMappings?.length) {
-        await applyGroupMappings(user.id, idpGroups, cfg.groupMappings)
+        await applyGroupMappings(user.id, idpGroups, cfg.groupMappings, true)
       }
 
       // Issue JWT cookie — OIDC session state is no longer needed
@@ -220,7 +220,7 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
 
       const idpGroups = extractGroupsFromProfile(samlProfile, cfg.groupAttribute)
       if (idpGroups.length && cfg.groupMappings?.length) {
-        await applyGroupMappings(user.id, idpGroups, cfg.groupMappings)
+        await applyGroupMappings(user.id, idpGroups, cfg.groupMappings, true)
       }
 
       // Issue JWT cookie
