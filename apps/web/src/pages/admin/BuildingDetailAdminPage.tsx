@@ -3,9 +3,10 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Layers, Plus, ChevronRight, Pencil, Trash2, Shield, Users, UserMinus, UserPlus } from 'lucide-react'
+import { Layers, Plus, ChevronRight, Pencil, Trash2, Shield, Users, UserMinus, UserPlus, UserX } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { buildingsApi, floorsApi, groupsApi, usersApi, ApiError } from '@/lib/api'
+import { buildingsApi, floorsApi, groupsApi, usersApi, assetsApi, ApiError } from '@/lib/api'
+import AssignmentImportDialog from '@/components/admin/AssignmentImportDialog'
 import { toast } from 'sonner'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -126,6 +127,18 @@ function FloorCard({ floor, buildingId }: { floor: Floor; buildingId: string }) 
   const [editOpen, setEditOpen] = useState(false)
   const [pendingUploadFile, setPendingUploadFile] = useState<File | null>(null)
   const [replaceConfirmOpen, setReplaceConfirmOpen] = useState(false)
+  const [clearAssignOpen, setClearAssignOpen] = useState(false)
+
+  const clearAssignments = useMutation({
+    mutationFn: () => assetsApi.clearFloorAssignments(floor.id),
+    onSuccess: (res) => {
+      toast.success(`Cleared ${res.data.cleared} assignment${res.data.cleared !== 1 ? 's' : ''}`)
+      qc.invalidateQueries({ queryKey: ['buildings', buildingId] })
+      qc.invalidateQueries({ queryKey: ['floors', floor.id] })
+      qc.invalidateQueries({ queryKey: ['assets'] })
+    },
+    onError: () => toast.error('Failed to clear assignments'),
+  })
 
   const upload = useMutation({
     mutationFn: (file: File) => floorsApi.uploadFloorPlan(floor.id, file),
@@ -218,6 +231,15 @@ function FloorCard({ floor, buildingId }: { floor: Floor; buildingId: string }) 
                 </AlertDialogFooter>
               </AlertDialogContent>
             </AlertDialog>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 hover:text-destructive"
+              title="Clear floor assignments"
+              onClick={() => setClearAssignOpen(true)}
+            >
+              <UserX className="h-3.5 w-3.5" />
+            </Button>
             <Button size="sm" className="h-8 gap-1.5 text-xs"
               onClick={() => navigate(`/admin/floors/${floor.id}`)}>
               Manage zones & assets
@@ -226,6 +248,27 @@ function FloorCard({ floor, buildingId }: { floor: Floor; buildingId: string }) 
           </div>
         </CardContent>
       </Card>
+
+      <AlertDialog open={clearAssignOpen} onOpenChange={setClearAssignOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear all assignments on this floor?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will remove all permanent user assignments from every asset on <strong>{floor.name}</strong>.
+              Assets will revert to open status. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { clearAssignments.mutate(); setClearAssignOpen(false) }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Clear assignments
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <FloorDialog
         open={editOpen}
@@ -653,6 +696,7 @@ function BuildingAccessSection({ buildingId }: { buildingId: string }) {
 export default function BuildingDetailAdminPage() {
   const { buildingId } = useParams<{ buildingId: string }>()
   const [addFloorOpen, setAddFloorOpen] = useState(false)
+  const [bulkAssignOpen, setBulkAssignOpen] = useState(false)
 
   const { data: building, isLoading } = useQuery({
     queryKey: ['buildings', buildingId],
@@ -678,9 +722,14 @@ export default function BuildingDetailAdminPage() {
             </>
           )}
         </div>
-        <Button onClick={() => setAddFloorOpen(true)}>
-          <Plus className="mr-2 h-4 w-4" /> Add Floor
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setBulkAssignOpen(true)}>
+            <UserPlus className="mr-2 h-4 w-4" /> Bulk assign users
+          </Button>
+          <Button onClick={() => setAddFloorOpen(true)}>
+            <Plus className="mr-2 h-4 w-4" /> Add Floor
+          </Button>
+        </div>
       </div>
 
       <BuildingManagersPanel buildingId={buildingId!} />
@@ -715,6 +764,13 @@ export default function BuildingDetailAdminPage() {
         open={addFloorOpen}
         onClose={() => setAddFloorOpen(false)}
         buildingId={buildingId!}
+      />
+
+      <AssignmentImportDialog
+        open={bulkAssignOpen}
+        onClose={() => setBulkAssignOpen(false)}
+        buildingId={buildingId}
+        buildingName={building?.name}
       />
     </div>
   )
