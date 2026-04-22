@@ -20,19 +20,95 @@ Roomer is a self-hosted platform for managing desk and asset reservations across
 |---|---|
 | **Floor plan editor** | Upload image, PDF or DXF floor plans and place assets on an interactive canvas |
 | **Desk & asset booking** | Book by date with live availability (available, booked, assigned, queued, restricted) |
-| **Permanent assignments** | Assign desks to users with primary/secondary ownership |
+| **Permanent assignments** | Assign desks to users with primary/secondary ownership; bulk-assign via CSV |
 | **Zone management** | Group assets into colour-coded zones with optional conflict rules |
-| **Floor Management** | Assign individuals or Access groups to manage individual floors |
+| **Building & floor management** | Building admins and floor managers for delegated admin without full super-admin access |
 | **Queue & waitlist** | Users join a waitlist and are automatically promoted when a desk frees up |
 | **Bulk CSV import** | Import buildings, floors, zones, and assets in a single pass |
 | **Asset registry** | Track non-bookable inventory (laptops, monitors, etc.) alongside bookable space |
-| **Role-based access** | Super admin, floor manager, and user roles |
-| **Enterprise auth** | LDAP, SAML, and OpenID Connect alongside local accounts |
+| **Role-based access** | Super admin, building admin, floor manager, and user roles |
+| **Multi-provider login** | Local, LDAP, OIDC, and SAML — mix providers with a configurable default and URL overrides |
+| **SCIM 2.0 provisioning** | Automated user and group sync from Okta, Azure AD / Entra ID, OneLogin, etc. |
 | **Email notifications** | Booking confirmations and queue promotions via SMTP |
 
 ---
 
 ![Roomer-demo](demo.gif)
+
+---
+
+## Quick Start (Docker)
+
+The fastest way to run Roomer is with the pre-built Docker images.
+
+**1. Create a `.env` file** in the project root:
+
+```env
+SESSION_SECRET=<run: openssl rand -hex 32>
+APP_ORIGIN=http://localhost
+COOKIE_SECURE=false
+WEB_PORT=80
+EMAIL_FROM=noreply@roomer.local
+
+# Admin account credentials (see "Seeding" below)
+SEED_ADMIN_EMAIL=admin@roomer.local
+SEED_ADMIN_PASSWORD=changeme
+```
+
+**2. Start everything:**
+
+```bash
+docker compose up -d
+```
+
+The web app will be at `http://localhost` (or `WEB_PORT` if changed). The API container automatically runs `prisma migrate deploy` on startup, then seeds the admin account on first run.
+
+**Find the admin password:** the seed step prints it to the API logs:
+
+```bash
+docker compose logs api | grep "seed"
+```
+
+If `SEED_ADMIN_PASSWORD` is not set, a random password is generated and logged there. Set it in your `.env` to use a known password.
+
+**3. (Optional) Seed demo buildings and desks:**
+
+Add `SEED_DEMO_DATA=true` to your `.env` (before first start, or re-run the seed manually):
+
+```bash
+docker compose exec api npx prisma db seed
+```
+
+This adds a sample building ("Acme HQ") with a floor, two zones, and six desks, plus a regular test user (`user@roomer.local`). Change all passwords after first login.
+
+### Docker Compose environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `SESSION_SECRET` | — | **Required.** 32+ character random string. |
+| `APP_ORIGIN` | `http://localhost` | Public URL used in CORS and email links. |
+| `COOKIE_SECURE` | `false` | Set to `true` when serving over HTTPS. |
+| `WEB_PORT` | `80` | Host port for the web container. |
+| `EMAIL_FROM` | `noreply@roomer.local` | Sender address for system emails. |
+| `SEED_ADMIN_EMAIL` | `admin@roomer.local` | Email for the super-admin account created on first seed. |
+| `SEED_ADMIN_PASSWORD` | *(random)* | Password for the super-admin account. If unset, a random password is generated and printed to the API container logs. |
+| `SEED_DEMO_DATA` | `false` | Set to `true` to seed demo buildings, floors, desks and a test user on first start. |
+| `SEED_USER_PASSWORD` | *(random)* | Password for the demo test user (`user@roomer.local`). Only used when `SEED_DEMO_DATA=true`. |
+
+### Build from source
+
+```bash
+docker compose -f docker-compose.build.yaml up --build
+```
+
+### Docker images
+
+| Image | Description |
+|---|---|
+| [`c0dewhacker/roomer-api`](https://hub.docker.com/r/c0dewhacker/roomer-api) | Multi-stage Node 22 Alpine. Runs migrations then starts Fastify. |
+| [`c0dewhacker/roomer-web`](https://hub.docker.com/r/c0dewhacker/roomer-web) | Multi-stage Vite build served by nginx 1.27. Proxies `/api` to the API. |
+
+Both images are built from the monorepo root so they can access `packages/shared`.
 
 ---
 
@@ -49,7 +125,7 @@ Roomer is a self-hosted platform for managing desk and asset reservations across
 
 ---
 
-## Getting Started
+## Development Setup
 
 ### Prerequisites
 
@@ -99,6 +175,12 @@ SMTP_PORT=1025
 SMTP_SECURE=false
 EMAIL_FROM=noreply@roomer.local
 APP_URL=http://localhost:5173
+
+# Seed credentials — set these before running db:seed so you know the password.
+# If SEED_ADMIN_PASSWORD is omitted, a random password is generated and printed to stdout.
+SEED_ADMIN_EMAIL=admin@roomer.local
+SEED_ADMIN_PASSWORD=admin123
+SEED_DEMO_DATA=true
 ```
 
 ### 4. Migrate and seed
@@ -108,14 +190,16 @@ pnpm --filter api db:migrate   # apply migrations
 pnpm --filter api db:seed      # seed demo data
 ```
 
-The seed creates:
+With the `.env` values above, the seed creates:
 
 | Resource | Value |
 |---|---|
-| Admin login | `admin@roomer.local` / `admin123` |
-| Organisation | Acme Corp |
-| Building | Head Office |
-| Floors | Ground Floor — 6 sample desks across two zones |
+| Admin login | `admin@roomer.local` / `admin123` (from your `.env`) |
+| Organisation | Acme Corp (renamed when `SEED_DEMO_DATA=true`) |
+| Building | Acme HQ with Ground Floor — 6 sample desks across two zones |
+| Test user | `user@roomer.local` (password from `SEED_USER_PASSWORD`, or logged if unset) |
+
+Without `SEED_DEMO_DATA=true`, only the admin account and a blank organisation ("My Organisation") are created.
 
 ### 5. Start dev servers
 
@@ -130,75 +214,13 @@ Open `http://localhost:5173` and sign in with `admin@roomer.local` / `admin123`.
 
 ---
 
-## Docker
-
-Two compose files are provided:
-
-| File | Purpose |
-|---|---|
-| `docker-compose.yml` | Pull pre-built images from Docker Hub — fastest way to run |
-| `docker-compose.build.yaml` | Build images locally from source |
-
-### Run with pre-built images (recommended)
-
-Create a `.env` in the project root:
-
-```env
-SESSION_SECRET=<openssl rand -hex 32>
-APP_ORIGIN=http://localhost
-COOKIE_SECURE=false
-WEB_PORT=80
-EMAIL_FROM=noreply@roomer.local
-```
-
-Then start everything:
-
-```bash
-docker compose up -d
-```
-
-The web app will be at `http://localhost` (or `WEB_PORT` if changed).
-
-The API container automatically runs `prisma migrate deploy` on startup, so the database is always up to date. To seed demo data after first start:
-
-```bash
-docker compose exec api npx prisma db seed
-```
-
-### Build from source
-
-```bash
-docker compose -f docker-compose.build.yaml up --build
-```
-
-### Images
-
-| Image | Description |
-|---|---|
-| [`c0dewhacker/roomer-api`](https://hub.docker.com/r/c0dewhacker/roomer-api) | Multi-stage Node 22 Alpine. Runs migrations then starts Fastify. |
-| [`c0dewhacker/roomer-web`](https://hub.docker.com/r/c0dewhacker/roomer-web) | Multi-stage Vite build served by nginx 1.27. Proxies `/api` to the API. |
-
-Both images are built from the monorepo root so they can access `packages/shared`.
-
-### Docker Compose environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `SESSION_SECRET` | — | **Required.** 32+ character random string. |
-| `APP_ORIGIN` | `http://localhost` | Public URL used in CORS and email links. |
-| `COOKIE_SECURE` | `false` | Set to `true` when serving over HTTPS. |
-| `WEB_PORT` | `80` | Host port for the web container. |
-| `EMAIL_FROM` | `noreply@roomer.local` | Sender address for system emails. |
-| `SEED_DEMO_DATA` | `false` | Set to `true` to seed demo buildings and a test user on first start. |
-
----
-
 ## Production Deployment
 
 The Docker images are production-ready as-is. Key checklist:
 
 - Set `COOKIE_SECURE=true` and serve over HTTPS
 - Set `APP_ORIGIN` to your public domain (e.g. `https://roomer.example.com`)
+- Set `API_PUBLIC_URL` to your public API URL if different from `APP_ORIGIN` (used for SCIM endpoint links)
 - Use a managed PostgreSQL instance by overriding `DATABASE_URL` in the API environment
 - Mount a persistent volume at `/app/uploads` for floor plan storage (already in `docker-compose.yml`)
 - For horizontal API scaling, point `FILE_STORAGE_PATH` at shared network storage rather than a local volume
@@ -214,16 +236,17 @@ The REST API runs on port `3001` by default.
 
 | Prefix | Description |
 |---|---|
-| `/api/v1/auth` | Login, logout, session, enterprise SSO |
-| `/api/v1/buildings` | Buildings CRUD |
+| `/api/v1/auth` | Login, logout, session, enterprise SSO (OIDC/SAML/LDAP) |
+| `/api/v1/buildings` | Buildings CRUD, managers, access groups |
 | `/api/v1/floors` | Floors, zones, floor plan upload, availability |
-| `/api/v1/assets` | Asset registry, bookable desks, user assignments |
+| `/api/v1/assets` | Asset registry, bookable desks, user assignments, bulk assignment CSV |
 | `/api/v1/bookings` | Booking lifecycle |
 | `/api/v1/queue` | Waitlist management |
-| `/api/v1/import/bulk` | CSV bulk import |
+| `/api/v1/import/bulk` | Global CSV bulk import |
 | `/api/v1/users` | User management |
 | `/api/v1/groups` | Group management |
-| `/api/v1/settings` | Organisation settings, auth provider config |
+| `/api/v1/settings` | Organisation settings, auth provider config, SCIM provisioning |
+| `/scim/v2` | SCIM 2.0 provisioning (separate prefix, bearer token auth) |
 
 ---
 
@@ -244,6 +267,7 @@ All API environment variables:
 | `SWAGGER_ENABLED` | `true` in dev | Expose Swagger UI at `/docs` |
 | `FILE_STORAGE_PATH` | `./uploads` | Directory for floor plan images |
 | `MAX_FILE_SIZE_MB` | `20` | Maximum upload size |
+| `API_PUBLIC_URL` | `http://localhost:3001` | Public URL of the API — shown in the SCIM settings panel as the endpoint base URL |
 | `SMTP_HOST` | `localhost` | Outbound email relay host |
 | `SMTP_PORT` | `1025` | Outbound email relay port |
 | `SMTP_SECURE` | `false` | Use TLS for SMTP |
@@ -259,7 +283,8 @@ All API environment variables:
 | Role | Scope | Permissions |
 |---|---|---|
 | `SUPER_ADMIN` | Global | Full access to all resources and settings |
-| `FLOOR_MANAGER` | Per floor | Manage assets and bookings on assigned floors |
+| `BUILDING_ADMIN` | Per building | Superset of floor manager for every floor in the building (full implementation in progress) |
+| `FLOOR_MANAGER` | Per floor | Manage zones, assets, and bookings on assigned floors |
 | `USER` | Global | Book available assets, manage own bookings |
 
 ---

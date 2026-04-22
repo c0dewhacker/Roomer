@@ -44,9 +44,15 @@ services:
       CORS_ORIGIN: ${APP_ORIGIN:-http://localhost}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       TRUST_PROXY: "true"
+      # Admin account (always created on first start).
+      # If SEED_ADMIN_PASSWORD is not set, a random password is generated and
+      # printed once to the API container logs — run: docker compose logs api
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@roomer.local}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
       # Set to true to seed demo buildings, floors, zones, desks and a test user.
-      # The admin user (admin@roomer.local / admin123) is always seeded regardless.
+      # SEED_USER_PASSWORD works the same way as SEED_ADMIN_PASSWORD.
       SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
+      SEED_USER_PASSWORD: ${SEED_USER_PASSWORD:-}
       FILE_STORAGE_PATH: /app/uploads
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
