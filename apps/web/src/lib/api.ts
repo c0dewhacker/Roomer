@@ -445,14 +445,22 @@ export const settingsApi = {
     api.delete<{ data: { ok: boolean } }>('/settings/scim/token'),
   syncLdap: () =>
     api.post<{ data: { created: number; updated: number; deactivated: number; skipped: number; errors: Array<{ dn: string; message: string }> } }>('/settings/auth-config/ldap/sync', {}),
+  updateLoginSettings: (body: { defaultProvider?: LoginProvider | null; showProviderSelector?: boolean }) =>
+    api.patch<{ data: { ok: boolean } }>('/settings/login-settings', body),
 }
 
 // --- Auth Providers (public) ---
+export type LoginProvider = 'local' | 'ldap' | 'oidc' | 'saml'
+export interface AuthProviders {
+  oidc: { enabled: boolean; label: string }
+  saml: { enabled: boolean; label: string }
+  ldap: { enabled: boolean }
+  local: { enabled: boolean }
+  defaultProvider: LoginProvider | null
+  showProviderSelector: boolean
+}
 export const authProvidersApi = {
-  list: () =>
-    api.get<{ data: { oidc: { enabled: boolean; label: string }; saml: { enabled: boolean; label: string }; ldap: { enabled: boolean } } }>(
-      '/auth/providers',
-    ),
+  list: () => api.get<{ data: AuthProviders }>('/auth/providers'),
 }
 
 
