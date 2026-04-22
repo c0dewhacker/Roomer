@@ -119,7 +119,7 @@ export async function syncLdapUsers(cfg: LdapConfig): Promise<LdapSyncResult> {
       if (!email) { result.skipped++; continue }
 
       const displayName = getAttr(nameAttr)?.values[0]?.trim() || email
-      const groups = (getAttr(groupAttr)?.values ?? []).map((g) => g.trim())
+      const groups = (getAttr(groupAttr)?.values ?? []).map((g) => g.trim().toLowerCase())
       const dn = entry.dn.toString()
 
       seenEmails.add(email)
@@ -142,7 +142,7 @@ export async function syncLdapUsers(cfg: LdapConfig): Promise<LdapSyncResult> {
         const userId = existing?.id ?? (await prisma.user.findUnique({ where: { email }, select: { id: true } }))!.id
         if (cfg.groupMappings?.length && groups.length) {
           const { applyGroupMappings } = await import('./group-mapping')
-          await applyGroupMappings(userId, groups, cfg.groupMappings)
+          await applyGroupMappings(userId, groups, cfg.groupMappings, true)
         }
       } catch (err) {
         result.errors.push({ dn, message: err instanceof Error ? err.message : 'Unknown error' })
@@ -207,7 +207,7 @@ export async function authenticateWithLdap(
     const userEmail = getAttr(emailAttr)?.values[0] ?? email
     const userDisplayName = getAttr(nameAttr)?.values[0] ?? email
     // Group values are trimmed to avoid whitespace issues in DN comparisons
-    const groups = (getAttr(groupAttr)?.values ?? []).map((g) => g.trim())
+    const groups = (getAttr(groupAttr)?.values ?? []).map((g) => g.trim().toLowerCase())
 
     // 3. Try binding as the user to verify password
     const userClient = createLdapClient(cfg)
@@ -220,7 +220,11 @@ export async function authenticateWithLdap(
     }
 
     return { email: userEmail, displayName: userDisplayName, dn: userDn, groups }
-  } catch {
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? 'unknown'
+    const message = err instanceof Error ? err.message : 'Unknown error'
+    // Log at warn level — never include bind credentials or user passwords
+    console.warn(`[ldap] authenticateWithLdap failed (${code}): ${message}`)
     return null
   } finally {
     unbind(adminClient)

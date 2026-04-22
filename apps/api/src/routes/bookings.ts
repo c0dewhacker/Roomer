@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma'
 import { createBookingSchema, updateBookingSchema, GlobalRole, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
@@ -6,6 +7,13 @@ import { requireGlobalRole } from '../middleware/requireRole'
 import { enqueueNotification } from '../lib/queue'
 import { checkGroupAccess } from './groups'
 import { z } from 'zod'
+
+class BookingConflictError extends Error {
+  constructor(public readonly code: string, message: string) {
+    super(message)
+    this.name = 'BookingConflictError'
+  }
+}
 
 const reportQuerySchema = z.object({
   from: z.string().datetime().optional(),
@@ -20,12 +28,13 @@ const reportQuerySchema = z.object({
 })
 
 async function checkAssetOverlap(
+  tx: Prisma.TransactionClient,
   assetId: string,
   startsAt: Date,
   endsAt: Date,
   excludeBookingId?: string,
 ): Promise<boolean> {
-  const conflict = await prisma.booking.findFirst({
+  const conflict = await tx.booking.findFirst({
     where: {
       assetId,
       status: 'CONFIRMED',
@@ -38,13 +47,14 @@ async function checkAssetOverlap(
 }
 
 async function checkZoneGroupOverlap(
+  tx: Prisma.TransactionClient,
   userId: string,
   assetId: string,
   startsAt: Date,
   endsAt: Date,
   excludeBookingId?: string,
 ): Promise<boolean> {
-  const asset = await prisma.asset.findUnique({
+  const asset = await tx.asset.findUnique({
     where: { id: assetId },
     select: {
       primaryZoneId: true,
@@ -55,7 +65,7 @@ async function checkZoneGroupOverlap(
   const zoneGroupId = asset?.primaryZone?.zoneGroupId
   if (!zoneGroupId) return false
 
-  const conflict = await prisma.booking.findFirst({
+  const conflict = await tx.booking.findFirst({
     where: {
       userId,
       status: 'CONFIRMED',
@@ -132,7 +142,11 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
   // GET /bookings — current user's bookings
   fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
-    const { status } = request.query as { status?: string }
+    const queryResult = z.object({ status: z.enum(['past', 'all', 'upcoming']).optional() }).safeParse(request.query)
+    if (!queryResult.success) {
+      return reply.status(400).send({ error: { message: 'Invalid query parameters', code: 'VALIDATION_ERROR' } })
+    }
+    const { status } = queryResult.data
     const now = new Date()
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
 
@@ -201,14 +215,14 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (asset.bookingStatus === 'RESTRICTED') {
       const onList = asset.allowList.some((e) => e.userId === request.user.id)
       const isAssigned = asset.userAssignments.some((ua) => ua.userId === request.user.id)
-      if (!onList && !isAssigned && request.user.globalRole !== 'SUPER_ADMIN') {
+      if (!onList && !isAssigned && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
         return reply.status(403).send({ error: { message: 'You are not on the allow list for this asset', code: 'NOT_ON_ALLOW_LIST' } })
       }
     }
 
     if (asset.bookingStatus === 'ASSIGNED') {
       const isAssignedUser = asset.userAssignments.some((ua) => ua.userId === request.user.id)
-      if (!isAssignedUser && request.user.globalRole !== 'SUPER_ADMIN') {
+      if (!isAssignedUser && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
         // Allow if there is an active availability window covering the requested slot
         const window = await prisma.assetAvailabilityWindow.findFirst({
           where: {
@@ -224,7 +238,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     // Check group-based access restrictions (non-admins only)
-    if (request.user.globalRole !== 'SUPER_ADMIN' && asset.floor) {
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN && asset.floor) {
       const allowed = await checkGroupAccess(
         request.user.id,
         asset.floor.buildingId,
@@ -237,38 +251,45 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
-    // Check asset overlap
-    const assetConflict = await checkAssetOverlap(assetId, startsAt, endsAt)
-    if (assetConflict) {
-      return reply.status(409).send({ error: { message: 'Asset is already booked for this time', code: 'ASSET_CONFLICT' } })
-    }
+    let booking: Awaited<ReturnType<typeof prisma.booking.create>>
+    try {
+      booking = await prisma.$transaction(async (tx) => {
+        // Serialize concurrent bookings for the same asset using an advisory lock
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1, hashtext(${assetId}))`
 
-    // Check zone group overlap
-    const zoneGroupConflict = await checkZoneGroupOverlap(request.user.id, assetId, startsAt, endsAt)
-    if (zoneGroupConflict) {
-      return reply.status(409).send({
-        error: { message: 'You already have a booking in the same zone group for this time', code: 'ZONE_GROUP_CONFLICT' },
-      })
-    }
+        if (await checkAssetOverlap(tx, assetId, startsAt, endsAt)) {
+          throw new BookingConflictError('ASSET_CONFLICT', 'Asset is already booked for this time')
+        }
 
-    const booking = await prisma.booking.create({
-      data: {
-        userId: request.user.id,
-        assetId,
-        startsAt,
-        endsAt,
-        notes: notes ?? null,
-        status: 'CONFIRMED',
-      },
-      include: {
-        asset: {
-          include: {
-            floor: { include: { building: { select: { id: true, name: true } } } },
-            primaryZone: { select: { id: true, name: true } },
+        if (await checkZoneGroupOverlap(tx, request.user.id, assetId, startsAt, endsAt)) {
+          throw new BookingConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
+        }
+
+        return tx.booking.create({
+          data: {
+            userId: request.user.id,
+            assetId,
+            startsAt,
+            endsAt,
+            notes: notes ?? null,
+            status: 'CONFIRMED',
           },
-        },
-      },
-    })
+          include: {
+            asset: {
+              include: {
+                floor: { include: { building: { select: { id: true, name: true } } } },
+                primaryZone: { select: { id: true, name: true } },
+              },
+            },
+          },
+        })
+      })
+    } catch (err) {
+      if (err instanceof BookingConflictError) {
+        return reply.status(409).send({ error: { message: err.message, code: err.code } })
+      }
+      throw err
+    }
 
     await enqueueNotification({
       type: NotificationType.BOOKING_CONFIRMED,
@@ -301,7 +322,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     // Only allow owner or super admin
-    if (booking.userId !== request.user.id && request.user.globalRole !== 'SUPER_ADMIN') {
+    if (booking.userId !== request.user.id && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
       return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
     }
 
@@ -323,7 +344,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(404).send({ error: { message: 'Booking not found', code: 'NOT_FOUND' } })
     }
 
-    if (booking.userId !== request.user.id && request.user.globalRole !== 'SUPER_ADMIN') {
+    if (booking.userId !== request.user.id && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
       return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
     }
 
@@ -334,26 +355,34 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     const newStartsAt = result.data.startsAt ? new Date(result.data.startsAt) : booking.startsAt
     const newEndsAt = result.data.endsAt ? new Date(result.data.endsAt) : booking.endsAt
 
-    const assetConflict = await checkAssetOverlap(booking.assetId, newStartsAt, newEndsAt, id)
-    if (assetConflict) {
-      return reply.status(409).send({ error: { message: 'Asset is already booked for this time', code: 'ASSET_CONFLICT' } })
-    }
+    let updated: Awaited<ReturnType<typeof prisma.booking.update>>
+    try {
+      updated = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1, hashtext(${booking.assetId}))`
 
-    const zoneGroupConflict = await checkZoneGroupOverlap(booking.userId, booking.assetId, newStartsAt, newEndsAt, id)
-    if (zoneGroupConflict) {
-      return reply.status(409).send({
-        error: { message: 'You already have a booking in the same zone group for this time', code: 'ZONE_GROUP_CONFLICT' },
+        if (await checkAssetOverlap(tx, booking.assetId, newStartsAt, newEndsAt, id)) {
+          throw new BookingConflictError('ASSET_CONFLICT', 'Asset is already booked for this time')
+        }
+
+        if (await checkZoneGroupOverlap(tx, booking.userId, booking.assetId, newStartsAt, newEndsAt, id)) {
+          throw new BookingConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
+        }
+
+        return tx.booking.update({
+          where: { id },
+          data: {
+            startsAt: newStartsAt,
+            endsAt: newEndsAt,
+            notes: result.data.notes !== undefined ? result.data.notes : booking.notes,
+          },
+        })
       })
+    } catch (err) {
+      if (err instanceof BookingConflictError) {
+        return reply.status(409).send({ error: { message: err.message, code: err.code } })
+      }
+      throw err
     }
-
-    const updated = await prisma.booking.update({
-      where: { id },
-      data: {
-        startsAt: newStartsAt,
-        endsAt: newEndsAt,
-        notes: result.data.notes !== undefined ? result.data.notes : booking.notes,
-      },
-    })
 
     return reply.status(200).send({ data: updated })
   })
@@ -371,7 +400,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     const isSelf = booking.userId === request.user.id
-    const isAdmin = request.user.globalRole === 'SUPER_ADMIN'
+    const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
 
     if (!isSelf && !isAdmin) {
       const floorId = booking.asset?.floorId

@@ -24,13 +24,21 @@ async function seedCore() {
   })
   console.log(`[seed] Organisation: ${org.name} (${org.id})`)
 
-  // Super-admin — credentials can be changed via the admin UI after first login.
-  const adminHash = bcryptjs.hashSync('admin123', 10)
+  // Super-admin — use SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD env vars.
+  // If SEED_ADMIN_PASSWORD is unset a secure random password is generated and
+  // printed once to stdout — there is no hardcoded default credential.
+  const adminEmail = process.env['SEED_ADMIN_EMAIL'] ?? 'admin@roomer.local'
+  const rawAdminPassword = process.env['SEED_ADMIN_PASSWORD'] ?? (() => {
+    const generated = require('crypto').randomBytes(16).toString('hex')
+    console.log(`[seed] SEED_ADMIN_PASSWORD not set — generated password: ${generated}`)
+    return generated
+  })()
+  const adminHash = bcryptjs.hashSync(rawAdminPassword, 12)
   const admin = await prisma.user.upsert({
-    where: { email: 'admin@roomer.local' },
+    where: { email: adminEmail },
     update: {},
     create: {
-      email: 'admin@roomer.local',
+      email: adminEmail,
       displayName: 'Admin',
       passwordHash: adminHash,
       globalRole: 'SUPER_ADMIN',
@@ -48,7 +56,12 @@ async function seedCore() {
 
 async function seedDemoData(orgId: string) {
   // Regular test user
-  const userHash = bcryptjs.hashSync('user123', 10)
+  const rawUserPassword = process.env['SEED_USER_PASSWORD'] ?? (() => {
+    const generated = require('crypto').randomBytes(16).toString('hex')
+    console.log(`[seed] SEED_USER_PASSWORD not set — generated password: ${generated}`)
+    return generated
+  })()
+  const userHash = bcryptjs.hashSync(rawUserPassword, 12)
   const regularUser = await prisma.user.upsert({
     where: { email: 'user@roomer.local' },
     update: {},
