@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Package, Plus, Pencil, Trash2, UserCheck, UserX, X } from 'lucide-react'
+import { Package, Plus, Pencil, Trash2, UserCheck, UserX, X, Users } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { assetsApi, usersApi } from '@/lib/api'
+import AssignmentImportDialog from '@/components/admin/AssignmentImportDialog'
 import { toast } from 'sonner'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -505,6 +506,7 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Asset | undefined>()
   const [assignTarget, setAssignTarget] = useState<string | null>(null)
+  const [bulkAssignOpen, setBulkAssignOpen] = useState(false)
 
   const { data: assets, isLoading } = useQuery({
     queryKey: ['assets'],
@@ -545,9 +547,14 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
           className="max-w-sm"
         />
         {isSuperAdmin && (
-          <Button onClick={() => { setEditTarget(undefined); setDialogOpen(true) }}>
-            <Plus className="mr-2 h-4 w-4" /> Add Asset
-          </Button>
+          <>
+            <Button variant="outline" onClick={() => setBulkAssignOpen(true)}>
+              <Users className="mr-2 h-4 w-4" /> Bulk assign users
+            </Button>
+            <Button onClick={() => { setEditTarget(undefined); setDialogOpen(true) }}>
+              <Plus className="mr-2 h-4 w-4" /> Add Asset
+            </Button>
+          </>
         )}
       </div>
 
@@ -709,6 +716,10 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
           assetId={assignTarget}
         />
       )}
+      <AssignmentImportDialog
+        open={bulkAssignOpen}
+        onClose={() => setBulkAssignOpen(false)}
+      />
     </>
   )
 }
