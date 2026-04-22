@@ -406,6 +406,117 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.status(200).send({ data: { ok: true } })
   })
 
+  // DELETE /user-assignments/by-floor/:floorId — clear all permanent assignments on a floor
+  fastify.delete(
+    '/user-assignments/by-floor/:floorId',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { floorId } = request.params as { floorId: string }
+      const floor = await prisma.floor.findUnique({ where: { id: floorId } })
+      if (!floor) {
+        return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+      }
+      const assets = await prisma.asset.findMany({ where: { floorId }, select: { id: true } })
+      const assetIds = assets.map((a) => a.id)
+      if (assetIds.length === 0) {
+        return reply.status(200).send({ data: { cleared: 0 } })
+      }
+      const { count } = await prisma.assetUserAssignment.deleteMany({ where: { assetId: { in: assetIds } } })
+      if (count > 0) {
+        await prisma.asset.updateMany({
+          where: { id: { in: assetIds }, bookingStatus: 'ASSIGNED' },
+          data: { bookingStatus: 'OPEN' },
+        })
+      }
+      return reply.status(200).send({ data: { cleared: count } })
+    },
+  )
+
+  // POST /user-assignments/bulk — bulk create/update permanent user assignments
+  fastify.post(
+    '/user-assignments/bulk',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const bodySchema = z.object({
+        rows: z.array(z.object({
+          assetId: z.string().min(1),
+          userEmail: z.string().email(),
+          isPrimary: z.boolean().optional().default(false),
+        })).min(1).max(5000),
+      })
+      const parsed = bodySchema.safeParse(request.body)
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: parsed.error.flatten() },
+        })
+      }
+      const { rows } = parsed.data
+      let assigned = 0
+      const errors: Array<{ row: number; assetId: string; userEmail: string; error: string }> = []
+
+      for (let i = 0; i < rows.length; i++) {
+        const { assetId, userEmail, isPrimary } = rows[i]
+        try {
+          const [asset, user] = await Promise.all([
+            prisma.asset.findUnique({ where: { id: assetId }, select: { id: true } }),
+            prisma.user.findUnique({ where: { email: userEmail }, select: { id: true } }),
+          ])
+          if (!asset) { errors.push({ row: i + 1, assetId, userEmail, error: 'Asset not found' }); continue }
+          if (!user) { errors.push({ row: i + 1, assetId, userEmail, error: 'User not found' }); continue }
+          if (isPrimary) {
+            await prisma.assetUserAssignment.updateMany({
+              where: { assetId, isPrimary: true },
+              data: { isPrimary: false },
+            })
+          }
+          await prisma.assetUserAssignment.upsert({
+            where: { assetId_userId: { assetId, userId: user.id } },
+            update: { isPrimary },
+            create: { assetId, userId: user.id, isPrimary },
+          })
+          await prisma.asset.update({ where: { id: assetId }, data: { bookingStatus: 'ASSIGNED' } })
+          assigned++
+        } catch {
+          errors.push({ row: i + 1, assetId, userEmail, error: 'Unexpected error' })
+        }
+      }
+
+      return reply.status(200).send({ data: { assigned, errors } })
+    },
+  )
+
+  // GET /user-assignments/export — export asset+assignment data for CSV generation
+  fastify.get(
+    '/user-assignments/export',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { buildingId } = request.query as { buildingId?: string }
+      const whereClause = buildingId ? { floor: { building: { id: buildingId } } } : {}
+      const assets = await prisma.asset.findMany({
+        where: whereClause,
+        select: {
+          id: true,
+          name: true,
+          userAssignments: {
+            include: { user: { select: { email: true } } },
+          },
+        },
+        orderBy: { name: 'asc' },
+      })
+      const rows = assets.flatMap((a) =>
+        a.userAssignments.length > 0
+          ? a.userAssignments.map((ua) => ({
+              assetId: a.id,
+              assetName: a.name,
+              userEmail: ua.user.email,
+              isPrimary: ua.isPrimary,
+            }))
+          : [{ assetId: a.id, assetName: a.name, userEmail: '', isPrimary: false }],
+      )
+      return reply.status(200).send({ data: rows })
+    },
+  )
+
   // GET /:id — get asset detail
   fastify.get('/:id', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }

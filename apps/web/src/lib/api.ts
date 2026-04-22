@@ -274,6 +274,14 @@ export const assetsApi = {
     api.delete<{ data: { ok: true } }>(`/assets/${id}/user-assignments/${userId}`),
   setPrimaryAssignment: (id: string, userId: string) =>
     api.patch<{ data: { ok: true } }>(`/assets/${id}/user-assignments/${userId}/primary`),
+  clearFloorAssignments: (floorId: string) =>
+    api.delete<{ data: { cleared: number } }>(`/assets/user-assignments/by-floor/${floorId}`),
+  bulkAssignments: (rows: Array<{ assetId: string; userEmail: string; isPrimary?: boolean }>) =>
+    api.post<{ data: { assigned: number; errors: Array<{ row: number; assetId: string; userEmail: string; error: string }> } }>('/assets/user-assignments/bulk', { rows }),
+  exportAssignments: (buildingId?: string) =>
+    api.get<{ data: Array<{ assetId: string; assetName: string; userEmail: string; isPrimary: boolean }> }>(
+      `/assets/user-assignments/export${buildingId ? `?buildingId=${encodeURIComponent(buildingId)}` : ''}`,
+    ),
   // Additional zones
   getZones: (id: string) =>
     api.get<{ data: AssetZone[] }>(`/assets/${id}/zones`),
