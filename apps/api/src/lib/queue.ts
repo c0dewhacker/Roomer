@@ -1,7 +1,7 @@
 import PgBoss from 'pg-boss'
 import { env } from '../env'
 import { prisma } from './prisma'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderQueueJoined, renderQueuePromoted, renderWelcome } from './mailer'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderWelcome } from './mailer'
 import { pruneExpiredBlocklistEntries } from './token-blocklist'
 import { NotificationType } from '@roomer/shared'
 
@@ -111,6 +111,7 @@ async function processSendNotification(
     if (entry) {
       title = `Queue entry expired — ${entry.asset.name}`
       body = `Your queue entry for ${entry.asset.name} has expired.`
+      emailPayload = renderQueueExpired(entry, user, entry.asset)
     }
   } else if (type === NotificationType.WELCOME) {
     title = 'Welcome to Roomer'

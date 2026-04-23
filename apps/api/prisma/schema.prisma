@@ -110,6 +110,7 @@ model Organisation {
   defaultBookingDurationHours Int         @default(8)
   maxAdvanceBookingDays       Int         @default(14)
   maxBookingsPerUser          Int         @default(5)
+  queueClaimWindowHours       Int         @default(4)
   branding                    Json        @default("{}")
   createdAt                   DateTime    @default(now())
   updatedAt                   DateTime    @updatedAt

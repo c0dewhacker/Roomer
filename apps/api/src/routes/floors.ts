@@ -438,7 +438,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
                     wantedStartsAt: { lt: dayEnd },
                     wantedEndsAt: { gt: dayStart },
                   },
-                  select: { id: true, status: true, position: true, claimDeadline: true },
+                  select: { id: true, status: true, position: true, claimDeadline: true, expiresAt: true, wantedStartsAt: true, wantedEndsAt: true },
                 },
                 availabilityWindows: {
                   where: {
@@ -466,6 +466,20 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     type AvailabilityStatus = 'available' | 'mine' | 'booked' | 'restricted' | 'assigned' | 'disabled' | 'queued' | 'promoted' | 'zone_conflict'
+
+    // Build a map of assetId → count of WAITING queue entries for the requested period
+    const allAssetIds = floor.zones.flatMap((z) => z.assets.map((a) => a.id))
+    const queueDepthRows = await prisma.queueEntry.groupBy({
+      by: ['assetId'],
+      where: {
+        assetId: { in: allAssetIds },
+        status: 'WAITING',
+        wantedStartsAt: { lt: dayEnd },
+        wantedEndsAt: { gt: dayStart },
+      },
+      _count: { assetId: true },
+    })
+    const queueDepthByAsset = new Map(queueDepthRows.map((r) => [r.assetId, r._count.assetId]))
 
     // Collect zone group IDs where the current user has a booking today
     const userBookedZoneGroupIds = new Set<string>()
@@ -506,7 +520,14 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           !isAssignedUser &&
           !hasAvailabilityWindow
         ) {
-          bookingStatus = 'assigned'
+          // Non-assigned user: reflect their queue state for this assigned desk
+          if (myQueueEntry?.status === 'PROMOTED') {
+            bookingStatus = 'promoted'
+          } else if (myQueueEntry?.status === 'WAITING') {
+            bookingStatus = 'queued'
+          } else {
+            bookingStatus = 'assigned'
+          }
         } else if (
           asset.bookingStatus === 'RESTRICTED' &&
           !isOnAllowList &&
@@ -549,6 +570,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
             : null,
           bookedBy: othersBookings.map((b) => ({ userId: b.userId, displayName: b.user?.displayName ?? 'Unknown' })),
           myQueueEntry,
+          queueDepth: queueDepthByAsset.get(asset.id) ?? 0,
           assignedUsers: asset.userAssignments.map((ua) => ({ ...ua.user, isPrimary: ua.isPrimary })),
         }
       })

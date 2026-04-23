@@ -194,6 +194,31 @@ export function renderQueuePromoted(
   return { subject, html, text }
 }
 
+// ─── QUEUE_EXPIRED ────────────────────────────────────────────────────────────
+
+export function renderQueueExpired(
+  queueEntry: Pick<QueueEntry, 'id' | 'wantedStartsAt' | 'wantedEndsAt'>,
+  user: Pick<User, 'displayName' | 'email'>,
+  asset: Pick<Asset, 'name'>,
+): { subject: string; html: string; text: string } {
+  const subject = `Queue entry expired — ${escapeHtml(asset.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Your queue entry has expired</h1>
+     <p>Hi ${escapeHtml(user.displayName)}, your place in the queue for <strong>${escapeHtml(asset.name)}</strong> has expired without becoming available.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
+         <dt>Wanted period</dt><dd>${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}</dd>
+       </dl>
+     </div>
+     <p>You can rejoin the queue any time from the floor plan.</p>
+     <a href="${env.APP_URL}/queue" class="btn">View My Queue</a>`,
+  )
+  const text = `Hi ${user.displayName},\n\nYour queue entry for ${asset.name} (${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}) has expired.\n\nYou can rejoin the queue from the floor plan: ${env.APP_URL}`
+  return { subject, html, text }
+}
+
 // ─── WELCOME ──────────────────────────────────────────────────────────────────
 
 export function renderWelcome(

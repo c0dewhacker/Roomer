@@ -60,6 +60,7 @@ const orgSchema = z.object({
   defaultBookingDurationHours: z.coerce.number().int().min(1).max(24),
   maxAdvanceBookingDays: z.coerce.number().int().min(1).max(365),
   maxBookingsPerUser: z.coerce.number().int().min(1).max(100),
+  queueClaimWindowHours: z.coerce.number().int().min(1).max(48),
 })
 type OrgForm = z.infer<typeof orgSchema>
 
@@ -82,6 +83,7 @@ function OrgSettingsCard() {
       defaultBookingDurationHours: 8,
       maxAdvanceBookingDays: 14,
       maxBookingsPerUser: 5,
+      queueClaimWindowHours: 4,
     },
   })
 
@@ -98,6 +100,7 @@ function OrgSettingsCard() {
         defaultBookingDurationHours: orgData.defaultBookingDurationHours,
         maxAdvanceBookingDays: orgData.maxAdvanceBookingDays,
         maxBookingsPerUser: orgData.maxBookingsPerUser,
+        queueClaimWindowHours: orgData.queueClaimWindowHours ?? 4,
       })
     }
   }, [orgData, reset])
@@ -106,7 +109,7 @@ function OrgSettingsCard() {
     mutationFn: (data: OrgForm) => settingsApi.updateOrg(data),
     onSuccess: (res) => {
       toast.success('Settings saved')
-      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser })
+      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4 })
       qc.invalidateQueries({ queryKey: ['settings', 'organisation'] })
     },
     onError: () => toast.error('Failed to save settings'),
@@ -140,6 +143,14 @@ function OrgSettingsCard() {
             <Input id="maxBookings" type="number" min={1} max={100} {...register('maxBookingsPerUser')} className="mt-1.5" />
             {errors.maxBookingsPerUser && (
               <p className="text-xs text-destructive mt-1">{errors.maxBookingsPerUser.message}</p>
+            )}
+          </div>
+          <div>
+            <Label htmlFor="queueClaimWindow">Queue claim window (hours)</Label>
+            <Input id="queueClaimWindow" type="number" min={1} max={48} {...register('queueClaimWindowHours')} className="mt-1.5" />
+            <p className="text-xs text-muted-foreground mt-1">How long an assigned user's queue promotion stays open before passing to the next person.</p>
+            {errors.queueClaimWindowHours && (
+              <p className="text-xs text-destructive mt-1">{errors.queueClaimWindowHours.message}</p>
             )}
           </div>
         </div>

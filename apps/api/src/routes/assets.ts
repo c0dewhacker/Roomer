@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma'
-import { GlobalRole, BookableStatus, bulkUpdateAssetPositionsSchema } from '@roomer/shared'
+import { GlobalRole, BookableStatus, bulkUpdateAssetPositionsSchema, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
 import { requireGlobalRole, getManagedFloorIds, isFloorManagerForFloor } from '../middleware/requireRole'
+import { enqueueNotification } from '../lib/queue'
 import { z } from 'zod'
 
 const createCategorySchema = z.object({
@@ -404,6 +405,86 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
     await prisma.assetAvailabilityWindow.delete({ where: { id: windowId } })
     return reply.status(200).send({ data: { ok: true } })
+  })
+
+  // POST /:id/make-available — assigned user offers their seat to the queue
+  fastify.post('/:id/make-available', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+
+    const asset = await prisma.asset.findUnique({
+      where: { id },
+      include: { userAssignments: { select: { userId: true, isPrimary: true } } },
+    })
+    if (!asset) {
+      return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+    }
+
+    // Requester must be the assigned user, a floor manager, or super admin
+    const isAssignedUser = asset.userAssignments.some((a) => a.userId === request.user.id)
+    const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+    const isManager = !isAdmin && asset.floorId
+      ? await isFloorManagerForFloor(request.user.id, asset.floorId)
+      : false
+
+    if (!isAssignedUser && !isAdmin && !isManager) {
+      return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+    }
+
+    // Get all WAITING entries ordered by position (no date filter — any future period)
+    const waiting = await prisma.queueEntry.findMany({
+      where: { assetId: id, status: 'WAITING', wantedStartsAt: { gt: new Date() } },
+      orderBy: { position: 'asc' },
+      include: { user: { select: { id: true, email: true, displayName: true } } },
+    })
+
+    if (waiting.length === 0) {
+      return reply.status(200).send({ data: { queued: 0, action: 'none' } })
+    }
+
+    const first = waiting[0]
+
+    if (waiting.length === 1) {
+      // Single waiter — confirm booking immediately
+      const [booking] = await prisma.$transaction([
+        prisma.booking.create({
+          data: {
+            userId: first.userId,
+            assetId: id,
+            startsAt: first.wantedStartsAt,
+            endsAt: first.wantedEndsAt,
+            status: 'CONFIRMED',
+          },
+        }),
+        prisma.queueEntry.update({ where: { id: first.id }, data: { status: 'CLAIMED' } }),
+      ])
+
+      await enqueueNotification({
+        type: NotificationType.BOOKING_CONFIRMED,
+        userId: first.userId,
+        bookingId: booking.id,
+      })
+
+      return reply.status(200).send({ data: { queued: 1, action: 'auto_confirmed', userId: first.userId } })
+    }
+
+    // Multiple waiters — promote first with configurable claim window
+    const org = await prisma.organisation.findFirst({ select: { queueClaimWindowHours: true } })
+    const windowHours = org?.queueClaimWindowHours ?? 4
+    const claimDeadline = new Date(Date.now() + windowHours * 3600 * 1000)
+
+    await prisma.queueEntry.update({
+      where: { id: first.id },
+      data: { status: 'PROMOTED', claimDeadline },
+    })
+
+    await enqueueNotification({
+      type: NotificationType.QUEUE_PROMOTED,
+      userId: first.userId,
+      queueEntryId: first.id,
+      claimDeadline: claimDeadline.toISOString(),
+    })
+
+    return reply.status(200).send({ data: { queued: waiting.length, action: 'promoted', userId: first.userId, claimDeadline } })
   })
 
   // DELETE /user-assignments/by-floor/:floorId — clear all permanent assignments on a floor

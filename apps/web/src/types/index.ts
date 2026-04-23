@@ -137,6 +137,7 @@ export interface AssetWithStatus extends Omit<Asset, 'bookingStatus'> {
   zoneColour: string
   zoneName: string
   assignedUsers?: AssetAssignedUser[]
+  queueDepth?: number
 }
 /** @deprecated Use AssetWithStatus instead */
 export type DeskWithStatus = AssetWithStatus

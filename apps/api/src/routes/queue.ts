@@ -7,12 +7,17 @@ import { enqueueNotification } from '../lib/queue'
 export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Queue'], ...route.schema } })
 
-  // GET /queue — current user's WAITING and PROMOTED entries
+  // GET /queue — current user's queue entries. Active only by default; ?include_history=true adds terminal entries.
   fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { include_history } = request.query as { include_history?: string }
+    const statusFilter: { in: Array<'WAITING' | 'PROMOTED'> } | undefined = include_history === 'true'
+      ? undefined
+      : { in: ['WAITING', 'PROMOTED'] }
+
     const entries = await prisma.queueEntry.findMany({
       where: {
         userId: request.user.id,
-        status: { in: ['WAITING', 'PROMOTED'] },
+        ...(statusFilter ? { status: statusFilter } : {}),
       },
       include: {
         asset: {
@@ -24,7 +29,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
           },
         },
       },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { createdAt: 'desc' },
     })
 
     return reply.status(200).send({ data: entries })
@@ -133,6 +138,18 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
     await prisma.queueEntry.update({
       where: { id },
       data: { status: 'CANCELLED' },
+    })
+
+    // Compact positions: decrement all WAITING entries for the same asset/period that were behind the cancelled one
+    await prisma.queueEntry.updateMany({
+      where: {
+        assetId: entry.assetId,
+        status: 'WAITING',
+        position: { gt: entry.position },
+        wantedStartsAt: { lt: entry.wantedEndsAt },
+        wantedEndsAt: { gt: entry.wantedStartsAt },
+      },
+      data: { position: { decrement: 1 } },
     })
 
     return reply.status(200).send({ data: { ok: true } })
