@@ -282,6 +282,8 @@ export const assetsApi = {
     api.get<{ data: Array<{ assetId: string; assetName: string; userEmail: string; isPrimary: boolean }> }>(
       `/assets/user-assignments/export${buildingId ? `?buildingId=${encodeURIComponent(buildingId)}` : ''}`,
     ),
+  makeAvailable: (assetId: string) =>
+    api.post<{ data: { queued: number; action: 'none' | 'auto_confirmed' | 'promoted'; userId?: string; claimDeadline?: string } }>(`/assets/${assetId}/make-available`),
   // Additional zones
   getZones: (id: string) =>
     api.get<{ data: AssetZone[] }>(`/assets/${id}/zones`),
@@ -341,7 +343,8 @@ export const bookingsApi = {
 
 // --- Queue ---
 export const queueApi = {
-  list: () => api.get<{ data: QueueEntry[] }>('/queue'),
+  list: (includeHistory?: boolean) =>
+    api.get<{ data: QueueEntry[] }>(`/queue${includeHistory ? '?include_history=true' : ''}`),
   join: (body: { assetId: string; wantedStartsAt: string; wantedEndsAt: string; expiresAt: string }) =>
     api.post<{ data: QueueEntry }>('/queue', body),
   leave: (id: string) => api.delete<{ data: { ok: true } }>(`/queue/${id}`),
@@ -389,6 +392,7 @@ type OrgSettings = {
   defaultBookingDurationHours: number
   maxAdvanceBookingDays: number
   maxBookingsPerUser: number
+  queueClaimWindowHours: number
 }
 
 export interface BrandingBanner {

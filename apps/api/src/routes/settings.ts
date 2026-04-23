@@ -38,6 +38,7 @@ const updateOrgSchema = z.object({
   defaultBookingDurationHours: z.number().int().min(1).max(24).optional(),
   maxAdvanceBookingDays: z.number().int().min(1).max(365).optional(),
   maxBookingsPerUser: z.number().int().min(1).max(100).optional(),
+  queueClaimWindowHours: z.number().int().min(1).max(48).optional(),
 })
 
 const groupMappingSchema = z.object({
