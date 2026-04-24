@@ -340,13 +340,20 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    const booking = await prisma.booking.findUnique({ where: { id } })
+    const booking = await prisma.booking.findUnique({ where: { id }, include: { asset: { include: { floor: true } } } })
     if (!booking) {
       return reply.status(404).send({ error: { message: 'Booking not found', code: 'NOT_FOUND' } })
     }
 
     if (booking.userId !== request.user.id && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
       return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+    }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN && booking.asset.floor) {
+      const allowed = await checkGroupAccess(request.user.id, booking.asset.floor.buildingId, booking.asset.floor.id)
+      if (!allowed) {
+        return reply.status(403).send({ error: { message: 'Your group does not have access to this building or floor', code: 'GROUP_ACCESS_DENIED' } })
+      }
     }
 
     if (booking.status !== 'CONFIRMED') {
