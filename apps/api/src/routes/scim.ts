@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'crypto'
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { prisma } from '../lib/prisma'
 import {
@@ -22,7 +23,9 @@ async function scimAuth(request: FastifyRequest, reply: FastifyReply): Promise<v
       .send(scimError(401, 'SCIM provisioning is not enabled'))
     return
   }
-  if (hashScimToken(auth.slice(7)) !== cfg.tokenHash) {
+  const provided = Buffer.from(hashScimToken(auth.slice(7)))
+  const expected = Buffer.from(cfg.tokenHash)
+  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
     reply.status(401).header('Content-Type', SCIM_CONTENT_TYPE)
       .send(scimError(401, 'Invalid bearer token'))
     return
