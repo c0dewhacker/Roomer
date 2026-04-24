@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { format, parseISO, isToday } from 'date-fns'
+import { parseISO, isToday } from 'date-fns'
 import { Calendar, MapPin, Clock, Trash2, Pencil, CalendarPlus, X, Armchair } from 'lucide-react'
 import { useMyBookings, useCancelBooking, useUpdateBooking } from '@/hooks/useBookings'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -10,7 +10,6 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -31,7 +30,8 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog'
-import { formatDateRange } from '@/lib/utils'
+import { formatDateRange, formatDate } from '@/lib/utils'
+import { DateTimeLocalInput } from '@/components/ui/date-time-input'
 import { assetsApi, type MyAssignment, type AvailabilityWindow } from '@/lib/api'
 import type { Booking } from '@/types'
 
@@ -91,12 +91,12 @@ function EditBookingDialog({
         </DialogHeader>
         <div className="space-y-4 py-2">
           <div>
-            <Label htmlFor="edit-starts">Start</Label>
-            <Input id="edit-starts" type="datetime-local" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} className="mt-1.5" />
+            <Label>Start</Label>
+            <DateTimeLocalInput value={startsAt} onChange={setStartsAt} className="mt-1.5" />
           </div>
           <div>
-            <Label htmlFor="edit-ends">End</Label>
-            <Input id="edit-ends" type="datetime-local" value={endsAt} onChange={(e) => setEndsAt(e.target.value)} min={startsAt} className="mt-1.5" />
+            <Label>End</Label>
+            <DateTimeLocalInput value={endsAt} onChange={setEndsAt} min={startsAt} className="mt-1.5" />
           </div>
           <div>
             <Label htmlFor="edit-notes">Notes</Label>
@@ -166,24 +166,20 @@ function MakeAvailableDialog({
         </div>
         <div className="space-y-4 py-1">
           <div>
-            <Label htmlFor="avail-starts">Available from</Label>
-            <Input
-              id="avail-starts"
-              type="datetime-local"
+            <Label>Available from</Label>
+            <DateTimeLocalInput
               value={startsAt}
               min={nowLocalValue()}
-              onChange={(e) => setStartsAt(e.target.value)}
+              onChange={setStartsAt}
               className="mt-1.5"
             />
           </div>
           <div>
-            <Label htmlFor="avail-ends">Available until</Label>
-            <Input
-              id="avail-ends"
-              type="datetime-local"
+            <Label>Available until</Label>
+            <DateTimeLocalInput
               value={endsAt}
               min={startsAt}
-              onChange={(e) => setEndsAt(e.target.value)}
+              onChange={setEndsAt}
               className="mt-1.5"
             />
           </div>
@@ -425,7 +421,7 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
                       <AlertDialogTitle>Cancel booking?</AlertDialogTitle>
                       <AlertDialogDescription>
                         Cancel your booking for <strong>{(booking.asset ?? booking.desk)?.name}</strong> on{' '}
-                        {format(parseISO(booking.startsAt), 'PPP')}? This action cannot be undone.
+                        {formatDate(booking.startsAt)}? This action cannot be undone.
                         Anyone in the queue will be notified.
                       </AlertDialogDescription>
                     </AlertDialogHeader>

@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react'
 import { subDays, format, parseISO } from 'date-fns'
+import { formatDate } from '@/lib/utils'
 import { useQuery } from '@tanstack/react-query'
 import {
   analyticsApi,
@@ -591,7 +592,7 @@ export default function ReportsAdminPage() {
         <div>
           <h1 className="text-2xl font-bold">Reports & Analytics</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            {format(parseISO(startDate), 'd MMM yyyy')} – {format(parseISO(endDate), 'd MMM yyyy')}
+            {formatDate(startDate)} – {formatDate(endDate)}
             {buildingFilter && buildings && ` · ${buildings.find(b => b.id === buildingFilter)?.name}`}
           </p>
         </div>
