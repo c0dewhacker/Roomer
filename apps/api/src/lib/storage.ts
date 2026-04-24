@@ -98,8 +98,12 @@ export async function saveFloorPlan(
   // Buffer the entire upload so we can validate magic bytes before persisting
   const buffer = await file.toBuffer()
 
-  // Validate magic bytes for all non-DXF types (DXF is plaintext — no magic signature)
-  if (fileType !== FloorPlanFileType.DXF && !checkFileMagic(buffer, file.mimetype)) {
+  if (fileType === FloorPlanFileType.DXF) {
+    // DXF is plaintext — reject files that contain null bytes (binary indicator)
+    if (buffer.includes(0x00)) {
+      throw Object.assign(new Error('DXF file contains binary content'), { code: 'INVALID_MAGIC' })
+    }
+  } else if (!checkFileMagic(buffer, file.mimetype)) {
     throw Object.assign(new Error('File content does not match the declared MIME type'), { code: 'INVALID_MAGIC' })
   }
 
@@ -276,6 +280,9 @@ export async function saveBrandingImage(
   const absPath = resolveStoragePath(relPath)
 
   const buffer = await file.toBuffer()
+  if (!checkFileMagic(buffer, file.mimetype)) {
+    throw Object.assign(new Error('File content does not match the declared MIME type'), { code: 'INVALID_MAGIC' })
+  }
   if (slot === 'favicon') {
     await sharp(buffer).resize(64, 64, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toFile(absPath)
   } else {
