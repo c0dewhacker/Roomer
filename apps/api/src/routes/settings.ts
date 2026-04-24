@@ -71,7 +71,7 @@ const samlConfigSchema = z.object({
   issuer: z.string().optional(),
   cert: z.string().min(1),
   callbackUrl: z.string().url(),
-  signatureAlgorithm: z.enum(['sha1', 'sha256', 'sha512']).optional(),
+  signatureAlgorithm: z.enum(['sha256', 'sha512']).optional(),
   label: z.string().optional(),
   groupAttribute: z.string().optional(),
   groupMappings: z.array(groupMappingSchema).optional(),
