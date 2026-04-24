@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma'
 import { createBookingSchema, updateBookingSchema, GlobalRole, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
 import { requireGlobalRole } from '../middleware/requireRole'
-import { enqueueNotification, fanOutFloorAvailable } from '../lib/queue'
+import { enqueueNotification, fanOutFloorAvailable, CLAIM_DEADLINE_MS } from '../lib/queue'
 import { randomUUID } from 'crypto'
 import { checkGroupAccess } from './groups'
 import { z } from 'zod'
@@ -460,7 +460,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     })
 
     if (nextQueued) {
-      const claimDeadline = new Date(Date.now() + 2 * 60 * 60 * 1000) // +2h
+      const claimDeadline = new Date(Date.now() + CLAIM_DEADLINE_MS)
       const claimToken = randomUUID()
       await prisma.queueEntry.update({
         where: { id: nextQueued.id },
