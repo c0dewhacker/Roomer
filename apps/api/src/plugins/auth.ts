@@ -34,7 +34,7 @@ async function authPlugin(fastify: FastifyInstance): Promise<void> {
     saveUninitialized: false,
     cookie: {
       // OIDC state sessions are short-lived (just the redirect round-trip)
-      secure: env.NODE_ENV === 'production',
+      secure: env.COOKIE_SECURE,
       httpOnly: true,
       sameSite: 'strict',
       maxAge: 10 * 60 * 1000, // 10 minutes — only needs to survive the IdP redirect
