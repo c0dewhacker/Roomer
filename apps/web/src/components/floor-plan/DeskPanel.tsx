@@ -12,8 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { useCreateBooking, useJoinQueue, useLeaveQueue, useClaimDesk, useCancelBooking } from '@/hooks/useBookings'
-import { useQueueEntries } from '@/hooks/useBookings'
+import { useCreateBooking, useJoinQueue, useLeaveQueue, useClaimDesk, useCancelBooking, useMakeAvailable, useQueueEntries } from '@/hooks/useBookings'
 import { formatDateRange } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
 import { assetsApi, usersApi, settingsApi } from '@/lib/api'
@@ -483,6 +482,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   const leaveQueue = useLeaveQueue()
   const claimDesk = useClaimDesk()
   const cancelBooking = useCancelBooking()
+  const makeAvailable = useMakeAvailable()
   const { data: queueEntries } = useQueueEntries()
 
   const { data: allowList } = useQuery({
@@ -582,9 +582,10 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
       toast.error('Start time must be before end time')
       return
     }
+    const minExpiry = Date.now() + 30 * 60000 // at least 30 min from now
     const expires = queueExpiry
       ? new Date(queueExpiry).toISOString()
-      : new Date(start.getTime() - 2 * 3600000).toISOString()
+      : new Date(Math.max(start.getTime() - 2 * 3600000, minExpiry)).toISOString()
     try {
       await joinQueue.mutateAsync({
         assetId: desk.id,
@@ -599,7 +600,12 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   }
 
   const myQueueEntry = queueEntries?.find(
-    (q) => (q.assetId ?? q.deskId) === desk.id && (q.status === 'WAITING' || q.status === 'PROMOTED'),
+    (q) => q.assetId === desk.id && (q.status === 'WAITING' || q.status === 'PROMOTED'),
+  )
+
+  const isMyAssignedDesk = !!(
+    desk.assignedUsers?.some((u) => u.id === user?.id) &&
+    desk.rawBookingStatus === 'ASSIGNED'
   )
 
   const statusLabel: Record<string, string> = {
@@ -709,6 +715,29 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
             </div>
 
             {/* Available: booking form */}
+            {/* Assigned user: offer desk to the queue */}
+            {isMyAssignedDesk && (
+              <div className="rounded-md bg-blue-50 border border-blue-200 p-3 space-y-2">
+                <p className="text-sm font-medium text-blue-800">This is your assigned desk</p>
+                {(desk.queueDepth ?? 0) > 0 ? (
+                  <p className="text-xs text-blue-600">
+                    {desk.queueDepth} {desk.queueDepth === 1 ? 'person is' : 'people are'} waiting for this desk.
+                  </p>
+                ) : (
+                  <p className="text-xs text-blue-600">No one is currently queued for this desk.</p>
+                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="w-full border-blue-300 text-blue-800 hover:bg-blue-100"
+                  onClick={() => makeAvailable.mutate(desk.id)}
+                  disabled={makeAvailable.isPending || (desk.queueDepth ?? 0) === 0}
+                >
+                  {makeAvailable.isPending ? 'Processing…' : 'Make available to queue'}
+                </Button>
+              </div>
+            )}
+
             {desk.bookingStatus === 'available' && (
               <div className="space-y-4">
                 <div>
@@ -922,23 +951,67 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
               </div>
             )}
 
-            {/* Assigned */}
+            {/* Assigned — non-assigned user: show queue option */}
             {desk.bookingStatus === 'assigned' && (
-              <div className="rounded-md bg-slate-50 border border-slate-200 p-3">
-                <AlertCircle className="h-4 w-4 text-slate-500 mb-1" />
-                <p className="text-sm font-medium text-slate-800">Permanently assigned</p>
-                {desk.assignedUsers && desk.assignedUsers.length > 0 ? (
-                  <p className="text-xs text-slate-600 mt-1">
-                    Assigned to{' '}
-                    <span className="font-medium">
-                      {desk.assignedUsers.find((u) => u.isPrimary)?.displayName ?? desk.assignedUsers[0].displayName}
-                    </span>
-                    {desk.assignedUsers.length > 1 && ` +${desk.assignedUsers.length - 1} more`}.
-                    {' '}This desk is not available for booking.
+              <div className="space-y-4">
+                <div className="rounded-md bg-slate-50 border border-slate-200 p-3">
+                  <AlertCircle className="h-4 w-4 text-slate-500 mb-1" />
+                  <p className="text-sm font-medium text-slate-800">Permanently assigned</p>
+                  {desk.assignedUsers && desk.assignedUsers.length > 0 ? (
+                    <p className="text-xs text-slate-600 mt-1">
+                      Assigned to{' '}
+                      <span className="font-medium">
+                        {desk.assignedUsers.find((u) => u.isPrimary)?.displayName ?? desk.assignedUsers[0].displayName}
+                      </span>
+                      {desk.assignedUsers.length > 1 && ` +${desk.assignedUsers.length - 1} more`}.
+                    </p>
+                  ) : null}
+                  <p className="text-xs text-slate-500 mt-1">
+                    Join the queue to be notified if the assignee makes this desk available.
                   </p>
-                ) : (
-                  <p className="text-xs text-slate-600 mt-1">This desk is not available for booking.</p>
-                )}
+                </div>
+
+                <div>
+                  <Label className="text-sm font-medium">Time preference</Label>
+                  <Select
+                    value={timePreset}
+                    onValueChange={(v) => setTimePreset(v as TimePreset)}
+                  >
+                    <SelectTrigger className="mt-1.5">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="full">Full Day</SelectItem>
+                      <SelectItem value="am">Morning</SelectItem>
+                      <SelectItem value="pm">Afternoon</SelectItem>
+                      <SelectItem value="custom">Custom</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div>
+                  <Label className="text-xs text-muted-foreground">
+                    Queue expiry (optional — defaults to 2h before start)
+                  </Label>
+                  <Input
+                    type="datetime-local"
+                    value={queueExpiry}
+                    onChange={(e) => setQueueExpiry(e.target.value)}
+                    className="mt-1"
+                  />
+                </div>
+
+                <Button
+                  onClick={handleJoinQueue}
+                  disabled={joinQueue.isPending}
+                  className="w-full bg-amber-500 hover:bg-amber-600 text-white"
+                >
+                  <Users className="mr-2 h-4 w-4" />
+                  {joinQueue.isPending ? 'Joining queue…' : 'Queue for this desk'}
+                </Button>
+                <p className="text-xs text-center text-muted-foreground">
+                  You're joining a queue, not booking directly.
+                </p>
               </div>
             )}
 

@@ -1,10 +1,12 @@
 import { useState, useCallback, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { format, addDays } from 'date-fns'
-import { ChevronLeft, ChevronRight, CalendarDays, Info, Users } from 'lucide-react'
+import { ChevronLeft, ChevronRight, CalendarDays, Info, Users, Bell, BellRing } from 'lucide-react'
 import { FloorPlanCanvas } from '@/components/floor-plan/FloorPlanCanvas'
 import { DeskPanel } from '@/components/floor-plan/DeskPanel'
+import { FloorSubscribeDialog } from '@/components/floor-plan/FloorSubscribeDialog'
 import { useFloorData, useFloorAvailability } from '@/hooks/useFloor'
+import { useFloorSubscriptions } from '@/hooks/useSubscriptions'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -29,8 +31,11 @@ export default function FloorPage() {
   const qc = useQueryClient()
 
   const [showWhoIsIn, setShowWhoIsIn] = useState(false)
+  const [showSubscribeDialog, setShowSubscribeDialog] = useState(false)
   const { data: floor, isLoading } = useFloorData(floorId!)
   const { data: desks } = useFloorAvailability(floorId!, selectedDate)
+  const { data: subscriptions } = useFloorSubscriptions()
+  const existingSubscription = subscriptions?.find((s) => s.floorId === floorId) ?? null
 
   // Keep selectedDesk in sync with fresh availability data so mutations (e.g. add permanent user)
   // are reflected immediately in the panel without re-clicking the desk.
@@ -131,7 +136,7 @@ export default function FloorPage() {
               <span className="text-xs text-muted-foreground">{label}</span>
             </div>
           ))}
-          <div className="ml-2 border-l pl-3">
+          <div className="ml-2 border-l pl-3 flex items-center gap-1">
             <Button
               variant={showWhoIsIn ? 'secondary' : 'ghost'}
               size="sm"
@@ -145,6 +150,18 @@ export default function FloorPage() {
                   {whoIsIn.length}
                 </Badge>
               )}
+            </Button>
+            <Button
+              variant={existingSubscription ? 'secondary' : 'ghost'}
+              size="icon"
+              className="h-7 w-7"
+              title={existingSubscription ? 'Edit floor notifications' : 'Subscribe to floor notifications'}
+              onClick={() => setShowSubscribeDialog(true)}
+            >
+              {existingSubscription
+                ? <BellRing className="h-3.5 w-3.5 text-primary" />
+                : <Bell className="h-3.5 w-3.5" />
+              }
             </Button>
           </div>
         </div>
@@ -225,6 +242,16 @@ export default function FloorPage() {
         floorZones={floor?.zones?.map((z) => ({ id: z.id, name: z.name, colour: z.colour })) ?? []}
         onClose={() => setSelectedDeskId(null)}
         onBookingCreated={handleBookingCreated}
+      />
+
+      {/* Floor subscribe dialog */}
+      <FloorSubscribeDialog
+        open={showSubscribeDialog}
+        floorId={floorId}
+        floorName={floor?.name ?? ''}
+        zones={floor?.zones?.map((z) => ({ id: z.id, name: z.name, colour: z.colour })) ?? []}
+        existing={existingSubscription}
+        onClose={() => setShowSubscribeDialog(false)}
       />
     </div>
   )
