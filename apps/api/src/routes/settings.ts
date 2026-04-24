@@ -33,6 +33,11 @@ const brandingSchema = z.object({
   footerBanner: bannerSchema.optional(),
 })
 
+const loginSettingsSchema = z.object({
+  defaultProvider: z.enum(['local', 'ldap', 'oidc', 'saml']).nullable().optional(),
+  showProviderSelector: z.boolean().optional(),
+})
+
 const ALLOWED_DATE_FORMATS = [
   'dd/MM/yyyy', 'dd-MM-yyyy', 'dd.MM.yyyy',
   'MM/dd/yyyy', 'yyyy-MM-dd', 'd MMM yyyy', 'MMMM d, yyyy',
@@ -399,10 +404,6 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
     '/login-settings',
     { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
     async (request, reply) => {
-      const loginSettingsSchema = z.object({
-        defaultProvider: z.enum(['local', 'ldap', 'oidc', 'saml']).nullable().optional(),
-        showProviderSelector: z.boolean().optional(),
-      })
       const result = loginSettingsSchema.safeParse(request.body)
       if (!result.success) {
         return reply.status(400).send({
