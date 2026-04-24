@@ -186,15 +186,17 @@ async function handleExpireQueueEntries(): Promise<void> {
     data: { status: 'EXPIRED' },
   })
 
-  // Notify each user
   const b = getBoss()
-  for (const entry of expired) {
-    await b.send('send-notification', {
-      type: NotificationType.QUEUE_EXPIRED,
-      userId: entry.userId,
-      queueEntryId: entry.id,
-    } satisfies NotificationJobData)
-  }
+  await b.insert(
+    expired.map((entry) => ({
+      name: 'send-notification',
+      data: {
+        type: NotificationType.QUEUE_EXPIRED,
+        userId: entry.userId,
+        queueEntryId: entry.id,
+      } satisfies NotificationJobData,
+    })),
+  )
 
   console.log(`[queue] Expired ${expired.length} queue entries`)
 }
@@ -214,40 +216,51 @@ async function handleExpireClaimDeadlines(): Promise<void> {
 
   if (expiredPromoted.length === 0) return
 
-  for (const entry of expiredPromoted) {
-    // Expire this entry
-    await prisma.queueEntry.update({
-      where: { id: entry.id },
-      data: { status: 'EXPIRED' },
-    })
+  // Expire all in one batch
+  await prisma.queueEntry.updateMany({
+    where: { id: { in: expiredPromoted.map((e) => e.id) } },
+    data: { status: 'EXPIRED' },
+  })
 
-    // Promote the next WAITING entry for this asset that overlaps the same slot
-    const nextEntry = await prisma.queueEntry.findFirst({
-      where: {
-        assetId: entry.assetId,
-        status: 'WAITING',
-        wantedStartsAt: { lt: entry.wantedEndsAt },
-        wantedEndsAt: { gt: entry.wantedStartsAt },
-      },
-      orderBy: { position: 'asc' },
-    })
+  // Find the next WAITING entry for each expired slot in parallel
+  const claimDeadline = new Date(Date.now() + 2 * 60 * 60 * 1000) // +2h
+  const nextEntries = await Promise.all(
+    expiredPromoted.map((entry) =>
+      prisma.queueEntry.findFirst({
+        where: {
+          assetId: entry.assetId,
+          status: 'WAITING',
+          wantedStartsAt: { lt: entry.wantedEndsAt },
+          wantedEndsAt: { gt: entry.wantedStartsAt },
+        },
+        orderBy: { position: 'asc' },
+      }),
+    ),
+  )
 
-    if (nextEntry) {
-      const claimDeadline = new Date(Date.now() + 2 * 60 * 60 * 1000) // +2h
-      const claimToken = randomUUID()
-      await prisma.queueEntry.update({
-        where: { id: nextEntry.id },
-        data: { status: 'PROMOTED', claimDeadline, claimToken },
-      })
+  const toPromote = nextEntries.filter((e): e is NonNullable<typeof e> => e !== null)
 
-      const b = getBoss()
-      await b.send('send-notification', {
-        type: NotificationType.QUEUE_PROMOTED,
-        userId: nextEntry.userId,
-        queueEntryId: nextEntry.id,
-        claimDeadline: claimDeadline.toISOString(),
-      } satisfies NotificationJobData)
-    }
+  if (toPromote.length > 0) {
+    await Promise.all(
+      toPromote.map((nextEntry) =>
+        prisma.queueEntry.update({
+          where: { id: nextEntry.id },
+          data: { status: 'PROMOTED', claimDeadline, claimToken: randomUUID() },
+        }),
+      ),
+    )
+
+    await getBoss().insert(
+      toPromote.map((nextEntry) => ({
+        name: 'send-notification',
+        data: {
+          type: NotificationType.QUEUE_PROMOTED,
+          userId: nextEntry.userId,
+          queueEntryId: nextEntry.id,
+          claimDeadline: claimDeadline.toISOString(),
+        } satisfies NotificationJobData,
+      })),
+    )
   }
 
   console.log(`[queue] Processed ${expiredPromoted.length} expired claim deadlines`)
@@ -337,15 +350,17 @@ export async function fanOutFloorAvailable(
     data: { lastNotifiedAt: now },
   })
 
-  const b = getBoss()
-  for (const sub of subscriptions) {
-    await b.send('send-notification', {
-      type: NotificationType.FLOOR_AVAILABLE,
-      userId: sub.userId,
-      floorId,
-      zoneId: primaryZoneId ?? undefined,
-      assetId,
-      slotDate,
-    } satisfies NotificationJobData)
-  }
+  await getBoss().insert(
+    subscriptions.map((sub) => ({
+      name: 'send-notification',
+      data: {
+        type: NotificationType.FLOOR_AVAILABLE,
+        userId: sub.userId,
+        floorId,
+        zoneId: primaryZoneId ?? undefined,
+        assetId,
+        slotDate,
+      } satisfies NotificationJobData,
+    })),
+  )
 }
