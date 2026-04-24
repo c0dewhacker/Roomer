@@ -17,6 +17,7 @@ import type {
   Lease,
   LeaseDocument,
   UserGroup,
+  FloorSubscription,
 } from '../types'
 
 const BASE = '/api/v1'
@@ -349,6 +350,18 @@ export const queueApi = {
     api.post<{ data: QueueEntry }>('/queue', body),
   leave: (id: string) => api.delete<{ data: { ok: true } }>(`/queue/${id}`),
   claim: (id: string) => api.post<{ data: Booking }>(`/queue/${id}/claim`),
+  claimByToken: (token: string) =>
+    api.post<{ data: { booking: Booking; queueEntry: { id: string; status: string } } }>('/queue/claim-by-token', { token }),
+}
+
+// --- Subscriptions ---
+export const subscriptionsApi = {
+  list: () => api.get<{ data: FloorSubscription[] }>('/subscriptions'),
+  create: (body: { floorId: string; zoneIds?: string[] }) =>
+    api.post<{ data: FloorSubscription }>('/subscriptions', body),
+  update: (id: string, body: { zoneIds: string[] }) =>
+    api.put<{ data: FloorSubscription }>(`/subscriptions/${id}`, body),
+  remove: (id: string) => api.delete<{ data: { ok: true } }>(`/subscriptions/${id}`),
 }
 
 // --- Users (admin) ---

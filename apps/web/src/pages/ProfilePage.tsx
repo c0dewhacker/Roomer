@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { User, Mail, Shield, Building2, Layers, Users, KeyRound } from 'lucide-react'
+import { User, Mail, Shield, Building2, Layers, Users, KeyRound, Bell, BellOff } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { usersApi } from '@/lib/api'
@@ -14,6 +14,7 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { useFloorSubscriptions, useUnsubscribeFromFloor } from '@/hooks/useSubscriptions'
 
 const profileSchema = z.object({
   displayName: z.string().min(2, 'Name must be at least 2 characters'),
@@ -84,6 +85,9 @@ export default function ProfilePage() {
     },
     onError: (err: Error) => toast.error(err.message ?? 'Failed to change password'),
   })
+
+  const { data: subscriptions } = useFloorSubscriptions()
+  const unsubscribe = useUnsubscribeFromFloor()
 
   if (!user) return null
 
@@ -289,6 +293,46 @@ export default function ProfilePage() {
                 </div>
               ))}
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Floor notification subscriptions */}
+      {subscriptions && subscriptions.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <Bell className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-base">Floor notifications</CardTitle>
+            </div>
+            <CardDescription>Floors you'll be emailed about when a desk becomes available</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {subscriptions.map((sub) => (
+              <div key={sub.id} className="flex items-center justify-between rounded-md border px-3 py-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium truncate">
+                    {sub.floor.building.name} — {sub.floor.name}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {sub.zones.length === 0
+                      ? 'All zones'
+                      : sub.zones.map((z) => z.zone.name).join(', ')
+                    }
+                  </p>
+                </div>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7 shrink-0 ml-2 hover:text-destructive"
+                  title="Unsubscribe"
+                  onClick={() => unsubscribe.mutate(sub.id)}
+                  disabled={unsubscribe.isPending}
+                >
+                  <BellOff className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            ))}
           </CardContent>
         </Card>
       )}

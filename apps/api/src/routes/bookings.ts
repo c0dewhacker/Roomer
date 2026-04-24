@@ -4,7 +4,8 @@ import { prisma } from '../lib/prisma'
 import { createBookingSchema, updateBookingSchema, GlobalRole, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
 import { requireGlobalRole } from '../middleware/requireRole'
-import { enqueueNotification } from '../lib/queue'
+import { enqueueNotification, fanOutFloorAvailable } from '../lib/queue'
+import { randomUUID } from 'crypto'
 import { checkGroupAccess } from './groups'
 import { z } from 'zod'
 
@@ -454,9 +455,10 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     if (nextQueued) {
       const claimDeadline = new Date(Date.now() + 2 * 60 * 60 * 1000) // +2h
+      const claimToken = randomUUID()
       await prisma.queueEntry.update({
         where: { id: nextQueued.id },
-        data: { status: 'PROMOTED', claimDeadline },
+        data: { status: 'PROMOTED', claimDeadline, claimToken },
       })
 
       await enqueueNotification({
@@ -465,6 +467,22 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         queueEntryId: nextQueued.id,
         claimDeadline: claimDeadline.toISOString(),
       })
+    }
+
+    // Notify floor subscribers of the newly-freed slot
+    const cancelledAsset = await prisma.asset.findUnique({
+      where: { id: booking.assetId },
+      select: { floorId: true, primaryZoneId: true },
+    })
+    if (cancelledAsset?.floorId) {
+      const slotDate = booking.startsAt.toISOString().slice(0, 10)
+      await fanOutFloorAvailable(
+        booking.assetId,
+        cancelledAsset.floorId,
+        cancelledAsset.primaryZoneId,
+        slotDate,
+        booking.userId,
+      ).catch((err) => console.error('[bookings] floor fan-out error:', err))
     }
 
     return reply.status(200).send({ data: { ok: true } })

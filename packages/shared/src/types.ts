@@ -81,6 +81,7 @@ export enum NotificationType {
   ASSET_ASSIGNED = 'ASSET_ASSIGNED',
   ASSET_DUE_RETURN = 'ASSET_DUE_RETURN',
   WELCOME = 'WELCOME',
+  FLOOR_AVAILABLE = 'FLOOR_AVAILABLE',
 }
 
 export enum FloorPlanFileType {
