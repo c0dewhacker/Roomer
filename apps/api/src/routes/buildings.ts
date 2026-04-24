@@ -1,10 +1,10 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma'
-import { createBuildingSchema, updateBuildingSchema } from '@roomer/shared'
+import { createBuildingSchema, updateBuildingSchema, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
 import { requireGlobalRole } from '../middleware/requireRole'
-import { GlobalRole } from '@roomer/shared'
 import { canUserAccessBuilding } from './groups'
+import { z } from 'zod'
 export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Buildings'], ...route.schema } })
 
@@ -155,11 +155,11 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
     { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
-      const { groupId } = request.body as { groupId?: string }
-
-      if (!groupId) {
+      const bodyResult = z.object({ groupId: z.string().min(1) }).safeParse(request.body)
+      if (!bodyResult.success) {
         return reply.status(400).send({ error: { message: 'groupId required', code: 'VALIDATION_ERROR' } })
       }
+      const { groupId } = bodyResult.data
 
       const [building, group] = await Promise.all([
         prisma.building.findUnique({ where: { id } }),
@@ -223,11 +223,11 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
     { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
-      const { userId } = request.body as { userId?: string }
-
-      if (!userId) {
+      const bodyResult = z.object({ userId: z.string().min(1) }).safeParse(request.body)
+      if (!bodyResult.success) {
         return reply.status(400).send({ error: { message: 'userId is required', code: 'VALIDATION_ERROR' } })
       }
+      const { userId } = bodyResult.data
 
       const [building, user] = await Promise.all([
         prisma.building.findUnique({ where: { id } }),
