@@ -406,6 +406,7 @@ type OrgSettings = {
   maxAdvanceBookingDays: number
   maxBookingsPerUser: number
   queueClaimWindowHours: number
+  dateFormat: string
 }
 
 export interface BrandingBanner {
@@ -460,6 +461,7 @@ export const settingsApi = {
   getOrg: () => api.get<{ data: OrgSettings }>('/settings/organisation'),
   updateOrg: (body: Partial<Omit<OrgSettings, 'id'>>) =>
     api.patch<{ data: OrgSettings }>('/settings/organisation', body),
+  getPublic: () => api.get<{ data: { dateFormat: string } }>('/settings/public'),
   getScim: () =>
     api.get<{ data: { enabled: boolean; hasToken: boolean; endpointUrl: string } }>('/settings/scim'),
   patchScim: (body: { enabled: boolean }) =>

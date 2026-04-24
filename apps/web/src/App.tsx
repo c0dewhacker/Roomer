@@ -1,15 +1,17 @@
 import { AppRouter } from './router'
 import { useBranding } from './hooks/useBranding'
+import { useDateFormatInit } from './hooks/useDateFormatInit'
 
-function BrandingApplier() {
+function AppInitializers() {
   useBranding()
+  useDateFormatInit()
   return null
 }
 
 export default function App() {
   return (
     <>
-      <BrandingApplier />
+      <AppInitializers />
       <AppRouter />
     </>
   )

@@ -1,4 +1,4 @@
-import { format } from 'date-fns'
+import { formatDateTime } from '@/lib/utils'
 import { Clock, MapPin, CheckCircle, XCircle } from 'lucide-react'
 import { useQueueEntries, useLeaveQueue, useClaimDesk } from '@/hooks/useBookings'
 import { Card, CardContent } from '@/components/ui/card'
@@ -60,13 +60,13 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
 
             {entry.status === 'WAITING' && (
               <p className="text-xs text-muted-foreground mt-0.5">
-                Position <strong>#{entry.position}</strong> · Expires {format(new Date(entry.expiresAt), 'PPp')}
+                Position <strong>#{entry.position}</strong> · Expires {formatDateTime(entry.expiresAt)}
               </p>
             )}
 
             {entry.status === 'PROMOTED' && entry.claimDeadline && (
               <p className="text-xs font-medium text-green-700 mt-1">
-                Claim before {format(new Date(entry.claimDeadline), 'PPp')}
+                Claim before {formatDateTime(entry.claimDeadline)}
               </p>
             )}
           </div>
