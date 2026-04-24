@@ -43,49 +43,6 @@ export function requireGlobalRole(minimumRole: GlobalRole) {
   }
 }
 
-export function requireResourceRole(
-  scopeType: ResourceScopeType,
-  minimumRole: ResourceRoleType,
-  getResourceId: (req: FastifyRequest) => string,
-) {
-  return async function (request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    if (!request.user) {
-      return reply.status(401).send({
-        error: { message: 'Authentication required', code: 'UNAUTHENTICATED' },
-      })
-    }
-
-    // Super admins always pass
-    if (request.user.globalRole === GlobalRole.SUPER_ADMIN) {
-      return
-    }
-
-    const resourceId = getResourceId(request)
-
-    const where =
-      scopeType === ResourceScopeType.BUILDING
-        ? { userId: request.user.id, scopeType, buildingId: resourceId }
-        : { userId: request.user.id, scopeType, floorId: resourceId }
-
-    const role = await prisma.userResourceRole.findFirst({ where })
-
-    if (!role) {
-      return reply.status(403).send({
-        error: { message: 'Insufficient permissions', code: 'FORBIDDEN' },
-      })
-    }
-
-    const userRoleLevel = ROLE_HIERARCHY[role.role as ResourceRoleType] ?? -1
-    const requiredLevel = ROLE_HIERARCHY[minimumRole] ?? 0
-
-    if (userRoleLevel < requiredLevel) {
-      return reply.status(403).send({
-        error: { message: 'Insufficient permissions', code: 'FORBIDDEN' },
-      })
-    }
-  }
-}
-
 /**
  * Returns true if the user holds BUILDING_ADMIN access on the given building,
  * either via a direct UserResourceRole or through a GroupResourceRole.
@@ -138,19 +95,21 @@ export async function getManagedBuildingIds(userId: string): Promise<string[]> {
  * Building admins inherit floor manager permissions for all floors in their building.
  */
 export async function isFloorManagerForFloor(userId: string, floorId: string): Promise<boolean> {
-  const direct = await prisma.userResourceRole.findFirst({
-    where: { userId, scopeType: 'FLOOR', floorId, role: 'FLOOR_MANAGER' },
-  })
-  if (direct) return true
-  const via = await prisma.groupResourceRole.findFirst({
-    where: {
-      scopeType: 'FLOOR',
-      floorId,
-      role: 'FLOOR_MANAGER',
-      group: { members: { some: { userId } } },
-    },
-  })
-  if (via) return true
+  // Run direct and group role checks in parallel — both are independent
+  const [direct, via] = await Promise.all([
+    prisma.userResourceRole.findFirst({
+      where: { userId, scopeType: 'FLOOR', floorId, role: 'FLOOR_MANAGER' },
+    }),
+    prisma.groupResourceRole.findFirst({
+      where: {
+        scopeType: 'FLOOR',
+        floorId,
+        role: 'FLOOR_MANAGER',
+        group: { members: { some: { userId } } },
+      },
+    }),
+  ])
+  if (direct || via) return true
 
   // Building admins inherit floor manager permissions
   const floor = await prisma.floor.findUnique({ where: { id: floorId }, select: { buildingId: true } })
