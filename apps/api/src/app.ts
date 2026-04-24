@@ -24,6 +24,7 @@ import { settingsRoutes } from './routes/settings'
 import { enterpriseAuthRoutes } from './routes/auth-enterprise'
 import { importRoutes } from './routes/import'
 import { scimRoutes } from './routes/scim'
+import { subscriptionRoutes } from './routes/subscriptions'
 import { getBoss } from './lib/queue'
 
 export async function buildApp(): Promise<FastifyInstance> {
@@ -186,6 +187,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await fastify.register(groupRoutes, { prefix: '/api/v1/groups' })
   await fastify.register(settingsRoutes, { prefix: '/api/v1/settings' })
   await fastify.register(importRoutes, { prefix: '/api/v1/import' })
+  await fastify.register(subscriptionRoutes, { prefix: '/api/v1/subscriptions' })
   await fastify.register(scimRoutes, { prefix: '/scim/v2' })
 
   // ─── Health check ──────────────────────────────────────────────────────────

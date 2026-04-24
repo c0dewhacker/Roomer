@@ -6,6 +6,7 @@ import LoginPage from './pages/LoginPage'
 import FloorPage from './pages/FloorPage'
 import BookingsPage from './pages/BookingsPage'
 import QueuePage from './pages/QueuePage'
+import QueueClaimPage from './pages/QueueClaimPage'
 import ProfilePage from './pages/ProfilePage'
 import BuildingsAdminPage from './pages/admin/BuildingsAdminPage'
 import BuildingDetailAdminPage from './pages/admin/BuildingDetailAdminPage'
@@ -87,6 +88,7 @@ export function AppRouter() {
     <Routes>
       <Route path="/" element={<RootRedirect />} />
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/queue/claim" element={<QueueClaimPage />} />
 
       <Route element={<ProtectedRoute />}>
         <Route element={<Layout />}>

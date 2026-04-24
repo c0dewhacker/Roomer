@@ -288,6 +288,22 @@ export interface UserGroup {
   _count?: { members: number }
 }
 
+export interface FloorSubscriptionZone {
+  subscriptionId: string
+  zoneId: string
+  zone: { id: string; name: string; colour: string }
+}
+
+export interface FloorSubscription {
+  id: string
+  userId: string
+  floorId: string
+  lastNotifiedAt?: string | null
+  createdAt: string
+  floor: { id: string; name: string; building: { id: string; name: string } }
+  zones: FloorSubscriptionZone[]
+}
+
 export interface UtilisationDataPoint {
   floorId: string
   floorName: string

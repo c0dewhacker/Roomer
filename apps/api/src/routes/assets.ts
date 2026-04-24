@@ -3,7 +3,8 @@ import { prisma } from '../lib/prisma'
 import { GlobalRole, BookableStatus, bulkUpdateAssetPositionsSchema, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
 import { requireGlobalRole, getManagedFloorIds, isFloorManagerForFloor } from '../middleware/requireRole'
-import { enqueueNotification } from '../lib/queue'
+import { enqueueNotification, fanOutFloorAvailable } from '../lib/queue'
+import { randomUUID } from 'crypto'
 import { z } from 'zod'
 
 const createCategorySchema = z.object({
@@ -438,6 +439,12 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     })
 
     if (waiting.length === 0) {
+      // No queue — fan out to floor subscribers so they know the desk is free
+      if (asset.floorId) {
+        const slotDate = new Date().toISOString().slice(0, 10)
+        fanOutFloorAvailable(id, asset.floorId, asset.primaryZoneId, slotDate, request.user.id)
+          .catch((err) => console.error('[assets] floor fan-out error:', err))
+      }
       return reply.status(200).send({ data: { queued: 0, action: 'none' } })
     }
 
@@ -471,10 +478,11 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     const org = await prisma.organisation.findFirst({ select: { queueClaimWindowHours: true } })
     const windowHours = org?.queueClaimWindowHours ?? 4
     const claimDeadline = new Date(Date.now() + windowHours * 3600 * 1000)
+    const claimToken = randomUUID()
 
     await prisma.queueEntry.update({
       where: { id: first.id },
-      data: { status: 'PROMOTED', claimDeadline },
+      data: { status: 'PROMOTED', claimDeadline, claimToken },
     })
 
     await enqueueNotification({
