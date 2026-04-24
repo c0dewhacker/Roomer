@@ -1,0 +1,1 @@
+ALTER TABLE "Organisation" ADD COLUMN IF NOT EXISTS "dateFormat" TEXT NOT NULL DEFAULT 'dd/MM/yyyy';

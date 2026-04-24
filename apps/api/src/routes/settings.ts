@@ -33,12 +33,18 @@ const brandingSchema = z.object({
   footerBanner: bannerSchema.optional(),
 })
 
+const ALLOWED_DATE_FORMATS = [
+  'dd/MM/yyyy', 'dd-MM-yyyy', 'dd.MM.yyyy',
+  'MM/dd/yyyy', 'yyyy-MM-dd', 'd MMM yyyy', 'MMMM d, yyyy',
+] as const
+
 const updateOrgSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   defaultBookingDurationHours: z.number().int().min(1).max(24).optional(),
   maxAdvanceBookingDays: z.number().int().min(1).max(365).optional(),
   maxBookingsPerUser: z.number().int().min(1).max(100).optional(),
   queueClaimWindowHours: z.number().int().min(1).max(48).optional(),
+  dateFormat: z.enum(ALLOWED_DATE_FORMATS).optional(),
 })
 
 const groupMappingSchema = z.object({
@@ -193,6 +199,12 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
       }
     },
   )
+
+  // GET /settings/public — public non-sensitive settings (dateFormat etc.)
+  fastify.get('/public', async (_request, reply) => {
+    const org = await prisma.organisation.findFirst({ select: { dateFormat: true } })
+    return reply.status(200).send({ data: { dateFormat: org?.dateFormat ?? 'dd/MM/yyyy' } })
+  })
 
   // GET /settings/branding — public (needed for login page theming)
   fastify.get('/branding', async (_request, reply) => {
