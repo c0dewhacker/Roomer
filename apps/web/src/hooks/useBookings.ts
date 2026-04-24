@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { bookingsApi, queueApi, ApiError } from '../lib/api'
+import { bookingsApi, queueApi, assetsApi, ApiError } from '../lib/api'
 
 function apiErrMsg(err: Error, fallback: string): string {
   if (err instanceof ApiError) {
@@ -64,10 +64,10 @@ export function useUpdateBooking() {
   })
 }
 
-export function useQueueEntries() {
+export function useQueueEntries(includeHistory?: boolean) {
   return useQuery({
-    queryKey: ['queue'],
-    queryFn: () => queueApi.list(),
+    queryKey: ['queue', { history: includeHistory ?? false }],
+    queryFn: () => queueApi.list(includeHistory),
     select: (res) => res.data,
   })
 }
@@ -100,6 +100,7 @@ export function useLeaveQueue() {
     onSuccess: () => {
       toast.success('Left the queue')
       qc.invalidateQueries({ queryKey: ['queue'] })
+      qc.invalidateQueries({ queryKey: ['floors'] })
     },
     onError: () => {
       toast.error('Failed to leave queue')
@@ -116,9 +117,33 @@ export function useClaimDesk() {
       toast.success('Desk claimed! Booking confirmed.')
       qc.invalidateQueries({ queryKey: ['queue'] })
       qc.invalidateQueries({ queryKey: ['bookings'] })
+      qc.invalidateQueries({ queryKey: ['floors'] })
     },
     onError: () => {
       toast.error('Failed to claim desk')
+    },
+  })
+}
+
+export function useMakeAvailable() {
+  const qc = useQueryClient()
+
+  return useMutation({
+    mutationFn: (assetId: string) => assetsApi.makeAvailable(assetId),
+    onSuccess: (res) => {
+      const { action } = res.data
+      if (action === 'none') {
+        toast.info('No one is queued for this desk right now.')
+      } else if (action === 'auto_confirmed') {
+        toast.success('Booking confirmed automatically for the person in queue.')
+      } else {
+        toast.success('The next person in the queue has been notified and has a limited time to claim the desk.')
+      }
+      qc.invalidateQueries({ queryKey: ['queue'] })
+      qc.invalidateQueries({ queryKey: ['floors'] })
+    },
+    onError: () => {
+      toast.error('Failed to make desk available')
     },
   })
 }

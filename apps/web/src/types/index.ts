@@ -137,6 +137,7 @@ export interface AssetWithStatus extends Omit<Asset, 'bookingStatus'> {
   zoneColour: string
   zoneName: string
   assignedUsers?: AssetAssignedUser[]
+  queueDepth?: number
 }
 /** @deprecated Use AssetWithStatus instead */
 export type DeskWithStatus = AssetWithStatus
@@ -285,6 +286,22 @@ export interface UserGroup {
   buildingAccess?: GroupBuildingAccess[]
   floorAccess?: GroupFloorAccess[]
   _count?: { members: number }
+}
+
+export interface FloorSubscriptionZone {
+  subscriptionId: string
+  zoneId: string
+  zone: { id: string; name: string; colour: string }
+}
+
+export interface FloorSubscription {
+  id: string
+  userId: string
+  floorId: string
+  lastNotifiedAt?: string | null
+  createdAt: string
+  floor: { id: string; name: string; building: { id: string; name: string } }
+  zones: FloorSubscriptionZone[]
 }
 
 export interface UtilisationDataPoint {

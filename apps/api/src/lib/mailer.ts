@@ -175,7 +175,9 @@ export function renderQueuePromoted(
   user: Pick<User, 'displayName' | 'email'>,
   asset: Pick<Asset, 'name'>,
   claimDeadline: Date,
+  claimToken: string,
 ): { subject: string; html: string; text: string } {
+  const claimUrl = `${env.APP_URL}/queue/claim?token=${encodeURIComponent(claimToken)}`
   const subject = `Asset available — claim now! ${escapeHtml(asset.name)}`
   const html = baseHtml(
     subject,
@@ -187,10 +189,64 @@ export function renderQueuePromoted(
          <dt>Claim by</dt><dd><strong>${formatDate(claimDeadline)}</strong></dd>
        </dl>
      </div>
-     <p>You must claim this booking before the deadline or it will be offered to the next person in the queue.</p>
-     <a href="${env.APP_URL}/queue" class="btn">Claim Now</a>`,
+     <p>Click the button below to claim your booking instantly — no login required. This link expires when the claim deadline passes.</p>
+     <a href="${claimUrl}" class="btn">Claim Now</a>`,
   )
-  const text = `Hi ${user.displayName},\n\n${asset.name} is now available!\nPeriod: ${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}\nClaim by: ${formatDate(claimDeadline)}\n\nClaim: ${env.APP_URL}/queue`
+  const text = `Hi ${user.displayName},\n\n${asset.name} is now available!\nPeriod: ${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}\nClaim by: ${formatDate(claimDeadline)}\n\nClaim your booking: ${claimUrl}`
+  return { subject, html, text }
+}
+
+// ─── FLOOR_AVAILABLE ──────────────────────────────────────────────────────────
+
+export function renderFloorAvailable(
+  floor: { id: string; name: string },
+  zone: { name: string } | null,
+  asset: Pick<Asset, 'name'>,
+  slotDate: string,
+): { subject: string; html: string; text: string } {
+  const floorUrl = `${env.APP_URL}/floors/${floor.id}?date=${slotDate}`
+  const location = zone ? `${escapeHtml(floor.name)} · ${escapeHtml(zone.name)}` : escapeHtml(floor.name)
+  const subject = `Desk available — ${location}`
+  const html = baseHtml(
+    subject,
+    `<h1>A desk just became available</h1>
+     <p><strong>${escapeHtml(asset.name)}</strong> on <strong>${location}</strong> is now free.</p>
+     <div class="detail">
+       <dl>
+         <dt>Floor</dt><dd>${escapeHtml(floor.name)}</dd>
+         ${zone ? `<dt>Zone</dt><dd>${escapeHtml(zone.name)}</dd>` : ''}
+         <dt>Date</dt><dd>${slotDate}</dd>
+       </dl>
+     </div>
+     <p>Be the first to book it.</p>
+     <a href="${floorUrl}" class="btn">View Floor Plan</a>`,
+  )
+  const text = `A desk just became available on ${floor.name}${zone ? ` (${zone.name})` : ''}.\n\n${asset.name} is now free on ${slotDate}.\n\nView floor plan: ${floorUrl}`
+  return { subject, html, text }
+}
+
+// ─── QUEUE_EXPIRED ────────────────────────────────────────────────────────────
+
+export function renderQueueExpired(
+  queueEntry: Pick<QueueEntry, 'id' | 'wantedStartsAt' | 'wantedEndsAt'>,
+  user: Pick<User, 'displayName' | 'email'>,
+  asset: Pick<Asset, 'name'>,
+): { subject: string; html: string; text: string } {
+  const subject = `Queue entry expired — ${escapeHtml(asset.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Your queue entry has expired</h1>
+     <p>Hi ${escapeHtml(user.displayName)}, your place in the queue for <strong>${escapeHtml(asset.name)}</strong> has expired without becoming available.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
+         <dt>Wanted period</dt><dd>${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}</dd>
+       </dl>
+     </div>
+     <p>You can rejoin the queue any time from the floor plan.</p>
+     <a href="${env.APP_URL}/queue" class="btn">View My Queue</a>`,
+  )
+  const text = `Hi ${user.displayName},\n\nYour queue entry for ${asset.name} (${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}) has expired.\n\nYou can rejoin the queue from the floor plan: ${env.APP_URL}`
   return { subject, html, text }
 }
 

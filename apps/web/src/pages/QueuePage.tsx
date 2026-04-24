@@ -40,16 +40,16 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
         <div className="flex items-start justify-between gap-3">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <p className="font-medium truncate">{(entry.asset ?? entry.desk)?.name ?? 'Unknown asset'}</p>
+              <p className="font-medium truncate">{entry.asset?.name ?? 'Unknown asset'}</p>
               <Badge variant={cfg.variant} className="shrink-0 text-xs">
                 {cfg.label}
               </Badge>
             </div>
 
-            {(entry.asset ?? entry.desk)?.zone && (
+            {entry.asset?.zone && (
               <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
                 <MapPin className="h-3 w-3 shrink-0" />
-                {(entry.asset ?? entry.desk)!.zone!.name}
+                {entry.asset.zone.name}
               </p>
             )}
 
@@ -97,7 +97,7 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
                     <AlertDialogTitle>Leave queue?</AlertDialogTitle>
                     <AlertDialogDescription>
                       You will lose your position #{entry.position} in the queue for{' '}
-                      <strong>{(entry.asset ?? entry.desk)?.name}</strong>.
+                      <strong>{entry.asset?.name}</strong>.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
@@ -120,7 +120,7 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
 }
 
 export default function QueuePage() {
-  const { data: entries, isLoading } = useQueueEntries()
+  const { data: entries, isLoading } = useQueueEntries(true)
 
   const active = (entries ?? []).filter((e) => e.status === 'WAITING' || e.status === 'PROMOTED')
   const past = (entries ?? []).filter((e) => e.status !== 'WAITING' && e.status !== 'PROMOTED')
@@ -145,7 +145,7 @@ export default function QueuePage() {
           <Clock className="h-12 w-12 text-muted-foreground/30 mb-3" />
           <p className="text-sm text-muted-foreground">You're not in any queues</p>
           <p className="text-xs text-muted-foreground mt-1">
-            When a desk you want is booked, click it and join the queue.
+            When a desk you want is booked or assigned, click it and join the queue.
           </p>
         </div>
       )}
@@ -165,7 +165,7 @@ export default function QueuePage() {
         <section>
           <h2 className="text-base font-semibold mb-3 text-muted-foreground">History</h2>
           <div className="space-y-3">
-            {past.slice(0, 10).map((e) => <QueueCard key={e.id} entry={e} />)}
+            {past.slice(0, 20).map((e) => <QueueCard key={e.id} entry={e} />)}
           </div>
         </section>
       )}

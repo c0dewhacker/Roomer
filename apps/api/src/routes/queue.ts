@@ -3,16 +3,22 @@ import { prisma } from '../lib/prisma'
 import { createQueueEntrySchema, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
 import { enqueueNotification } from '../lib/queue'
+import { randomUUID } from 'crypto'
 
 export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Queue'], ...route.schema } })
 
-  // GET /queue — current user's WAITING and PROMOTED entries
+  // GET /queue — current user's queue entries. Active only by default; ?include_history=true adds terminal entries.
   fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { include_history } = request.query as { include_history?: string }
+    const statusFilter: { in: Array<'WAITING' | 'PROMOTED'> } | undefined = include_history === 'true'
+      ? undefined
+      : { in: ['WAITING', 'PROMOTED'] }
+
     const entries = await prisma.queueEntry.findMany({
       where: {
         userId: request.user.id,
-        status: { in: ['WAITING', 'PROMOTED'] },
+        ...(statusFilter ? { status: statusFilter } : {}),
       },
       include: {
         asset: {
@@ -24,7 +30,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
           },
         },
       },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { createdAt: 'desc' },
     })
 
     return reply.status(200).send({ data: entries })
@@ -135,7 +141,83 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       data: { status: 'CANCELLED' },
     })
 
+    // Compact positions: decrement all WAITING entries for the same asset/period that were behind the cancelled one
+    await prisma.queueEntry.updateMany({
+      where: {
+        assetId: entry.assetId,
+        status: 'WAITING',
+        position: { gt: entry.position },
+        wantedStartsAt: { lt: entry.wantedEndsAt },
+        wantedEndsAt: { gt: entry.wantedStartsAt },
+      },
+      data: { position: { decrement: 1 } },
+    })
+
     return reply.status(200).send({ data: { ok: true } })
+  })
+
+  // POST /queue/claim-by-token — one-click claim via email link (no auth required)
+  fastify.post('/claim-by-token', async (request, reply) => {
+    const { token } = request.body as { token?: string }
+    if (!token || typeof token !== 'string') {
+      return reply.status(400).send({ error: { message: 'Token is required', code: 'VALIDATION_ERROR' } })
+    }
+
+    const entry = await prisma.queueEntry.findUnique({
+      where: { claimToken: token },
+      include: { asset: true },
+    })
+
+    if (!entry) {
+      return reply.status(404).send({ error: { message: 'Invalid or already-used token', code: 'TOKEN_INVALID' } })
+    }
+
+    if (entry.status !== 'PROMOTED') {
+      return reply.status(409).send({ error: { message: 'This booking has already been claimed or expired', code: 'ALREADY_CLAIMED' } })
+    }
+
+    if (!entry.claimDeadline || entry.claimDeadline < new Date()) {
+      return reply.status(409).send({ error: { message: 'Claim deadline has passed', code: 'TOKEN_EXPIRED' } })
+    }
+
+    const conflict = await prisma.booking.findFirst({
+      where: {
+        assetId: entry.assetId,
+        status: 'CONFIRMED',
+        startsAt: { lt: entry.wantedEndsAt },
+        endsAt: { gt: entry.wantedStartsAt },
+      },
+    })
+
+    if (conflict) {
+      return reply.status(409).send({
+        error: { message: 'Asset is no longer available for this period', code: 'ASSET_CONFLICT' },
+      })
+    }
+
+    const [booking] = await prisma.$transaction([
+      prisma.booking.create({
+        data: {
+          userId: entry.userId,
+          assetId: entry.assetId,
+          startsAt: entry.wantedStartsAt,
+          endsAt: entry.wantedEndsAt,
+          status: 'CONFIRMED',
+        },
+      }),
+      prisma.queueEntry.update({
+        where: { id: entry.id },
+        data: { status: 'CLAIMED', claimToken: null },
+      }),
+    ])
+
+    await enqueueNotification({
+      type: NotificationType.BOOKING_CONFIRMED,
+      userId: entry.userId,
+      bookingId: booking.id,
+    })
+
+    return reply.status(201).send({ data: { booking, queueEntry: { id: entry.id, status: 'CLAIMED' } } })
   })
 
   // POST /queue/:id/claim — claim promoted asset
@@ -183,7 +265,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    // Create booking and mark entry as CLAIMED
+    // Create booking and mark entry as CLAIMED (clear one-time token)
     const [booking] = await prisma.$transaction([
       prisma.booking.create({
         data: {
@@ -196,7 +278,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       }),
       prisma.queueEntry.update({
         where: { id },
-        data: { status: 'CLAIMED' },
+        data: { status: 'CLAIMED', claimToken: null },
       }),
     ])
 

@@ -1,7 +1,8 @@
 import PgBoss from 'pg-boss'
 import { env } from '../env'
 import { prisma } from './prisma'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderQueueJoined, renderQueuePromoted, renderWelcome } from './mailer'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderWelcome, renderFloorAvailable } from './mailer'
+import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist'
 import { NotificationType } from '@roomer/shared'
 
@@ -22,6 +23,10 @@ export interface NotificationJobData {
   bookingId?: string
   queueEntryId?: string
   claimDeadline?: string
+  floorId?: string
+  zoneId?: string
+  assetId?: string
+  slotDate?: string
 }
 
 // ─── Worker: send-notification ────────────────────────────────────────────────
@@ -37,7 +42,7 @@ async function handleSendNotification(
 async function processSendNotification(
   job: PgBoss.Job<NotificationJobData>,
 ): Promise<void> {
-  const { type, userId, bookingId, queueEntryId, claimDeadline } = job.data
+  const { type, userId, bookingId, queueEntryId, claimDeadline, floorId, zoneId, assetId, slotDate } = job.data
 
   const user = await prisma.user.findUnique({ where: { id: userId } })
   if (!user) {
@@ -98,10 +103,23 @@ async function processSendNotification(
       where: { id: queueEntryId },
       include: { asset: true },
     })
-    if (entry && claimDeadline) {
+    if (entry && claimDeadline && entry.claimToken) {
       title = `Asset available — ${entry.asset.name}`
       body = `Claim your booking by ${new Date(claimDeadline).toISOString()}.`
-      emailPayload = renderQueuePromoted(entry, user, entry.asset, new Date(claimDeadline))
+      emailPayload = renderQueuePromoted(entry, user, entry.asset, new Date(claimDeadline), entry.claimToken)
+    }
+  } else if (type === NotificationType.FLOOR_AVAILABLE && floorId && assetId && slotDate) {
+    const [floor, asset] = await Promise.all([
+      prisma.floor.findUnique({ where: { id: floorId }, select: { id: true, name: true } }),
+      prisma.asset.findUnique({ where: { id: assetId }, select: { name: true } }),
+    ])
+    const zone = zoneId
+      ? await prisma.zone.findUnique({ where: { id: zoneId }, select: { name: true } })
+      : null
+    if (floor && asset) {
+      title = `Desk available — ${floor.name}${zone ? ` · ${zone.name}` : ''}`
+      body = `${asset.name} is now free on ${slotDate}.`
+      emailPayload = renderFloorAvailable(floor, zone, asset, slotDate)
     }
   } else if (type === NotificationType.QUEUE_EXPIRED && queueEntryId) {
     const entry = await prisma.queueEntry.findUnique({
@@ -111,6 +129,7 @@ async function processSendNotification(
     if (entry) {
       title = `Queue entry expired — ${entry.asset.name}`
       body = `Your queue entry for ${entry.asset.name} has expired.`
+      emailPayload = renderQueueExpired(entry, user, entry.asset)
     }
   } else if (type === NotificationType.WELCOME) {
     title = 'Welcome to Roomer'
@@ -215,9 +234,10 @@ async function handleExpireClaimDeadlines(): Promise<void> {
 
     if (nextEntry) {
       const claimDeadline = new Date(Date.now() + 2 * 60 * 60 * 1000) // +2h
+      const claimToken = randomUUID()
       await prisma.queueEntry.update({
         where: { id: nextEntry.id },
-        data: { status: 'PROMOTED', claimDeadline },
+        data: { status: 'PROMOTED', claimDeadline, claimToken },
       })
 
       const b = getBoss()
@@ -271,4 +291,61 @@ export async function startQueue(): Promise<void> {
 export async function enqueueNotification(data: NotificationJobData): Promise<void> {
   const b = getBoss()
   await b.send('send-notification', data)
+}
+
+// ─── Floor-subscription fan-out ──────────────────────────────────────────────
+// Called after a booking is cancelled or a desk is made available (action=none).
+// Finds all subscribers for the floor/zone, applies a 30-min cooldown, and
+// enqueues FLOOR_AVAILABLE notifications.
+
+export async function fanOutFloorAvailable(
+  assetId: string,
+  floorId: string,
+  primaryZoneId: string | null,
+  slotDate: string,
+  excludeUserId?: string,
+): Promise<void> {
+  const now = new Date()
+  const cooldown = new Date(now.getTime() - 30 * 60000)
+
+  const subscriptions = await prisma.floorSubscription.findMany({
+    where: {
+      floorId,
+      ...(excludeUserId ? { userId: { not: excludeUserId } } : {}),
+      OR: [
+        { lastNotifiedAt: null },
+        { lastNotifiedAt: { lt: cooldown } },
+      ],
+      AND: primaryZoneId
+        ? [
+            {
+              OR: [
+                { zones: { none: {} } },
+                { zones: { some: { zoneId: primaryZoneId } } },
+              ],
+            },
+          ]
+        : [{ zones: { none: {} } }],
+    },
+    select: { id: true, userId: true },
+  })
+
+  if (subscriptions.length === 0) return
+
+  await prisma.floorSubscription.updateMany({
+    where: { id: { in: subscriptions.map((s) => s.id) } },
+    data: { lastNotifiedAt: now },
+  })
+
+  const b = getBoss()
+  for (const sub of subscriptions) {
+    await b.send('send-notification', {
+      type: NotificationType.FLOOR_AVAILABLE,
+      userId: sub.userId,
+      floorId,
+      zoneId: primaryZoneId ?? undefined,
+      assetId,
+      slotDate,
+    } satisfies NotificationJobData)
+  }
 }
