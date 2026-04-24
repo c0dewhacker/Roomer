@@ -19,6 +19,21 @@ function defaultDateRange(): { startDate: Date; endDate: Date } {
   return { startDate, endDate }
 }
 
+function parseDateParam(value: string | undefined, suffix: 'T00:00:00.000Z' | 'T23:59:59.999Z', fallback: Date): Date {
+  return value ? new Date(value + suffix) : fallback
+}
+
+function countWorkingDays(start: Date, end: Date): number {
+  let days = 0
+  const cursor = new Date(start)
+  while (cursor <= end) {
+    const d = cursor.getDay()
+    if (d !== 0 && d !== 6) days++
+    cursor.setDate(cursor.getDate() + 1)
+  }
+  return days || 1
+}
+
 export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Analytics'], ...route.schema } })
 
@@ -35,18 +50,9 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       const defaults = defaultDateRange()
-      const startDate = result.data.startDate ? new Date(result.data.startDate + 'T00:00:00.000Z') : defaults.startDate
-      const endDate = result.data.endDate ? new Date(result.data.endDate + 'T23:59:59.999Z') : defaults.endDate
-
-      // Calculate working days in range (Mon–Fri)
-      let workingDays = 0
-      const cursor = new Date(startDate)
-      while (cursor <= endDate) {
-        const day = cursor.getDay()
-        if (day !== 0 && day !== 6) workingDays++
-        cursor.setDate(cursor.getDate() + 1)
-      }
-      if (workingDays === 0) workingDays = 1
+      const startDate = parseDateParam(result.data.startDate, 'T00:00:00.000Z', defaults.startDate)
+      const endDate = parseDateParam(result.data.endDate, 'T23:59:59.999Z', defaults.endDate)
+      const workingDays = countWorkingDays(startDate, endDate)
 
       // Build floor/building filters
       const floorWhere: Record<string, unknown> = {}
@@ -123,8 +129,8 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       const defaults = defaultDateRange()
-      const startDate = result.data.startDate ? new Date(result.data.startDate + 'T00:00:00.000Z') : defaults.startDate
-      const endDate = result.data.endDate ? new Date(result.data.endDate + 'T23:59:59.999Z') : defaults.endDate
+      const startDate = parseDateParam(result.data.startDate, 'T00:00:00.000Z', defaults.startDate)
+      const endDate = parseDateParam(result.data.endDate, 'T23:59:59.999Z', defaults.endDate)
 
       type BookingCountRow = { date: Date; count: bigint }
 
@@ -185,17 +191,9 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       if (!result.success) return reply.status(400).send({ error: { message: 'Invalid query', code: 'VALIDATION_ERROR' } })
 
       const defaults = defaultDateRange()
-      const startDate = result.data.startDate ? new Date(result.data.startDate + 'T00:00:00.000Z') : defaults.startDate
-      const endDate = result.data.endDate ? new Date(result.data.endDate + 'T23:59:59.999Z') : defaults.endDate
-
-      let workingDays = 0
-      const cursor = new Date(startDate)
-      while (cursor <= endDate) {
-        const day = cursor.getDay()
-        if (day !== 0 && day !== 6) workingDays++
-        cursor.setDate(cursor.getDate() + 1)
-      }
-      if (workingDays === 0) workingDays = 1
+      const startDate = parseDateParam(result.data.startDate, 'T00:00:00.000Z', defaults.startDate)
+      const endDate = parseDateParam(result.data.endDate, 'T23:59:59.999Z', defaults.endDate)
+      const workingDays = countWorkingDays(startDate, endDate)
 
       const bookingWhere: Record<string, unknown> = { startsAt: { gte: startDate, lte: endDate } }
 
