@@ -6,6 +6,7 @@ import { requireGlobalRole, getManagedFloorIds, isFloorManagerForFloor } from '.
 import { enqueueNotification, fanOutFloorAvailable } from '../lib/queue'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
+import { checkGroupAccess } from './groups'
 
 const createCategorySchema = z.object({
   name: z.string().min(1).max(255),
@@ -382,6 +383,19 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /assets/:id/availability-windows — list active windows
   fastify.get('/:id/availability-windows', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+
+    const asset = await prisma.asset.findUnique({ where: { id }, include: { floor: true } })
+    if (!asset) {
+      return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+    }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN && asset.floor) {
+      const allowed = await checkGroupAccess(request.user.id, asset.floor.buildingId, asset.floor.id)
+      if (!allowed) {
+        return reply.status(403).send({ error: { message: 'Your group does not have access to this building or floor', code: 'GROUP_ACCESS_DENIED' } })
+      }
+    }
+
     const now = new Date()
 
     const windows = await prisma.assetAvailabilityWindow.findMany({
@@ -1141,9 +1155,16 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string }
     const { from, to } = request.query as { from?: string; to?: string }
 
-    const asset = await prisma.asset.findUnique({ where: { id } })
+    const asset = await prisma.asset.findUnique({ where: { id }, include: { floor: true } })
     if (!asset) {
       return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+    }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN && asset.floor) {
+      const allowed = await checkGroupAccess(request.user.id, asset.floor.buildingId, asset.floor.id)
+      if (!allowed) {
+        return reply.status(403).send({ error: { message: 'Your group does not have access to this building or floor', code: 'GROUP_ACCESS_DENIED' } })
+      }
     }
 
     const where: Record<string, unknown> = { assetId: id }
