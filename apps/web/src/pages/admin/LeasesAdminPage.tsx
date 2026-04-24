@@ -2,7 +2,8 @@ import { useState, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { format, isPast } from 'date-fns'
+import { isPast } from 'date-fns'
+import { formatDate } from '@/lib/utils'
 import {
   FileText, Plus, Trash2, Upload, Download, ChevronDown, ChevronUp, Building2, AlertCircle,
 } from 'lucide-react'
@@ -288,13 +289,13 @@ function LeaseCard({ lease }: { lease: Lease }) {
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1 mt-2 text-sm">
           <div>
             <span className="text-xs text-muted-foreground">Start</span>
-            <p className="font-medium">{format(new Date(lease.startDate), 'd MMM yyyy')}</p>
+            <p className="font-medium">{formatDate(lease.startDate)}</p>
           </div>
           {lease.endDate && (
             <div>
               <span className="text-xs text-muted-foreground">End</span>
               <p className={`font-medium ${isExpired ? 'text-destructive' : ''}`}>
-                {format(new Date(lease.endDate), 'd MMM yyyy')}
+                {formatDate(lease.endDate)}
               </p>
             </div>
           )}
@@ -361,7 +362,7 @@ function LeaseCard({ lease }: { lease: Lease }) {
                     <div className="min-w-0">
                       <p className="text-sm font-medium truncate">{doc.filename}</p>
                       <p className="text-xs text-muted-foreground">
-                        {(doc.sizeBytes / 1024).toFixed(0)} KB · {format(new Date(doc.uploadedAt), 'd MMM yyyy')}
+                        {(doc.sizeBytes / 1024).toFixed(0)} KB · {formatDate(doc.uploadedAt)}
                       </p>
                     </div>
                     <div className="flex items-center gap-1 ml-2 shrink-0">

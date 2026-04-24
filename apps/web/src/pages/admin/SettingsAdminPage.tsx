@@ -13,6 +13,7 @@ import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
 import { settingsApi, groupsApi, brandingApi, authProvidersApi, type Branding, type BrandingBanner, type LoginProvider } from '@/lib/api'
+import { DATE_FORMAT_OPTIONS } from '@/lib/dateFormat'
 import {
   Select,
   SelectContent,
@@ -61,6 +62,7 @@ const orgSchema = z.object({
   maxAdvanceBookingDays: z.coerce.number().int().min(1).max(365),
   maxBookingsPerUser: z.coerce.number().int().min(1).max(100),
   queueClaimWindowHours: z.coerce.number().int().min(1).max(48),
+  dateFormat: z.string().min(1),
 })
 type OrgForm = z.infer<typeof orgSchema>
 
@@ -76,7 +78,7 @@ type EmailForm = z.infer<typeof emailSchema>
 
 function OrgSettingsCard() {
   const qc = useQueryClient()
-  const { register, handleSubmit, reset, formState: { errors, isDirty } } = useForm<OrgForm>({
+  const { register, handleSubmit, reset, watch, setValue, formState: { errors, isDirty } } = useForm<OrgForm>({
     resolver: zodResolver(orgSchema),
     defaultValues: {
       name: 'Roomer',
@@ -84,6 +86,7 @@ function OrgSettingsCard() {
       maxAdvanceBookingDays: 14,
       maxBookingsPerUser: 5,
       queueClaimWindowHours: 4,
+      dateFormat: 'dd/MM/yyyy',
     },
   })
 
@@ -101,6 +104,7 @@ function OrgSettingsCard() {
         maxAdvanceBookingDays: orgData.maxAdvanceBookingDays,
         maxBookingsPerUser: orgData.maxBookingsPerUser,
         queueClaimWindowHours: orgData.queueClaimWindowHours ?? 4,
+        dateFormat: orgData.dateFormat ?? 'dd/MM/yyyy',
       })
     }
   }, [orgData, reset])
@@ -109,8 +113,9 @@ function OrgSettingsCard() {
     mutationFn: (data: OrgForm) => settingsApi.updateOrg(data),
     onSuccess: (res) => {
       toast.success('Settings saved')
-      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4 })
+      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4, dateFormat: res.data.dateFormat ?? 'dd/MM/yyyy' })
       qc.invalidateQueries({ queryKey: ['settings', 'organisation'] })
+      qc.invalidateQueries({ queryKey: ['settings', 'public'] })
     },
     onError: () => toast.error('Failed to save settings'),
   })
@@ -153,6 +158,20 @@ function OrgSettingsCard() {
               <p className="text-xs text-destructive mt-1">{errors.queueClaimWindowHours.message}</p>
             )}
           </div>
+        </div>
+        <div>
+          <Label htmlFor="dateFormat">Date format</Label>
+          <Select value={watch('dateFormat')} onValueChange={(v) => setValue('dateFormat', v, { shouldDirty: true })}>
+            <SelectTrigger id="dateFormat" className="mt-1.5 max-w-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {DATE_FORMAT_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground mt-1">Controls how dates are displayed across the platform.</p>
         </div>
         <Button type="submit" size="sm" disabled={!isDirty || save.isPending}>
           {save.isPending ? 'Saving…' : 'Save changes'}

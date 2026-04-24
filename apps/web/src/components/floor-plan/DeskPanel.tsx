@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { format, addHours, startOfDay, addDays } from 'date-fns'
+import { formatDateTime } from '@/lib/utils'
 import { MapPin, Clock, Users, CheckCircle, XCircle, AlertCircle, Shield, UserPlus, UserMinus, ChevronDown, ChevronUp, Pencil, X } from 'lucide-react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
@@ -7,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
+import { DateTimeLocalInput } from '@/components/ui/date-time-input'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
@@ -885,10 +887,9 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                   <Label className="text-xs text-muted-foreground">
                     Queue expiry (optional — defaults to 2h before start)
                   </Label>
-                  <Input
-                    type="datetime-local"
+                  <DateTimeLocalInput
                     value={queueExpiry}
-                    onChange={(e) => setQueueExpiry(e.target.value)}
+                    onChange={setQueueExpiry}
                     className="mt-1"
                   />
                 </div>
@@ -915,7 +916,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                     You'll be notified when this desk becomes available.
                   </p>
                   <p className="text-xs text-yellow-600 mt-1">
-                    Queue expires: {format(new Date(myQueueEntry.expiresAt), 'PPp')}
+                    Queue expires: {formatDateTime(myQueueEntry.expiresAt)}
                   </p>
                 </div>
                 <Button
@@ -936,7 +937,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                   <p className="text-sm font-semibold text-green-800">Desk available for you!</p>
                   {myQueueEntry.claimDeadline && (
                     <p className="text-xs text-green-600 mt-1">
-                      Claim before: {format(new Date(myQueueEntry.claimDeadline), 'PPp')}
+                      Claim before: {formatDateTime(myQueueEntry.claimDeadline)}
                     </p>
                   )}
                 </div>
@@ -993,10 +994,9 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                   <Label className="text-xs text-muted-foreground">
                     Queue expiry (optional — defaults to 2h before start)
                   </Label>
-                  <Input
-                    type="datetime-local"
+                  <DateTimeLocalInput
                     value={queueExpiry}
-                    onChange={(e) => setQueueExpiry(e.target.value)}
+                    onChange={setQueueExpiry}
                     className="mt-1"
                   />
                 </div>
