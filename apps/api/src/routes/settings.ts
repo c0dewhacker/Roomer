@@ -233,13 +233,13 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
   )
 
   // GET /settings/public — public non-sensitive settings (dateFormat etc.)
-  fastify.get('/public', async (_request, reply) => {
+  fastify.get('/public', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (_request, reply) => {
     const org = await prisma.organisation.findFirst({ select: { dateFormat: true } })
     return reply.status(200).send({ data: { dateFormat: org?.dateFormat ?? 'dd/MM/yyyy' } })
   })
 
   // GET /settings/branding — public (needed for login page theming)
-  fastify.get('/branding', async (_request, reply) => {
+  fastify.get('/branding', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (_request, reply) => {
     const org = await prisma.organisation.findFirst({ select: { branding: true } })
     return reply.status(200).send({ data: (org?.branding ?? {}) as object })
   })
@@ -382,6 +382,14 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
             mergedConfig[key] = val
           }
         }
+
+        // Validate merged result against the full schema to catch cross-field invariant violations
+        const mergedParsed = (schema as z.ZodObject<z.ZodRawShape>).partial().safeParse(mergedConfig)
+        if (!mergedParsed.success) {
+          return reply.status(400).send({
+            error: { message: 'Merged config is invalid', code: 'VALIDATION_ERROR', details: mergedParsed.error.flatten() },
+          })
+        }
       }
 
       const row = await prisma.authConfig.upsert({
@@ -474,11 +482,15 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
     '/scim',
     { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
     async (request, reply) => {
-      const { enabled } = request.body as { enabled?: boolean }
+      const patchResult = z.object({ enabled: z.boolean() }).safeParse(request.body)
+      if (!patchResult.success) {
+        return reply.status(400).send({ error: { message: 'enabled (boolean) is required', code: 'VALIDATION_ERROR' } })
+      }
+      const { enabled } = patchResult.data
       const cfg = await prisma.scimConfig.findFirst()
       const updated = cfg
-        ? await prisma.scimConfig.update({ where: { id: cfg.id }, data: { enabled: enabled ?? cfg.enabled } })
-        : await prisma.scimConfig.create({ data: { enabled: enabled ?? false } })
+        ? await prisma.scimConfig.update({ where: { id: cfg.id }, data: { enabled } })
+        : await prisma.scimConfig.create({ data: { enabled } })
       return reply.status(200).send({ data: { enabled: updated.enabled, hasToken: !!updated.tokenHash } })
     },
   )

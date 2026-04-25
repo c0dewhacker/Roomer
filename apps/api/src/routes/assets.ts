@@ -468,7 +468,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       if (asset.floorId) {
         const slotDate = new Date().toISOString().slice(0, 10)
         fanOutFloorAvailable(id, asset.floorId, asset.primaryZoneId, slotDate, request.user.id)
-          .catch((err) => console.error('[assets] floor fan-out error:', err))
+          .catch((err) => fastify.log.warn({ err }, '[assets] floor fan-out error'))
       }
       return reply.status(200).send({ data: { queued: 0, action: 'none' } })
     }

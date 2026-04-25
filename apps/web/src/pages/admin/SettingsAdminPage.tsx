@@ -66,15 +66,6 @@ const orgSchema = z.object({
 })
 type OrgForm = z.infer<typeof orgSchema>
 
-const emailSchema = z.object({
-  smtpHost: z.string().min(1, 'Host is required'),
-  smtpPort: z.coerce.number().int().min(1).max(65535),
-  smtpUser: z.string().optional(),
-  smtpPassword: z.string().optional(),
-  fromAddress: z.string().email('Must be a valid email'),
-  fromName: z.string().min(1, 'Sender name is required'),
-})
-type EmailForm = z.infer<typeof emailSchema>
 
 function OrgSettingsCard() {
   const qc = useQueryClient()
@@ -182,27 +173,6 @@ function OrgSettingsCard() {
 }
 
 function EmailSettingsCard() {
-  const { register, handleSubmit, formState: { errors, isDirty } } = useForm<EmailForm>({
-    resolver: zodResolver(emailSchema),
-    defaultValues: {
-      smtpHost: 'localhost',
-      smtpPort: 1025,
-      smtpUser: '',
-      smtpPassword: '',
-      fromAddress: 'roomer@example.com',
-      fromName: 'Roomer',
-    },
-  })
-
-  const save = useMutation({
-    mutationFn: async (data: EmailForm) => {
-      await new Promise((r) => setTimeout(r, 400))
-      return data
-    },
-    onSuccess: () => toast.success('Email settings saved — restart the API to apply SMTP changes'),
-    onError: () => toast.error('Failed to save settings'),
-  })
-
   const testEmail = useMutation({
     mutationFn: () => settingsApi.testEmail(),
     onSuccess: (res) => toast.success(res.data.message),
@@ -211,58 +181,28 @@ function EmailSettingsCard() {
 
   return (
     <CollapsibleCard title="Email" description="SMTP configuration for outbound notifications">
-      <form onSubmit={handleSubmit((d) => save.mutate(d))} className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-            <div className="sm:col-span-3">
-              <Label htmlFor="smtpHost">SMTP host *</Label>
-              <Input id="smtpHost" {...register('smtpHost')} className="mt-1.5" placeholder="smtp.example.com" />
-              {errors.smtpHost && <p className="text-xs text-destructive mt-1">{errors.smtpHost.message}</p>}
-            </div>
-            <div>
-              <Label htmlFor="smtpPort">Port</Label>
-              <Input id="smtpPort" type="number" {...register('smtpPort')} className="mt-1.5" />
-              {errors.smtpPort && <p className="text-xs text-destructive mt-1">{errors.smtpPort.message}</p>}
-            </div>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <Label htmlFor="smtpUser">SMTP username</Label>
-              <Input id="smtpUser" {...register('smtpUser')} className="mt-1.5" placeholder="optional" />
-            </div>
-            <div>
-              <Label htmlFor="smtpPassword">SMTP password</Label>
-              <Input id="smtpPassword" type="password" {...register('smtpPassword')} className="mt-1.5" placeholder="optional" />
-            </div>
-          </div>
-          <Separator />
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <Label htmlFor="fromAddress">From address *</Label>
-              <Input id="fromAddress" type="email" {...register('fromAddress')} className="mt-1.5" />
-              {errors.fromAddress && <p className="text-xs text-destructive mt-1">{errors.fromAddress.message}</p>}
-            </div>
-            <div>
-              <Label htmlFor="fromName">Sender name *</Label>
-              <Input id="fromName" {...register('fromName')} className="mt-1.5" />
-              {errors.fromName && <p className="text-xs text-destructive mt-1">{errors.fromName.message}</p>}
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button type="submit" size="sm" disabled={!isDirty || save.isPending}>
-              {save.isPending ? 'Saving…' : 'Save changes'}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={testEmail.isPending}
-              onClick={() => testEmail.mutate()}
-            >
-              <Send className="mr-2 h-3.5 w-3.5" />
-              {testEmail.isPending ? 'Sending…' : 'Send test email'}
-            </Button>
-          </div>
-        </form>
+      <div className="space-y-4">
+        <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
+          SMTP settings are configured via environment variables (<code className="font-mono text-xs">SMTP_HOST</code>,{' '}
+          <code className="font-mono text-xs">SMTP_PORT</code>,{' '}
+          <code className="font-mono text-xs">SMTP_USER</code>,{' '}
+          <code className="font-mono text-xs">SMTP_PASS</code>,{' '}
+          <code className="font-mono text-xs">EMAIL_FROM</code>). Update your <code className="font-mono text-xs">.env</code>{' '}
+          file and restart the API to change email configuration.
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={testEmail.isPending}
+            onClick={() => testEmail.mutate()}
+          >
+            <Send className="mr-2 h-3.5 w-3.5" />
+            {testEmail.isPending ? 'Sending…' : 'Send test email'}
+          </Button>
+        </div>
+      </div>
     </CollapsibleCard>
   )
 }
@@ -1194,6 +1134,13 @@ function ScimCard() {
   const [showToken, setShowToken] = useState(false)
   const [newToken, setNewToken] = useState<string | null>(null)
 
+  // Auto-clear the token from state after 60 seconds to reduce exposure in the DOM
+  useEffect(() => {
+    if (!newToken) return
+    const timer = setTimeout(() => setNewToken(null), 60_000)
+    return () => clearTimeout(timer)
+  }, [newToken])
+
   const { data: scim } = useQuery({
     queryKey: ['settings', 'scim'],
     queryFn: () => settingsApi.getScim(),
@@ -1210,6 +1157,7 @@ function ScimCard() {
     mutationFn: () => settingsApi.generateScimToken(),
     onSuccess: (res) => {
       setNewToken(res.data.token)
+      setShowToken(false)
       qc.invalidateQueries({ queryKey: ['settings', 'scim'] })
     },
     onError: () => toast.error('Failed to generate token'),
