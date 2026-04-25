@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.7](https://github.com/c0dewhacker/Roomer/compare/v0.2.6...v0.2.7) (2026-04-25)
+
+
+### Bug Fixes
+
+* **validation:** add Zod validation for building body params and sanitize lease filename ([2d64338](https://github.com/c0dewhacker/Roomer/commit/2d643382cb9e0568c6e5e39d7c81aad6ae9f0323))
+
 ## [0.2.6](https://github.com/c0dewhacker/Roomer/compare/v0.2.5...v0.2.6) (2026-04-25)
 
 
