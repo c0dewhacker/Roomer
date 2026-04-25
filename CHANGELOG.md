@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.12](https://github.com/c0dewhacker/Roomer/compare/v0.2.11...v0.2.12) (2026-04-25)
+
+
+### Bug Fixes
+
+* add missing Assets category swagger tag ([bbffc4c](https://github.com/c0dewhacker/Roomer/commit/bbffc4cfae2df59e5b98e04bb46d244ab557f9e9))
+* add missing Assets category swagger tag ([5080247](https://github.com/c0dewhacker/Roomer/commit/50802475dca09fc987f96b55ec4ec044205e6b97))
+
 ## [0.2.11](https://github.com/c0dewhacker/Roomer/compare/v0.2.10...v0.2.11) (2026-04-25)
 
 
