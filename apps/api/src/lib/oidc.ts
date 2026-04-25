@@ -14,9 +14,12 @@ export interface OidcConfig {
   groupMappings?: GroupMapping[]
 }
 
+const CACHE_TTL_MS = 60 * 60 * 1000 // 1 hour — forces re-discovery if IdP rotates keys
+
 // Cache the discovered client so we don't rediscover on every request
 let cachedClient: Client | null = null
 let cachedIssuerUrl: string | null = null
+let cachedAt: number = 0
 
 export async function getOidcClient(): Promise<Client | null> {
   const row = await prisma.authConfig.findUnique({ where: { provider: 'OIDC' } })
@@ -25,8 +28,10 @@ export async function getOidcClient(): Promise<Client | null> {
   const cfg = row.config as unknown as OidcConfig
   if (!cfg.issuerUrl || !cfg.clientId || !cfg.clientSecret || !cfg.redirectUri) return null
 
-  // Re-discover if issuerUrl changed
-  if (!cachedClient || cachedIssuerUrl !== cfg.issuerUrl) {
+  const cacheExpired = Date.now() - cachedAt > CACHE_TTL_MS
+
+  // Re-discover if issuerUrl changed or cache has expired
+  if (!cachedClient || cachedIssuerUrl !== cfg.issuerUrl || cacheExpired) {
     const issuer = await Issuer.discover(cfg.issuerUrl)
     cachedClient = new issuer.Client({
       client_id: cfg.clientId,
@@ -35,6 +40,7 @@ export async function getOidcClient(): Promise<Client | null> {
       response_types: ['code'],
     })
     cachedIssuerUrl = cfg.issuerUrl
+    cachedAt = Date.now()
   }
 
   return cachedClient
@@ -43,6 +49,7 @@ export async function getOidcClient(): Promise<Client | null> {
 export function invalidateOidcCache(): void {
   cachedClient = null
   cachedIssuerUrl = null
+  cachedAt = 0
 }
 
 export function generateState(): string {
