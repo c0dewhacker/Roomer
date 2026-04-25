@@ -17,11 +17,11 @@ type ScimUser = Record<string, unknown>
 type ScimGroup = Record<string, unknown>
 
 export function scimUserLocation(id: string): string {
-  return `${env.APP_URL}/scim/v2/Users/${id}`
+  return `${env.API_PUBLIC_URL}/scim/v2/Users/${id}`
 }
 
 export function scimGroupLocation(id: string): string {
-  return `${env.APP_URL}/scim/v2/Groups/${id}`
+  return `${env.API_PUBLIC_URL}/scim/v2/Groups/${id}`
 }
 
 export function userToScim(user: {

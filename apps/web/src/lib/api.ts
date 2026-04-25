@@ -49,10 +49,17 @@ async function request<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
+  const isMutating = method !== 'GET' && method !== 'HEAD'
+  const baseHeaders: Record<string, string> = isMutating
+    ? { 'X-Requested-With': 'XMLHttpRequest' }
+    : {}
+  if (body !== undefined && !(body instanceof FormData)) {
+    baseHeaders['Content-Type'] = 'application/json'
+  }
   const res = await fetch(`${BASE}${path}`, {
     method,
     credentials: 'include',
-    headers: body instanceof FormData || body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    headers: Object.keys(baseHeaders).length > 0 ? baseHeaders : undefined,
     body: body instanceof FormData ? body : body !== undefined ? JSON.stringify(body) : undefined,
   })
 

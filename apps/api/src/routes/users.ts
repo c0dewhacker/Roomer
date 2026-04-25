@@ -312,20 +312,32 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
     }
 
-    const bookings = await prisma.booking.findMany({
-      where: { userId: id },
-      include: {
-        asset: {
-          include: {
-            floor: { include: { building: { select: { id: true, name: true } } } },
-            primaryZone: { select: { id: true, name: true } },
+    const pageResult = z.object({
+      page: z.coerce.number().int().positive().default(1),
+      limit: z.coerce.number().int().positive().max(100).default(20),
+    }).safeParse(request.query)
+    const { page, limit } = pageResult.success ? pageResult.data : { page: 1, limit: 20 }
+    const skip = (page - 1) * limit
+
+    const [bookings, total] = await Promise.all([
+      prisma.booking.findMany({
+        where: { userId: id },
+        include: {
+          asset: {
+            include: {
+              floor: { include: { building: { select: { id: true, name: true } } } },
+              primaryZone: { select: { id: true, name: true } },
+            },
           },
         },
-      },
-      orderBy: { startsAt: 'desc' },
-    })
+        orderBy: { startsAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.booking.count({ where: { userId: id } }),
+    ])
 
-    return reply.status(200).send({ data: bookings })
+    return reply.status(200).send({ data: bookings, meta: { total, page, limit } })
   })
 
   // POST /users/:id/resource-roles — assign resource role (admin)

@@ -142,11 +142,11 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /groups/:id/members — add member
   fastify.post('/:id/members', { preHandler: adminHandlers }, async (request, reply) => {
     const { id } = request.params as { id: string }
-    const { userId } = request.body as { userId: string }
-
-    if (!userId) {
+    const bodyResult = z.object({ userId: z.string().min(1) }).safeParse(request.body)
+    if (!bodyResult.success) {
       return reply.status(400).send({ error: { message: 'userId required', code: 'VALIDATION_ERROR' } })
     }
+    const { userId } = bodyResult.data
 
     const [group, user] = await Promise.all([
       prisma.userGroup.findUnique({ where: { id } }),
@@ -179,11 +179,11 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /groups/:id/building-access — add building access rule
   fastify.post('/:id/building-access', { preHandler: adminHandlers }, async (request, reply) => {
     const { id } = request.params as { id: string }
-    const { buildingId } = request.body as { buildingId: string }
-
-    if (!buildingId) {
+    const bodyResult = z.object({ buildingId: z.string().min(1) }).safeParse(request.body)
+    if (!bodyResult.success) {
       return reply.status(400).send({ error: { message: 'buildingId required', code: 'VALIDATION_ERROR' } })
     }
+    const { buildingId } = bodyResult.data
 
     const [group, building] = await Promise.all([
       prisma.userGroup.findUnique({ where: { id } }),
@@ -216,11 +216,11 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /groups/:id/floor-access — add floor access rule
   fastify.post('/:id/floor-access', { preHandler: adminHandlers }, async (request, reply) => {
     const { id } = request.params as { id: string }
-    const { floorId } = request.body as { floorId: string }
-
-    if (!floorId) {
+    const bodyResult = z.object({ floorId: z.string().min(1) }).safeParse(request.body)
+    if (!bodyResult.success) {
       return reply.status(400).send({ error: { message: 'floorId required', code: 'VALIDATION_ERROR' } })
     }
+    const { floorId } = bodyResult.data
 
     const [group, floor] = await Promise.all([
       prisma.userGroup.findUnique({ where: { id } }),

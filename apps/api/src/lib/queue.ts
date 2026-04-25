@@ -49,7 +49,7 @@ async function processSendNotification(
 
   const user = await prisma.user.findUnique({ where: { id: userId } })
   if (!user) {
-    console.warn(`[queue] User not found for notification: ${userId}`)
+    process.stderr.write(JSON.stringify({ level: 'warn', msg: '[queue] User not found for notification', userId }) + '\n')
     return
   }
 
@@ -141,7 +141,7 @@ async function processSendNotification(
   }
 
   if (!title) {
-    console.warn(`[queue] Unhandled notification type: ${type}`)
+    process.stderr.write(JSON.stringify({ level: 'warn', msg: '[queue] Unhandled notification type', type }) + '\n')
     return
   }
 
@@ -164,7 +164,7 @@ async function processSendNotification(
     try {
       await sendEmail({ to: user.email, ...emailPayload })
     } catch (err) {
-      console.error(`[queue] Failed to send email to ${user.email}:`, err)
+      process.stderr.write(JSON.stringify({ level: 'error', msg: '[queue] Failed to send email', to: user.email, err: String(err) }) + '\n')
       // Don't re-throw — notification is persisted, email failure is non-fatal
     }
   }
@@ -201,7 +201,7 @@ async function handleExpireQueueEntries(): Promise<void> {
     })),
   )
 
-  console.log(`[queue] Expired ${expired.length} queue entries`)
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Expired queue entries', count: expired.length }) + '\n')
 }
 
 // ─── Worker: expire-claim-deadlines (cron every 5 min) ───────────────────────
@@ -266,7 +266,7 @@ async function handleExpireClaimDeadlines(): Promise<void> {
     )
   }
 
-  console.log(`[queue] Processed ${expiredPromoted.length} expired claim deadlines`)
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Processed expired claim deadlines', count: expiredPromoted.length }) + '\n')
 }
 
 // ─── Start queue ──────────────────────────────────────────────────────────────
@@ -299,7 +299,7 @@ export async function startQueue(): Promise<void> {
   })
   await b.schedule('prune-revoked-tokens', '*/30 * * * *', {})
 
-  console.log('[queue] pg-boss started and workers registered')
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] pg-boss started and workers registered' }) + '\n')
 }
 
 // ─── Enqueue helper ───────────────────────────────────────────────────────────

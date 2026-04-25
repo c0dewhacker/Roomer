@@ -299,11 +299,11 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
     { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
-      const { groupId } = request.body as { groupId?: string }
-
-      if (!groupId) {
+      const bodyResult = z.object({ groupId: z.string().min(1) }).safeParse(request.body)
+      if (!bodyResult.success) {
         return reply.status(400).send({ error: { message: 'groupId is required', code: 'VALIDATION_ERROR' } })
       }
+      const { groupId } = bodyResult.data
 
       const [building, group] = await Promise.all([
         prisma.building.findUnique({ where: { id } }),
