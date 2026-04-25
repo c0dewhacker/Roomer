@@ -119,15 +119,26 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       const created: { id: string; name: string }[] = []
       const errors: { row: number; name: string; error: string }[] = []
 
+      // Pre-resolve all referenced category names in one pass to avoid N+1
+      const categoryNames = [...new Set(assets.map((a) => a.categoryName))]
+      const existingCategories = await prisma.assetCategory.findMany({
+        where: { name: { in: categoryNames } },
+        select: { id: true, name: true },
+      })
+      const categoryMap = new Map(existingCategories.map((c) => [c.name, c.id]))
+      for (const name of categoryNames) {
+        if (!categoryMap.has(name)) {
+          const cat = await prisma.assetCategory.create({
+            data: { name, defaultIsBookable: true, defaultIcon: 'monitor' },
+            select: { id: true },
+          })
+          categoryMap.set(name, cat.id)
+        }
+      }
+
       for (const [index, row] of assets.entries()) {
         try {
-          // Look up or create category by name
-          let category = await prisma.assetCategory.findFirst({ where: { name: row.categoryName } })
-          if (!category) {
-            category = await prisma.assetCategory.create({
-              data: { name: row.categoryName, defaultIsBookable: true, defaultIcon: 'monitor' },
-            })
-          }
+          const categoryId = categoryMap.get(row.categoryName)!
 
           // Resolve zone: match by name on this floor, fall back to first zone
           let primaryZoneId: string | undefined
@@ -141,7 +152,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
           const asset = await prisma.asset.create({
             data: {
-              categoryId: category.id,
+              categoryId,
               name: row.name,
               isBookable: true,
               bookingLabel: row.bookingLabel ?? 'Desk',
@@ -557,15 +568,22 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       let assigned = 0
       const errors: Array<{ row: number; assetId: string; userEmail: string; error: string }> = []
 
+      // Pre-fetch all referenced assets and users in two batch queries
+      const allAssetIds = [...new Set(rows.map((r) => r.assetId))]
+      const allEmails = [...new Set(rows.map((r) => r.userEmail))]
+      const [assetRows, userRows] = await Promise.all([
+        prisma.asset.findMany({ where: { id: { in: allAssetIds } }, select: { id: true } }),
+        prisma.user.findMany({ where: { email: { in: allEmails } }, select: { id: true, email: true } }),
+      ])
+      const assetIds = new Set(assetRows.map((a) => a.id))
+      const userByEmail = new Map(userRows.map((u) => [u.email, u.id]))
+
       for (let i = 0; i < rows.length; i++) {
         const { assetId, userEmail, isPrimary } = rows[i]
         try {
-          const [asset, user] = await Promise.all([
-            prisma.asset.findUnique({ where: { id: assetId }, select: { id: true } }),
-            prisma.user.findUnique({ where: { email: userEmail }, select: { id: true } }),
-          ])
-          if (!asset) { errors.push({ row: i + 1, assetId, userEmail, error: 'Asset not found' }); continue }
-          if (!user) { errors.push({ row: i + 1, assetId, userEmail, error: 'User not found' }); continue }
+          if (!assetIds.has(assetId)) { errors.push({ row: i + 1, assetId, userEmail, error: 'Asset not found' }); continue }
+          const userId = userByEmail.get(userEmail)
+          if (!userId) { errors.push({ row: i + 1, assetId, userEmail, error: 'User not found' }); continue }
           if (isPrimary) {
             await prisma.assetUserAssignment.updateMany({
               where: { assetId, isPrimary: true },
@@ -573,9 +591,9 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
             })
           }
           await prisma.assetUserAssignment.upsert({
-            where: { assetId_userId: { assetId, userId: user.id } },
+            where: { assetId_userId: { assetId, userId } },
             update: { isPrimary },
-            create: { assetId, userId: user.id, isPrimary },
+            create: { assetId, userId, isPrimary },
           })
           await prisma.asset.update({ where: { id: assetId }, data: { bookingStatus: 'ASSIGNED' } })
           assigned++
