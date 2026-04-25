@@ -117,6 +117,23 @@ function redactSecrets(provider: ProviderKey, config: Record<string, unknown>): 
   return redacted
 }
 
+async function serveUploadedFile(
+  reply: import('fastify').FastifyReply,
+  relativePath: string,
+  notFoundMessage: string,
+): Promise<void> {
+  const absPath = resolveStoragePath(relativePath)
+  try {
+    await fs.promises.access(absPath, fs.constants.R_OK)
+  } catch {
+    reply.status(404).send({ error: { message: notFoundMessage, code: 'FILE_NOT_FOUND' } })
+    return
+  }
+  reply.header('Content-Type', 'image/png')
+  reply.header('Cache-Control', 'public, max-age=300')
+  reply.send(fs.createReadStream(absPath))
+}
+
 export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Settings'], ...route.schema } })
 
@@ -286,15 +303,7 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
     if (!branding.logoPath) {
       return reply.status(404).send({ error: { message: 'Logo not set', code: 'NOT_FOUND' } })
     }
-    const absPath = resolveStoragePath(branding.logoPath as string)
-    try {
-      await fs.promises.access(absPath, fs.constants.R_OK)
-    } catch {
-      return reply.status(404).send({ error: { message: 'Logo file not found', code: 'FILE_NOT_FOUND' } })
-    }
-    reply.header('Content-Type', 'image/png')
-    reply.header('Cache-Control', 'public, max-age=300')
-    return reply.send(fs.createReadStream(absPath))
+    return serveUploadedFile(reply, branding.logoPath as string, 'Logo file not found')
   })
 
   // GET /settings/branding/favicon/image — serve favicon file (public)
@@ -304,15 +313,7 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
     if (!branding.faviconPath) {
       return reply.status(404).send({ error: { message: 'Favicon not set', code: 'NOT_FOUND' } })
     }
-    const absPath = resolveStoragePath(branding.faviconPath as string)
-    try {
-      await fs.promises.access(absPath, fs.constants.R_OK)
-    } catch {
-      return reply.status(404).send({ error: { message: 'Favicon file not found', code: 'FILE_NOT_FOUND' } })
-    }
-    reply.header('Content-Type', 'image/png')
-    reply.header('Cache-Control', 'public, max-age=300')
-    return reply.send(fs.createReadStream(absPath))
+    return serveUploadedFile(reply, branding.faviconPath as string, 'Favicon file not found')
   })
 
   // GET /settings/auth-config — list all provider configs (secrets redacted)

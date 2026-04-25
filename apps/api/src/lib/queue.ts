@@ -15,6 +15,9 @@ export function getBoss(): PgBoss {
   return boss
 }
 
+/** How long a promoted queue entry has to be claimed before it expires. */
+export const CLAIM_DEADLINE_MS = 2 * 60 * 60 * 1000 // 2 hours
+
 // ─── Notification job payload ─────────────────────────────────────────────────
 
 export interface NotificationJobData {
@@ -223,7 +226,7 @@ async function handleExpireClaimDeadlines(): Promise<void> {
   })
 
   // Find the next WAITING entry for each expired slot in parallel
-  const claimDeadline = new Date(Date.now() + 2 * 60 * 60 * 1000) // +2h
+  const claimDeadline = new Date(Date.now() + CLAIM_DEADLINE_MS)
   const nextEntries = await Promise.all(
     expiredPromoted.map((entry) =>
       prisma.queueEntry.findFirst({
