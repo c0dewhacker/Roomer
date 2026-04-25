@@ -5,7 +5,6 @@
 
 ### Bug Fixes
 
-* replace useMemo side-effect with useEffect and fix error/cache bugs in hooks ([3f15eb0](https://github.com/c0dewhacker/Roomer/commit/3f15eb0b7170463b7fd8d55b8d3eeb807a21d29e))
 * **validation:** add Zod validation for building body params and sanitize lease filename ([2d64338](https://github.com/c0dewhacker/Roomer/commit/2d643382cb9e0568c6e5e39d7c81aad6ae9f0323))
 
 ## [0.2.6](https://github.com/c0dewhacker/Roomer/compare/v0.2.5...v0.2.6) (2026-04-25)
