@@ -8,7 +8,9 @@ export function useDateFormatInit(): void {
     queryKey: ['settings', 'public'],
     queryFn: () => settingsApi.getPublic(),
     select: (r) => r.data,
-    staleTime: 5 * 60 * 1000,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
   })
 
   useEffect(() => {
