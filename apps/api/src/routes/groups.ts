@@ -311,10 +311,7 @@ export async function checkGroupAccess(
 
   if (groupsWithFloorRules.length === 0) return true  // no floor restrictions
 
-  for (const group of groupsWithFloorRules) {
-    const allowedFloors = group.floorAccess.map((f) => f.floorId)
-    if (!allowedFloors.includes(floorId)) return false
-  }
-
-  return true
+  return groupsWithFloorRules.some((group) =>
+    group.floorAccess.map((f) => f.floorId).includes(floorId)
+  )
 }
