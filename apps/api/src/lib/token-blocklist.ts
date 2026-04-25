@@ -1,5 +1,21 @@
 import { prisma } from './prisma'
 
+// In-process negative-result cache: if a JTI is NOT in the blocklist, we cache that
+// result for 30 seconds to avoid a DB round-trip on every authenticated request.
+// Positive results (blocked tokens) are never cached — revocations must be immediate.
+const NOT_BLOCKED_CACHE = new Map<string, number>()
+const NOT_BLOCKED_TTL_MS = 30_000
+
+function isCachedNotBlocked(jti: string): boolean {
+  const expiresAt = NOT_BLOCKED_CACHE.get(jti)
+  if (expiresAt === undefined) return false
+  if (Date.now() > expiresAt) {
+    NOT_BLOCKED_CACHE.delete(jti)
+    return false
+  }
+  return true
+}
+
 /**
  * Add a token JTI to the revocation blocklist.
  *
@@ -25,7 +41,11 @@ export async function blockToken(jti: string, expUnix: number): Promise<void> {
  * A missing row means the token has not been revoked.
  */
 export async function isTokenBlocked(jti: string): Promise<boolean> {
+  if (isCachedNotBlocked(jti)) return false
   const row = await prisma.revokedToken.findUnique({ where: { jti } })
+  if (row === null) {
+    NOT_BLOCKED_CACHE.set(jti, Date.now() + NOT_BLOCKED_TTL_MS)
+  }
   return row !== null
 }
 
