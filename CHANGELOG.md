@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.9](https://github.com/c0dewhacker/Roomer/compare/v0.2.8...v0.2.9) (2026-04-25)
+
+
+### Bug Fixes
+
+* **ui:** prevent date format refetch on window focus and cache eviction ([8500074](https://github.com/c0dewhacker/Roomer/commit/850007452570693d850280c53c15463cb83f94de))
+* **ui:** prevent date format refetch on window focus and cache eviction ([e9d17c2](https://github.com/c0dewhacker/Roomer/commit/e9d17c20fa5e3196e219aaf3d8338c51fb4b6166))
+
 ## [0.2.8](https://github.com/c0dewhacker/Roomer/compare/v0.2.7...v0.2.8) (2026-04-25)
 
 
