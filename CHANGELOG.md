@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.8](https://github.com/c0dewhacker/Roomer/compare/v0.2.7...v0.2.8) (2026-04-25)
+
+
+### Performance Improvements
+
+* cache token blocklist negative results and parallelize floor manager check ([ec4193f](https://github.com/c0dewhacker/Roomer/commit/ec4193fc4b2ef0bd31f74ed487abae22815f0b50))
+
 ## [0.2.7](https://github.com/c0dewhacker/Roomer/compare/v0.2.6...v0.2.7) (2026-04-25)
 
 
