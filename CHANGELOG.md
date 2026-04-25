@@ -1,5 +1,82 @@
 # Changelog
 
+## [0.2.0](https://github.com/c0dewhacker/Roomer/compare/v0.2.10...v0.2.0) (2026-04-25)
+
+
+### Features
+
+* Add BUILDING_ADMIN functionality ([b91a275](https://github.com/c0dewhacker/Roomer/commit/b91a2754491044a901e3c052515dcbee31e62f9a))
+* Add BUILDING_ADMIN functionality ([80991d7](https://github.com/c0dewhacker/Roomer/commit/80991d73f52f3c8ff5e768e3ae983c2fc48dd629))
+* add idp provider options and defaults to UI and Settings API & UI. ([b8682ad](https://github.com/c0dewhacker/Roomer/commit/b8682ad21eefb411b0cabbe4209c871c7b8ff483))
+* add idp provider options and defaults to UI and Settings API & UI. ([773831d](https://github.com/c0dewhacker/Roomer/commit/773831d5e35f169f40e00a360875acf28d5ab437))
+* add scim provisioning and LDAP syncing ([be9c80e](https://github.com/c0dewhacker/Roomer/commit/be9c80e269080c0147a28d06c8e4a7efcd611546))
+* add scim provisioning. ([a8f35d8](https://github.com/c0dewhacker/Roomer/commit/a8f35d8b7ca118e982907c35d208d3c1f5bca90b))
+* implement bulk assignment feature and clear floor assignment fe… ([666d247](https://github.com/c0dewhacker/Roomer/commit/666d247afaf7e8d4beb86a9a5cdedade640422c7))
+* implement bulk assignment feature and clear floor assignment feature. ([4bbd50c](https://github.com/c0dewhacker/Roomer/commit/4bbd50c61944d56242dbedd62ba215a43b7e4a3f))
+* implemented floor subscriptions ([ed39184](https://github.com/c0dewhacker/Roomer/commit/ed3918460f2814dfe46c2f08491ada8b8bbc443e))
+* release / github details. ([02b9cbd](https://github.com/c0dewhacker/Roomer/commit/02b9cbd31eb19ba8168e05b868d0ba842091bda5))
+* Update dateFormat across entire app. make it configurable in settings. ([29200a3](https://github.com/c0dewhacker/Roomer/commit/29200a36f84c775c6ffecfe5f543796d3a64d404))
+
+
+### Bug Fixes
+
+* address all security and code quality audit findings ([4644dcc](https://github.com/c0dewhacker/Roomer/commit/4644dcc60c857d90a781df9c79d75c7c6e61c7f2))
+* **auth:** add missing group access checks on subscriptions, queue, and booking patch ([f057d64](https://github.com/c0dewhacker/Roomer/commit/f057d64b0e37863ee75575a6d77858387549a42d))
+* **auth:** add missing group access checks on subscriptions, queue, and booking patch ([92a4963](https://github.com/c0dewhacker/Roomer/commit/92a49636ba4581767b4946caa422c69611e5f7e8))
+* **auth:** enforce group access checks on asset booking and window endpoints ([1d873b9](https://github.com/c0dewhacker/Roomer/commit/1d873b96109b20d8e703c49c584331069b77bd96))
+* **auth:** use OR-gate semantics for multi-group floor access ([25e27e6](https://github.com/c0dewhacker/Roomer/commit/25e27e620cc2fff2025678406d4147155cba1adb))
+* Categorise API ([8f92dbf](https://github.com/c0dewhacker/Roomer/commit/8f92dbfaddcd2ed8c5a599349dca9281e3076168))
+* Categorise API ([aeec2c3](https://github.com/c0dewhacker/Roomer/commit/aeec2c35c6b99d3159ff7b6b63ea2d0adbc78d26))
+* correct bookings report filter overwrite when both floorId and buildingId supplied ([7fb302e](https://github.com/c0dewhacker/Roomer/commit/7fb302e0eec557d78a04008c1846abe91ccc7d67))
+* fix dateFormat hardcoded values on bookings modal. ([f7bcdd8](https://github.com/c0dewhacker/Roomer/commit/f7bcdd8af8798697446433f4157ce381365390e3))
+* fix my bookings page. add "Today" badge to distinguish todays bo… ([61d73c2](https://github.com/c0dewhacker/Roomer/commit/61d73c2a3656a9cae4e58635488f47effc5369d0))
+* fix my bookings page. add "Today" badge to distinguish todays bookings ([d616428](https://github.com/c0dewhacker/Roomer/commit/d6164280c4871ac3f95f7d3409964aa07eeae739))
+* fix pdfworker issues and floor canvas panning ([e48b175](https://github.com/c0dewhacker/Roomer/commit/e48b175861771fc39913230cacffa224c3e4a44d))
+* fix pdfworker issues and floor canvas panning ([d7cc00e](https://github.com/c0dewhacker/Roomer/commit/d7cc00e3aa605ab8463c20b709538ff229c463c5))
+* fix release workflow. ([2b6fa16](https://github.com/c0dewhacker/Roomer/commit/2b6fa162dcadb32f95e456c30af57f5fffe0c0e0))
+* fix release-please semver naming ([2241d76](https://github.com/c0dewhacker/Roomer/commit/2241d76100af0b22d2638a02cd21cca5fec6734f))
+* fix release-please semver naming ([412ec10](https://github.com/c0dewhacker/Roomer/commit/412ec10f2b639fbe3d3495aa4a8c5e87c454b67f))
+* fix release-please semver naming ([321ac75](https://github.com/c0dewhacker/Roomer/commit/321ac75b6161ce83890b1d223e1c1f41fba19f5e))
+* fix release-please semver naming ([c704837](https://github.com/c0dewhacker/Roomer/commit/c70483741b42dd8458fe376b82202909d3ad60e1))
+* fix release-please semver naming ([2b7e0c8](https://github.com/c0dewhacker/Roomer/commit/2b7e0c896638a5ab3258cdb52a1fcaedad7dab57))
+* fix release-please semver naming ([0f94530](https://github.com/c0dewhacker/Roomer/commit/0f9453056316fbd83d8a511d8ef2f08e4d5015cd))
+* include build and dockerhub image compose files ([283f15c](https://github.com/c0dewhacker/Roomer/commit/283f15c1abb27ad549bb5a43de001b9817d6af98))
+* **ops:** use structured logger for post-startup messages ([f311fd9](https://github.com/c0dewhacker/Roomer/commit/f311fd9a41e20f74ee0fd98505277f4ef01db81d))
+* **ops:** use structured logger for post-startup messages ([1b701ce](https://github.com/c0dewhacker/Roomer/commit/1b701ce4bfc773873b2613fcf953b005d61cb89d))
+* queuing mechanism and ensure UI matches.  Add setting QueueClaimWindowExpiration to expire queued bookings without confirmation. ([bd80dc8](https://github.com/c0dewhacker/Roomer/commit/bd80dc8015e481cdd30b8edc8d5dcb3557fa7904))
+* release / github details. ([fb2422d](https://github.com/c0dewhacker/Roomer/commit/fb2422d1bd566e9d9bcba092322795124251657d))
+* replace useMemo side-effect with useEffect and fix error/cache bugs in hooks ([0448eb7](https://github.com/c0dewhacker/Roomer/commit/0448eb755140e35fa4639d9068ed57454edd8f37))
+* replace useMemo side-effect with useEffect and fix error/cache bugs in hooks ([5c6c9ee](https://github.com/c0dewhacker/Roomer/commit/5c6c9ee9c4eb63a5756352a21bd402387be5c92b))
+* **security:** add 1-hour TTL to OIDC discovery client cache ([9936c9a](https://github.com/c0dewhacker/Roomer/commit/9936c9a5a3562a8e69f621ccf694e0056d493037))
+* **security:** key global rate limiter by auth token, falling back to IP ([8903123](https://github.com/c0dewhacker/Roomer/commit/8903123266f5f0da053ca25870e333f0725a6465))
+* **security:** lock SAML signing flags in production and replace GlobalRole string literals ([f195da8](https://github.com/c0dewhacker/Roomer/commit/f195da85f3c31847c27cf169249ed1bc1d84133f))
+* **security:** rate-limit claim-by-token and fix queue position race ([365f253](https://github.com/c0dewhacker/Roomer/commit/365f253d36b6e850d8caca6de563c746204bca09))
+* **security:** remove SHA-1 from allowed SAML signature algorithms ([09de37a](https://github.com/c0dewhacker/Roomer/commit/09de37af3ea7e14d7aa637ad59a8aad3f908bfbd))
+* **security:** use constant-time comparison for SCIM bearer token ([89e48d7](https://github.com/c0dewhacker/Roomer/commit/89e48d72225ddb6f5169278b9a697620d39c56bd))
+* **security:** use CSPRNG for upload filename entropy ([73037f9](https://github.com/c0dewhacker/Roomer/commit/73037f9174c3facac072db84651cb4d28c1dccb9))
+* **security:** validate branding image magic bytes and reject binary DXF ([331e31a](https://github.com/c0dewhacker/Roomer/commit/331e31a8372e508ff50ebca0412c85583de3a48f))
+* **ui:** prevent date format refetch on window focus and cache eviction ([4bad97b](https://github.com/c0dewhacker/Roomer/commit/4bad97bf8bee620dd32a28efa7b48c3ab98fec87))
+* **ui:** prevent date format refetch on window focus and cache eviction ([62c74ec](https://github.com/c0dewhacker/Roomer/commit/62c74ec69c76a64025794c17085f9e1ae5dff5cc))
+* update floor plan manager doco ([db09ed0](https://github.com/c0dewhacker/Roomer/commit/db09ed001ca25b0c3917ba2c54e418af6ffb4e54))
+* update floor plan manager doco ([75f1e41](https://github.com/c0dewhacker/Roomer/commit/75f1e4189a1c7f477dfea9431f8a333ab951fb17))
+* **validation:** add Zod validation for building body params and sanitize lease filename ([8e072cf](https://github.com/c0dewhacker/Roomer/commit/8e072cfb12880f3dd9bba8eebbaf4e78709a806e))
+* **validation:** add Zod validation for building body params and sanitize lease filename ([590570d](https://github.com/c0dewhacker/Roomer/commit/590570d91d1e3c8f08314017bdf1e47be81eb008))
+* **validation:** replace raw query-param casts with Zod validation ([fb30091](https://github.com/c0dewhacker/Roomer/commit/fb300917b6827962ab4f72396710cf6ab919dfa2))
+
+
+### Performance Improvements
+
+* batch pg-boss notification inserts in queue workers ([f23f458](https://github.com/c0dewhacker/Roomer/commit/f23f4588a2940c1f3ba12f158f2f95122ab19a96))
+* cache token blocklist negative results and parallelize floor manager check ([872404f](https://github.com/c0dewhacker/Roomer/commit/872404fe81f65c2feac7efa7b562c7cc8d12e7bb))
+* cache token blocklist negative results and parallelize floor manager check ([d93a006](https://github.com/c0dewhacker/Roomer/commit/d93a0064fdd2a61c5ccef1edbcfc403e97de54c2))
+* eliminate N+1 queries in bulk-import and user-assignments/bulk ([62442cf](https://github.com/c0dewhacker/Roomer/commit/62442cfa31e8416c7a339000be978343a8d3f955))
+
+
+### Miscellaneous
+
+* security audit and fixes. ([c04522a](https://github.com/c0dewhacker/Roomer/commit/c04522a9283239ad4af2b60bf0c45b9d623ee05f))
+* security audit and fixes. ([254a284](https://github.com/c0dewhacker/Roomer/commit/254a284ef2752dc0d5a0580d5175805840770afc))
+
 ## [0.2.10](https://github.com/c0dewhacker/Roomer/compare/v0.2.9...v0.2.10) (2026-04-25)
 
 
