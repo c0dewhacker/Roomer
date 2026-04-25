@@ -353,9 +353,8 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         requireAuth,
         async (request, reply) => {
           const { id } = request.params as { id: string }
-          const user = (request as any).user
-          if (user.globalRole === 'SUPER_ADMIN') return
-          const isManager = await isFloorManagerForFloor(user.id, id)
+          if (request.user.globalRole === 'SUPER_ADMIN') return
+          const isManager = await isFloorManagerForFloor(request.user.id, id)
           if (!isManager) {
             return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
           }
