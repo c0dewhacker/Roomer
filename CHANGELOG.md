@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.6](https://github.com/c0dewhacker/Roomer/compare/v0.2.5...v0.2.6) (2026-04-25)
+
+
+### Bug Fixes
+
+* **auth:** add missing group access checks on subscriptions, queue, and booking patch ([c593a7c](https://github.com/c0dewhacker/Roomer/commit/c593a7c5725cf0e553c09b9c0b98671b55831384))
+
 ## [0.2.5](https://github.com/c0dewhacker/Roomer/compare/v0.2.4...v0.2.5) (2026-04-25)
 
 
