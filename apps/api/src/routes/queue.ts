@@ -1,9 +1,10 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma'
-import { createQueueEntrySchema, NotificationType } from '@roomer/shared'
+import { createQueueEntrySchema, NotificationType, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
 import { enqueueNotification } from '../lib/queue'
 import { randomUUID } from 'crypto'
+import { checkGroupAccess } from './groups'
 
 export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Queue'], ...route.schema } })
@@ -50,9 +51,16 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
     const wantedEndsAt = new Date(result.data.wantedEndsAt)
     const expiresAtDate = new Date(expiresAt)
 
-    const asset = await prisma.asset.findUnique({ where: { id: assetId } })
+    const asset = await prisma.asset.findUnique({ where: { id: assetId }, include: { floor: true } })
     if (!asset) {
       return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+    }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN && asset.floor) {
+      const allowed = await checkGroupAccess(request.user.id, asset.floor.buildingId, asset.floor.id)
+      if (!allowed) {
+        return reply.status(403).send({ error: { message: 'Your group does not have access to this building or floor', code: 'GROUP_ACCESS_DENIED' } })
+      }
     }
 
     if (asset.bookingStatus === 'DISABLED') {
