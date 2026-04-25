@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.11](https://github.com/c0dewhacker/Roomer/compare/v0.2.10...v0.2.11) (2026-04-25)
+
+
+### Features
+
+* add email template customisation settingsAdmin page. Release-As: 0.3.0 ([604b2df](https://github.com/c0dewhacker/Roomer/commit/604b2df1b392e77de694b309f934e581a2e4175c))
+
+
+### Bug Fixes
+
+* fix sessions table not being in prisma schema. remove table creation and check from server startup. ([7cb146e](https://github.com/c0dewhacker/Roomer/commit/7cb146e25870bb80b99ee3edc2bb6154eb9fbca1))
+
 ## [0.2.10](https://github.com/c0dewhacker/Roomer/compare/v0.2.9...v0.2.10) (2026-04-25)
 
 
