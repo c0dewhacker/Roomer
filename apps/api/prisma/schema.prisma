@@ -113,6 +113,7 @@ model Organisation {
   maxBookingsPerUser          Int         @default(5)
   queueClaimWindowHours       Int         @default(4)
   dateFormat                  String      @default("dd/MM/yyyy")
+  emailTemplates              Json        @default("{}")
   branding                    Json        @default("{}")
   createdAt                   DateTime    @default(now())
   updatedAt                   DateTime    @updatedAt
@@ -607,4 +608,14 @@ model RevokedToken {
   expiresAt DateTime
 
   @@index([expiresAt])
+}
+
+/// connect-pg-simple session store — managed by Prisma rather than created at runtime.
+model Session {
+  sid    String   @id @db.VarChar
+  sess   Json
+  expire DateTime @db.Timestamp(6)
+
+  @@index([expire], name: "IDX_session_expire")
+  @@map("sessions")
 }

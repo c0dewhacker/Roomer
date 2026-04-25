@@ -13,6 +13,7 @@ import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
 import { settingsApi, groupsApi, brandingApi, authProvidersApi, type Branding, type BrandingBanner, type LoginProvider } from '@/lib/api'
+import { EmailTemplatesCard } from '@/components/settings/EmailTemplatesCard'
 import { DATE_FORMAT_OPTIONS } from '@/lib/dateFormat'
 import {
   Select,
@@ -1678,6 +1679,7 @@ export default function SettingsAdminPage() {
       <OrgSettingsCard />
       <BrandingCard />
       <EmailSettingsCard />
+      <EmailTemplatesCard />
       <AuthProvidersCard />
       <LoginDisplayCard />
       <ScimCard />

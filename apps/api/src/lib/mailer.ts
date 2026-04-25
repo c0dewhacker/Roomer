@@ -49,7 +49,7 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;')
 }
 
-function formatDate(date: Date | string): string {
+export function formatDate(date: Date | string): string {
   return new Date(date).toLocaleString('en-GB', {
     weekday: 'short',
     year: 'numeric',
@@ -86,6 +86,142 @@ function baseHtml(title: string, body: string): string {
   </div>
 </body>
 </html>`
+}
+
+// ─── Custom template interpolation ────────────────────────────────────────────
+
+const URL_VARS = new Set(['bookingUrl', 'bookingsUrl', 'queueUrl', 'claimUrl', 'floorUrl', 'appUrl'])
+
+export function interpolateTemplate(template: string, vars: Record<string, string>): string {
+  return template.replace(/\{\{(\w+)\}\}/g, (_, key: string) => {
+    const val = vars[key] ?? ''
+    return URL_VARS.has(key) ? val : escapeHtml(val)
+  })
+}
+
+export function stripHtmlToText(html: string): string {
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// ─── Default parameterised template strings (shown in the editor as starting points) ──
+
+export const DEFAULT_TEMPLATE_STRINGS: Record<string, { subject: string; html: string }> = {
+  BOOKING_CONFIRMED: {
+    subject: 'Booking confirmed — {{assetName}}',
+    html: baseHtml('Booking confirmed — {{assetName}}', `<h1>Your booking is confirmed</h1>
+     <p>Hi {{userName}}, your booking has been confirmed.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>{{assetName}}</dd>
+         <dt>Zone</dt><dd>{{zoneName}}</dd>
+         <dt>Floor</dt><dd>{{floorName}}</dd>
+         <dt>From</dt><dd>{{startsAt}}</dd>
+         <dt>To</dt><dd>{{endsAt}}</dd>
+         <dt>Notes</dt><dd>{{notes}}</dd>
+       </dl>
+     </div>
+     <a href="{{bookingUrl}}" class="btn">View Booking</a>`),
+  },
+
+  BOOKING_CANCELLED: {
+    subject: 'Booking cancelled — {{assetName}}',
+    html: baseHtml('Booking cancelled — {{assetName}}', `<h1>Booking cancelled</h1>
+     <p>Hi {{userName}}, your booking has been cancelled.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>{{assetName}}</dd>
+         <dt>Was scheduled</dt><dd>{{startsAt}} → {{endsAt}}</dd>
+       </dl>
+     </div>
+     <a href="{{bookingsUrl}}" class="btn">View My Bookings</a>`),
+  },
+
+  BOOKING_CANCELLED_BY_ADMIN: {
+    subject: 'Booking cancelled by administrator — {{assetName}}',
+    html: baseHtml('Booking cancelled by administrator — {{assetName}}', `<h1>Booking cancelled by administrator</h1>
+     <p>Hi {{userName}}, your booking has been cancelled by an administrator.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>{{assetName}}</dd>
+         <dt>Was scheduled</dt><dd>{{startsAt}} → {{endsAt}}</dd>
+       </dl>
+     </div>
+     <a href="{{bookingsUrl}}" class="btn">View My Bookings</a>`),
+  },
+
+  QUEUE_JOINED: {
+    subject: "You've joined the queue — {{assetName}}",
+    html: baseHtml("You've joined the queue — {{assetName}}", `<h1>You're in the queue</h1>
+     <p>Hi {{userName}}, you have been added to the queue for <strong>{{assetName}}</strong>.</p>
+     <div class="detail">
+       <dl>
+         <dt>Position</dt><dd>#{{position}}</dd>
+         <dt>Wanted period</dt><dd>{{wantedStartsAt}} → {{wantedEndsAt}}</dd>
+       </dl>
+     </div>
+     <p>We'll notify you immediately if the asset becomes available.</p>
+     <a href="{{queueUrl}}" class="btn">View My Queue</a>`),
+  },
+
+  QUEUE_PROMOTED: {
+    subject: 'Asset available — claim now! {{assetName}}',
+    html: baseHtml('Asset available — claim now! {{assetName}}', `<h1>Your asset is available!</h1>
+     <p>Hi {{userName}}, <strong>{{assetName}}</strong> is now available for your requested period.</p>
+     <div class="detail">
+       <dl>
+         <dt>Period</dt><dd>{{wantedStartsAt}} → {{wantedEndsAt}}</dd>
+         <dt>Claim by</dt><dd><strong>{{claimDeadline}}</strong></dd>
+       </dl>
+     </div>
+     <p>Click the button below to claim your booking instantly — no login required. This link expires when the claim deadline passes.</p>
+     <a href="{{claimUrl}}" class="btn">Claim Now</a>`),
+  },
+
+  QUEUE_EXPIRED: {
+    subject: 'Queue entry expired — {{assetName}}',
+    html: baseHtml('Queue entry expired — {{assetName}}', `<h1>Your queue entry has expired</h1>
+     <p>Hi {{userName}}, your place in the queue for <strong>{{assetName}}</strong> has expired without becoming available.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>{{assetName}}</dd>
+         <dt>Wanted period</dt><dd>{{wantedStartsAt}} → {{wantedEndsAt}}</dd>
+       </dl>
+     </div>
+     <p>You can rejoin the queue any time from the floor plan.</p>
+     <a href="{{queueUrl}}" class="btn">View My Queue</a>`),
+  },
+
+  FLOOR_AVAILABLE: {
+    subject: 'Desk available — {{floorName}}',
+    html: baseHtml('Desk available — {{floorName}}', `<h1>A desk just became available</h1>
+     <p><strong>{{assetName}}</strong> on <strong>{{floorName}}</strong> is now free.</p>
+     <div class="detail">
+       <dl>
+         <dt>Floor</dt><dd>{{floorName}}</dd>
+         <dt>Zone</dt><dd>{{zoneName}}</dd>
+         <dt>Date</dt><dd>{{slotDate}}</dd>
+       </dl>
+     </div>
+     <p>Be the first to book it.</p>
+     <a href="{{floorUrl}}" class="btn">View Floor Plan</a>`),
+  },
+
+  WELCOME: {
+    subject: 'Welcome to Roomer',
+    html: baseHtml('Welcome to Roomer', `<h1>Welcome to Roomer!</h1>
+     <p>Hi {{userName}}, your account has been created.</p>
+     <p>Roomer lets you book hot-desks, manage your workspace and keep track of assets — all in one place.</p>
+     <a href="{{appUrl}}" class="btn">Get Started</a>`),
+  },
 }
 
 // ─── BOOKING_CONFIRMED ────────────────────────────────────────────────────────
