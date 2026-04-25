@@ -16,6 +16,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useCreateBooking, useJoinQueue, useLeaveQueue, useClaimDesk, useCancelBooking, useMakeAvailable, useQueueEntries } from '@/hooks/useBookings'
 import { formatDateRange } from '@/lib/utils'
+import { getDateFormat } from '@/lib/dateFormat'
 import { useAuthStore } from '@/stores/auth'
 import { assetsApi, usersApi, settingsApi } from '@/lib/api'
 import type { AssetWithStatus } from '@/types'
@@ -710,8 +711,8 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
               <Clock className="h-4 w-4 text-muted-foreground" />
               <span>
                 {isMultiDay
-                  ? `${format(date, 'd MMM')} – ${format(endDate, 'd MMM yyyy')}`
-                  : format(date, 'EEEE, d MMMM yyyy')
+                  ? `${format(date, getDateFormat())} – ${format(endDate, getDateFormat())}`
+                  : `${format(date, 'EEEE, ')}${format(date, getDateFormat())}`
                 }
               </span>
             </div>

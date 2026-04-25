@@ -8,6 +8,7 @@ import { requireGlobalRole, isFloorManagerForFloor } from '../middleware/require
 import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage'
 import { canUserAccessBuilding } from './groups'
 import { env } from '../env'
+import { z } from 'zod'
 
 export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Floors'], ...route.schema } })
@@ -99,11 +100,11 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
-      const { groupId } = request.body as { groupId: string }
-
-      if (!groupId) {
+      const bodyResult = z.object({ groupId: z.string().min(1) }).safeParse(request.body)
+      if (!bodyResult.success) {
         return reply.status(400).send({ error: { message: 'groupId is required', code: 'VALIDATION_ERROR' } })
       }
+      const { groupId } = bodyResult.data
 
       const group = await prisma.userGroup.findUnique({ where: { id: groupId } })
       if (!group) {
@@ -342,6 +343,11 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     const stream = fs.createReadStream(absPath)
     reply.header('Content-Type', contentType)
     reply.header('Cache-Control', 'public, max-age=86400')
+    // SVG files support embedded scripts; lock them down to prevent stored XSS
+    if (contentType === 'image/svg+xml') {
+      reply.header('Content-Security-Policy', "default-src 'none'")
+      reply.header('X-Content-Type-Options', 'nosniff')
+    }
     return reply.send(stream)
   })
 
@@ -353,7 +359,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         requireAuth,
         async (request, reply) => {
           const { id } = request.params as { id: string }
-          if (request.user.globalRole === 'SUPER_ADMIN') return
+          if (request.user.globalRole === GlobalRole.SUPER_ADMIN) return
           const isManager = await isFloorManagerForFloor(request.user.id, id)
           if (!isManager) {
             return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
@@ -387,13 +393,13 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
   // Returns zones with nested bookable assets and computed bookingStatus for the requesting user.
   fastify.get('/:id/availability', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
-    const { date } = request.query as { date?: string }
-
-    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    const queryResult = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).safeParse(request.query)
+    if (!queryResult.success || !queryResult.data.date) {
       return reply.status(400).send({
         error: { message: 'date query param required (YYYY-MM-DD)', code: 'INVALID_DATE' },
       })
     }
+    const { date } = queryResult.data
 
     const currentUserId = request.user.id
     const dayStart = new Date(`${date}T00:00:00.000Z`)

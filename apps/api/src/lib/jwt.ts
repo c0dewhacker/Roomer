@@ -68,9 +68,15 @@ export function signAccessToken(payload: TokenPayload): string {
  * the caller side.
  */
 export function verifyAccessToken(token: string): TokenPayload & { iat: number; exp: number; jti: string } {
-  return jwt.verify(token, env.SESSION_SECRET, {
+  const decoded = jwt.verify(token, env.SESSION_SECRET, {
     algorithms: ['HS256'],
     issuer: 'roomer',
     audience: 'roomer',
-  }) as TokenPayload & { iat: number; exp: number; jti: string }
+  }) as TokenPayload & { iat?: number; exp?: number; jti?: string }
+
+  if (typeof decoded.jti !== 'string' || !decoded.jti) {
+    throw new Error('Token missing jti claim')
+  }
+
+  return decoded as TokenPayload & { iat: number; exp: number; jti: string }
 }

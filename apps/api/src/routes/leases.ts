@@ -37,7 +37,11 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
 
   // GET /leases?buildingId= — list leases
   fastify.get('/', { preHandler: adminHandlers }, async (request, reply) => {
-    const { buildingId } = request.query as { buildingId?: string }
+    const queryResult = z.object({ buildingId: z.string().cuid().optional() }).safeParse(request.query)
+    if (!queryResult.success) {
+      return reply.status(400).send({ error: { message: 'Invalid query parameters', code: 'VALIDATION_ERROR' } })
+    }
+    const { buildingId } = queryResult.data
 
     const leases = await prisma.buildingLease.findMany({
       where: buildingId ? { buildingId } : undefined,
