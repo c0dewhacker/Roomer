@@ -1,5 +1,6 @@
 import fs from 'fs'
 import path from 'path'
+import { randomBytes } from 'crypto'
 import type { MultipartFile } from '@fastify/multipart'
 import sharp from 'sharp'
 import { env } from '../env'
@@ -52,7 +53,7 @@ function generateFilename(originalName: string): string {
   const base = path.basename(originalName, ext)
   const safe = sanitizeFilename(base)
   const timestamp = Date.now()
-  const rand = Math.random().toString(36).slice(2, 8)
+  const rand = randomBytes(4).toString('hex')
   return `${safe}_${timestamp}_${rand}${ext}`
 }
 
