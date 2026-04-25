@@ -17,9 +17,9 @@ export const TOKEN_COOKIE_OPTS = {
   path: '/',
 } as const
 
-/** Lifetime of an access token: 8 hours (one working day). */
-const EXPIRES_IN = '8h'
+/** Lifetime of an access token in seconds: 8 hours (one working day). */
 const MAX_AGE_SECONDS = 8 * 60 * 60
+const EXPIRES_IN = MAX_AGE_SECONDS  // jsonwebtoken accepts seconds as a number
 
 export const TOKEN_MAX_AGE = MAX_AGE_SECONDS
 
