@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.10](https://github.com/c0dewhacker/Roomer/compare/v0.2.9...v0.2.10) (2026-04-25)
+
+
+### Bug Fixes
+
+* address all security and code quality audit findings ([78394f4](https://github.com/c0dewhacker/Roomer/commit/78394f4489e97d3661c2ddb8a084fb49f8375e84))
+* fix dateFormat hardcoded values on bookings modal. ([4822a3d](https://github.com/c0dewhacker/Roomer/commit/4822a3d8b2eb18966a5df30154e56efeec413268))
+* **security:** key global rate limiter by auth token, falling back to IP ([06d2fcc](https://github.com/c0dewhacker/Roomer/commit/06d2fccb3b10d0f343e979e223de39636cfdab32))
+* **security:** lock SAML signing flags in production and replace GlobalRole string literals ([5f92391](https://github.com/c0dewhacker/Roomer/commit/5f9239146d5317c7d13f1eaab9ea7d369ef6f258))
+* **validation:** replace raw query-param casts with Zod validation ([60c10e5](https://github.com/c0dewhacker/Roomer/commit/60c10e5b71b819c16b0f2f69e842a67c1d08cbaa))
+
 ## [0.2.9](https://github.com/c0dewhacker/Roomer/compare/v0.2.8...v0.2.9) (2026-04-25)
 
 
