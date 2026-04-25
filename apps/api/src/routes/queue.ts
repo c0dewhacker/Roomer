@@ -5,13 +5,18 @@ import { requireAuth } from '../middleware/requireAuth'
 import { enqueueNotification } from '../lib/queue'
 import { randomUUID } from 'crypto'
 import { checkGroupAccess } from './groups'
+import { z } from 'zod'
 
 export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Queue'], ...route.schema } })
 
   // GET /queue — current user's queue entries. Active only by default; ?include_history=true adds terminal entries.
   fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
-    const { include_history } = request.query as { include_history?: string }
+    const queryResult = z.object({ include_history: z.enum(['true', 'false']).optional() }).safeParse(request.query)
+    if (!queryResult.success) {
+      return reply.status(400).send({ error: { message: 'Invalid query parameters', code: 'VALIDATION_ERROR' } })
+    }
+    const { include_history } = queryResult.data
     const statusFilter: { in: Array<'WAITING' | 'PROMOTED'> } | undefined = include_history === 'true'
       ? undefined
       : { in: ['WAITING', 'PROMOTED'] }
