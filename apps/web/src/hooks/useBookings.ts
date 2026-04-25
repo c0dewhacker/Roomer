@@ -42,8 +42,8 @@ export function useCancelBooking() {
       toast.success('Booking cancelled')
       qc.invalidateQueries({ queryKey: ['bookings'] })
     },
-    onError: () => {
-      toast.error('Failed to cancel booking')
+    onError: (err: Error) => {
+      toast.error(apiErrMsg(err, 'Failed to cancel booking'))
     },
   })
 }
@@ -86,8 +86,8 @@ export function useJoinQueue() {
       toast.success('Joined the queue')
       qc.invalidateQueries({ queryKey: ['queue'] })
     },
-    onError: () => {
-      toast.error('Failed to join queue')
+    onError: (err: Error) => {
+      toast.error(apiErrMsg(err, 'Failed to join queue'))
     },
   })
 }
@@ -102,8 +102,8 @@ export function useLeaveQueue() {
       qc.invalidateQueries({ queryKey: ['queue'] })
       qc.invalidateQueries({ queryKey: ['floors'] })
     },
-    onError: () => {
-      toast.error('Failed to leave queue')
+    onError: (err: Error) => {
+      toast.error(apiErrMsg(err, 'Failed to leave queue'))
     },
   })
 }

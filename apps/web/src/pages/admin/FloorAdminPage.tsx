@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo } from 'react'
+import { useState, useCallback, useRef, useMemo, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
@@ -154,7 +154,7 @@ function AddAssetToFloorDialog({
   })
 
   // Reset selections when dialog opens
-  useMemo(() => {
+  useEffect(() => {
     if (open) {
       setSearch('')
       setSelectedAssetId('')

@@ -110,8 +110,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       }
       if (floorId) {
         where['asset'] = { floorId }
-      }
-      if (buildingId) {
+      } else if (buildingId) {
         where['asset'] = { floor: { buildingId } }
       }
 
