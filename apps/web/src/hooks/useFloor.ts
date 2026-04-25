@@ -27,14 +27,15 @@ export function useUpdateAssetPositions() {
   const qc = useQueryClient()
 
   return useMutation({
-    mutationFn: (
-      positions: Array<{ id: string; x: number; y: number; width: number; height: number; rotation: number }>,
-    ) => assetsApi.updatePositions(positions),
-    onSuccess: (_, _vars, context: { floorId?: string } | undefined) => {
+    mutationFn: ({
+      positions,
+    }: {
+      floorId: string
+      positions: Array<{ id: string; x: number; y: number; width: number; height: number; rotation: number }>
+    }) => assetsApi.updatePositions(positions),
+    onSuccess: (_, { floorId }) => {
       toast.success('Layout saved')
-      if (context?.floorId) {
-        qc.invalidateQueries({ queryKey: ['floors', context.floorId] })
-      }
+      qc.invalidateQueries({ queryKey: ['floors', floorId] })
     },
     onError: () => {
       toast.error('Failed to save layout')
