@@ -34,7 +34,7 @@ export function useAuth() {
         navigate('/login', { replace: true })
       }
     } else {
-      setUser((data?.data as any)?.user ?? null)
+      setUser(data?.data?.user ?? null)
       setLoading(false)
     }
   }, [data, queryLoading, error, setUser, setLoading, qc, navigate])
