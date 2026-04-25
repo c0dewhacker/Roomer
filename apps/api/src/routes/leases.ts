@@ -205,10 +205,15 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
     }
     await fs.promises.writeFile(absPath, buffer)
 
+    const safeDisplayFilename = data.filename
+      .replace(/[\x00-\x1f\x7f]/g, '')     // strip control characters incl. null bytes
+      .replace(/[‮‏​]/g, '') // strip Unicode directional/zero-width overrides
+      .slice(0, 255)
+
     const doc = await prisma.leaseDocument.create({
       data: {
         leaseId: id,
-        filename: data.filename,
+        filename: safeDisplayFilename,
         storagePath: relPath,
         mimeType: data.mimetype,
         sizeBytes: buffer.length,

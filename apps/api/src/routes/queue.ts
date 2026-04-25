@@ -84,36 +84,40 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    // Calculate position: count of WAITING entries for overlapping range + 1
-    const position = await prisma.queueEntry.count({
-      where: {
-        assetId,
-        status: 'WAITING',
-        wantedStartsAt: { lt: wantedEndsAt },
-        wantedEndsAt: { gt: wantedStartsAt },
-      },
-    })
+    // Count + create in one transaction with advisory lock to prevent position race
+    const entry = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(2, hashtext(${assetId}))`
 
-    const entry = await prisma.queueEntry.create({
-      data: {
-        userId: request.user.id,
-        assetId,
-        wantedStartsAt,
-        wantedEndsAt,
-        expiresAt: expiresAtDate,
-        position: position + 1,
-        status: 'WAITING',
-      },
-      include: {
-        asset: {
-          include: {
-            primaryZone: {
-              include: { floor: { include: { building: { select: { id: true, name: true } } } } },
+      const position = await tx.queueEntry.count({
+        where: {
+          assetId,
+          status: 'WAITING',
+          wantedStartsAt: { lt: wantedEndsAt },
+          wantedEndsAt: { gt: wantedStartsAt },
+        },
+      })
+
+      return tx.queueEntry.create({
+        data: {
+          userId: request.user.id,
+          assetId,
+          wantedStartsAt,
+          wantedEndsAt,
+          expiresAt: expiresAtDate,
+          position: position + 1,
+          status: 'WAITING',
+        },
+        include: {
+          asset: {
+            include: {
+              primaryZone: {
+                include: { floor: { include: { building: { select: { id: true, name: true } } } } },
+              },
+              floor: { include: { building: { select: { id: true, name: true } } } },
             },
-            floor: { include: { building: { select: { id: true, name: true } } } },
           },
         },
-      },
+      })
     })
 
     await enqueueNotification({
@@ -165,7 +169,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
   })
 
   // POST /queue/claim-by-token — one-click claim via email link (no auth required)
-  fastify.post('/claim-by-token', async (request, reply) => {
+  fastify.post('/claim-by-token', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { token } = request.body as { token?: string }
     if (!token || typeof token !== 'string') {
       return reply.status(400).send({ error: { message: 'Token is required', code: 'VALIDATION_ERROR' } })
