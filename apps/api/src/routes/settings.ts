@@ -80,8 +80,18 @@ const samlConfigSchema = z.object({
   label: z.string().optional(),
   groupAttribute: z.string().optional(),
   groupMappings: z.array(groupMappingSchema).optional(),
-  wantAuthnResponseSigned: z.boolean().optional(),
-  wantAssertionsSigned: z.boolean().optional(),
+  // Refuse to disable signature verification in production — disabling either flag
+  // turns SAML into an unauthenticated identity assertion (signature-stripping attack).
+  wantAuthnResponseSigned: z.boolean()
+    .refine((v) => env.NODE_ENV !== 'production' || v !== false, {
+      message: 'SAML response signing cannot be disabled in production',
+    })
+    .optional(),
+  wantAssertionsSigned: z.boolean()
+    .refine((v) => env.NODE_ENV !== 'production' || v !== false, {
+      message: 'SAML assertion signing cannot be disabled in production',
+    })
+    .optional(),
   allowClockSkewMs: z.number().int().min(0).max(300000).optional(),
 })
 
