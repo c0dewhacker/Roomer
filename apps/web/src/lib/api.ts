@@ -483,6 +483,24 @@ export const settingsApi = {
     api.patch<{ data: { ok: boolean } }>('/settings/login-settings', body),
 }
 
+// --- Email Templates ---
+export interface EmailTemplate {
+  subject: string
+  html: string
+  isCustom: boolean
+}
+
+export const emailTemplatesApi = {
+  get: (type: string) =>
+    api.get<{ data: EmailTemplate }>(`/settings/email-templates/${type}`),
+  save: (type: string, body: { subject: string; html: string }) =>
+    api.put<{ data: EmailTemplate & { type: string } }>(`/settings/email-templates/${type}`, body),
+  reset: (type: string) =>
+    api.delete<{ data: EmailTemplate & { type: string } }>(`/settings/email-templates/${type}`),
+  sendTest: (type: string, body?: { subject?: string; html?: string }) =>
+    api.post<{ data: { ok: boolean; sentTo: string } }>(`/settings/email-templates/${type}/test`, body ?? {}),
+}
+
 // --- Auth Providers (public) ---
 export type LoginProvider = 'local' | 'ldap' | 'oidc' | 'saml'
 export interface AuthProviders {

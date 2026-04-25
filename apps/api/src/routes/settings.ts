@@ -3,13 +3,14 @@ import type { FastifyInstance } from 'fastify'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
 import { requireGlobalRole } from '../middleware/requireRole'
-import { sendEmail } from '../lib/mailer'
 import { env } from '../env'
 import { prisma } from '../lib/prisma'
+import { Prisma } from '@prisma/client'
 import { invalidateOidcCache } from '../lib/oidc'
 import { syncLdapUsers, getLdapConfig } from '../lib/ldap'
 import { hashScimToken, generateScimToken } from '../lib/scim-helpers'
 import { saveBrandingImage, resolveStoragePath } from '../lib/storage'
+import { DEFAULT_TEMPLATE_STRINGS, interpolateTemplate, stripHtmlToText, formatDate, sendEmail } from '../lib/mailer'
 import { z } from 'zod'
 
 const ALLOWED_PROVIDERS = ['OIDC', 'SAML', 'LDAP'] as const
@@ -527,6 +528,163 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
         await prisma.scimConfig.update({ where: { id: cfg.id }, data: { tokenHash: null, enabled: false } })
       }
       return reply.status(200).send({ data: { ok: true } })
+    },
+  )
+
+  // ─── Email template endpoints ─────────────────────────────────────────────
+
+  const ALLOWED_TEMPLATE_TYPES = [
+    'BOOKING_CONFIRMED', 'BOOKING_CANCELLED', 'BOOKING_CANCELLED_BY_ADMIN',
+    'QUEUE_JOINED', 'QUEUE_PROMOTED', 'QUEUE_EXPIRED',
+    'FLOOR_AVAILABLE', 'WELCOME',
+  ] as const
+  type TemplateType = (typeof ALLOWED_TEMPLATE_TYPES)[number]
+
+  function buildTestVars(type: TemplateType): Record<string, string> {
+    const now = new Date()
+    const later = new Date(now.getTime() + 8 * 60 * 60 * 1000)
+    const claimDeadline = new Date(now.getTime() + 2 * 60 * 60 * 1000)
+    return {
+      userName: 'Test User',
+      userEmail: 'test@example.com',
+      assetName: 'Desk 1',
+      zoneName: 'Zone A',
+      floorName: 'Floor 2',
+      startsAt: formatDate(now),
+      endsAt: formatDate(later),
+      notes: 'Example booking notes',
+      bookingUrl: `${env.APP_URL}/bookings/example-id`,
+      bookingsUrl: `${env.APP_URL}/bookings`,
+      queueUrl: `${env.APP_URL}/queue`,
+      position: '3',
+      wantedStartsAt: formatDate(now),
+      wantedEndsAt: formatDate(later),
+      claimDeadline: formatDate(claimDeadline),
+      claimUrl: `${env.APP_URL}/queue/claim?token=example-token`,
+      floorUrl: `${env.APP_URL}/floors/example-floor-id?date=${now.toISOString().slice(0, 10)}`,
+      slotDate: now.toISOString().slice(0, 10),
+      appUrl: env.APP_URL,
+    }
+  }
+
+  // GET /settings/email-templates/:type — get current template (custom or default)
+  fastify.get(
+    '/email-templates/:type',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { type } = request.params as { type: string }
+      const upperType = type.toUpperCase() as TemplateType
+      if (!ALLOWED_TEMPLATE_TYPES.includes(upperType)) {
+        return reply.status(400).send({ error: { message: `Unknown template type: ${type}`, code: 'VALIDATION_ERROR' } })
+      }
+      const org = await prisma.organisation.findFirst({ select: { emailTemplates: true } })
+      const stored = ((org?.emailTemplates ?? {}) as Record<string, { subject: string; html: string } | undefined>)[upperType]
+      const defaults = DEFAULT_TEMPLATE_STRINGS[upperType]
+      return reply.status(200).send({
+        data: {
+          subject: stored?.subject ?? defaults.subject,
+          html: stored?.html ?? defaults.html,
+          isCustom: !!stored,
+        },
+      })
+    },
+  )
+
+  // PUT /settings/email-templates/:type — save a custom template
+  fastify.put(
+    '/email-templates/:type',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { type } = request.params as { type: string }
+      const upperType = type.toUpperCase() as TemplateType
+      if (!ALLOWED_TEMPLATE_TYPES.includes(upperType)) {
+        return reply.status(400).send({ error: { message: `Unknown template type: ${type}`, code: 'VALIDATION_ERROR' } })
+      }
+      const bodyResult = z.object({
+        subject: z.string().min(1).max(500),
+        html: z.string().min(1).max(200_000),
+      }).safeParse(request.body)
+      if (!bodyResult.success) {
+        return reply.status(400).send({ error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: bodyResult.error.flatten() } })
+      }
+      const org = await prisma.organisation.findFirst()
+      if (!org) return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
+      const current = (org.emailTemplates ?? {}) as Record<string, unknown>
+      const updated = { ...current, [upperType]: bodyResult.data } as Prisma.InputJsonValue
+      await prisma.organisation.update({ where: { id: org.id }, data: { emailTemplates: updated } })
+      return reply.status(200).send({ data: { type: upperType, ...bodyResult.data, isCustom: true } })
+    },
+  )
+
+  // DELETE /settings/email-templates/:type — reset to default
+  fastify.delete(
+    '/email-templates/:type',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { type } = request.params as { type: string }
+      const upperType = type.toUpperCase() as TemplateType
+      if (!ALLOWED_TEMPLATE_TYPES.includes(upperType)) {
+        return reply.status(400).send({ error: { message: `Unknown template type: ${type}`, code: 'VALIDATION_ERROR' } })
+      }
+      const org = await prisma.organisation.findFirst()
+      if (!org) return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
+      const current = (org.emailTemplates ?? {}) as Record<string, unknown>
+      const { [upperType]: _removed, ...rest } = current
+      await prisma.organisation.update({ where: { id: org.id }, data: { emailTemplates: rest as Prisma.InputJsonValue } })
+      const defaults = DEFAULT_TEMPLATE_STRINGS[upperType]
+      return reply.status(200).send({ data: { type: upperType, ...defaults, isCustom: false } })
+    },
+  )
+
+  // POST /settings/email-templates/:type/test — send a test email (uses current editor content or saved custom)
+  fastify.post(
+    '/email-templates/:type/test',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { type } = request.params as { type: string }
+      const upperType = type.toUpperCase() as TemplateType
+      if (!ALLOWED_TEMPLATE_TYPES.includes(upperType)) {
+        return reply.status(400).send({ error: { message: `Unknown template type: ${type}`, code: 'VALIDATION_ERROR' } })
+      }
+      const bodyResult = z.object({
+        subject: z.string().min(1).max(500).optional(),
+        html: z.string().min(1).max(200_000).optional(),
+      }).safeParse(request.body)
+      if (!bodyResult.success) {
+        return reply.status(400).send({ error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: bodyResult.error.flatten() } })
+      }
+
+      // Resolve subject + html: request body → saved custom → built-in default
+      let subject: string
+      let html: string
+      if (bodyResult.data.subject && bodyResult.data.html) {
+        subject = bodyResult.data.subject
+        html = bodyResult.data.html
+      } else {
+        const org = await prisma.organisation.findFirst({ select: { emailTemplates: true } })
+        const stored = ((org?.emailTemplates ?? {}) as Record<string, { subject: string; html: string } | undefined>)[upperType]
+        const defaults = DEFAULT_TEMPLATE_STRINGS[upperType]
+        subject = stored?.subject ?? defaults.subject
+        html = stored?.html ?? defaults.html
+      }
+
+      const vars = buildTestVars(upperType)
+      const renderedSubject = interpolateTemplate(subject, vars)
+      const renderedHtml = interpolateTemplate(html, vars)
+      const renderedText = stripHtmlToText(renderedHtml)
+
+      try {
+        await sendEmail({
+          to: request.user.email,
+          subject: `[TEST] ${renderedSubject}`,
+          html: renderedHtml,
+          text: renderedText,
+        })
+        return reply.status(200).send({ data: { ok: true, sentTo: request.user.email } })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error'
+        return reply.status(502).send({ error: { message: `Failed to send test email: ${message}`, code: 'SMTP_ERROR' } })
+      }
     },
   )
 }

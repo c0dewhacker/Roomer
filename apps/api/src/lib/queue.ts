@@ -1,7 +1,7 @@
 import PgBoss from 'pg-boss'
 import { env } from '../env'
 import { prisma } from './prisma'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderWelcome, renderFloorAvailable } from './mailer'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderWelcome, renderFloorAvailable, interpolateTemplate, stripHtmlToText, formatDate } from './mailer'
 import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist'
 import { NotificationType } from '@roomer/shared'
@@ -56,6 +56,7 @@ async function processSendNotification(
   let title = ''
   let body = ''
   let emailPayload: { subject: string; html: string; text: string } | null = null
+  let templateVars: Record<string, string> = {}
 
   if (type === NotificationType.BOOKING_CONFIRMED && bookingId) {
     const booking = await prisma.booking.findUnique({
@@ -70,6 +71,16 @@ async function processSendNotification(
         zoneName: booking.asset.primaryZone?.name ?? '',
         floorName: booking.asset.floor?.name ?? '',
       })
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: booking.asset.name,
+        zoneName: booking.asset.primaryZone?.name ?? '',
+        floorName: booking.asset.floor?.name ?? '',
+        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        notes: booking.notes ?? '',
+        bookingUrl: `${env.APP_URL}/bookings/${booking.id}`,
+        appUrl: env.APP_URL,
+      }
     }
   } else if (type === NotificationType.BOOKING_CANCELLED && bookingId) {
     const booking = await prisma.booking.findUnique({
@@ -80,6 +91,12 @@ async function processSendNotification(
       title = `Booking cancelled — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} has been cancelled.`
       emailPayload = renderBookingCancelled(booking, user, booking.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: booking.asset.name,
+        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
     }
   } else if (type === NotificationType.BOOKING_CANCELLED_BY_ADMIN && bookingId) {
     const booking = await prisma.booking.findUnique({
@@ -90,6 +107,12 @@ async function processSendNotification(
       title = `Booking cancelled by admin — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} has been cancelled by an administrator.`
       emailPayload = renderBookingCancelled(booking, user, booking.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: booking.asset.name,
+        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
     }
   } else if (type === NotificationType.QUEUE_JOINED && queueEntryId) {
     const entry = await prisma.queueEntry.findUnique({
@@ -100,6 +123,13 @@ async function processSendNotification(
       title = `Joined queue — ${entry.asset.name}`
       body = `You are #${entry.position} in the queue for ${entry.asset.name}.`
       emailPayload = renderQueueJoined(entry, user, entry.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: entry.asset.name,
+        position: String(entry.position),
+        wantedStartsAt: formatDate(entry.wantedStartsAt), wantedEndsAt: formatDate(entry.wantedEndsAt),
+        queueUrl: `${env.APP_URL}/queue`, appUrl: env.APP_URL,
+      }
     }
   } else if (type === NotificationType.QUEUE_PROMOTED && queueEntryId) {
     const entry = await prisma.queueEntry.findUnique({
@@ -110,6 +140,14 @@ async function processSendNotification(
       title = `Asset available — ${entry.asset.name}`
       body = `Claim your booking by ${new Date(claimDeadline).toISOString()}.`
       emailPayload = renderQueuePromoted(entry, user, entry.asset, new Date(claimDeadline), entry.claimToken)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: entry.asset.name,
+        wantedStartsAt: formatDate(entry.wantedStartsAt), wantedEndsAt: formatDate(entry.wantedEndsAt),
+        claimDeadline: formatDate(new Date(claimDeadline)),
+        claimUrl: `${env.APP_URL}/queue/claim?token=${encodeURIComponent(entry.claimToken)}`,
+        appUrl: env.APP_URL,
+      }
     }
   } else if (type === NotificationType.FLOOR_AVAILABLE && floorId && assetId && slotDate) {
     const [floor, asset] = await Promise.all([
@@ -123,6 +161,12 @@ async function processSendNotification(
       title = `Desk available — ${floor.name}${zone ? ` · ${zone.name}` : ''}`
       body = `${asset.name} is now free on ${slotDate}.`
       emailPayload = renderFloorAvailable(floor, zone, asset, slotDate)
+      templateVars = {
+        floorName: floor.name, zoneName: zone?.name ?? '',
+        assetName: asset.name, slotDate,
+        floorUrl: `${env.APP_URL}/floors/${floor.id}?date=${slotDate}`,
+        appUrl: env.APP_URL,
+      }
     }
   } else if (type === NotificationType.QUEUE_EXPIRED && queueEntryId) {
     const entry = await prisma.queueEntry.findUnique({
@@ -133,11 +177,32 @@ async function processSendNotification(
       title = `Queue entry expired — ${entry.asset.name}`
       body = `Your queue entry for ${entry.asset.name} has expired.`
       emailPayload = renderQueueExpired(entry, user, entry.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: entry.asset.name,
+        wantedStartsAt: formatDate(entry.wantedStartsAt), wantedEndsAt: formatDate(entry.wantedEndsAt),
+        queueUrl: `${env.APP_URL}/queue`, appUrl: env.APP_URL,
+      }
     }
   } else if (type === NotificationType.WELCOME) {
     title = 'Welcome to Roomer'
     body = 'Your account has been created.'
     emailPayload = renderWelcome(user)
+    templateVars = { userName: user.displayName, userEmail: user.email, appUrl: env.APP_URL }
+  }
+
+  // Apply custom email template if one is saved for this notification type
+  if (emailPayload && Object.keys(templateVars).length > 0) {
+    const org = await prisma.organisation.findFirst({ select: { emailTemplates: true } })
+    const custom = ((org?.emailTemplates ?? {}) as Record<string, { subject: string; html: string } | undefined>)[type]
+    if (custom) {
+      const renderedHtml = interpolateTemplate(custom.html, templateVars)
+      emailPayload = {
+        subject: interpolateTemplate(custom.subject, templateVars),
+        html: renderedHtml,
+        text: stripHtmlToText(renderedHtml),
+      }
+    }
   }
 
   if (!title) {
