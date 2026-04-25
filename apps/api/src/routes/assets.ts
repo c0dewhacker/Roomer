@@ -94,6 +94,8 @@ const bulkImportSchema = z.object({
 })
 
 export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Assets'], ...route.schema } })
+
   // POST /bulk-import — create multiple bookable assets and place them on a floor
   fastify.post(
     '/bulk-import',
