@@ -5,13 +5,18 @@ import { requireAuth } from '../middleware/requireAuth'
 import { enqueueNotification } from '../lib/queue'
 import { randomUUID } from 'crypto'
 import { checkGroupAccess } from './groups'
+import { z } from 'zod'
 
 export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Queue'], ...route.schema } })
 
   // GET /queue — current user's queue entries. Active only by default; ?include_history=true adds terminal entries.
   fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
-    const { include_history } = request.query as { include_history?: string }
+    const queryResult = z.object({ include_history: z.enum(['true', 'false']).optional() }).safeParse(request.query)
+    if (!queryResult.success) {
+      return reply.status(400).send({ error: { message: 'Invalid query parameters', code: 'VALIDATION_ERROR' } })
+    }
+    const { include_history } = queryResult.data
     const statusFilter: { in: Array<'WAITING' | 'PROMOTED'> } | undefined = include_history === 'true'
       ? undefined
       : { in: ['WAITING', 'PROMOTED'] }
@@ -192,23 +197,20 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(409).send({ error: { message: 'Claim deadline has passed', code: 'TOKEN_EXPIRED' } })
     }
 
-    const conflict = await prisma.booking.findFirst({
-      where: {
-        assetId: entry.assetId,
-        status: 'CONFIRMED',
-        startsAt: { lt: entry.wantedEndsAt },
-        endsAt: { gt: entry.wantedStartsAt },
-      },
-    })
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(2, hashtext(${entry.assetId}))`
 
-    if (conflict) {
-      return reply.status(409).send({
-        error: { message: 'Asset is no longer available for this period', code: 'ASSET_CONFLICT' },
+      const conflict = await tx.booking.findFirst({
+        where: {
+          assetId: entry.assetId,
+          status: 'CONFIRMED',
+          startsAt: { lt: entry.wantedEndsAt },
+          endsAt: { gt: entry.wantedStartsAt },
+        },
       })
-    }
+      if (conflict) return null
 
-    const [booking] = await prisma.$transaction([
-      prisma.booking.create({
+      const booking = await tx.booking.create({
         data: {
           userId: entry.userId,
           assetId: entry.assetId,
@@ -216,20 +218,27 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
           endsAt: entry.wantedEndsAt,
           status: 'CONFIRMED',
         },
-      }),
-      prisma.queueEntry.update({
+      })
+      await tx.queueEntry.update({
         where: { id: entry.id },
         data: { status: 'CLAIMED', claimToken: null },
-      }),
-    ])
+      })
+      return booking
+    })
+
+    if (!result) {
+      return reply.status(409).send({
+        error: { message: 'Asset is no longer available for this period', code: 'ASSET_CONFLICT' },
+      })
+    }
 
     await enqueueNotification({
       type: NotificationType.BOOKING_CONFIRMED,
       userId: entry.userId,
-      bookingId: booking.id,
+      bookingId: result.id,
     })
 
-    return reply.status(201).send({ data: { booking, queueEntry: { id: entry.id, status: 'CLAIMED' } } })
+    return reply.status(201).send({ data: { booking: result, queueEntry: { id: entry.id, status: 'CLAIMED' } } })
   })
 
   // POST /queue/:id/claim — claim promoted asset
@@ -261,25 +270,21 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    // Check asset is still free for the wanted period
-    const conflict = await prisma.booking.findFirst({
-      where: {
-        assetId: entry.assetId,
-        status: 'CONFIRMED',
-        startsAt: { lt: entry.wantedEndsAt },
-        endsAt: { gt: entry.wantedStartsAt },
-      },
-    })
+    // Serialize on the asset ID, then check availability and create booking atomically
+    const booking = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(2, hashtext(${entry.assetId}))`
 
-    if (conflict) {
-      return reply.status(409).send({
-        error: { message: 'Asset is no longer available for this period', code: 'ASSET_CONFLICT' },
+      const conflict = await tx.booking.findFirst({
+        where: {
+          assetId: entry.assetId,
+          status: 'CONFIRMED',
+          startsAt: { lt: entry.wantedEndsAt },
+          endsAt: { gt: entry.wantedStartsAt },
+        },
       })
-    }
+      if (conflict) return null
 
-    // Create booking and mark entry as CLAIMED (clear one-time token)
-    const [booking] = await prisma.$transaction([
-      prisma.booking.create({
+      const created = await tx.booking.create({
         data: {
           userId: request.user.id,
           assetId: entry.assetId,
@@ -287,12 +292,19 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
           endsAt: entry.wantedEndsAt,
           status: 'CONFIRMED',
         },
-      }),
-      prisma.queueEntry.update({
+      })
+      await tx.queueEntry.update({
         where: { id },
         data: { status: 'CLAIMED', claimToken: null },
-      }),
-    ])
+      })
+      return created
+    })
+
+    if (!booking) {
+      return reply.status(409).send({
+        error: { message: 'Asset is no longer available for this period', code: 'ASSET_CONFLICT' },
+      })
+    }
 
     await enqueueNotification({
       type: NotificationType.BOOKING_CONFIRMED,

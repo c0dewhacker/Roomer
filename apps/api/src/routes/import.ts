@@ -213,7 +213,7 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
               categoryId: categoryEntry.id,
               name: row.asset_name.trim(),
               isBookable: row.is_bookable,
-              bookingStatus: row.is_bookable ? (row.asset_status as any) : null,
+              bookingStatus: row.is_bookable ? (row.asset_status as import('@prisma/client').BookableStatus) : null,
               primaryZoneId: zoneId,
               floorId,
               amenities,

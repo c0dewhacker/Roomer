@@ -143,6 +143,17 @@ export async function buildApp(): Promise<FastifyInstance> {
     global: true,
     max: 300,
     timeWindow: '1 minute',
+    // Key authenticated requests by their auth token rather than the source IP.
+    // This binds the rate-limit budget to the credential, so a single compromised
+    // token cannot exhaust the IP budget shared by other users behind a NAT.
+    keyGenerator: (req) => {
+      const cookie = req.headers.cookie
+      if (cookie) {
+        const m = /(?:^|;\s*)access_token=([^;]+)/.exec(cookie)
+        if (m) return m[1]
+      }
+      return req.headers.authorization?.split(' ')[1] ?? req.ip
+    },
     errorResponseBuilder: () => ({
       error: { message: 'Too many requests, please try again later', code: 'RATE_LIMITED' },
     }),

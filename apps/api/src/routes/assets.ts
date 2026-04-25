@@ -376,7 +376,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     const assignment = await prisma.assetUserAssignment.findUnique({
       where: { assetId_userId: { assetId: id, userId: request.user.id } },
     })
-    if (!assignment && request.user.globalRole !== 'SUPER_ADMIN') {
+    if (!assignment && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
       return reply.status(403).send({ error: { message: 'You are not permanently assigned to this asset', code: 'FORBIDDEN' } })
     }
 
@@ -425,7 +425,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     if (!window || window.assetId !== id) {
       return reply.status(404).send({ error: { message: 'Availability window not found', code: 'NOT_FOUND' } })
     }
-    if (window.ownerId !== request.user.id && request.user.globalRole !== 'SUPER_ADMIN') {
+    if (window.ownerId !== request.user.id && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
       return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
     }
 
@@ -468,7 +468,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       if (asset.floorId) {
         const slotDate = new Date().toISOString().slice(0, 10)
         fanOutFloorAvailable(id, asset.floorId, asset.primaryZoneId, slotDate, request.user.id)
-          .catch((err) => console.error('[assets] floor fan-out error:', err))
+          .catch((err) => fastify.log.warn({ err }, '[assets] floor fan-out error'))
       }
       return reply.status(200).send({ data: { queued: 0, action: 'none' } })
     }
@@ -611,7 +611,11 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     '/user-assignments/export',
     { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
     async (request, reply) => {
-      const { buildingId } = request.query as { buildingId?: string }
+      const queryResult = z.object({ buildingId: z.string().cuid().optional() }).safeParse(request.query)
+      if (!queryResult.success) {
+        return reply.status(400).send({ error: { message: 'Invalid query parameters', code: 'VALIDATION_ERROR' } })
+      }
+      const { buildingId } = queryResult.data
       const whereClause = buildingId ? { floor: { building: { id: buildingId } } } : {}
       const assets = await prisma.asset.findMany({
         where: whereClause,
@@ -734,7 +738,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       // Authorization: super admin can edit any asset; floor managers can edit assets on their floor
-      const isAdmin = request.user.globalRole === 'SUPER_ADMIN'
+      const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
       if (!isAdmin) {
         const existing = await prisma.asset.findUnique({ where: { id }, select: { floorId: true } })
         if (!existing) {
@@ -1171,7 +1175,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /:id/bookings?from=ISO&to=ISO — bookings for this asset
   fastify.get('/:id/bookings', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
-    const { from, to } = request.query as { from?: string; to?: string }
+    const queryResult = z.object({
+      from: z.string().datetime({ offset: true }).optional(),
+      to: z.string().datetime({ offset: true }).optional(),
+    }).safeParse(request.query)
+    if (!queryResult.success) {
+      return reply.status(400).send({ error: { message: 'Invalid query parameters', code: 'VALIDATION_ERROR' } })
+    }
+    const { from, to } = queryResult.data
 
     const asset = await prisma.asset.findUnique({ where: { id }, include: { floor: true } })
     if (!asset) {

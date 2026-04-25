@@ -223,7 +223,7 @@ async function saveDxfFloorPlan(
           const y2 = (cy - r * Math.sin(a2)).toFixed(2)
           let sweep = a2 - a1
           if (sweep < 0) sweep += 2 * Math.PI
-          const largeArc = sweep > Math.PI ? 0 : 1
+          const largeArc = sweep > Math.PI ? 1 : 0
           elems.push(`<path d="M ${x1} ${y1} A ${r.toFixed(2)} ${r.toFixed(2)} 0 ${largeArc} 0 ${x2} ${y2}"/>`)
         }
       } catch {
@@ -313,9 +313,8 @@ const MAGIC_SIGNATURES: Record<string, number[][]> = {
 
 /**
  * Validate that `buffer` starts with the expected magic bytes for `mimeType`.
- * Returns true when the MIME type is unknown (no signature on record) to avoid
- * blocking legitimate new types.  Returns false only when a signature IS known
- * but the buffer does not match any of its alternatives.
+ * Returns false for unknown MIME types (fail-closed) and when the buffer does
+ * not match any known signature alternative for the given type.
  */
 export function checkFileMagic(buffer: Buffer, mimeType: string): boolean {
   const signatures = MAGIC_SIGNATURES[mimeType]

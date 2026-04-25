@@ -488,7 +488,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         cancelledAsset.primaryZoneId,
         slotDate,
         booking.userId,
-      ).catch((err) => console.error('[bookings] floor fan-out error:', err))
+      ).catch((err) => fastify.log.warn({ err }, '[bookings] floor fan-out error'))
     }
 
     return reply.status(200).send({ data: { ok: true } })

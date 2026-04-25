@@ -1,26 +1,37 @@
+import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, Outlet } from 'react-router-dom'
-import { useAuthStore } from './stores/auth'
 import { useAuth } from './hooks/useAuth'
 import Layout from './components/layout/Layout'
 import LoginPage from './pages/LoginPage'
-import FloorPage from './pages/FloorPage'
 import BookingsPage from './pages/BookingsPage'
 import QueuePage from './pages/QueuePage'
 import QueueClaimPage from './pages/QueueClaimPage'
 import ProfilePage from './pages/ProfilePage'
 import BuildingsAdminPage from './pages/admin/BuildingsAdminPage'
 import BuildingDetailAdminPage from './pages/admin/BuildingDetailAdminPage'
-import FloorAdminPage from './pages/admin/FloorAdminPage'
 import UsersAdminPage from './pages/admin/UsersAdminPage'
 import SettingsAdminPage from './pages/admin/SettingsAdminPage'
 import AssetsPage from './pages/AssetsPage'
 import BuildingsPage from './pages/BuildingsPage'
 import BuildingPage from './pages/BuildingPage'
 import AssetsAdminPage from './pages/admin/AssetsAdminPage'
-import ReportsAdminPage from './pages/admin/ReportsAdminPage'
 import LeasesAdminPage from './pages/admin/LeasesAdminPage'
 import GroupsAdminPage from './pages/admin/GroupsAdminPage'
 import { Loader2 } from 'lucide-react'
+
+// Lazy-load pages that pull in large dependencies (pdfjs-dist, react-konva, recharts)
+// so they are excluded from the initial bundle.
+const FloorPage = lazy(() => import('./pages/FloorPage'))
+const FloorAdminPage = lazy(() => import('./pages/admin/FloorAdminPage'))
+const ReportsAdminPage = lazy(() => import('./pages/admin/ReportsAdminPage'))
+
+function PageLoader() {
+  return (
+    <div className="flex h-64 items-center justify-center">
+      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+    </div>
+  )
+}
 
 function ProtectedRoute() {
   const { isLoading, isAuthenticated } = useAuth()
@@ -41,7 +52,15 @@ function ProtectedRoute() {
 }
 
 function AdminRoute() {
-  const user = useAuthStore((s) => s.user)
+  const { isLoading, user } = useAuth()
+
+  if (isLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    )
+  }
 
   if (user?.globalRole !== 'SUPER_ADMIN') {
     return <Navigate to="/bookings" replace />
@@ -53,7 +72,15 @@ function AdminRoute() {
 // Admits SUPER_ADMIN or any user with at least one FLOOR_MANAGER resource role
 // (direct or via group). Used for routes floor managers should be able to access.
 function FloorManagerOrAdminRoute() {
-  const user = useAuthStore((s) => s.user)
+  const { isLoading, user } = useAuth()
+
+  if (isLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    )
+  }
 
   const isSuperAdmin = user?.globalRole === 'SUPER_ADMIN'
   const isFloorManager =
@@ -92,7 +119,7 @@ export function AppRouter() {
 
       <Route element={<ProtectedRoute />}>
         <Route element={<Layout />}>
-          <Route path="/floors/:floorId" element={<FloorPage />} />
+          <Route path="/floors/:floorId" element={<Suspense fallback={<PageLoader />}><FloorPage /></Suspense>} />
           <Route path="/bookings" element={<BookingsPage />} />
           <Route path="/queue" element={<QueuePage />} />
           <Route path="/profile" element={<ProfilePage />} />
@@ -106,14 +133,14 @@ export function AppRouter() {
             <Route path="/admin/buildings/:buildingId" element={<BuildingDetailAdminPage />} />
             <Route path="/admin/users" element={<UsersAdminPage />} />
             <Route path="/admin/settings" element={<SettingsAdminPage />} />
-            <Route path="/admin/reports" element={<ReportsAdminPage />} />
+            <Route path="/admin/reports" element={<Suspense fallback={<PageLoader />}><ReportsAdminPage /></Suspense>} />
             <Route path="/admin/leases" element={<LeasesAdminPage />} />
             <Route path="/admin/groups" element={<GroupsAdminPage />} />
           </Route>
 
           {/* SUPER_ADMIN or FLOOR_MANAGER routes */}
           <Route element={<FloorManagerOrAdminRoute />}>
-            <Route path="/admin/floors/:floorId" element={<FloorAdminPage />} />
+            <Route path="/admin/floors/:floorId" element={<Suspense fallback={<PageLoader />}><FloorAdminPage /></Suspense>} />
             <Route path="/admin/assets" element={<AssetsAdminPage />} />
           </Route>
         </Route>

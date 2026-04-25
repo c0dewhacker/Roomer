@@ -79,11 +79,17 @@ function CredentialForm({ ldapEnabled }: { ldapEnabled: boolean }) {
 export default function LoginPage() {
   const urlProvider = useMemo(parseLoginProviderParam, [])
 
-  // Show error passed back from SSO callback redirects
-  const urlError = useMemo(() => new URLSearchParams(window.location.search).get('error'), [])
+  // Show error passed back from SSO callback redirects.
+  // Only treat recognised error codes as real errors — an unrecognised ?error=...
+  // value must not suppress the SSO auto-redirect (phishing guard).
+  const rawUrlError = useMemo(() => new URLSearchParams(window.location.search).get('error'), [])
+  const urlError = useMemo(
+    () => (rawUrlError && Object.prototype.hasOwnProperty.call(SSO_ERROR_MESSAGES, rawUrlError) ? rawUrlError : null),
+    [rawUrlError],
+  )
   useEffect(() => {
     if (urlError) {
-      toast.error(SSO_ERROR_MESSAGES[urlError] ?? 'Sign-in failed')
+      toast.error(SSO_ERROR_MESSAGES[urlError])
       window.history.replaceState({}, '', window.location.pathname)
     }
   }, [urlError])
