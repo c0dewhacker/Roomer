@@ -54,7 +54,7 @@ const userImportRowSchema = z.object({
 })
 
 const userImportBodySchema = z.object({
-  rows: z.array(z.record(z.string())).min(1).max(1000),
+  rows: z.array(z.record(z.string(), z.string())).min(1).max(1000),
 })
 
 export async function userRoutes(fastify: FastifyInstance): Promise<void> {

@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { useForm } from 'react-hook-form'
+import { useForm, type Resolver } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Layers, Plus, ChevronRight, Pencil, Trash2, Shield, Users, UserMinus, UserPlus, UserX } from 'lucide-react'
@@ -60,7 +60,7 @@ function FloorDialog({
 }) {
   const qc = useQueryClient()
   const { register, handleSubmit, formState: { errors } } = useForm<FloorForm>({
-    resolver: zodResolver(floorSchema),
+    resolver: zodResolver(floorSchema) as Resolver<FloorForm>,
     defaultValues: { name: existing?.name ?? '', level: existing?.level ?? 0 },
   })
 
@@ -98,7 +98,7 @@ function FloorDialog({
         <DialogHeader>
           <DialogTitle>{existing ? 'Edit Floor' : 'Add Floor'}</DialogTitle>
         </DialogHeader>
-        <form onSubmit={handleSubmit((d) => existing ? update.mutate(d) : create.mutate(d))} className="space-y-4">
+        <form onSubmit={handleSubmit((d: FloorForm) => existing ? update.mutate(d) : create.mutate(d))} className="space-y-4">
           <div>
             <Label htmlFor="fname">Floor name *</Label>
             <Input id="fname" {...register('name')} className="mt-1.5" placeholder="e.g. Ground Floor" />

@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from 'fastify'
+import Fastify, { type FastifyInstance, type FastifyError } from 'fastify'
 import helmet from '@fastify/helmet'
 import cors from '@fastify/cors'
 import formbody from '@fastify/formbody'
@@ -207,20 +207,21 @@ export async function buildApp(): Promise<FastifyInstance> {
   })
 
   // ─── Global error handler ──────────────────────────────────────────────────
-  fastify.setErrorHandler((error, _request, reply) => {
+  fastify.setErrorHandler((error: FastifyError | Error, _request, reply) => {
     fastify.log.error(error)
+    const fastifyError = error as FastifyError
 
-    if (error.validation) {
+    if (fastifyError.validation) {
       return reply.status(400).send({
-        error: { message: 'Validation error', code: 'VALIDATION_ERROR', details: error.validation },
+        error: { message: 'Validation error', code: 'VALIDATION_ERROR', details: fastifyError.validation },
       })
     }
 
-    if (error.statusCode) {
+    if (fastifyError.statusCode) {
       // Only surface the original message for 4xx client errors.
       // For 5xx, use a generic message to avoid leaking internal details.
-      const message = error.statusCode < 500 ? error.message : 'Internal server error'
-      return reply.status(error.statusCode).send({
+      const message = fastifyError.statusCode < 500 ? fastifyError.message : 'Internal server error'
+      return reply.status(fastifyError.statusCode).send({
         error: { message, code: 'REQUEST_ERROR' },
       })
     }

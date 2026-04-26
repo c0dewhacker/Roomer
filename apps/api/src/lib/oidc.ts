@@ -1,4 +1,4 @@
-import { Issuer, type Client, generators } from 'openid-client'
+import { discovery, randomState, randomNonce, type Configuration, ClientSecretPost } from 'openid-client'
 import { prisma } from './prisma'
 import type { GroupMapping } from './group-mapping'
 
@@ -16,12 +16,11 @@ export interface OidcConfig {
 
 const CACHE_TTL_MS = 60 * 60 * 1000 // 1 hour — forces re-discovery if IdP rotates keys
 
-// Cache the discovered client so we don't rediscover on every request
-let cachedClient: Client | null = null
+let cachedConfig: Configuration | null = null
 let cachedIssuerUrl: string | null = null
 let cachedAt: number = 0
 
-export async function getOidcClient(): Promise<Client | null> {
+export async function getOidcClientConfig(): Promise<Configuration | null> {
   const row = await prisma.authConfig.findUnique({ where: { provider: 'OIDC' } })
   if (!row || !row.enabled) return null
 
@@ -30,34 +29,32 @@ export async function getOidcClient(): Promise<Client | null> {
 
   const cacheExpired = Date.now() - cachedAt > CACHE_TTL_MS
 
-  // Re-discover if issuerUrl changed or cache has expired
-  if (!cachedClient || cachedIssuerUrl !== cfg.issuerUrl || cacheExpired) {
-    const issuer = await Issuer.discover(cfg.issuerUrl)
-    cachedClient = new issuer.Client({
-      client_id: cfg.clientId,
-      client_secret: cfg.clientSecret,
-      redirect_uris: [cfg.redirectUri],
-      response_types: ['code'],
-    })
+  if (!cachedConfig || cachedIssuerUrl !== cfg.issuerUrl || cacheExpired) {
+    cachedConfig = await discovery(
+      new URL(cfg.issuerUrl),
+      cfg.clientId,
+      { client_secret: cfg.clientSecret },
+      ClientSecretPost(cfg.clientSecret),
+    )
     cachedIssuerUrl = cfg.issuerUrl
     cachedAt = Date.now()
   }
 
-  return cachedClient
+  return cachedConfig
 }
 
 export function invalidateOidcCache(): void {
-  cachedClient = null
+  cachedConfig = null
   cachedIssuerUrl = null
   cachedAt = 0
 }
 
 export function generateState(): string {
-  return generators.state()
+  return randomState()
 }
 
 export function generateNonce(): string {
-  return generators.nonce()
+  return randomNonce()
 }
 
 export async function getOidcConfig(): Promise<OidcConfig | null> {

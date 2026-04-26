@@ -1,4 +1,4 @@
-import PgBoss from 'pg-boss'
+import { PgBoss, type Job } from 'pg-boss'
 import { env } from '../env'
 import { prisma } from './prisma'
 import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderWelcome, renderFloorAvailable, interpolateTemplate, stripHtmlToText, formatDate } from './mailer'
@@ -35,7 +35,7 @@ export interface NotificationJobData {
 // ─── Worker: send-notification ────────────────────────────────────────────────
 
 async function handleSendNotification(
-  jobs: PgBoss.Job<NotificationJobData>[],
+  jobs: Job<NotificationJobData>[],
 ): Promise<void> {
   for (const job of jobs) {
     await processSendNotification(job)
@@ -43,7 +43,7 @@ async function handleSendNotification(
 }
 
 async function processSendNotification(
-  job: PgBoss.Job<NotificationJobData>,
+  job: Job<NotificationJobData>,
 ): Promise<void> {
   const { type, userId, bookingId, queueEntryId, claimDeadline, floorId, zoneId, assetId, slotDate } = job.data
 
@@ -256,8 +256,8 @@ async function handleExpireQueueEntries(): Promise<void> {
 
   const b = getBoss()
   await b.insert(
+    'send-notification',
     expired.map((entry) => ({
-      name: 'send-notification',
       data: {
         type: NotificationType.QUEUE_EXPIRED,
         userId: entry.userId,
@@ -319,8 +319,8 @@ async function handleExpireClaimDeadlines(): Promise<void> {
     )
 
     await getBoss().insert(
+      'send-notification',
       toPromote.map((nextEntry) => ({
-        name: 'send-notification',
         data: {
           type: NotificationType.QUEUE_PROMOTED,
           userId: nextEntry.userId,
@@ -419,8 +419,8 @@ export async function fanOutFloorAvailable(
   })
 
   await getBoss().insert(
+    'send-notification',
     subscriptions.map((sub) => ({
-      name: 'send-notification',
       data: {
         type: NotificationType.FLOOR_AVAILABLE,
         userId: sub.userId,

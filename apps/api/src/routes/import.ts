@@ -47,7 +47,7 @@ const rowSchema = z.object({
 })
 
 const importBodySchema = z.object({
-  rows: z.array(z.record(z.string())).min(1).max(2000),
+  rows: z.array(z.record(z.string(), z.string())).min(1).max(2000),
 })
 
 // ─── Route ────────────────────────────────────────────────────────────────────
