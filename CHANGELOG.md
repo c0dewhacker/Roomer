@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.0](https://github.com/c0dewhacker/Roomer/compare/v0.2.12...v0.3.0) (2026-04-26)
+
+
+### Bug Fixes
+
+* **docker:** upgrade base images to node:24-alpine and pin pnpm@10.30.1 ([72dff5c](https://github.com/c0dewhacker/Roomer/commit/72dff5c48a41fb9583690728042f1857b20399c9))
+* upgrade fastify from v4 to v5 ([6a98854](https://github.com/c0dewhacker/Roomer/commit/6a98854798d9da8de4a5baa85675d198081c15b2))
+* upgrade openid-client from v4 to v6 ([2f23d4f](https://github.com/c0dewhacker/Roomer/commit/2f23d4fa373c0bfd7455f55a982dfc714de48b3e))
+* upgrade pg-boss from v10 to v12 ([26781c3](https://github.com/c0dewhacker/Roomer/commit/26781c3808a52e7048013d5d7c2fa9ed8af1df2c))
+* upgrade react-router-dom from v6 to v7 ([8d1d45d](https://github.com/c0dewhacker/Roomer/commit/8d1d45d0059f364c6b70154376dd94a177b17e07))
+* upgrade tailwindcss from v3 to v4 ([520a2df](https://github.com/c0dewhacker/Roomer/commit/520a2df4e477bb55356cb30178d567800a0a6c22))
+* upgrade typescript from v5 to v6 ([08194de](https://github.com/c0dewhacker/Roomer/commit/08194dea0ebf414724833476c87fdaa4d13f0b67))
+
+
+### Miscellaneous
+
+* **deps:** bump the dependencies group with 47 updates ([03cdcf5](https://github.com/c0dewhacker/Roomer/commit/03cdcf54b3da289fbd214ac63f75b37822ee7b89))
+
 ## [0.2.12](https://github.com/c0dewhacker/Roomer/compare/v0.2.11...v0.2.12) (2026-04-25)
 
 
