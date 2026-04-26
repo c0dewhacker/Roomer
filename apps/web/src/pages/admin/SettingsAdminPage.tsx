@@ -1,4 +1,4 @@
-import { useForm } from 'react-hook-form'
+import { useForm, type Resolver } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -71,7 +71,7 @@ type OrgForm = z.infer<typeof orgSchema>
 function OrgSettingsCard() {
   const qc = useQueryClient()
   const { register, handleSubmit, reset, watch, setValue, formState: { errors, isDirty } } = useForm<OrgForm>({
-    resolver: zodResolver(orgSchema),
+    resolver: zodResolver(orgSchema) as Resolver<OrgForm>,
     defaultValues: {
       name: 'Roomer',
       defaultBookingDurationHours: 8,
@@ -114,7 +114,7 @@ function OrgSettingsCard() {
 
   return (
     <CollapsibleCard title="Organisation" description="General settings for your Roomer workspace">
-      <form onSubmit={handleSubmit((d) => save.mutate(d))} className="space-y-4">
+      <form onSubmit={handleSubmit((d: OrgForm) => save.mutate(d))} className="space-y-4">
         <div>
           <Label htmlFor="orgName">Organisation name *</Label>
           <Input id="orgName" {...register('name')} className="mt-1.5 max-w-sm" />

@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { useForm } from 'react-hook-form'
+import { useForm, type Resolver } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { isPast } from 'date-fns'
@@ -56,7 +56,7 @@ function LeaseDialog({
 }) {
   const qc = useQueryClient()
   const { register, handleSubmit, setValue, watch, formState: { errors }, reset } = useForm<LeaseForm>({
-    resolver: zodResolver(leaseSchema),
+    resolver: zodResolver(leaseSchema) as Resolver<LeaseForm>,
     defaultValues: {
       buildingId: existing?.buildingId ?? '',
       name: existing?.name ?? '',
