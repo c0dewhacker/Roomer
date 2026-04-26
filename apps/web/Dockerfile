@@ -1,6 +1,6 @@
 # ─── Stage 1: base ────────────────────────────────────────────────────────────
-FROM node:22-alpine AS base
-RUN corepack enable && corepack prepare pnpm@10 --activate
+FROM node:24-alpine AS base
+RUN corepack enable && corepack prepare pnpm@10.30.1 --activate
 WORKDIR /repo
 
 # ─── Stage 2: install ─────────────────────────────────────────────────────────
