@@ -1,7 +1,8 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { prisma } from '../lib/prisma'
 import { env } from '../env'
-import { getOidcClient, getOidcConfig, generateState, generateNonce, invalidateOidcCache } from '../lib/oidc'
+import { getOidcClientConfig, getOidcConfig, generateState, generateNonce, invalidateOidcCache } from '../lib/oidc'
+import { buildAuthorizationUrl, authorizationCodeGrant, fetchUserInfo, skipSubjectCheck } from 'openid-client'
 import { getSamlConfig, buildSaml, extractEmailFromProfile, extractDisplayNameFromProfile, extractGroupsFromProfile, type SamlProfile } from '../lib/saml'
 import { applyGroupMappings } from '../lib/group-mapping'
 import { signAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE } from '../lib/jwt'
@@ -96,8 +97,8 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
   // The session is used exclusively to store the short-lived OIDC state/nonce
   // parameters needed to validate the callback. It is NOT used for user auth.
   fastify.get('/oidc/authorize', async (request, reply) => {
-    const client = await getOidcClient()
-    if (!client) {
+    const config = await getOidcClientConfig()
+    if (!config) {
       return reply.redirect(`${env.APP_URL}/login?error=oidc_not_configured`)
     }
 
@@ -114,21 +115,21 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
     request.session.oidcNonce = nonce
     await request.session.save()
 
-    const authUrl = client.authorizationUrl({
+    const authUrl = buildAuthorizationUrl(config, {
       scope: cfg?.scope ?? 'openid profile email',
       state,
       nonce,
     })
 
-    return reply.redirect(authUrl)
+    return reply.redirect(authUrl.href)
   })
 
   // GET /auth/oidc/callback — receive code from IdP, issue JWT
   fastify.get('/oidc/callback', async (request, reply) => {
-    const client = await getOidcClient()
+    const config = await getOidcClientConfig()
     const cfg = await getOidcConfig()
 
-    if (!client || !cfg) {
+    if (!config || !cfg) {
       return reply.redirect(`${env.APP_URL}/login?error=oidc_not_configured`)
     }
 
@@ -141,13 +142,13 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
       request.session.oidcNonce = undefined
       await request.session.save()
 
-      const params = client.callbackParams(request.raw)
-      const tokenSet = await client.callback(cfg.redirectUri, params, {
-        state: storedState,
-        nonce: storedNonce,
+      const callbackUrl = new URL(request.raw.url!, `${request.protocol}://${request.hostname}`)
+      const tokenSet = await authorizationCodeGrant(config, callbackUrl, {
+        expectedState: storedState,
+        expectedNonce: storedNonce,
       })
 
-      const userinfo = await client.userinfo(tokenSet)
+      const userinfo = await fetchUserInfo(config, tokenSet.access_token!, skipSubjectCheck)
       const email = userinfo.email
       const fullName = ((userinfo.given_name ?? '') + ' ' + (userinfo.family_name ?? '')).trim()
       const displayName = userinfo.name ?? (fullName || userinfo.preferred_username) ?? email
