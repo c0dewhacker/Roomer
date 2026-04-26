@@ -105,7 +105,7 @@ docker compose -f docker-compose.build.yaml up --build
 
 | Image | Description |
 |---|---|
-| [`c0dewhacker/roomer-api`](https://hub.docker.com/r/c0dewhacker/roomer-api) | Multi-stage Node 22 Alpine. Runs migrations then starts Fastify. |
+| [`c0dewhacker/roomer-api`](https://hub.docker.com/r/c0dewhacker/roomer-api) | Multi-stage Node 24 Alpine. Runs migrations then starts Fastify. |
 | [`c0dewhacker/roomer-web`](https://hub.docker.com/r/c0dewhacker/roomer-web) | Multi-stage Vite build served by nginx 1.27. Proxies `/api` to the API. |
 
 Both images are built from the monorepo root so they can access `packages/shared`.
@@ -129,8 +129,8 @@ Both images are built from the monorepo root so they can access `packages/shared
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org) v20+
-- [pnpm](https://pnpm.io) v9+ — `npm install -g pnpm`
+- [Node.js](https://nodejs.org) v24+ (required by Prisma 7)
+- [pnpm](https://pnpm.io) v10+ — `npm install -g pnpm@10`
 - [Docker](https://docs.docker.com/get-docker/) and Docker Compose
 
 ### 1. Clone and install
