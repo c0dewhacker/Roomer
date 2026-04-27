@@ -96,7 +96,7 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
   // GET /auth/oidc/authorize — redirect to IdP
   // The session is used exclusively to store the short-lived OIDC state/nonce
   // parameters needed to validate the callback. It is NOT used for user auth.
-  fastify.get('/oidc/authorize', async (request, reply) => {
+  fastify.get('/oidc/authorize', { config: { rateLimit: { max: 20, timeWindow: '15 minutes' } } }, async (request, reply) => {
     const config = await getOidcClientConfig()
     if (!config) {
       return reply.redirect(`${env.APP_URL}/login?error=oidc_not_configured`)
@@ -125,7 +125,7 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
   })
 
   // GET /auth/oidc/callback — receive code from IdP, issue JWT
-  fastify.get('/oidc/callback', async (request, reply) => {
+  fastify.get('/oidc/callback', { config: { rateLimit: { max: 20, timeWindow: '15 minutes' } } }, async (request, reply) => {
     const config = await getOidcClientConfig()
     const cfg = await getOidcConfig()
 
@@ -180,7 +180,7 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
   // ─── SAML ──────────────────────────────────────────────────────────────────
 
   // GET /auth/saml/authorize — redirect to IdP (HTTP-Redirect binding)
-  fastify.get('/saml/authorize', async (request, reply) => {
+  fastify.get('/saml/authorize', { config: { rateLimit: { max: 20, timeWindow: '15 minutes' } } }, async (request, reply) => {
     const cfg = await getSamlConfig()
     if (!cfg) {
       return reply.redirect(`${env.APP_URL}/login?error=saml_not_configured`)
@@ -198,7 +198,7 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
   })
 
   // POST /auth/saml/callback — receive assertion from IdP, issue JWT
-  fastify.post('/saml/callback', async (request, reply) => {
+  fastify.post('/saml/callback', { config: { rateLimit: { max: 20, timeWindow: '15 minutes' } } }, async (request, reply) => {
     const cfg = await getSamlConfig()
     if (!cfg) {
       return reply.redirect(`${env.APP_URL}/login?error=saml_not_configured`)
