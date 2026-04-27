@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.5](https://github.com/c0dewhacker/Roomer/compare/v0.3.4...v0.3.5) (2026-04-27)
+
+
+### Features
+
+* AES-256-GCM encryption at rest for AuthConfig secrets ([#94](https://github.com/c0dewhacker/Roomer/issues/94)) ([8d6451e](https://github.com/c0dewhacker/Roomer/commit/8d6451ea3a779e581553595854e08960e9f469ea))
+* ROOMER_ env namespace + AES-256-GCM encryption at rest ([0d7f019](https://github.com/c0dewhacker/Roomer/commit/0d7f0197b4941790042bded418ba35b62975dafa))
+* ROOMER_ env namespace with backward-compatible fallback ([#93](https://github.com/c0dewhacker/Roomer/issues/93)) ([158324c](https://github.com/c0dewhacker/Roomer/commit/158324c1cda92566279fbbff88948d6cb2ed8e56))
+
 ## [0.3.4](https://github.com/c0dewhacker/Roomer/compare/v0.3.3...v0.3.4) (2026-04-27)
 
 
