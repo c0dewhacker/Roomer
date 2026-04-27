@@ -6,21 +6,21 @@ metadata:
   labels:
     {{- include "roomer.labels" . | nindent 4 }}
 data:
-  NODE_ENV: {{ .Values.config.nodeEnv | quote }}
-  PORT: "3001"
-  HOST: "0.0.0.0"
-  CORS_ORIGIN: {{ .Values.config.corsOrigin | quote }}
-  APP_URL: {{ .Values.config.appUrl | quote }}
-  API_PUBLIC_URL: {{ .Values.config.apiPublicUrl | quote }}
-  COOKIE_SECURE: {{ .Values.config.cookieSecure | quote }}
-  TRUST_PROXY: {{ .Values.config.trustProxy | quote }}
-  ALLOW_BEARER_AUTH: {{ .Values.config.allowBearerAuth | quote }}
-  SWAGGER_ENABLED: {{ .Values.config.swaggerEnabled | quote }}
-  SMTP_HOST: {{ .Values.config.smtpHost | quote }}
-  SMTP_PORT: {{ .Values.config.smtpPort | quote }}
-  SMTP_SECURE: {{ .Values.config.smtpSecure | quote }}
-  EMAIL_FROM: {{ .Values.config.emailFrom | quote }}
-  FILE_STORAGE_PATH: "/app/uploads"
-  MAX_FILE_SIZE_MB: {{ .Values.config.maxFileSizeMb | quote }}
-  SEED_ADMIN_EMAIL: {{ .Values.config.seedAdminEmail | quote }}
-  SEED_DEMO_DATA: {{ .Values.config.seedDemoData | quote }}
+  ROOMER_NODE_ENV: {{ .Values.config.nodeEnv | quote }}
+  ROOMER_PORT: "3001"
+  ROOMER_HOST: "0.0.0.0"
+  ROOMER_CORS_ORIGIN: {{ .Values.config.corsOrigin | quote }}
+  ROOMER_APP_URL: {{ .Values.config.appUrl | quote }}
+  ROOMER_API_PUBLIC_URL: {{ .Values.config.apiPublicUrl | quote }}
+  ROOMER_COOKIE_SECURE: {{ .Values.config.cookieSecure | quote }}
+  ROOMER_TRUST_PROXY: {{ .Values.config.trustProxy | quote }}
+  ROOMER_ALLOW_BEARER_AUTH: {{ .Values.config.allowBearerAuth | quote }}
+  ROOMER_SWAGGER_ENABLED: {{ .Values.config.swaggerEnabled | quote }}
+  ROOMER_SMTP_HOST: {{ .Values.config.smtpHost | quote }}
+  ROOMER_SMTP_PORT: {{ .Values.config.smtpPort | quote }}
+  ROOMER_SMTP_SECURE: {{ .Values.config.smtpSecure | quote }}
+  ROOMER_EMAIL_FROM: {{ .Values.config.emailFrom | quote }}
+  ROOMER_FILE_STORAGE_PATH: "/app/uploads"
+  ROOMER_MAX_FILE_SIZE_MB: {{ .Values.config.maxFileSizeMb | quote }}
+  ROOMER_SEED_ADMIN_EMAIL: {{ .Values.config.seedAdminEmail | quote }}
+  ROOMER_SEED_DEMO_DATA: {{ .Values.config.seedDemoData | quote }}

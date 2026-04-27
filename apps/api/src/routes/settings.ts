@@ -9,6 +9,7 @@ import { Prisma } from '@prisma/client'
 import { invalidateOidcCache } from '../lib/oidc'
 import { syncLdapUsers, getLdapConfig } from '../lib/ldap'
 import { hashScimToken, generateScimToken } from '../lib/scim-helpers'
+import { findAuthConfig, listAuthConfigs, upsertAuthConfig } from '../lib/prisma'
 import { saveBrandingImage, resolveStoragePath } from '../lib/storage'
 import { DEFAULT_TEMPLATE_STRINGS, interpolateTemplate, stripHtmlToText, formatDate, sendEmail } from '../lib/mailer'
 import { z } from 'zod'
@@ -332,7 +333,7 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
     '/auth-config',
     { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
     async (_request, reply) => {
-      const rows = await prisma.authConfig.findMany()
+      const rows = await listAuthConfigs()
       const result: Record<string, unknown> = {}
       for (const row of rows) {
         result[row.provider] = {
@@ -365,7 +366,7 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
 
       if (body.config) {
         // Merge with existing config to support partial updates (keep secrets if not provided)
-        const existing = await prisma.authConfig.findUnique({ where: { provider: upperProvider } })
+        const existing = await findAuthConfig(upperProvider)
         const existingConfig = (existing?.config ?? {}) as Record<string, unknown>
         mergedConfig = { ...existingConfig }
 
@@ -393,17 +394,9 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      const row = await prisma.authConfig.upsert({
-        where: { provider: upperProvider },
-        update: {
-          ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
-          ...(body.config ? { config: mergedConfig as Record<string, string> } : {}),
-        },
-        create: {
-          provider: upperProvider,
-          enabled: body.enabled ?? false,
-          config: mergedConfig as Record<string, string>,
-        },
+      const row = await upsertAuthConfig(upperProvider, {
+        enabled: body.enabled,
+        config: body.config ? mergedConfig : undefined,
       })
 
       // Invalidate OIDC client cache when OIDC config changes

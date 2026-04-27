@@ -38,23 +38,31 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://${POSTGRES_USER:-roomer}:${POSTGRES_PASSWORD:-roomer}@postgres:5432/${POSTGRES_DB:-roomer}
-      # Generate a strong secret: openssl rand -hex 32
-      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
-      PORT: "3001"
-      HOST: "0.0.0.0"
-      CORS_ORIGIN: ${APP_ORIGIN:-http://localhost}
-      COOKIE_SECURE: ${COOKIE_SECURE:-true}
-      TRUST_PROXY: "true"
+      ROOMER_DATABASE_URL: postgresql://${POSTGRES_USER:-roomer}:${POSTGRES_PASSWORD:-roomer}@postgres:5432/${POSTGRES_DB:-roomer}
+      # CHANGE IN PRODUCTION — generate with: openssl rand -hex 32
+      ROOMER_SESSION_SECRET: ${ROOMER_SESSION_SECRET:-00000000000000000000000000000000}
+      # CHANGE IN PRODUCTION — generate with: openssl rand -hex 32
+      ROOMER_ENCRYPTION_KEY: ${ROOMER_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      ROOMER_PORT: "3001"
+      ROOMER_HOST: "0.0.0.0"
+      ROOMER_CORS_ORIGIN: ${APP_ORIGIN:-http://localhost}
+      ROOMER_COOKIE_SECURE: ${ROOMER_COOKIE_SECURE:-true}
+      ROOMER_TRUST_PROXY: "true"
+      ROOMER_APP_URL: ${APP_ORIGIN:-http://localhost}
+      ROOMER_FILE_STORAGE_PATH: /app/uploads
+      ROOMER_SMTP_HOST: mailpit
+      ROOMER_SMTP_PORT: "1025"
+      ROOMER_SMTP_SECURE: "false"
+      ROOMER_EMAIL_FROM: ${ROOMER_EMAIL_FROM:-noreply@roomer.local}
+      # Admin account — always created on first start.
+      # If ROOMER_SEED_ADMIN_PASSWORD is not set a random password is generated
+      # and printed once to logs — check with: docker compose logs api
+      ROOMER_SEED_ADMIN_EMAIL: ${ROOMER_SEED_ADMIN_EMAIL:-admin@roomer.local}
+      ROOMER_SEED_ADMIN_PASSWORD: ${ROOMER_SEED_ADMIN_PASSWORD:-}
       # Set to true to seed demo buildings, floors, zones, desks and a test user.
-      # The admin user (admin@roomer.local / admin123) is always seeded regardless.
-      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
-      FILE_STORAGE_PATH: /app/uploads
-      SMTP_HOST: mailpit
-      SMTP_PORT: "1025"
-      SMTP_SECURE: "false"
-      EMAIL_FROM: ${EMAIL_FROM:-noreply@roomer.local}
-      APP_URL: ${APP_ORIGIN:-http://localhost}
+      # ROOMER_SEED_USER_PASSWORD works the same way as ROOMER_SEED_ADMIN_PASSWORD.
+      ROOMER_SEED_DEMO_DATA: ${ROOMER_SEED_DEMO_DATA:-false}
+      ROOMER_SEED_USER_PASSWORD: ${ROOMER_SEED_USER_PASSWORD:-}
     volumes:
       - uploads_data:/app/uploads
     expose:

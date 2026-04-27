@@ -1,5 +1,5 @@
 import { SAML } from '@node-saml/node-saml'
-import { prisma } from './prisma'
+import { findAuthConfig } from './prisma'
 import type { GroupMapping } from './group-mapping'
 
 export interface SamlConfig {
@@ -21,7 +21,7 @@ export interface SamlConfig {
 }
 
 export async function getSamlConfig(): Promise<SamlConfig | null> {
-  const row = await prisma.authConfig.findUnique({ where: { provider: 'SAML' } })
+  const row = await findAuthConfig('SAML')
   if (!row || !row.enabled) return null
   const cfg = row.config as unknown as SamlConfig
   if (!cfg.entryPoint || !cfg.cert || !cfg.callbackUrl) return null
