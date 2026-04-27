@@ -225,6 +225,34 @@ The Docker images are production-ready as-is. Key checklist:
 - Mount a persistent volume at `/app/uploads` for floor plan storage (already in `docker-compose.yml`)
 - For horizontal API scaling, point `FILE_STORAGE_PATH` at shared network storage rather than a local volume
 
+### Kubernetes (Helm)
+
+A Helm chart is included at `charts/roomer/`. Fetch sub-chart dependencies, then install:
+
+```bash
+helm dependency update ./charts/roomer
+helm install roomer ./charts/roomer \
+  --namespace roomer --create-namespace \
+  --set ingress.host=roomer.example.com \
+  --set secrets.sessionSecret=$(openssl rand -hex 32) \
+  --set secrets.databaseUrl="postgresql://user:pass@host:5432/roomer"
+```
+
+**TLS with cert-manager (Let's Encrypt):**
+
+```bash
+helm install roomer ./charts/roomer \
+  --namespace roomer --create-namespace \
+  --set ingress.host=roomer.example.com \
+  --set ingress.tls.enabled=true \
+  --set ingress.tls.certManager.enabled=true \
+  --set ingress.tls.certManager.issuerName=letsencrypt-prod \
+  --set secrets.sessionSecret=$(openssl rand -hex 32) \
+  --set secrets.databaseUrl="postgresql://user:pass@host:5432/roomer"
+```
+
+See the [Kubernetes Deployment](https://github.com/c0dewhacker/Roomer/wiki/Kubernetes-Deployment) wiki page for the full values reference and upgrade instructions.
+
 ---
 
 ## API Reference
