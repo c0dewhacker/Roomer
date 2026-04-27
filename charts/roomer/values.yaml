@@ -2,9 +2,11 @@
 api:
   image:
     repository: c0dewhacker/roomer-api
-    # Defaults to Chart.appVersion when empty
-    tag: ""
-    pullPolicy: IfNotPresent
+    # Uses "latest" by default so deployments always pull the current release.
+    # Pin to a specific version (e.g. "0.3.2") to lock to a known image.
+    tag: "latest"
+    # Always required when tag is "latest" so Kubernetes re-pulls on each rollout.
+    pullPolicy: Always
   replicaCount: 1
   resources:
     requests:
@@ -27,8 +29,11 @@ api:
 web:
   image:
     repository: c0dewhacker/roomer-web
-    tag: ""
-    pullPolicy: IfNotPresent
+    # Uses "latest" by default so deployments always pull the current release.
+    # Pin to a specific version (e.g. "0.3.2") to lock to a known image.
+    tag: "latest"
+    # Always required when tag is "latest" so Kubernetes re-pulls on each rollout.
+    pullPolicy: Always
   replicaCount: 1
   resources:
     requests:
