@@ -129,9 +129,9 @@ function registerUsers(fastify: FastifyInstance): void {
         .send(scimError(400, 'userName is required'))
     }
 
-    // Validate email format — SCIM userName must be a valid email address
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    if (!emailRegex.test(email)) {
+    // Validate email format — bounded, linear-time check (no backtracking)
+    const emailRegex = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,64}$/
+    if (email.length > 254 || !emailRegex.test(email)) {
       return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
         .send(scimError(400, 'userName must be a valid email address'))
     }

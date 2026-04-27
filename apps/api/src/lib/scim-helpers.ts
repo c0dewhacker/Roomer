@@ -108,7 +108,7 @@ export function listResponse(
  */
 export function parseScimFilter(filter: string | undefined): { attr: string; value: string } | null {
   if (!filter) return null
-  const m = filter.match(/^([\w.\[\]"=\s]+?)\s+eq\s+["'](.+?)["']$/i)
+  const m = filter.match(/^([\w.[\]"=]{1,100})\s+eq\s+["']([^"']{0,1000})["']$/i)
   if (!m) return null
   const raw = m[1].trim()
   let attr: string
