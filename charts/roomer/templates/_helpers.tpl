@@ -114,14 +114,14 @@ Database URL — resolved in priority order:
 {{- end }}
 
 {{/*
-API image reference.
+API image reference. Falls back to Chart.appVersion if tag is explicitly cleared.
 */}}
 {{- define "roomer.api.image" -}}
 {{- printf "%s:%s" .Values.api.image.repository (.Values.api.image.tag | default .Chart.AppVersion) }}
 {{- end }}
 
 {{/*
-Web image reference.
+Web image reference. Falls back to Chart.appVersion if tag is explicitly cleared.
 */}}
 {{- define "roomer.web.image" -}}
 {{- printf "%s:%s" .Values.web.image.repository (.Values.web.image.tag | default .Chart.AppVersion) }}
