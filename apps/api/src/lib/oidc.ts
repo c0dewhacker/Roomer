@@ -1,5 +1,5 @@
 import { discovery, randomState, randomNonce, type Configuration, ClientSecretPost } from 'openid-client'
-import { prisma } from './prisma'
+import { findAuthConfig } from './prisma'
 import type { GroupMapping } from './group-mapping'
 
 export interface OidcConfig {
@@ -21,7 +21,7 @@ let cachedIssuerUrl: string | null = null
 let cachedAt: number = 0
 
 export async function getOidcClientConfig(): Promise<Configuration | null> {
-  const row = await prisma.authConfig.findUnique({ where: { provider: 'OIDC' } })
+  const row = await findAuthConfig('OIDC')
   if (!row || !row.enabled) return null
 
   const cfg = row.config as unknown as OidcConfig
@@ -58,7 +58,7 @@ export function generateNonce(): string {
 }
 
 export async function getOidcConfig(): Promise<OidcConfig | null> {
-  const row = await prisma.authConfig.findUnique({ where: { provider: 'OIDC' } })
+  const row = await findAuthConfig('OIDC')
   if (!row || !row.enabled) return null
   return row.config as unknown as OidcConfig
 }

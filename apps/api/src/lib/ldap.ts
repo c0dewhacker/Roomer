@@ -1,5 +1,5 @@
 import ldap from 'ldapjs'
-import { prisma } from './prisma'
+import { prisma, findAuthConfig } from './prisma'
 import type { GroupMapping } from './group-mapping'
 
 export interface LdapConfig {
@@ -34,7 +34,7 @@ export interface LdapSyncResult {
 }
 
 export async function getLdapConfig(): Promise<LdapConfig | null> {
-  const row = await prisma.authConfig.findUnique({ where: { provider: 'LDAP' } })
+  const row = await findAuthConfig('LDAP')
   if (!row || !row.enabled) return null
   const cfg = row.config as unknown as LdapConfig
   if (!cfg.url || !cfg.searchBase) return null
