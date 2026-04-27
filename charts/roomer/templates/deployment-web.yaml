@@ -38,6 +38,17 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "roomer.serviceAccountName" . }}
       securityContext: {}
+      initContainers:
+        - name: wait-for-api
+          image: busybox
+          command:
+            - sh
+            - -c
+            - |
+              until wget -qO /dev/null http://{{ include "roomer.api.fullname" . }}:3001/health; do
+                echo "waiting for api..."; sleep 2
+              done
+          securityContext: {}
       containers:
         - name: web
           image: {{ include "roomer.web.image" . }}

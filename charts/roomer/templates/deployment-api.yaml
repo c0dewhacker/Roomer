@@ -44,6 +44,22 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
+      {{- if .Values.postgresql.enabled }}
+      initContainers:
+        - name: wait-for-postgresql
+          image: busybox
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z {{ include "roomer.fullname" . }}-postgresql 5432; do
+                echo "waiting for postgresql..."; sleep 2
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      {{- end }}
       containers:
         - name: api
           image: {{ include "roomer.api.image" . }}
