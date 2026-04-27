@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.3](https://github.com/c0dewhacker/Roomer/compare/v0.3.2...v0.3.3) (2026-04-27)
+
+
+### Features
+
+* **chart:** add Helm chart for Kubernetes deployment ([39b58fd](https://github.com/c0dewhacker/Roomer/commit/39b58fd0dd8a9efd6e56509efd03efe077680153))
+* **chart:** add Helm chart for Kubernetes deployment ([64366f6](https://github.com/c0dewhacker/Roomer/commit/64366f66a0bb37ba4f370aa2f6971c4caf32a458)), closes [#92](https://github.com/c0dewhacker/Roomer/issues/92)
+* **chart:** add init containers for dependency readiness ([8bb278e](https://github.com/c0dewhacker/Roomer/commit/8bb278e42d286fd42fa19db8eefb6c41b7d5f6b4))
+* **chart:** enable bundled PostgreSQL 18 by default ([0582d28](https://github.com/c0dewhacker/Roomer/commit/0582d2876c7b908aa99e03fcfb2dfb617c63f9d0))
+* **chart:** support individual db components as alternative to databaseUrl ([5fbaee4](https://github.com/c0dewhacker/Roomer/commit/5fbaee4e6dd5965ea62c68842248ea283c3cc0ac))
+
 ## [0.3.2](https://github.com/c0dewhacker/Roomer/compare/v0.3.1...v0.3.2) (2026-04-27)
 
 
