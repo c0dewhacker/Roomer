@@ -1,0 +1,22 @@
+apiVersion: v2
+name: roomer
+description: Self-hosted workspace booking platform
+type: application
+version: 0.1.0
+appVersion: "0.3.2"
+keywords:
+  - roomer
+  - workspace
+  - booking
+  - desk-booking
+home: https://github.com/c0dewhacker/Roomer
+sources:
+  - https://github.com/c0dewhacker/Roomer
+maintainers:
+  - name: c0dewhacker
+    url: https://github.com/c0dewhacker
+dependencies:
+  - name: postgresql
+    version: "18.x.x"
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: postgresql.enabled

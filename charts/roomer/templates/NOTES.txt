@@ -1,0 +1,57 @@
+Roomer {{ .Chart.AppVersion }} has been deployed.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Application URL:
+  {{- if .Values.ingress.enabled }}
+  {{- if .Values.ingress.tls.enabled }}
+    https://{{ .Values.ingress.host }}
+  {{- else }}
+    http://{{ .Values.ingress.host }}
+  {{- end }}
+  {{- else }}
+    kubectl port-forward svc/{{ include "roomer.web.fullname" . }} 8080:80
+    → http://localhost:8080
+  {{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FIRST START — Admin account
+  An admin account is automatically created using:
+    Email:    {{ .Values.config.seedAdminEmail }}
+    Password: {{ if .Values.secrets.seedAdminPassword }}(value you provided in secrets.seedAdminPassword){{ else }}(randomly generated — check API logs){{ end }}
+
+  Retrieve the auto-generated password:
+    kubectl logs -l app.kubernetes.io/component=api,app.kubernetes.io/instance={{ .Release.Name }} | grep -i "admin password"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STORAGE WARNING
+  {{- if gt (int .Values.api.replicaCount) 1 }}
+  ⚠  api.replicaCount > 1 detected. The uploads PVC must use
+     accessMode: ReadWriteMany (NFS, EFS, etc.) to be shared
+     across multiple API pods. Update persistence.accessMode
+     and persistence.storageClass accordingly.
+  {{- else }}
+  Uploads are stored in a PersistentVolumeClaim ({{ .Values.persistence.size }}).
+  Scale api.replicaCount > 1 only with a ReadWriteMany storage class.
+  {{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+POSTGRESQL
+  {{- if .Values.postgresql.enabled }}
+  Bundled PostgreSQL is enabled (development only).
+  For production use an external managed database and set:
+    postgresql.enabled: false
+    secrets.databaseUrl: "postgresql://..."
+  {{- else }}
+  External database — ensure DATABASE_URL is correct in your secret.
+  {{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Useful commands:
+  helm status {{ .Release.Name }} -n {{ .Release.Namespace }}
+  helm upgrade {{ .Release.Name }} ./charts/roomer -f my-values.yaml
+  kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }}
