@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.4](https://github.com/c0dewhacker/Roomer/compare/v0.3.3...v0.3.4) (2026-04-27)
+
+
+### Features
+
+* **chart:** default image tag to latest with Always pull policy ([31fe8c3](https://github.com/c0dewhacker/Roomer/commit/31fe8c329fc3393445c48f1e72f4e55ae1120b1d))
+* **chart:** Helm chart improvements from cluster testing ([bdb1202](https://github.com/c0dewhacker/Roomer/commit/bdb1202124342cf3d9557c123368f00455ac56ab))
+
 ## [0.3.3](https://github.com/c0dewhacker/Roomer/compare/v0.3.2...v0.3.3) (2026-04-27)
 
 
