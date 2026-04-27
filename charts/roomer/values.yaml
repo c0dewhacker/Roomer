@@ -89,6 +89,14 @@ config:
   # If seedAdminPassword is omitted a random password is printed to API logs.
   seedAdminEmail: "admin@roomer.local"
   seedDemoData: "false"
+  # ── External database components (used when postgresql.enabled=false and
+  #    secrets.databaseUrl is empty). The URL is assembled as:
+  #    postgresql://<dbUser>:<secrets.dbPassword>@<dbHost>:<dbPort>/<dbName>[?sslmode=<dbSslMode>]
+  dbHost: ""       # e.g. db.example.com
+  dbPort: "5432"
+  dbName: ""       # e.g. roomer
+  dbUser: ""       # e.g. roomer
+  dbSslMode: ""    # e.g. require — leave empty to omit the sslmode parameter
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
 secrets:
@@ -97,8 +105,11 @@ secrets:
   create: true
   existingSecret: ""
 
-  # Required when postgresql.enabled is false
+  # ── Database — choose ONE of the three options below ──────────────────────
+  # Option 1: full connection string (takes precedence over config.db* fields)
   databaseUrl: ""
+  # Option 2: password component — pair with config.dbHost/dbPort/dbName/dbUser
+  dbPassword: ""
 
   # Required — minimum 32 characters (openssl rand -hex 32)
   sessionSecret: ""

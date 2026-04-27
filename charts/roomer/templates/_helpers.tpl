@@ -86,13 +86,30 @@ ConfigMap name.
 {{- end }}
 
 {{/*
-Database URL — auto-constructed when postgresql sub-chart is enabled.
+Database URL — resolved in priority order:
+  1. postgresql.enabled=true  → auto-constructed from sub-chart auth values
+  2. secrets.databaseUrl set  → used as-is (full connection string override)
+  3. config.dbHost set        → assembled from config.db* + secrets.dbPassword
 */}}
 {{- define "roomer.databaseUrl" -}}
 {{- if .Values.postgresql.enabled }}
 {{- printf "postgresql://%s:%s@%s-postgresql:5432/%s" .Values.postgresql.auth.username .Values.postgresql.auth.password (include "roomer.fullname" .) .Values.postgresql.auth.database }}
+{{- else if .Values.secrets.databaseUrl }}
+{{- .Values.secrets.databaseUrl }}
+{{- else if .Values.config.dbHost }}
+{{- $base := printf "postgresql://%s:%s@%s:%s/%s"
+      (required "config.dbUser is required when using config.dbHost" .Values.config.dbUser)
+      (required "secrets.dbPassword is required when using config.dbHost" .Values.secrets.dbPassword)
+      .Values.config.dbHost
+      .Values.config.dbPort
+      (required "config.dbName is required when using config.dbHost" .Values.config.dbName) -}}
+{{- if .Values.config.dbSslMode -}}
+{{- printf "%s?sslmode=%s" $base .Values.config.dbSslMode }}
+{{- else -}}
+{{- $base }}
+{{- end }}
 {{- else }}
-{{- required "secrets.databaseUrl is required when postgresql.enabled is false" .Values.secrets.databaseUrl }}
+{{- fail "Database not configured: set postgresql.enabled=true, secrets.databaseUrl, or config.dbHost + secrets.dbPassword" }}
 {{- end }}
 {{- end }}
 
