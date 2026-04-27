@@ -119,6 +119,11 @@ secrets:
   # Required — minimum 32 characters (openssl rand -hex 32)
   sessionSecret: ""
 
+  # Required — 64 hex characters (32 bytes) for AES-256-GCM encryption of sensitive
+  # database fields (OAuth client secrets, LDAP bind credentials).
+  # Generate with: openssl rand -hex 32
+  encryptionKey: ""
+
   smtpUser: ""
   smtpPass: ""
 
