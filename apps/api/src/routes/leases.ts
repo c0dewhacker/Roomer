@@ -140,7 +140,7 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
   })
 
   // DELETE /leases/:id — delete lease (cascades documents)
-  fastify.delete('/:id', { preHandler: adminHandlers }, async (request, reply) => {
+  fastify.delete('/:id', { preHandler: adminHandlers, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { id } = request.params as { id: string }
 
     const lease = await prisma.buildingLease.findUnique({
@@ -167,8 +167,12 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
   })
 
   // POST /leases/:id/documents — upload document
-  fastify.post('/:id/documents', { preHandler: adminHandlers }, async (request, reply) => {
+  fastify.post('/:id/documents', { preHandler: adminHandlers, config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { id } = request.params as { id: string }
+
+    if (!/^[\w-]{1,64}$/.test(id)) {
+      return reply.status(400).send({ error: { message: 'Invalid lease ID', code: 'INVALID_INPUT' } })
+    }
 
     const lease = await prisma.buildingLease.findUnique({ where: { id } })
     if (!lease) {
@@ -228,7 +232,7 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
   })
 
   // GET /leases/:id/documents/:docId — download document
-  fastify.get('/:id/documents/:docId', { preHandler: adminHandlers }, async (request, reply) => {
+  fastify.get('/:id/documents/:docId', { preHandler: adminHandlers, config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { id, docId } = request.params as { id: string; docId: string }
 
     const doc = await prisma.leaseDocument.findUnique({ where: { id: docId } })
@@ -250,7 +254,7 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
   })
 
   // DELETE /leases/:id/documents/:docId — delete document
-  fastify.delete('/:id/documents/:docId', { preHandler: adminHandlers }, async (request, reply) => {
+  fastify.delete('/:id/documents/:docId', { preHandler: adminHandlers, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { id, docId } = request.params as { id: string; docId: string }
 
     const doc = await prisma.leaseDocument.findUnique({ where: { id: docId } })
