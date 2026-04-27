@@ -131,15 +131,18 @@ persistence:
   # Provide an existing PVC name to skip creation
   existingClaim: ""
 
-# ── Optional bundled PostgreSQL (Bitnami sub-chart) ───────────────────────────
-# Disabled by default — use an external managed database in production.
-# When enabled, DATABASE_URL is automatically constructed from the values below.
+# ── Bundled PostgreSQL 18 (Bitnami sub-chart) ────────────────────────────────
+# Enabled by default for a zero-config install. DATABASE_URL is automatically
+# constructed from the auth values below.
+# For production, disable and point secrets.databaseUrl (or config.db*) at a
+# managed database instead.
 # Run `helm dependency update ./charts/roomer` before installing.
 postgresql:
-  enabled: false
+  enabled: true
   auth:
     username: roomer
-    password: ""
+    # Change this in production — or disable postgresql and use an external DB.
+    password: "roomer"
     database: roomer
   primary:
     persistence:
