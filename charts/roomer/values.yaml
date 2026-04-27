@@ -1,0 +1,159 @@
+# ── API service ──────────────────────────────────────────────────────────────
+api:
+  image:
+    repository: c0dewhacker/roomer-api
+    # Defaults to Chart.appVersion when empty
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+  # Extra environment variables injected directly into the API pods
+  extraEnv: []
+  # - name: MY_VAR
+  #   value: "my-value"
+
+# ── Web (nginx) service ───────────────────────────────────────────────────────
+web:
+  image:
+    repository: c0dewhacker/roomer-web
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+
+# ── Ingress ───────────────────────────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: ""
+  # Additional annotations merged with any cert-manager annotation generated below
+  annotations: {}
+  host: roomer.example.com
+  tls:
+    enabled: false
+    # Name of the Kubernetes Secret that holds the TLS certificate.
+    # cert-manager will create this automatically when certManager.enabled is true.
+    secretName: roomer-tls
+    # ── cert-manager ACME integration ─────────────────────────────────────────
+    # Requires cert-manager to be installed in the cluster.
+    # https://cert-manager.io/docs/usage/ingress/
+    certManager:
+      enabled: false
+      # issuerType controls which annotation is added to the Ingress:
+      #   ClusterIssuer → cert-manager.io/cluster-issuer  (cluster-scoped, recommended)
+      #   Issuer        → cert-manager.io/issuer          (namespace-scoped)
+      issuerType: ClusterIssuer
+      # Name of your ClusterIssuer or Issuer resource.
+      # Common values: letsencrypt-prod, letsencrypt-staging
+      issuerName: letsencrypt-prod
+
+# ── Application config (non-secret) ──────────────────────────────────────────
+config:
+  nodeEnv: production
+  # Must match ingress.host (with scheme)
+  corsOrigin: "https://roomer.example.com"
+  appUrl: "https://roomer.example.com"
+  # Public URL for the API itself (used for SCIM endpoint display)
+  apiPublicUrl: "https://roomer.example.com/api"
+  cookieSecure: "true"
+  trustProxy: "true"
+  allowBearerAuth: "false"
+  swaggerEnabled: "false"
+  smtpHost: ""
+  smtpPort: "1025"
+  smtpSecure: "false"
+  emailFrom: "noreply@roomer.example.com"
+  maxFileSizeMb: "20"
+  # Seed: admin account is always created on first start.
+  # If seedAdminPassword is omitted a random password is printed to API logs.
+  seedAdminEmail: "admin@roomer.local"
+  seedDemoData: "false"
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+secrets:
+  # create: true  → Helm creates a Secret from the values below
+  # create: false → provide existingSecret with a pre-existing Secret name
+  create: true
+  existingSecret: ""
+
+  # Required when postgresql.enabled is false
+  databaseUrl: ""
+
+  # Required — minimum 32 characters (openssl rand -hex 32)
+  sessionSecret: ""
+
+  smtpUser: ""
+  smtpPass: ""
+
+  # Optional seed passwords (random generated + printed to logs if empty)
+  seedAdminPassword: ""
+  seedUserPassword: ""
+
+# ── Uploads persistent storage ────────────────────────────────────────────────
+persistence:
+  enabled: true
+  storageClass: ""
+  size: 10Gi
+  # Use ReadWriteMany (e.g. NFS, EFS) if api.replicaCount > 1
+  accessMode: ReadWriteOnce
+  # Provide an existing PVC name to skip creation
+  existingClaim: ""
+
+# ── Optional bundled PostgreSQL (Bitnami sub-chart) ───────────────────────────
+# Disabled by default — use an external managed database in production.
+# When enabled, DATABASE_URL is automatically constructed from the values below.
+# Run `helm dependency update ./charts/roomer` before installing.
+postgresql:
+  enabled: false
+  auth:
+    username: roomer
+    password: ""
+    database: roomer
+  primary:
+    persistence:
+      size: 10Gi
+
+# ── Global overrides ──────────────────────────────────────────────────────────
+global:
+  security:
+    # Bitnami's image-verification gate rejects any registry that isn't its own
+    # default. Set to true so the bundled PostgreSQL sub-chart deploys without
+    # manual --set overrides.
+    allowInsecureImages: true
+
+# ── Service account ───────────────────────────────────────────────────────────
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# ── Miscellaneous ─────────────────────────────────────────────────────────────
+imagePullSecrets: []
+
+podAnnotations: {}
+podLabels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

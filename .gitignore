@@ -42,6 +42,9 @@ Thumbs.db
 # Prisma
 apps/api/prisma/migrations/*.sql.tmp
 
+# Helm — sub-chart tarballs are downloaded via `helm dependency update`
+charts/*/charts/*.tgz
+
 #claude
 .claude*/
 .swarm/
