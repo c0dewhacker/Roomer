@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.2](https://github.com/c0dewhacker/Roomer/compare/v0.3.1...v0.3.2) (2026-04-27)
+
+
+### Bug Fixes
+
+* **api:** silence TS6.0 moduleResolution deprecation error ([5c2eaf3](https://github.com/c0dewhacker/Roomer/commit/5c2eaf37a3bbe5e843dd26354fe14351d04d4731))
+* **api:** silence TS6.0 moduleResolution=node10 deprecation error ([086f5cd](https://github.com/c0dewhacker/Roomer/commit/086f5cdca2fbf44d936756db6067a28db8ee858d)), closes [#22](https://github.com/c0dewhacker/Roomer/issues/22)
+
 ## [0.3.1](https://github.com/c0dewhacker/Roomer/compare/v0.3.0...v0.3.1) (2026-04-27)
 
 
