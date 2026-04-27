@@ -3,7 +3,9 @@ import { PrismaPg } from '@prisma/adapter-pg'
 import { Pool } from 'pg'
 import bcryptjs from 'bcryptjs'
 
-const pool = new Pool({ connectionString: process.env['DATABASE_URL'] })
+const r = (name: string): string | undefined => process.env[`ROOMER_${name}`] ?? process.env[name]
+
+const pool = new Pool({ connectionString: r('DATABASE_URL') })
 const adapter = new PrismaPg(pool)
 const prisma = new PrismaClient({ adapter })
 
@@ -27,8 +29,8 @@ async function seedCore() {
   // Super-admin — use SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD env vars.
   // If SEED_ADMIN_PASSWORD is unset a secure random password is generated and
   // printed once to stdout — there is no hardcoded default credential.
-  const adminEmail = process.env['SEED_ADMIN_EMAIL'] ?? 'admin@roomer.local'
-  const rawAdminPassword = process.env['SEED_ADMIN_PASSWORD'] ?? (() => {
+  const adminEmail = r('SEED_ADMIN_EMAIL') ?? 'admin@roomer.local'
+  const rawAdminPassword = r('SEED_ADMIN_PASSWORD') ?? (() => {
     const generated = require('crypto').randomBytes(16).toString('hex')
     console.log(`[seed] SEED_ADMIN_PASSWORD not set — generated password: ${generated}`)
     return generated
@@ -56,7 +58,7 @@ async function seedCore() {
 
 async function seedDemoData(orgId: string) {
   // Regular test user
-  const rawUserPassword = process.env['SEED_USER_PASSWORD'] ?? (() => {
+  const rawUserPassword = r('SEED_USER_PASSWORD') ?? (() => {
     const generated = require('crypto').randomBytes(16).toString('hex')
     console.log(`[seed] SEED_USER_PASSWORD not set — generated password: ${generated}`)
     return generated
@@ -172,7 +174,7 @@ async function seedDemoData(orgId: string) {
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 async function main() {
-  const seedDemo = process.env['SEED_DEMO_DATA'] === 'true'
+  const seedDemo = r('SEED_DEMO_DATA') === 'true'
   console.log(`[seed] Starting (demo data: ${seedDemo})`)
 
   const { org } = await seedCore()
