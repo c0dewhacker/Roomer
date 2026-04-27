@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.1](https://github.com/c0dewhacker/Roomer/compare/v0.3.0...v0.3.1) (2026-04-27)
+
+
+### Bug Fixes
+
+* **ci:** add least-privilege permissions to GitHub Actions workflows ([fc7bcb9](https://github.com/c0dewhacker/Roomer/commit/fc7bcb9010639aea9e5db705f13c18277cb89c9b))
+* **deps:** upgrade @xmldom/xmldom to ^0.9.7 via pnpm override ([2a1636b](https://github.com/c0dewhacker/Roomer/commit/2a1636b9e2a258ed5e6f8e6051621491a3cacb85))
+* **security:** add explicit per-route rate limits to auth and floor-plan endpoints ([aefe1b7](https://github.com/c0dewhacker/Roomer/commit/aefe1b77037c4e9717c4d7a89bc22cb790d313ee))
+* **security:** harden lease document endpoints ([cabc68e](https://github.com/c0dewhacker/Roomer/commit/cabc68ed05c258f32fa591884e68ac3e2f60472a))
+* **security:** remove incomplete HTML entity decoding from stripHtmlToText ([b5cf776](https://github.com/c0dewhacker/Roomer/commit/b5cf77667a41cc4ce27468be249692324e392b49))
+* **security:** replace backtracking-prone regexes in SCIM handlers ([d1fd0a8](https://github.com/c0dewhacker/Roomer/commit/d1fd0a8c2c5c21e8ddff3c724de2eae053b463d8))
+* **security:** resolve all Dependabot and code scanning alerts ([542d6f5](https://github.com/c0dewhacker/Roomer/commit/542d6f558e67a732eaaf4946c56b5317391ef85d))
+
 ## [0.3.0](https://github.com/c0dewhacker/Roomer/compare/v0.2.12...v0.3.0) (2026-04-26)
 
 
