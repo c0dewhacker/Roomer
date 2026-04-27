@@ -12,7 +12,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Auth'], ...route.schema } })
 
   // POST /auth/login
-  fastify.post('/login', async (request, reply) => {
+  fastify.post('/login', { config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } }, async (request, reply) => {
     const result = loginSchema.safeParse(request.body)
     if (!result.success) {
       return reply.status(400).send({
@@ -96,7 +96,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
   })
 
   // POST /auth/logout
-  fastify.post('/logout', { preHandler: [requireAuth] }, async (request, reply) => {
+  fastify.post('/logout', { preHandler: [requireAuth], config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (request, reply) => {
     // Blocklist the current token JTI so it cannot be replayed even before expiry.
     // This is the critical step that makes logout actually invalidate the JWT.
     const rawToken = request.cookies?.[TOKEN_COOKIE] ??
@@ -123,7 +123,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
   //     token cannot be kept alive indefinitely.
   //   - Blocklists the old JTI after issuing a new token so the old token cannot
   //     be replayed if intercepted.
-  fastify.post('/refresh', async (request, reply) => {
+  fastify.post('/refresh', { config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } }, async (request, reply) => {
     const token = request.cookies?.[TOKEN_COOKIE]
     if (!token) {
       return reply.status(401).send({ error: { message: 'No token to refresh', code: 'UNAUTHENTICATED' } })

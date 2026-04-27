@@ -18,6 +18,9 @@
       "prisma",
       "sharp",
       "@prisma/engines"
-    ]
+    ],
+    "overrides": {
+      "@xmldom/xmldom": "^0.9.7"
+    }
   }
 }

@@ -303,7 +303,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
   )
 
   // GET /floors/:id/floor-plan/image — stream rendered floor plan
-  fastify.get('/:id/floor-plan/image', { preHandler: [requireAuth] }, async (request, reply) => {
+  fastify.get('/:id/floor-plan/image', { preHandler: [requireAuth], config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { id } = request.params as { id: string }
 
     const floorPlan = await prisma.floorPlan.findUnique({
