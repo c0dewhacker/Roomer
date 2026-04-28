@@ -16,6 +16,7 @@ data:
   ROOMER_TRUST_PROXY: {{ .Values.config.trustProxy | quote }}
   ROOMER_ALLOW_BEARER_AUTH: {{ .Values.config.allowBearerAuth | quote }}
   ROOMER_SWAGGER_ENABLED: {{ .Values.config.swaggerEnabled | quote }}
+  ROOMER_METRICS_ENABLED: {{ .Values.config.metricsEnabled | quote }}
   ROOMER_SMTP_HOST: {{ .Values.config.smtpHost | quote }}
   ROOMER_SMTP_PORT: {{ .Values.config.smtpPort | quote }}
   ROOMER_SMTP_SECURE: {{ .Values.config.smtpSecure | quote }}
