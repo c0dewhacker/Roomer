@@ -269,6 +269,18 @@ async function handleExpireQueueEntries(): Promise<void> {
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Expired queue entries', count: expired.length }) + '\n')
 }
 
+// ─── Worker: auto-complete-bookings (cron every 30 min) ──────────────────────
+
+async function handleAutoCompleteBookings(): Promise<void> {
+  const result = await prisma.booking.updateMany({
+    where: { status: 'CONFIRMED', endsAt: { lt: new Date() } },
+    data: { status: 'COMPLETED' },
+  })
+  if (result.count > 0) {
+    process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Auto-completed past bookings', count: result.count }) + '\n')
+  }
+}
+
 // ─── Worker: expire-claim-deadlines (cron every 5 min) ───────────────────────
 
 async function handleExpireClaimDeadlines(): Promise<void> {
@@ -345,6 +357,7 @@ export async function startQueue(): Promise<void> {
   await b.createQueue('expire-queue-entries')
   await b.createQueue('expire-claim-deadlines')
   await b.createQueue('prune-revoked-tokens')
+  await b.createQueue('auto-complete-bookings')
 
   await b.work<NotificationJobData>('send-notification', handleSendNotification)
 
@@ -357,6 +370,11 @@ export async function startQueue(): Promise<void> {
     await handleExpireClaimDeadlines()
   })
   await b.schedule('expire-claim-deadlines', '*/5 * * * *', {})
+
+  await b.work('auto-complete-bookings', async () => {
+    await handleAutoCompleteBookings()
+  })
+  await b.schedule('auto-complete-bookings', '*/30 * * * *', {})
 
   // Prune expired JWT blocklist entries every 30 minutes
   await b.work('prune-revoked-tokens', async () => {
