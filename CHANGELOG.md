@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.6](https://github.com/c0dewhacker/Roomer/compare/v0.3.5...v0.3.6) (2026-04-28)
+
+
+### Bug Fixes
+
+* resolve all open CodeQL security alerts ([714493c](https://github.com/c0dewhacker/Roomer/commit/714493c9ea267f4ea8d3c5b49ab083fbfefed748))
+* resolve all open CodeQL security alerts ([284becb](https://github.com/c0dewhacker/Roomer/commit/284becb4388dba4a2cc7941b388ac454d08f6643))
+* resolve remaining CodeQL incomplete-sanitization alert in stripHtmlToText ([4198a44](https://github.com/c0dewhacker/Roomer/commit/4198a4485539cb959ffdeb4e7564382ed3409358))
+* strip angle brackets as single characters to resolve CodeQL incomplete-sanitization alert ([1d99f8c](https://github.com/c0dewhacker/Roomer/commit/1d99f8c7defbfb3068a28d8da8cd38f663911d21))
+* use stray-bracket elimination to satisfy CodeQL incomplete-sanitization check ([aaa6cce](https://github.com/c0dewhacker/Roomer/commit/aaa6ccee79bf6f5cb918e649c93e4fa98fc4876f))
+
 ## [0.3.5](https://github.com/c0dewhacker/Roomer/compare/v0.3.4...v0.3.5) (2026-04-27)
 
 

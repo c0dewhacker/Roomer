@@ -3,7 +3,7 @@ name: roomer
 description: Self-hosted workspace booking platform
 type: application
 version: 0.1.0
-appVersion: "0.3.5"
+appVersion: 0.3.6
 keywords:
   - roomer
   - workspace
@@ -17,6 +17,6 @@ maintainers:
     url: https://github.com/c0dewhacker
 dependencies:
   - name: postgresql
-    version: "18.x.x"
+    version: 18.x.x
     repository: oci://registry-1.docker.io/bitnamicharts
     condition: postgresql.enabled
