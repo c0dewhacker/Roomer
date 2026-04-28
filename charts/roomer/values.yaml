@@ -85,6 +85,7 @@ config:
   trustProxy: "true"
   allowBearerAuth: "false"
   swaggerEnabled: "false"
+  metricsEnabled: "false"
   smtpHost: ""
   smtpPort: "1025"
   smtpSecure: "false"

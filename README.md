@@ -285,6 +285,9 @@ The REST API runs on port `3001` by default.
 | `/api/v1/groups` | Group management |
 | `/api/v1/settings` | Organisation settings, auth provider config, SCIM provisioning |
 | `/scim/v2` | SCIM 2.0 provisioning (separate prefix, bearer token auth) |
+| `/health/live` | Liveness probe — always 200 while the process is running |
+| `/health/ready` | Readiness probe — 200 when the DB is reachable, 503 otherwise |
+| `/metrics` | Prometheus metrics (enabled via `ROOMER_METRICS_ENABLED=true`) |
 
 ---
 
@@ -304,6 +307,7 @@ All API environment variables. Every variable accepts a `ROOMER_` prefix (e.g. `
 | `TRUST_PROXY` | `false` in dev | Trust `X-Forwarded-For` headers |
 | `ALLOW_BEARER_AUTH` | `true` in dev | Accept `Authorization: Bearer` tokens |
 | `SWAGGER_ENABLED` | `true` in dev | Expose Swagger UI at `/docs` |
+| `ROOMER_METRICS_ENABLED` | `false` | Set to `true` to expose a Prometheus `/metrics` endpoint. Unauthenticated — protect at the network/ingress level. |
 | `FILE_STORAGE_PATH` | `./uploads` | Directory for floor plan images |
 | `MAX_FILE_SIZE_MB` | `20` | Maximum upload size |
 | `API_PUBLIC_URL` | `http://localhost:3001` | Public URL of the API — shown in the SCIM settings panel as the endpoint base URL |

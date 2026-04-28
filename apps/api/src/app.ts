@@ -26,6 +26,9 @@ import { importRoutes } from './routes/import'
 import { scimRoutes } from './routes/scim'
 import { subscriptionRoutes } from './routes/subscriptions'
 import { getBoss } from './lib/queue'
+import { prisma } from './lib/prisma'
+import { register, httpRequestDuration, setupMetrics } from './lib/metrics'
+import { randomUUID } from 'crypto'
 
 export async function buildApp(): Promise<FastifyInstance> {
   const fastify = Fastify({
@@ -183,6 +186,28 @@ export async function buildApp(): Promise<FastifyInstance> {
     { prefix: '/api/v1/auth' },
   )
 
+  // ─── x-request-id propagation ─────────────────────────────────────────────
+  fastify.addHook('onRequest', (_request, reply, done) => {
+    const existing = _request.headers['x-request-id']
+    const id = (typeof existing === 'string' && existing.length > 0) ? existing : randomUUID()
+    reply.header('x-request-id', id)
+    done()
+  })
+
+  // ─── Metrics instrumentation ───────────────────────────────────────────────
+  if (env.METRICS_ENABLED) {
+    setupMetrics()
+    fastify.addHook('onRequest', (request, _reply, done) => {
+      ;(request as unknown as Record<string, unknown>)['_metricsTimer'] = httpRequestDuration.startTimer()
+      done()
+    })
+    fastify.addHook('onResponse', (request, reply, done) => {
+      const timer = (request as unknown as Record<string, unknown>)['_metricsTimer'] as ((labels: Record<string, string>) => void) | undefined
+      timer?.({ method: request.method, route: request.routeOptions?.url ?? request.url, status_code: String(reply.statusCode) })
+      done()
+    })
+  }
+
   // ─── Routes ────────────────────────────────────────────────────────────────
   await fastify.register(buildingRoutes, { prefix: '/api/v1/buildings' })
   await fastify.register(floorRoutes, { prefix: '/api/v1/floors' })
@@ -201,10 +226,40 @@ export async function buildApp(): Promise<FastifyInstance> {
   await fastify.register(subscriptionRoutes, { prefix: '/api/v1/subscriptions' })
   await fastify.register(scimRoutes, { prefix: '/scim/v2' })
 
-  // ─── Health check ──────────────────────────────────────────────────────────
-  fastify.get('/health', async (_request, reply) => {
-    return reply.status(200).send({ status: 'ok', timestamp: new Date().toISOString() })
+  // ─── Health checks ─────────────────────────────────────────────────────────
+  // /health/live — process is running (Kubernetes liveness probe)
+  fastify.get('/health/live', { config: { rateLimit: false } }, async (_request, reply) => {
+    return reply.status(200).send({ status: 'ok' })
   })
+
+  // /health/ready — DB is reachable (Kubernetes readiness probe)
+  fastify.get('/health/ready', { config: { rateLimit: false } }, async (_request, reply) => {
+    try {
+      await prisma.$queryRaw`SELECT 1`
+      return reply.status(200).send({ status: 'ok', db: 'ok' })
+    } catch (err) {
+      fastify.log.error(err, 'health/ready check failed')
+      return reply.status(503).send({ status: 'error', db: 'error' })
+    }
+  })
+
+  // /health — alias for /health/ready (backwards compatibility)
+  fastify.get('/health', { config: { rateLimit: false } }, async (_request, reply) => {
+    try {
+      await prisma.$queryRaw`SELECT 1`
+      return reply.status(200).send({ status: 'ok', timestamp: new Date().toISOString() })
+    } catch {
+      return reply.status(503).send({ status: 'error' })
+    }
+  })
+
+  // ─── Prometheus metrics ────────────────────────────────────────────────────
+  if (env.METRICS_ENABLED) {
+    fastify.get('/metrics', { config: { rateLimit: false } }, async (_request, reply) => {
+      const content = await register.metrics()
+      return reply.status(200).header('Content-Type', register.contentType).send(content)
+    })
+  }
 
   // ─── Global error handler ──────────────────────────────────────────────────
   fastify.setErrorHandler((error: FastifyError | Error, _request, reply) => {
