@@ -102,7 +102,8 @@ export function interpolateTemplate(template: string, vars: Record<string, strin
 export function stripHtmlToText(html: string): string {
   return html
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<[^>]+>/g, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/</g, ' ')   // remove stray `<` from malformed/unclosed tags
     .replace(/\s+/g, ' ')
     .trim()
 }

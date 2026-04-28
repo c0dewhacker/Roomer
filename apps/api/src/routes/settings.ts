@@ -331,7 +331,7 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /settings/auth-config — list all provider configs (secrets redacted)
   fastify.get(
     '/auth-config',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)], config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
     async (_request, reply) => {
       const rows = await listAuthConfigs()
       const result: Record<string, unknown> = {}
@@ -348,7 +348,7 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
   // PUT /settings/auth-config/:provider — upsert provider config
   fastify.put(
     '/auth-config/:provider',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)], config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
     async (request, reply) => {
       const { provider } = request.params as { provider: string }
       const upperProvider = provider.toUpperCase() as ProviderKey
