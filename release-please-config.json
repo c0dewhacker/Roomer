@@ -3,7 +3,15 @@
   "release-type": "node",
   "include-component-in-tag": false,
   "packages": {
-    ".": {}
+    ".": {
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "charts/roomer/Chart.yaml",
+          "jsonpath": "$.appVersion"
+        }
+      ]
+    }
   },
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": true,
