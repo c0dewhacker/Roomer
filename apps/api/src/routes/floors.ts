@@ -340,6 +340,28 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     }
     const contentType = mimeMap[ext] ?? 'application/octet-stream'
 
+    // Optional stroke colour override for SVG floor plans (DXF-derived).
+    // Accepts a plain 6-character hex string without the # prefix (e.g. stroke=e2e8f0).
+    const { stroke: rawStroke } = request.query as { stroke?: string }
+    let stroke: string | undefined
+    if (rawStroke !== undefined && rawStroke !== '') {
+      if (!/^[0-9a-fA-F]{6}$/.test(rawStroke)) {
+        return reply.status(400).send({ error: { message: 'Invalid stroke colour — provide a 6-character hex string without # (e.g. e2e8f0)', code: 'INVALID_PARAM' } })
+      }
+      stroke = `#${rawStroke}`
+    }
+
+    if (contentType === 'image/svg+xml' && stroke) {
+      const raw = await fs.promises.readFile(absPath, 'utf-8')
+      const recolored = raw.replace(/stroke="[^"]*"/g, `stroke="${stroke}"`)
+      reply
+        .header('Content-Type', contentType)
+        .header('Cache-Control', 'public, max-age=86400')
+        .header('Content-Security-Policy', "default-src 'none'")
+        .header('X-Content-Type-Options', 'nosniff')
+      return reply.send(recolored)
+    }
+
     const stream = fs.createReadStream(absPath)
     reply.header('Content-Type', contentType)
     reply.header('Cache-Control', 'public, max-age=86400')
