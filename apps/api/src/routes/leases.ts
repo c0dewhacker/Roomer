@@ -198,11 +198,11 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    // Save file (store relative path like floor plans)
-    const relDir = path.join('leases', id)
+    // Save file — use DB-sourced lease.id (not raw param) to avoid tainted path
+    const relDir = path.join('leases', lease.id)
     const absDir = resolveStoragePath(relDir)
     await fs.promises.mkdir(absDir, { recursive: true })
-    const safeFilename = `${Date.now()}-${data.filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+    const safeFilename = `${Date.now()}-${data.filename.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.{2,}/g, '_')}`
     const relPath = path.join(relDir, safeFilename)
     const absPath = resolveStoragePath(relPath)
     const buffer = await data.toBuffer()
