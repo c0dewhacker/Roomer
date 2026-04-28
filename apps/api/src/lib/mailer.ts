@@ -100,14 +100,12 @@ export function interpolateTemplate(template: string, vars: Record<string, strin
 }
 
 export function stripHtmlToText(html: string): string {
-  let text = html.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-  // Loop until stable — prevents bypass via nested/malformed tags (e.g. <<script>>)
-  let prev: string
-  do {
-    prev = text
-    text = text.replace(/<[^>]+>/g, ' ')
-  } while (text !== prev)
-  return text.replace(/\s+/g, ' ').trim()
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/</g, ' ')   // remove stray `<` from malformed/unclosed tags
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 // ─── Default parameterised template strings (shown in the editor as starting points) ──
