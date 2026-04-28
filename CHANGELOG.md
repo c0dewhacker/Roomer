@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.6](https://github.com/c0dewhacker/Roomer/compare/v0.3.5...v0.3.6) (2026-04-28)
+
+
+### Bug Fixes
+
+* prisma.config.ts falls back to ROOMER_DATABASE_URL for migrations ([9620e8a](https://github.com/c0dewhacker/Roomer/commit/9620e8a0c3b1153e45ec48e8630137ba644d084e))
+* prisma.config.ts reads ROOMER_DATABASE_URL for migrations ([5620868](https://github.com/c0dewhacker/Roomer/commit/56208685b2c288b674a58b996daf74451dff55e4))
+
 ## [0.3.5](https://github.com/c0dewhacker/Roomer/compare/v0.3.4...v0.3.5) (2026-04-27)
 
 
