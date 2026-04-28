@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.7](https://github.com/c0dewhacker/Roomer/compare/v0.3.6...v0.3.7) (2026-04-28)
+
+
+### Features
+
+* auto-complete past bookings via pg-boss cron job ([abcf591](https://github.com/c0dewhacker/Roomer/commit/abcf591904213d0630988dce4d973a10dbdea800))
+* auto-complete past bookings via pg-boss cron job ([adb6686](https://github.com/c0dewhacker/Roomer/commit/adb668698cc4fa22387c0a05000ec4122b492899))
+* production observability — /metrics, health probes, x-request-id ([4fdc068](https://github.com/c0dewhacker/Roomer/commit/4fdc06874572b3adcf9959f5ee540cd9b32a7b6d))
+* production observability — /metrics, improved health checks, x-request-id ([962e846](https://github.com/c0dewhacker/Roomer/commit/962e84694a59afe0a5a79d85cb0d2e3bed5f1d17))
+
 ## [0.3.6](https://github.com/c0dewhacker/Roomer/compare/v0.3.5...v0.3.6) (2026-04-28)
 
 
