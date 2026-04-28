@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.8](https://github.com/c0dewhacker/Roomer/compare/v0.3.7...v0.3.8) (2026-04-28)
+
+
+### Bug Fixes
+
+* **helm:** point web init container at /health/ready instead of /health ([0b0be74](https://github.com/c0dewhacker/Roomer/commit/0b0be74867d0e9b8a2b0a520783c36028179bd81))
+
 ## [0.3.7](https://github.com/c0dewhacker/Roomer/compare/v0.3.6...v0.3.7) (2026-04-28)
 
 
