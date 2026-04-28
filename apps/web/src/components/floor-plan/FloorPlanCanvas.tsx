@@ -166,7 +166,7 @@ export function FloorPlanCanvas({
     const params = new URLSearchParams()
     if (updatedAt) params.set('v', updatedAt)
     // DXF files are served as SVG — request a stroke colour that suits the current theme
-    if (fileType === 'DXF') params.set('stroke', isDark ? '#e2e8f0' : '#334155')
+    if (fileType === 'DXF') params.set('stroke', isDark ? 'e2e8f0' : '334155')
     const qs = params.toString()
     return `/api/v1/floors/${floorId}/floor-plan/image${qs ? `?${qs}` : ''}`
   })()
@@ -323,7 +323,7 @@ export function FloorPlanCanvas({
   // loading, containerRef.current is null when the effect runs ([] deps) and
   // dimensions stays stuck at the initial { 800, 600 } default.
   return (
-    <div className="relative h-full w-full" ref={containerRef} style={{ cursor: isLoading ? 'default' : 'grab' }}>
+    <div className="relative h-full w-full bg-slate-50 dark:bg-slate-900" ref={containerRef} style={{ cursor: isLoading ? 'default' : 'grab' }}>
       {isLoading && (
         <div className="absolute inset-0 z-20 flex items-center justify-center">
           <Skeleton className="h-full w-full" />
