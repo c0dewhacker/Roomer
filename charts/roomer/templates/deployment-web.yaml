@@ -45,7 +45,7 @@ spec:
             - sh
             - -c
             - |
-              until wget -qO /dev/null http://{{ include "roomer.api.fullname" . }}:3001/health; do
+              until wget -qO /dev/null http://{{ include "roomer.api.fullname" . }}:3001/health/ready; do
                 echo "waiting for api..."; sleep 2
               done
           securityContext: {}
