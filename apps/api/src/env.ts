@@ -47,6 +47,12 @@ const envSchema = z.object({
   SWAGGER_ENABLED: z.string()
     .default(isProd ? 'false' : 'true')
     .transform((v) => v === 'true'),
+  // Set to "true" to expose a Prometheus /metrics endpoint.
+  // Disabled by default — enable in environments where a scraper is configured.
+  // Protect this endpoint at the network/ingress level; it is unauthenticated.
+  METRICS_ENABLED: z.string()
+    .default('false')
+    .transform((v) => v === 'true'),
   FILE_STORAGE_PATH: z.string().default('./uploads'),
   MAX_FILE_SIZE_MB: z.coerce.number().default(20),
   SMTP_HOST: z.string().default('localhost'),
@@ -81,6 +87,7 @@ const parsed = envSchema.safeParse({
   TRUST_PROXY:            r('TRUST_PROXY'),
   ALLOW_BEARER_AUTH:      r('ALLOW_BEARER_AUTH'),
   SWAGGER_ENABLED:        r('SWAGGER_ENABLED'),
+  METRICS_ENABLED:        r('METRICS_ENABLED'),
   FILE_STORAGE_PATH:      r('FILE_STORAGE_PATH'),
   MAX_FILE_SIZE_MB:       r('MAX_FILE_SIZE_MB'),
   SMTP_HOST:              r('SMTP_HOST'),
