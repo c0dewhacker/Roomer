@@ -340,6 +340,25 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     }
     const contentType = mimeMap[ext] ?? 'application/octet-stream'
 
+    // Optional stroke colour override for SVG floor plans (DXF-derived).
+    // Allows the frontend to adapt line colour for dark/light mode without re-uploading.
+    // Only accepted for SVG; validated strictly to a 3- or 6-digit hex colour.
+    const { stroke } = request.query as { stroke?: string }
+    if (stroke !== undefined && !/^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(stroke)) {
+      return reply.status(400).send({ error: { message: 'Invalid stroke colour — use a 3- or 6-digit hex value (e.g. #e2e8f0)', code: 'INVALID_PARAM' } })
+    }
+
+    if (contentType === 'image/svg+xml' && stroke) {
+      const raw = await fs.promises.readFile(absPath, 'utf-8')
+      const recolored = raw.replace(/stroke="[^"]*"/g, `stroke="${stroke}"`)
+      reply
+        .header('Content-Type', contentType)
+        .header('Cache-Control', 'public, max-age=86400')
+        .header('Content-Security-Policy', "default-src 'none'")
+        .header('X-Content-Type-Options', 'nosniff')
+      return reply.send(recolored)
+    }
+
     const stream = fs.createReadStream(absPath)
     reply.header('Content-Type', contentType)
     reply.header('Cache-Control', 'public, max-age=86400')

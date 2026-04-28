@@ -9,7 +9,25 @@ import { AssetShape } from './AssetShape'
 import { DeskMarker } from './DeskMarker'
 import { useFloorData, useFloorAvailability } from '@/hooks/useFloor'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useThemeStore } from '@/stores/theme'
 import type { AssetWithStatus } from '@/types'
+
+// Resolve whether the UI is currently in dark mode, reacting to both the stored
+// theme preference and the OS-level prefers-color-scheme media query.
+function useIsDarkMode(): boolean {
+  const theme = useThemeStore((s) => s.theme)
+  const [systemDark, setSystemDark] = useState(
+    () => window.matchMedia('(prefers-color-scheme: dark)').matches,
+  )
+  useEffect(() => {
+    if (theme !== 'system') return
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const handler = (e: MediaQueryListEvent) => setSystemDark(e.matches)
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [theme])
+  return theme === 'system' ? systemDark : theme === 'dark'
+}
 
 // Use the bundled worker from pdfjs-dist
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl
@@ -140,11 +158,18 @@ export function FloorPlanCanvas({
     setDisplayScale(serverDisplayScale)
   }, [serverDisplayScale])
 
+  const isDark = useIsDarkMode()
   const updatedAt = floorData?.floorPlan?.updatedAt
-  const floorPlanUrl = updatedAt
-    ? `/api/v1/floors/${floorId}/floor-plan/image?v=${encodeURIComponent(updatedAt)}`
-    : `/api/v1/floors/${floorId}/floor-plan/image`
   const fileType = floorData?.floorPlan?.fileType
+
+  const floorPlanUrl = (() => {
+    const params = new URLSearchParams()
+    if (updatedAt) params.set('v', updatedAt)
+    // DXF files are served as SVG — request a stroke colour that suits the current theme
+    if (fileType === 'DXF') params.set('stroke', isDark ? '#e2e8f0' : '#334155')
+    const qs = params.toString()
+    return `/api/v1/floors/${floorId}/floor-plan/image${qs ? `?${qs}` : ''}`
+  })()
   const hasFloorPlan = Boolean(floorData?.floorPlan)
 
   const [bgImage, bgStatus] = useFloorPlanImage(
