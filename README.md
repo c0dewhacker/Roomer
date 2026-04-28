@@ -44,15 +44,16 @@ The fastest way to run Roomer is with the pre-built Docker images.
 **1. Create a `.env` file** in the project root:
 
 ```env
-SESSION_SECRET=<run: openssl rand -hex 32>
+ROOMER_SESSION_SECRET=<run: openssl rand -hex 32>
+ROOMER_ENCRYPTION_KEY=<run: openssl rand -hex 32>
 APP_ORIGIN=http://localhost
-COOKIE_SECURE=false
+ROOMER_COOKIE_SECURE=false
 WEB_PORT=80
-EMAIL_FROM=noreply@roomer.local
+ROOMER_EMAIL_FROM=noreply@roomer.local
 
 # Admin account credentials (see "Seeding" below)
-SEED_ADMIN_EMAIL=admin@roomer.local
-SEED_ADMIN_PASSWORD=changeme
+ROOMER_SEED_ADMIN_EMAIL=admin@roomer.local
+ROOMER_SEED_ADMIN_PASSWORD=changeme
 ```
 
 **2. Start everything:**
@@ -83,17 +84,20 @@ This adds a sample building ("Acme HQ") with a floor, two zones, and six desks, 
 
 ### Docker Compose environment variables
 
+All API variables use the `ROOMER_` prefix in the root `.env`. Unprefixed names are still accepted by the API itself (for local dev), but Docker Compose and Kubernetes always inject the `ROOMER_` form.
+
 | Variable | Default | Description |
 |---|---|---|
-| `SESSION_SECRET` | — | **Required.** 32+ character random string. |
-| `APP_ORIGIN` | `http://localhost` | Public URL used in CORS and email links. |
-| `COOKIE_SECURE` | `false` | Set to `true` when serving over HTTPS. |
-| `WEB_PORT` | `80` | Host port for the web container. |
-| `EMAIL_FROM` | `noreply@roomer.local` | Sender address for system emails. |
-| `SEED_ADMIN_EMAIL` | `admin@roomer.local` | Email for the super-admin account created on first seed. |
-| `SEED_ADMIN_PASSWORD` | *(random)* | Password for the super-admin account. If unset, a random password is generated and printed to the API container logs. |
-| `SEED_DEMO_DATA` | `false` | Set to `true` to seed demo buildings, floors, desks and a test user on first start. |
-| `SEED_USER_PASSWORD` | *(random)* | Password for the demo test user (`user@roomer.local`). Only used when `SEED_DEMO_DATA=true`. |
+| `ROOMER_SESSION_SECRET` | — | **Required.** 32+ character random string. Generate with `openssl rand -hex 32`. |
+| `ROOMER_ENCRYPTION_KEY` | — | **Required.** 64 hex-char AES-256 key for encrypting auth provider secrets at rest. Generate with `openssl rand -hex 32`. |
+| `APP_ORIGIN` | `http://localhost` | Public URL used for `CORS_ORIGIN` and `APP_URL` on the API container. |
+| `ROOMER_COOKIE_SECURE` | `true` | Set to `false` only for plain HTTP testing. |
+| `WEB_PORT` | `8999` | Host port for the web container. |
+| `ROOMER_EMAIL_FROM` | `noreply@roomer.local` | Sender address for system emails. |
+| `ROOMER_SEED_ADMIN_EMAIL` | `admin@roomer.local` | Email for the super-admin account created on first seed. |
+| `ROOMER_SEED_ADMIN_PASSWORD` | *(random)* | Password for the super-admin account. If unset, a random password is generated and printed to the API container logs. |
+| `ROOMER_SEED_DEMO_DATA` | `false` | Set to `true` to seed demo buildings, floors, desks and a test user on first start. |
+| `ROOMER_SEED_USER_PASSWORD` | *(random)* | Password for the demo test user (`user@roomer.local`). Only used when `ROOMER_SEED_DEMO_DATA=true`. |
 
 ### Build from source
 
@@ -163,6 +167,8 @@ Create `apps/api/.env`:
 # Required
 DATABASE_URL=postgresql://roomer:roomer@localhost:5435/roomer
 SESSION_SECRET=<openssl rand -hex 32>
+# AES-256-GCM key for encrypting auth provider secrets (OIDC/LDAP/SAML)
+ROOMER_ENCRYPTION_KEY=<openssl rand -hex 32>
 
 # Defaults — override as needed
 NODE_ENV=development
@@ -182,6 +188,8 @@ SEED_ADMIN_EMAIL=admin@roomer.local
 SEED_ADMIN_PASSWORD=admin123
 SEED_DEMO_DATA=true
 ```
+
+> All variables also accept the `ROOMER_` prefix (e.g. `ROOMER_DATABASE_URL`). `ROOMER_<NAME>` takes precedence when both are set — Docker Compose and Kubernetes always use the prefixed form. For local dev the unprefixed names are fine.
 
 ### 4. Migrate and seed
 
@@ -235,6 +243,7 @@ helm install roomer ./charts/roomer \
   --namespace roomer --create-namespace \
   --set ingress.host=roomer.example.com \
   --set secrets.sessionSecret=$(openssl rand -hex 32) \
+  --set secrets.encryptionKey=$(openssl rand -hex 32) \
   --set secrets.databaseUrl="postgresql://user:pass@host:5432/roomer"
 ```
 
@@ -248,6 +257,7 @@ helm install roomer ./charts/roomer \
   --set ingress.tls.certManager.enabled=true \
   --set ingress.tls.certManager.issuerName=letsencrypt-prod \
   --set secrets.sessionSecret=$(openssl rand -hex 32) \
+  --set secrets.encryptionKey=$(openssl rand -hex 32) \
   --set secrets.databaseUrl="postgresql://user:pass@host:5432/roomer"
 ```
 
@@ -280,12 +290,13 @@ The REST API runs on port `3001` by default.
 
 ## Configuration Reference
 
-All API environment variables:
+All API environment variables. Every variable accepts a `ROOMER_` prefix (e.g. `ROOMER_DATABASE_URL`); the prefixed form takes precedence when both are set. Docker Compose and Kubernetes always inject the `ROOMER_` form.
 
 | Variable | Default | Description |
 |---|---|---|
 | `DATABASE_URL` | — | PostgreSQL connection string (required) |
 | `SESSION_SECRET` | — | Cookie signing secret, min 32 chars (required) |
+| `ROOMER_ENCRYPTION_KEY` | — | 64-char hex AES-256 key for encrypting auth provider secrets at rest (required). Generate with `openssl rand -hex 32`. |
 | `PORT` | `3001` | API listen port |
 | `HOST` | `0.0.0.0` | API bind address |
 | `CORS_ORIGIN` | `http://localhost:5173` | Allowed frontend origin |
