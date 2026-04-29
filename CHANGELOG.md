@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.8](https://github.com/c0dewhacker/Roomer/compare/v0.3.7...v0.3.8) (2026-04-29)
+
+
+### Features
+
+* adapt DXF floor plan stroke colour for dark/light mode ([2f91641](https://github.com/c0dewhacker/Roomer/commit/2f91641e2aa99df03e3a40e9f8fc9d729cefa418))
+* **api:** add navStyle field to branding schema ([7019f04](https://github.com/c0dewhacker/Roomer/commit/7019f0486781d537c661deb9b74757ff28442df8))
+* configurable navigation styles with draggable floating island ([d51c9fc](https://github.com/c0dewhacker/Roomer/commit/d51c9fcc6f4e6c3b25a915027f9c68f83b7bed49))
+* DXF floor plan stroke colour adapts to dark/light mode ([4819c91](https://github.com/c0dewhacker/Roomer/commit/4819c9197f1ff9c34a91576b2ba5591e3fa66379))
+* **web:** add nav style picker to admin branding settings ([5b7febe](https://github.com/c0dewhacker/Roomer/commit/5b7febe5869b98c752c615c3d9de0c6eb0dbc8f0))
+* **web:** implement four navigation style components ([668f0df](https://github.com/c0dewhacker/Roomer/commit/668f0df318b0a54b705012bc4fb2a8391ce72cc4))
+* **web:** switch layout based on branding navStyle ([6b10979](https://github.com/c0dewhacker/Roomer/commit/6b10979b262e11531becaa219a62eb261c924184))
+
+
+### Bug Fixes
+
+* canvas background + simplify stroke param to plain 6-char hex ([a386393](https://github.com/c0dewhacker/Roomer/commit/a386393af542531f810321e92c628126024f6601))
+* **helm:** point web init container at /health/ready instead of /health ([0b0be74](https://github.com/c0dewhacker/Roomer/commit/0b0be74867d0e9b8a2b0a520783c36028179bd81))
+
 ## [0.3.7](https://github.com/c0dewhacker/Roomer/compare/v0.3.6...v0.3.7) (2026-04-28)
 
 
