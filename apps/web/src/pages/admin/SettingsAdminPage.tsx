@@ -1492,6 +1492,7 @@ function BrandingCard() {
   const [primaryColor, setPrimaryColor] = useState('#6366f1')
   const [primaryColorDark, setPrimaryColorDark] = useState('#818cf8')
   const [borderRadius, setBorderRadius] = useState<Branding['borderRadius']>('medium')
+  const [navStyle, setNavStyle] = useState<Branding['navStyle']>('sidebar')
   const [headerBanner, setHeaderBanner] = useState<BrandingBanner>({
     enabled: false, text: '', bgColor: '#f59e0b', textColor: '#ffffff',
   })
@@ -1507,6 +1508,7 @@ function BrandingCard() {
     setPrimaryColor(brandingData.primaryColor ?? '#6366f1')
     setPrimaryColorDark(brandingData.primaryColorDark ?? '#818cf8')
     setBorderRadius(brandingData.borderRadius ?? 'medium')
+    setNavStyle(brandingData.navStyle ?? 'sidebar')
     if (brandingData.headerBanner) setHeaderBanner(brandingData.headerBanner)
     if (brandingData.footerBanner) setFooterBanner(brandingData.footerBanner)
   }, [brandingData])
@@ -1520,6 +1522,7 @@ function BrandingCard() {
         primaryColor,
         primaryColorDark,
         borderRadius,
+        navStyle,
         headerBanner,
         footerBanner,
       }),
@@ -1647,6 +1650,98 @@ function BrandingCard() {
                   style={{ borderRadius: opt.preview }}
                 />
                 {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* Navigation Style */}
+        <div className="space-y-4">
+          <div>
+            <p className="text-sm font-semibold">Navigation Style</p>
+            <p className="text-xs text-muted-foreground mt-0.5">Choose how navigation is presented to all users</p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {([
+              {
+                value: 'sidebar' as const,
+                label: 'Enhanced Sidebar',
+                description: 'Collapsible & pinnable side panel',
+                preview: (
+                  <div className="flex h-10 w-full overflow-hidden rounded border border-current/20">
+                    <div className="w-5 border-r border-current/20 bg-current/10 flex flex-col gap-0.5 p-0.5">
+                      {[...Array(4)].map((_, i) => <div key={i} className="h-1 rounded-sm bg-current/40" />)}
+                    </div>
+                    <div className="flex-1 bg-current/5 p-1 space-y-0.5">
+                      {[...Array(3)].map((_, i) => <div key={i} className="h-1.5 rounded bg-current/20" />)}
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                value: 'topbar' as const,
+                label: 'Top Navigation',
+                description: 'Horizontal bar across the top',
+                preview: (
+                  <div className="flex h-10 w-full flex-col overflow-hidden rounded border border-current/20">
+                    <div className="flex h-4 items-center gap-1 border-b border-current/20 bg-current/10 px-1">
+                      {[...Array(4)].map((_, i) => <div key={i} className="h-1 w-4 rounded-sm bg-current/40" />)}
+                    </div>
+                    <div className="flex-1 bg-current/5 p-1 space-y-0.5">
+                      {[...Array(2)].map((_, i) => <div key={i} className="h-1.5 rounded bg-current/20" />)}
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                value: 'floating' as const,
+                label: 'Floating Island',
+                description: 'Glass-morphism pill floating at the bottom',
+                preview: (
+                  <div className="relative flex h-10 w-full overflow-hidden rounded border border-current/20 bg-current/5">
+                    <div className="absolute bottom-1 left-1/2 -translate-x-1/2 flex gap-1 rounded-lg border border-current/30 bg-current/15 px-2 py-0.5 backdrop-blur-sm">
+                      {[...Array(4)].map((_, i) => <div key={i} className="h-2 w-2 rounded-sm bg-current/50" />)}
+                    </div>
+                    <div className="p-1 space-y-0.5 w-full">
+                      {[...Array(2)].map((_, i) => <div key={i} className="h-1.5 rounded bg-current/20" />)}
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                value: 'rail' as const,
+                label: 'Icon Rail',
+                description: 'Narrow icon strip with slide-out flyout',
+                preview: (
+                  <div className="flex h-10 w-full overflow-hidden rounded border border-current/20">
+                    <div className="w-3 border-r border-current/20 bg-current/10 flex flex-col items-center gap-0.5 py-0.5">
+                      {[...Array(4)].map((_, i) => <div key={i} className="h-1.5 w-1.5 rounded-sm bg-current/40" />)}
+                    </div>
+                    <div className="flex-1 bg-current/5 p-1 space-y-0.5">
+                      {[...Array(3)].map((_, i) => <div key={i} className="h-1.5 rounded bg-current/20" />)}
+                    </div>
+                  </div>
+                ),
+              },
+            ] as const).map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setNavStyle(opt.value)}
+                className={cn(
+                  'flex flex-col gap-2 rounded-lg border p-3 text-left text-xs transition-colors',
+                  navStyle === opt.value
+                    ? 'border-primary bg-primary/5 text-primary'
+                    : 'border-input text-muted-foreground hover:border-muted-foreground',
+                )}
+              >
+                {opt.preview}
+                <div>
+                  <p className="font-medium">{opt.label}</p>
+                  <p className="text-[11px] opacity-70 mt-0.5">{opt.description}</p>
+                </div>
               </button>
             ))}
           </div>

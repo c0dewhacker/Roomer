@@ -432,6 +432,7 @@ export interface Branding {
   logoPath?: string
   faviconPath?: string
   borderRadius?: 'sharp' | 'medium' | 'large'
+  navStyle?: 'sidebar' | 'topbar' | 'floating' | 'rail'
   headerBanner?: BrandingBanner
   footerBanner?: BrandingBanner
 }

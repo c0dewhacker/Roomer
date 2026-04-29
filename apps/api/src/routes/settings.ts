@@ -31,6 +31,7 @@ const brandingSchema = z.object({
   primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().nullable(),
   primaryColorDark: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().nullable(),
   borderRadius: z.enum(['sharp', 'medium', 'large']).optional().nullable(),
+  navStyle: z.enum(['sidebar', 'topbar', 'floating', 'rail']).optional().nullable(),
   headerBanner: bannerSchema.optional(),
   footerBanner: bannerSchema.optional(),
 })
