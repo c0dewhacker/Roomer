@@ -97,7 +97,7 @@ export default function Layout() {
         </aside>
 
         <div className="flex flex-1 flex-col overflow-hidden">
-          <TopBar onMenuClick={() => setSidebarOpen((o) => !o)} />
+          <TopBar onMenuClick={() => setSidebarOpen((o) => !o)} hideBrand />
           <main className="flex-1 overflow-auto">
             <Outlet />
           </main>
