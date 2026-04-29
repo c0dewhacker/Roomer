@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.9](https://github.com/c0dewhacker/Roomer/compare/v0.3.8...v0.3.9) (2026-04-29)
+
+
+### Bug Fixes
+
+* **sidebar:** remove duplicate brand header, reorder buildings above admin, polish styles ([79e17a6](https://github.com/c0dewhacker/Roomer/commit/79e17a6cb25ea391badd81ceddacca6e87820c46))
+* **sidebar:** remove duplicate brand, reorder buildings, polish styles ([684772e](https://github.com/c0dewhacker/Roomer/commit/684772e99cc3e3c73ab4983f98e7f76ea2b48f67))
+
 ## [0.3.8](https://github.com/c0dewhacker/Roomer/compare/v0.3.7...v0.3.8) (2026-04-29)
 
 
