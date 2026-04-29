@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
-import { ChevronDown, ChevronRight, Pin, PinOff, Building2 } from 'lucide-react'
+import { ChevronRight, Pin, PinOff, Building2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useNavConfig } from '@/hooks/useNavConfig'
 import { useQuery } from '@tanstack/react-query'
@@ -27,8 +27,10 @@ export function SidebarNav({ onNavigate }: SidebarNavProps) {
   }, [pinned])
 
   const togglePin = () => setPinned((p) => !p)
-
   const width = collapsed ? 'w-14' : 'w-60'
+
+  const personalSection = sections.find((s) => s.id === 'personal')
+  const secondarySections = sections.filter((s) => s.id !== 'personal')
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -41,16 +43,19 @@ export function SidebarNav({ onNavigate }: SidebarNavProps) {
         onMouseLeave={() => { if (!pinned) setCollapsed(true) }}
       >
         {/* Header */}
-        <div className="flex h-14 items-center justify-between px-3 border-b shrink-0">
+        <div className="flex h-14 items-center gap-2.5 px-3 border-b shrink-0">
+          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground text-xs font-bold shrink-0 select-none">
+            {(branding?.sidebarTitle ?? 'R')[0].toUpperCase()}
+          </div>
           {!collapsed && (
-            <div className="min-w-0">
-              <h2 className="text-sm font-bold text-foreground truncate">{branding?.sidebarTitle ?? 'Roomer'}</h2>
-              <p className="text-xs text-muted-foreground truncate">{branding?.sidebarSubtitle ?? 'Desk Booking'}</p>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold leading-tight truncate">{branding?.sidebarTitle ?? 'Roomer'}</p>
+              <p className="text-[11px] text-muted-foreground leading-tight truncate">{branding?.sidebarSubtitle ?? 'Desk Booking'}</p>
             </div>
           )}
           <button
             onClick={togglePin}
-            className="ml-auto rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors shrink-0"
+            className="ml-auto rounded p-1 text-muted-foreground/60 hover:text-foreground hover:bg-accent transition-colors shrink-0"
             title={pinned ? 'Unpin sidebar' : 'Pin sidebar open'}
           >
             {pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
@@ -58,22 +63,22 @@ export function SidebarNav({ onNavigate }: SidebarNavProps) {
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 overflow-y-auto overflow-x-hidden py-3 px-2 space-y-0.5">
-          {sections.map((section) => (
-            <div key={section.id}>
-              {section.label && !collapsed && (
-                <p className="px-3 py-1.5 text-xs font-semibold uppercase text-muted-foreground tracking-wider">
-                  {section.label}
-                </p>
-              )}
-              {section.label && collapsed && <div className="my-1 mx-2 border-t" />}
-              {section.items.map((item) => (
-                <NavItemLink key={item.to} item={item} collapsed={collapsed} onNavigate={onNavigate} />
-              ))}
-            </div>
+        <nav className="flex-1 overflow-y-auto overflow-x-hidden py-2 px-2 space-y-0.5">
+          {/* Personal items */}
+          {personalSection?.items.map((item) => (
+            <NavItemLink key={item.to} item={item} collapsed={collapsed} onNavigate={onNavigate} />
           ))}
 
-          {/* Buildings tree */}
+          {/* Separator before buildings */}
+          {collapsed ? (
+            <div className="my-1.5 mx-2 border-t border-border/50" />
+          ) : (
+            <p className="px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/50">
+              Spaces
+            </p>
+          )}
+
+          {/* Buildings — before admin so it's in the right context for all users */}
           {!collapsed ? (
             <BuildingsTree buildingsData={buildingsData} onNavigate={onNavigate} />
           ) : (
@@ -89,6 +94,22 @@ export function SidebarNav({ onNavigate }: SidebarNavProps) {
               <TooltipContent side="right">Buildings</TooltipContent>
             </Tooltip>
           )}
+
+          {/* Admin / Manager sections */}
+          {secondarySections.map((section) => (
+            <div key={section.id}>
+              {collapsed ? (
+                <div className="my-1.5 mx-2 border-t border-border/50" />
+              ) : (
+                <p className="px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/50">
+                  {section.label}
+                </p>
+              )}
+              {section.items.map((item) => (
+                <NavItemLink key={item.to} item={item} collapsed={collapsed} onNavigate={onNavigate} />
+              ))}
+            </div>
+          ))}
         </nav>
       </div>
     </TooltipProvider>
@@ -115,7 +136,7 @@ function NavItemLink({
               cn(
                 'flex items-center justify-center rounded-lg p-2 transition-colors',
                 isActive
-                  ? 'bg-primary text-primary-foreground'
+                  ? 'bg-primary/10 text-primary'
                   : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
               )
             }
@@ -134,15 +155,19 @@ function NavItemLink({
       onClick={onNavigate}
       className={({ isActive }) =>
         cn(
-          'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+          'group flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
           isActive
-            ? 'bg-primary text-primary-foreground'
-            : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+            ? 'bg-primary/10 text-primary'
+            : 'text-muted-foreground hover:bg-accent/70 hover:text-foreground',
         )
       }
     >
-      <item.icon className="h-4 w-4 shrink-0" />
-      <span className="truncate">{item.label}</span>
+      {({ isActive }) => (
+        <>
+          <item.icon className={cn('h-4 w-4 shrink-0 transition-transform duration-150', !isActive && 'group-hover:scale-105')} />
+          <span className="truncate">{item.label}</span>
+        </>
+      )}
     </NavLink>
   )
 }
@@ -160,20 +185,22 @@ function BuildingsTree({
     <div>
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+        className="group flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-accent/70 hover:text-foreground transition-all duration-150"
       >
-        <Building2 className="h-4 w-4 shrink-0" />
+        <Building2 className="h-4 w-4 shrink-0 transition-transform duration-150 group-hover:scale-105" />
         <span className="flex-1 text-left">Buildings</span>
-        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        <span className="transition-transform duration-150" style={{ transform: open ? 'rotate(90deg)' : undefined }}>
+          <ChevronRight className="h-3 w-3 opacity-50" />
+        </span>
       </button>
 
       {open && (
-        <div className="ml-7 mt-0.5 space-y-0.5">
+        <div className="ml-4 mt-0.5 space-y-0.5 border-l border-border/40 pl-3">
           {buildingsData.map((b) => (
             <BuildingItem key={b.id} buildingId={b.id} buildingName={b.name} onNavigate={onNavigate} />
           ))}
           {buildingsData.length === 0 && (
-            <p className="px-3 py-1 text-xs text-muted-foreground">No buildings</p>
+            <p className="py-1 text-xs text-muted-foreground/60">No buildings</p>
           )}
         </div>
       )}
@@ -202,13 +229,16 @@ function BuildingItem({
     <div>
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
       >
-        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        {buildingName}
+        <ChevronRight
+          className="h-3 w-3 opacity-40 shrink-0 transition-transform duration-150"
+          style={{ transform: open ? 'rotate(90deg)' : undefined }}
+        />
+        <span className="truncate">{buildingName}</span>
       </button>
       {open && data && (
-        <div className="ml-5 space-y-0.5">
+        <div className="ml-5 mt-0.5 space-y-0.5">
           {data.floors?.map((floor) => (
             <NavLink
               key={floor.id}
@@ -216,8 +246,10 @@ function BuildingItem({
               onClick={onNavigate}
               className={({ isActive }) =>
                 cn(
-                  'block rounded px-2 py-1 text-xs transition-colors',
-                  isActive ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:text-foreground',
+                  'block rounded-md px-2 py-1 text-xs transition-colors',
+                  isActive
+                    ? 'bg-primary/10 text-primary font-medium'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-accent/40',
                 )
               }
             >

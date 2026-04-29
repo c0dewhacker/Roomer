@@ -28,9 +28,10 @@ const APP_REPO_URL = import.meta.env.VITE_APP_REPO_URL || ''
 
 interface TopBarProps {
   onMenuClick?: () => void
+  hideBrand?: boolean
 }
 
-export function TopBar({ onMenuClick }: TopBarProps) {
+export function TopBar({ onMenuClick, hideBrand }: TopBarProps) {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
   const [aboutOpen, setAboutOpen] = useState(false)
@@ -53,7 +54,7 @@ export function TopBar({ onMenuClick }: TopBarProps) {
         <Button variant="ghost" size="icon" className="md:hidden" onClick={onMenuClick}>
           <Menu className="h-5 w-5" />
         </Button>
-        {branding?.logoPath ? (
+        {!hideBrand && (branding?.logoPath ? (
           <img
             src={`${brandingApi.getLogoUrl()}?t=${branding.logoPath}`}
             alt={branding.appName ?? 'Logo'}
@@ -63,7 +64,7 @@ export function TopBar({ onMenuClick }: TopBarProps) {
           <span className="hidden text-sm font-semibold text-muted-foreground md:block">
             {branding?.appName ?? 'Roomer'}
           </span>
-        )}
+        ))}
       </div>
 
       <div className="flex items-center gap-2">
