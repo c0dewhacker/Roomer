@@ -18,6 +18,7 @@ import type {
   LeaseDocument,
   UserGroup,
   FloorSubscription,
+  RecurringBookingRule,
 } from '../types'
 
 const BASE = '/api/v1'
@@ -656,4 +657,19 @@ export const notificationsApi = {
   unreadCount: () => api.get<{ data: { count: number } }>('/notifications/unread-count'),
   markAllRead: () => api.patch<{ data: { ok: true } }>('/notifications/read-all'),
   markRead: (id: string) => api.patch<{ data: { ok: true } }>(`/notifications/${id}/read`),
+}
+
+// --- Recurring bookings ---
+export const recurringBookingsApi = {
+  list: () => api.get<{ data: RecurringBookingRule[] }>('/recurring-bookings'),
+  get: (id: string) => api.get<{ data: RecurringBookingRule }>(`/recurring-bookings/${id}`),
+  create: (body: {
+    assetId: string
+    dayOfWeek: number
+    startTime: string
+    endTime: string
+    firstDate: string
+    lastDate: string
+  }) => api.post<{ data: RecurringBookingRule }>('/recurring-bookings', body),
+  cancel: (id: string) => api.delete<{ data: { ok: true } }>(`/recurring-bookings/${id}`),
 }
