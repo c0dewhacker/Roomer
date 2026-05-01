@@ -41,7 +41,23 @@ export function useNavConfig() {
     return [...byId.values()]
   }, [user, isSuperAdmin])
 
+  const managedBuildings = useMemo(() => {
+    if (!user || isSuperAdmin) return []
+    const direct = (user.resourceRoles ?? [])
+      .filter((r) => r.role === 'BUILDING_ADMIN' && r.buildingId && r.building)
+      .map((r) => ({ id: r.buildingId!, name: r.building!.name }))
+    const viaGroup = (user.groupMemberships ?? []).flatMap((m) =>
+      (m.group.groupResourceRoles ?? [])
+        .filter((r) => r.role === 'BUILDING_ADMIN' && r.buildingId && r.building)
+        .map((r) => ({ id: r.buildingId!, name: r.building!.name })),
+    )
+    const byId = new Map<string, { id: string; name: string }>()
+    ;[...direct, ...viaGroup].forEach((b) => byId.set(b.id, b))
+    return [...byId.values()]
+  }, [user, isSuperAdmin])
+
   const isFloorManager = managedFloors.length > 0
+  const isBuildingAdmin = managedBuildings.length > 0
 
   const { data: buildingsData } = useQuery({
     queryKey: ['buildings'],
@@ -75,6 +91,17 @@ export function useNavConfig() {
           { to: '/admin/settings', icon: Settings, label: 'Settings' },
         ],
       })
+    } else if (isBuildingAdmin) {
+      result.push({
+        id: 'building-admin',
+        label: 'My Buildings',
+        items: [
+          ...managedBuildings.map((b) => ({ to: `/admin/buildings/${b.id}`, icon: Building2, label: b.name })),
+          { to: '/admin/assets', icon: Package, label: 'Assets' },
+          { to: '/admin/leases', icon: FileText, label: 'Leases' },
+          { to: '/admin/reports', icon: BarChart3, label: 'Reports' },
+        ],
+      })
     } else if (isFloorManager) {
       result.push({
         id: 'manager',
@@ -87,7 +114,7 @@ export function useNavConfig() {
     }
 
     return result
-  }, [isSuperAdmin, isFloorManager, managedFloors])
+  }, [isSuperAdmin, isBuildingAdmin, isFloorManager, managedBuildings, managedFloors])
 
-  return { sections, buildingsData: buildingsData ?? [], isSuperAdmin, isFloorManager, managedFloors }
+  return { sections, buildingsData: buildingsData ?? [], isSuperAdmin, isBuildingAdmin, isFloorManager, managedFloors, managedBuildings }
 }
