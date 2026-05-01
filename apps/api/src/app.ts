@@ -25,6 +25,7 @@ import { enterpriseAuthRoutes } from './routes/auth-enterprise'
 import { importRoutes } from './routes/import'
 import { scimRoutes } from './routes/scim'
 import { subscriptionRoutes } from './routes/subscriptions'
+import { recurringBookingRoutes } from './routes/recurring'
 import { getBoss } from './lib/queue'
 import { prisma } from './lib/prisma'
 import { register, httpRequestDuration, setupMetrics } from './lib/metrics'
@@ -113,6 +114,8 @@ export async function buildApp(): Promise<FastifyInstance> {
           { name: 'Leases', description: 'Building lease management (admin only)' },
           { name: 'Settings', description: 'System configuration — branding, SSO, email (admin only)' },
           { name: 'Import', description: 'Bulk data import (admin only)' },
+          { name: 'Subscriptions', description: 'Floor availability subscriptions and notifications' },
+          { name: 'Recurring Bookings', description: 'Weekly recurring booking rules and series management' },
         ],
         components: {
           securitySchemes: {
@@ -224,6 +227,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await fastify.register(settingsRoutes, { prefix: '/api/v1/settings' })
   await fastify.register(importRoutes, { prefix: '/api/v1/import' })
   await fastify.register(subscriptionRoutes, { prefix: '/api/v1/subscriptions' })
+  await fastify.register(recurringBookingRoutes, { prefix: '/api/v1/recurring-bookings' })
   await fastify.register(scimRoutes, { prefix: '/scim/v2' })
 
   // ─── Health checks ─────────────────────────────────────────────────────────
