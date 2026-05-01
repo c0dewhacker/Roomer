@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
-import { requireGlobalRole } from '../middleware/requireRole'
+import { requireGlobalRole, getManagedBuildingIds } from '../middleware/requireRole'
 import { z } from 'zod'
 
 const analyticsQuerySchema = z.object({
@@ -37,16 +37,34 @@ function countWorkingDays(start: Date, end: Date): number {
 export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Analytics'], ...route.schema } })
 
-  // GET /utilisation — desk utilisation by floor/zone for a date range
+  // GET /utilisation — desk utilisation by floor/zone for a date range (SUPER_ADMIN or building admin)
   fastify.get(
     '/utilisation',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const result = analyticsQuerySchema.safeParse(request.query)
       if (!result.success) {
         return reply.status(400).send({
           error: { message: 'Invalid query parameters', code: 'VALIDATION_ERROR' },
         })
+      }
+
+      const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      let managedBuildingIds: string[] = []
+      if (!isSuperAdmin) {
+        managedBuildingIds = await getManagedBuildingIds(request.user.id)
+        if (managedBuildingIds.length === 0) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        if (result.data.buildingId && !managedBuildingIds.includes(result.data.buildingId)) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        if (result.data.floorId) {
+          const floor = await prisma.floor.findUnique({ where: { id: result.data.floorId }, select: { buildingId: true } })
+          if (!floor || !managedBuildingIds.includes(floor.buildingId)) {
+            return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+          }
+        }
       }
 
       const defaults = defaultDateRange()
@@ -57,7 +75,11 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       // Build floor/building filters
       const floorWhere: Record<string, unknown> = {}
       if (result.data.floorId) floorWhere.id = result.data.floorId
-      if (result.data.buildingId) floorWhere.buildingId = result.data.buildingId
+      if (result.data.buildingId) {
+        floorWhere.buildingId = result.data.buildingId
+      } else if (!isSuperAdmin) {
+        floorWhere.buildingId = { in: managedBuildingIds }
+      }
 
       const floors = await prisma.floor.findMany({
         where: Object.keys(floorWhere).length > 0 ? floorWhere : undefined,
@@ -116,16 +138,34 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // GET /bookings — booking counts by day for a date range
+  // GET /bookings — booking counts by day for a date range (SUPER_ADMIN or building admin)
   fastify.get(
     '/bookings',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const result = analyticsQuerySchema.safeParse(request.query)
       if (!result.success) {
         return reply.status(400).send({
           error: { message: 'Invalid query parameters', code: 'VALIDATION_ERROR' },
         })
+      }
+
+      const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      let managedBuildingIds: string[] = []
+      if (!isSuperAdmin) {
+        managedBuildingIds = await getManagedBuildingIds(request.user.id)
+        if (managedBuildingIds.length === 0) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        if (result.data.buildingId && !managedBuildingIds.includes(result.data.buildingId)) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        if (result.data.floorId) {
+          const floor = await prisma.floor.findUnique({ where: { id: result.data.floorId }, select: { buildingId: true } })
+          if (!floor || !managedBuildingIds.includes(floor.buildingId)) {
+            return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+          }
+        }
       }
 
       const defaults = defaultDateRange()
@@ -158,6 +198,19 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
             AND b."startsAt" <= ${endDate}
             AND b.status = 'CONFIRMED'
             AND f."buildingId" = ${result.data.buildingId}
+          GROUP BY DATE(b."startsAt")
+          ORDER BY DATE(b."startsAt") ASC
+        `
+      } else if (!isSuperAdmin) {
+        rows = await prisma.$queryRaw<BookingCountRow[]>`
+          SELECT DATE(b."startsAt") AS date, COUNT(*)::bigint AS count
+          FROM "Booking" b
+          JOIN "Asset" a ON a.id = b."assetId"
+          JOIN "Floor" f ON f.id = a."floorId"
+          WHERE b."startsAt" >= ${startDate}
+            AND b."startsAt" <= ${endDate}
+            AND b.status = 'CONFIRMED'
+            AND f."buildingId" = ANY(${managedBuildingIds})
           GROUP BY DATE(b."startsAt")
           ORDER BY DATE(b."startsAt") ASC
         `
@@ -306,13 +359,25 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // GET /floor-utilisation — floor-level aggregated utilisation
+  // GET /floor-utilisation — floor-level aggregated utilisation (SUPER_ADMIN or building admin)
   fastify.get(
     '/floor-utilisation',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const result = analyticsQuerySchema.safeParse(request.query)
       if (!result.success) return reply.status(400).send({ error: { message: 'Invalid query', code: 'VALIDATION_ERROR' } })
+
+      const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      let managedBuildingIds: string[] = []
+      if (!isSuperAdmin) {
+        managedBuildingIds = await getManagedBuildingIds(request.user.id)
+        if (managedBuildingIds.length === 0) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        if (result.data.buildingId && !managedBuildingIds.includes(result.data.buildingId)) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       const defaults = defaultDateRange()
       const startDate = result.data.startDate ? new Date(result.data.startDate + 'T00:00:00.000Z') : defaults.startDate
@@ -328,7 +393,11 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       if (workingDays === 0) workingDays = 1
 
       const floorWhere: Record<string, unknown> = {}
-      if (result.data.buildingId) floorWhere.buildingId = result.data.buildingId
+      if (result.data.buildingId) {
+        floorWhere.buildingId = result.data.buildingId
+      } else if (!isSuperAdmin) {
+        floorWhere.buildingId = { in: managedBuildingIds }
+      }
 
       const floors = await prisma.floor.findMany({
         where: Object.keys(floorWhere).length > 0 ? floorWhere : undefined,
@@ -377,16 +446,34 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // GET /top-users — top users by booking count
+  // GET /top-users — top users by booking count (SUPER_ADMIN or building admin)
   fastify.get(
     '/top-users',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const result = analyticsQuerySchema.safeParse(request.query)
       if (!result.success) {
         return reply.status(400).send({
           error: { message: 'Invalid query parameters', code: 'VALIDATION_ERROR' },
         })
+      }
+
+      const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      let managedBuildingIds: string[] = []
+      if (!isSuperAdmin) {
+        managedBuildingIds = await getManagedBuildingIds(request.user.id)
+        if (managedBuildingIds.length === 0) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        if (result.data.buildingId && !managedBuildingIds.includes(result.data.buildingId)) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        if (result.data.floorId) {
+          const floor = await prisma.floor.findUnique({ where: { id: result.data.floorId }, select: { buildingId: true } })
+          if (!floor || !managedBuildingIds.includes(floor.buildingId)) {
+            return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+          }
+        }
       }
 
       const defaults = defaultDateRange()
@@ -422,6 +509,21 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
             AND b."startsAt" <= ${endDate}
             AND b.status = 'CONFIRMED'
             AND f."buildingId" = ${result.data.buildingId}
+          GROUP BY b."userId", u."displayName", u.email
+          ORDER BY count DESC
+          LIMIT 20
+        `
+      } else if (!isSuperAdmin) {
+        rows = await prisma.$queryRaw<TopUserRow[]>`
+          SELECT b."userId", u."displayName", u.email, COUNT(*)::bigint AS count
+          FROM "Booking" b
+          JOIN "User" u ON u.id = b."userId"
+          JOIN "Asset" a ON a.id = b."assetId"
+          JOIN "Floor" f ON f.id = a."floorId"
+          WHERE b."startsAt" >= ${startDate}
+            AND b."startsAt" <= ${endDate}
+            AND b.status = 'CONFIRMED'
+            AND f."buildingId" = ANY(${managedBuildingIds})
           GROUP BY b."userId", u."displayName", u.email
           ORDER BY count DESC
           LIMIT 20

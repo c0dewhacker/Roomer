@@ -156,6 +156,29 @@ export async function getManagedFloorIds(userId: string): Promise<string[]> {
   return [...new Set(ids)]
 }
 
+/**
+ * Middleware: passes for SUPER_ADMIN, or for users who hold BUILDING_ADMIN access
+ * on the building identified by `buildingIdParam` in request.params.
+ * Use `buildingIdParam = 'buildingId'` when the param isn't named `id`.
+ */
+export function requireBuildingAdmin(buildingIdParam = 'id') {
+  return async function (request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    if (!request.user) {
+      return reply.status(401).send({ error: { message: 'Authentication required', code: 'UNAUTHENTICATED' } })
+    }
+    if (request.user.globalRole === GlobalRole.SUPER_ADMIN) return
+
+    const buildingId = (request.params as Record<string, string>)[buildingIdParam]
+    if (!buildingId) {
+      return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+    }
+    const ok = await isBuildingManagerForBuilding(request.user.id, buildingId)
+    if (!ok) {
+      return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+    }
+  }
+}
+
 // Middleware for asset endpoints: resolves asset → floorId directly, then checks floor-level role.
 // Also passes for SUPER_ADMIN.
 export function requireFloorRoleForAsset(minimumRole: ResourceRoleType) {

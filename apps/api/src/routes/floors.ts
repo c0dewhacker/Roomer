@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma'
 import { createFloorSchema, updateFloorSchema, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
-import { requireGlobalRole, isFloorManagerForFloor } from '../middleware/requireRole'
+import { requireGlobalRole, isFloorManagerForFloor, isBuildingManagerForBuilding } from '../middleware/requireRole'
 import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage'
 import { canUserAccessBuilding } from './groups'
 import { env } from '../env'
@@ -49,12 +49,23 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.status(200).send({ data: floor })
   })
 
-  // GET /floors/:id/managers — list floor managers (SUPER_ADMIN only)
+  // GET /floors/:id/managers — list floor managers (SUPER_ADMIN or building admin)
   fastify.get(
     '/:id/managers',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const floor = await prisma.floor.findUnique({ where: { id }, select: { buildingId: true } })
+        if (!floor) {
+          return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+        }
+        const ok = await isBuildingManagerForBuilding(request.user.id, floor.buildingId)
+        if (!ok) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       const roles = await prisma.userResourceRole.findMany({
         where: { scopeType: 'FLOOR', floorId: id, role: 'FLOOR_MANAGER' },
@@ -68,12 +79,23 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // GET /floors/:id/group-managers — list group floor managers (SUPER_ADMIN only)
+  // GET /floors/:id/group-managers — list group floor managers (SUPER_ADMIN or building admin)
   fastify.get(
     '/:id/group-managers',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const floor = await prisma.floor.findUnique({ where: { id }, select: { buildingId: true } })
+        if (!floor) {
+          return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+        }
+        const ok = await isBuildingManagerForBuilding(request.user.id, floor.buildingId)
+        if (!ok) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       const roles = await prisma.groupResourceRole.findMany({
         where: { scopeType: 'FLOOR', floorId: id, role: 'FLOOR_MANAGER' },
@@ -204,12 +226,24 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // DELETE /floors/:id
+  // DELETE /floors/:id (SUPER_ADMIN or building admin)
   fastify.delete(
     '/:id',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const floor = await prisma.floor.findUnique({ where: { id }, select: { buildingId: true } })
+        if (!floor) {
+          return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+        }
+        const ok = await isBuildingManagerForBuilding(request.user.id, floor.buildingId)
+        if (!ok) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+
       try {
         await prisma.floor.delete({ where: { id } })
         return reply.status(200).send({ data: { ok: true } })
