@@ -383,6 +383,35 @@ export function renderQueueExpired(
 
 // ─── WELCOME ──────────────────────────────────────────────────────────────────
 
+export function renderBookingReminder(
+  booking: Pick<Booking, 'id' | 'startsAt' | 'endsAt'>,
+  user: Pick<User, 'displayName' | 'email'>,
+  asset: Pick<Asset, 'name'> & { zoneName?: string; floorName?: string },
+): { subject: string; html: string; text: string } {
+  const subject = `Reminder — ${escapeHtml(asset.name)} booking coming up`
+  const safeUser = escapeHtml(user.displayName)
+  const safeAsset = escapeHtml(asset.name)
+  const safeZone = asset.zoneName ? escapeHtml(asset.zoneName) : ''
+  const safeFloor = asset.floorName ? escapeHtml(asset.floorName) : ''
+  const html = baseHtml(
+    subject,
+    `<h1>Upcoming booking reminder</h1>
+     <p>Hi ${safeUser}, your booking is coming up soon.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>${safeAsset}${safeZone ? ` — ${safeZone}` : ''}${safeFloor ? `, ${safeFloor}` : ''}</dd>
+         <dt>Starts</dt><dd>${formatDate(booking.startsAt)}</dd>
+         <dt>Ends</dt><dd>${formatDate(booking.endsAt)}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/bookings/${booking.id}" class="btn">View Booking</a>`,
+  )
+  const text = `Hi ${user.displayName},\n\nReminder: your booking for ${asset.name} starts at ${formatDate(booking.startsAt)}.\n\nView: ${env.APP_URL}/bookings/${booking.id}`
+  return { subject, html, text }
+}
+
+// ─── WELCOME ──────────────────────────────────────────────────────────────────
+
 export function renderWelcome(
   user: Pick<User, 'displayName' | 'email'>,
 ): { subject: string; html: string; text: string } {

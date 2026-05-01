@@ -1,7 +1,7 @@
 import { PgBoss, type Job } from 'pg-boss'
 import { env } from '../env'
 import { prisma } from './prisma'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderWelcome, renderFloorAvailable, interpolateTemplate, stripHtmlToText, formatDate } from './mailer'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderWelcome, renderFloorAvailable, interpolateTemplate, stripHtmlToText, formatDate } from './mailer'
 import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist'
 import { NotificationType } from '@roomer/shared'
@@ -114,6 +114,29 @@ async function processSendNotification(
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }
+  } else if (type === NotificationType.BOOKING_REMINDER && bookingId) {
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true } } } } },
+    })
+    if (booking) {
+      title = `Reminder — ${booking.asset.name} booking coming up`
+      body = `Your booking starts at ${formatDate(booking.startsAt)}.`
+      emailPayload = renderBookingReminder(booking, user, {
+        name: booking.asset.name,
+        zoneName: booking.asset.primaryZone?.name ?? '',
+        floorName: booking.asset.floor?.name ?? '',
+      })
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: booking.asset.name,
+        zoneName: booking.asset.primaryZone?.name ?? '',
+        floorName: booking.asset.floor?.name ?? '',
+        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        bookingUrl: `${env.APP_URL}/bookings/${booking.id}`,
+        appUrl: env.APP_URL,
+      }
+    }
   } else if (type === NotificationType.QUEUE_JOINED && queueEntryId) {
     const entry = await prisma.queueEntry.findUnique({
       where: { id: queueEntryId },
@@ -210,22 +233,31 @@ async function processSendNotification(
     return
   }
 
-  // Persist in-app notification
-  await prisma.notification.create({
-    data: {
-      userId,
-      type,
-      title,
-      body,
-      metadata: {
-        bookingId: bookingId ?? null,
-        queueEntryId: queueEntryId ?? null,
-      },
-    },
-  })
+  // Respect per-user notification preferences. Missing key = both channels enabled.
+  type NotifPref = { email?: boolean; inApp?: boolean }
+  const prefs = (user as unknown as { notificationPreferences: Record<string, NotifPref> }).notificationPreferences ?? {}
+  const pref: NotifPref = prefs[type] ?? {}
+  const sendInApp = pref.inApp !== false
+  const sendEmailNotif = pref.email !== false
 
-  // Send email if we have a template
-  if (emailPayload) {
+  // Persist in-app notification (if not opted out)
+  if (sendInApp) {
+    await prisma.notification.create({
+      data: {
+        userId,
+        type,
+        title,
+        body,
+        metadata: {
+          bookingId: bookingId ?? null,
+          queueEntryId: queueEntryId ?? null,
+        },
+      },
+    })
+  }
+
+  // Send email if we have a template and user hasn't opted out
+  if (sendEmailNotif && emailPayload) {
     try {
       await sendEmail({ to: user.email, ...emailPayload })
     } catch (err) {
@@ -346,6 +378,48 @@ async function handleExpireClaimDeadlines(): Promise<void> {
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Processed expired claim deadlines', count: expiredPromoted.length }) + '\n')
 }
 
+// ─── Worker: send-booking-reminders (cron every 15 min) ──────────────────────
+
+async function handleSendBookingReminders(): Promise<void> {
+  const org = await prisma.organisation.findFirst({ select: { bookingReminderHours: true } })
+  const reminderHours = org?.bookingReminderHours ?? 24
+  const now = new Date()
+  const windowEnd = new Date(now.getTime() + reminderHours * 60 * 60 * 1000)
+
+  // Find confirmed bookings starting within the reminder window that haven't been reminded yet.
+  // We claim them immediately (set reminderSentAt) before enqueuing to prevent double-sends
+  // across overlapping cron invocations.
+  const bookings = await prisma.booking.findMany({
+    where: {
+      status: 'CONFIRMED',
+      startsAt: { gt: now, lte: windowEnd },
+      reminderSentAt: null,
+    },
+    select: { id: true, userId: true },
+  })
+
+  if (bookings.length === 0) return
+
+  await prisma.booking.updateMany({
+    where: { id: { in: bookings.map((b) => b.id) }, reminderSentAt: null },
+    data: { reminderSentAt: now },
+  })
+
+  const b = getBoss()
+  await b.insert(
+    'send-notification',
+    bookings.map((booking) => ({
+      data: {
+        type: NotificationType.BOOKING_REMINDER,
+        userId: booking.userId,
+        bookingId: booking.id,
+      } satisfies NotificationJobData,
+    })),
+  )
+
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Enqueued booking reminders', count: bookings.length }) + '\n')
+}
+
 // ─── Start queue ──────────────────────────────────────────────────────────────
 
 export async function startQueue(): Promise<void> {
@@ -358,6 +432,7 @@ export async function startQueue(): Promise<void> {
   await b.createQueue('expire-claim-deadlines')
   await b.createQueue('prune-revoked-tokens')
   await b.createQueue('auto-complete-bookings')
+  await b.createQueue('send-booking-reminders')
 
   await b.work<NotificationJobData>('send-notification', handleSendNotification)
 
@@ -381,6 +456,11 @@ export async function startQueue(): Promise<void> {
     await pruneExpiredBlocklistEntries()
   })
   await b.schedule('prune-revoked-tokens', '*/30 * * * *', {})
+
+  await b.work('send-booking-reminders', async () => {
+    await handleSendBookingReminders()
+  })
+  await b.schedule('send-booking-reminders', '*/15 * * * *', {})
 
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] pg-boss started and workers registered' }) + '\n')
 }

@@ -179,6 +179,7 @@ export interface User {
   externalId: string | null
   accountStatus: AccountStatus
   globalRole: GlobalRole
+  notificationPreferences: Record<string, { email?: boolean; inApp?: boolean }>
   createdAt: Date
   updatedAt: Date
 }
@@ -201,6 +202,7 @@ export interface Booking {
   endsAt: Date
   status: BookingStatus
   notes: string | null
+  reminderSentAt: Date | null
   createdAt: Date
   updatedAt: Date
 }
