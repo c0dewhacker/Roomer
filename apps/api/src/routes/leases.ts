@@ -3,9 +3,8 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
-import { requireGlobalRole } from '../middleware/requireRole'
+import { isBuildingManagerForBuilding, getManagedBuildingIds } from '../middleware/requireRole'
 import { resolveStoragePath, checkFileMagic } from '../lib/storage'
-import { env } from '../env'
 import path from 'path'
 import { z } from 'zod'
 
@@ -30,21 +29,39 @@ const updateLeaseSchema = z.object({
   notes: z.string().optional(),
 })
 
-const adminHandlers = [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)]
-
 export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Leases'], ...route.schema } })
 
-  // GET /leases?buildingId= — list leases
-  fastify.get('/', { preHandler: adminHandlers }, async (request, reply) => {
+  // GET /leases?buildingId= — list leases (SUPER_ADMIN or building admin, scoped to managed buildings)
+  fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
     const queryResult = z.object({ buildingId: z.string().cuid().optional() }).safeParse(request.query)
     if (!queryResult.success) {
       return reply.status(400).send({ error: { message: 'Invalid query parameters', code: 'VALIDATION_ERROR' } })
     }
     const { buildingId } = queryResult.data
 
+    const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+    let where: Record<string, unknown> | undefined
+
+    if (isSuperAdmin) {
+      where = buildingId ? { buildingId } : undefined
+    } else {
+      const managedIds = await getManagedBuildingIds(request.user.id)
+      if (managedIds.length === 0) {
+        return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
+      if (buildingId) {
+        if (!managedIds.includes(buildingId)) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        where = { buildingId }
+      } else {
+        where = { buildingId: { in: managedIds } }
+      }
+    }
+
     const leases = await prisma.buildingLease.findMany({
-      where: buildingId ? { buildingId } : undefined,
+      where,
       include: {
         building: { select: { id: true, name: true } },
         documents: { select: { id: true, filename: true, sizeBytes: true, mimeType: true, uploadedAt: true } },
@@ -55,13 +72,20 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.status(200).send({ data: leases })
   })
 
-  // POST /leases — create lease
-  fastify.post('/', { preHandler: adminHandlers }, async (request, reply) => {
+  // POST /leases — create lease (SUPER_ADMIN or building admin of the target building)
+  fastify.post('/', { preHandler: [requireAuth] }, async (request, reply) => {
     const result = createLeaseSchema.safeParse(request.body)
     if (!result.success) {
       return reply.status(400).send({
         error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
       })
+    }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const ok = await isBuildingManagerForBuilding(request.user.id, result.data.buildingId)
+      if (!ok) {
+        return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
     }
 
     const building = await prisma.building.findUnique({ where: { id: result.data.buildingId } })
@@ -89,8 +113,8 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.status(201).send({ data: lease })
   })
 
-  // GET /leases/:id — get lease detail
-  fastify.get('/:id', { preHandler: adminHandlers }, async (request, reply) => {
+  // GET /leases/:id — get lease detail (SUPER_ADMIN or building admin)
+  fastify.get('/:id', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
 
     const lease = await prisma.buildingLease.findUnique({
@@ -105,17 +129,36 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(404).send({ error: { message: 'Lease not found', code: 'NOT_FOUND' } })
     }
 
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const ok = await isBuildingManagerForBuilding(request.user.id, lease.buildingId)
+      if (!ok) {
+        return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
+    }
+
     return reply.status(200).send({ data: lease })
   })
 
-  // PUT /leases/:id — update lease
-  fastify.put('/:id', { preHandler: adminHandlers }, async (request, reply) => {
+  // PUT /leases/:id — update lease (SUPER_ADMIN or building admin)
+  fastify.put('/:id', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
     const result = updateLeaseSchema.safeParse(request.body)
     if (!result.success) {
       return reply.status(400).send({
         error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
       })
+    }
+
+    const existing = await prisma.buildingLease.findUnique({ where: { id }, select: { buildingId: true } })
+    if (!existing) {
+      return reply.status(404).send({ error: { message: 'Lease not found', code: 'NOT_FOUND' } })
+    }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const ok = await isBuildingManagerForBuilding(request.user.id, existing.buildingId)
+      if (!ok) {
+        return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
     }
 
     try {
@@ -139,8 +182,8 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
     }
   })
 
-  // DELETE /leases/:id — delete lease (cascades documents)
-  fastify.delete('/:id', { preHandler: adminHandlers, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
+  // DELETE /leases/:id — delete lease (SUPER_ADMIN or building admin)
+  fastify.delete('/:id', { preHandler: [requireAuth], config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { id } = request.params as { id: string }
 
     const lease = await prisma.buildingLease.findUnique({
@@ -150,6 +193,13 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
 
     if (!lease) {
       return reply.status(404).send({ error: { message: 'Lease not found', code: 'NOT_FOUND' } })
+    }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const ok = await isBuildingManagerForBuilding(request.user.id, lease.buildingId)
+      if (!ok) {
+        return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
     }
 
     // Delete stored document files
@@ -166,8 +216,8 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.status(200).send({ data: { ok: true } })
   })
 
-  // POST /leases/:id/documents — upload document
-  fastify.post('/:id/documents', { preHandler: adminHandlers, config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+  // POST /leases/:id/documents — upload document (SUPER_ADMIN or building admin)
+  fastify.post('/:id/documents', { preHandler: [requireAuth], config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { id } = request.params as { id: string }
 
     if (!/^[\w-]{1,64}$/.test(id)) {
@@ -177,6 +227,13 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
     const lease = await prisma.buildingLease.findUnique({ where: { id } })
     if (!lease) {
       return reply.status(404).send({ error: { message: 'Lease not found', code: 'NOT_FOUND' } })
+    }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const ok = await isBuildingManagerForBuilding(request.user.id, lease.buildingId)
+      if (!ok) {
+        return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
     }
 
     const data = await request.file()
@@ -231,13 +288,24 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.status(201).send({ data: doc })
   })
 
-  // GET /leases/:id/documents/:docId — download document
-  fastify.get('/:id/documents/:docId', { preHandler: adminHandlers, config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (request, reply) => {
+  // GET /leases/:id/documents/:docId — download document (SUPER_ADMIN or building admin)
+  fastify.get('/:id/documents/:docId', { preHandler: [requireAuth], config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { id, docId } = request.params as { id: string; docId: string }
 
     const doc = await prisma.leaseDocument.findUnique({ where: { id: docId } })
     if (!doc || doc.leaseId !== id) {
       return reply.status(404).send({ error: { message: 'Document not found', code: 'NOT_FOUND' } })
+    }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const lease = await prisma.buildingLease.findUnique({ where: { id }, select: { buildingId: true } })
+      if (!lease) {
+        return reply.status(404).send({ error: { message: 'Lease not found', code: 'NOT_FOUND' } })
+      }
+      const ok = await isBuildingManagerForBuilding(request.user.id, lease.buildingId)
+      if (!ok) {
+        return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
     }
 
     const docAbsPath = resolveStoragePath(doc.storagePath)
@@ -253,13 +321,24 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.send(stream)
   })
 
-  // DELETE /leases/:id/documents/:docId — delete document
-  fastify.delete('/:id/documents/:docId', { preHandler: adminHandlers, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
+  // DELETE /leases/:id/documents/:docId — delete document (SUPER_ADMIN or building admin)
+  fastify.delete('/:id/documents/:docId', { preHandler: [requireAuth], config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { id, docId } = request.params as { id: string; docId: string }
 
     const doc = await prisma.leaseDocument.findUnique({ where: { id: docId } })
     if (!doc || doc.leaseId !== id) {
       return reply.status(404).send({ error: { message: 'Document not found', code: 'NOT_FOUND' } })
+    }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const lease = await prisma.buildingLease.findUnique({ where: { id }, select: { buildingId: true } })
+      if (!lease) {
+        return reply.status(404).send({ error: { message: 'Lease not found', code: 'NOT_FOUND' } })
+      }
+      const ok = await isBuildingManagerForBuilding(request.user.id, lease.buildingId)
+      if (!ok) {
+        return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
     }
 
     const absPath = resolveStoragePath(doc.storagePath)

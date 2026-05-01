@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma'
 import { createBookingSchema, updateBookingSchema, GlobalRole, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
-import { requireGlobalRole } from '../middleware/requireRole'
+import { requireGlobalRole, isFloorManagerForFloor, getManagedBuildingIds } from '../middleware/requireRole'
 import { enqueueNotification, fanOutFloorAvailable, CLAIM_DEADLINE_MS } from '../lib/queue'
 import { randomUUID } from 'crypto'
 import { checkGroupAccess } from './groups'
@@ -84,16 +84,34 @@ async function checkZoneGroupOverlap(
 export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Bookings'], ...route.schema } })
 
-  // GET /bookings/report — admin paginated report (must be before /:id)
+  // GET /bookings/report — admin paginated report (SUPER_ADMIN or building admin, must be before /:id)
   fastify.get(
     '/report',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const result = reportQuerySchema.safeParse(request.query)
       if (!result.success) {
         return reply.status(400).send({
           error: { message: 'Invalid query parameters', code: 'VALIDATION_ERROR', details: result.error.flatten() },
         })
+      }
+
+      const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      let managedBuildingIds: string[] = []
+      if (!isSuperAdmin) {
+        managedBuildingIds = await getManagedBuildingIds(request.user.id)
+        if (managedBuildingIds.length === 0) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        if (result.data.buildingId && !managedBuildingIds.includes(result.data.buildingId)) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        if (result.data.floorId) {
+          const floor = await prisma.floor.findUnique({ where: { id: result.data.floorId }, select: { buildingId: true } })
+          if (!floor || !managedBuildingIds.includes(floor.buildingId)) {
+            return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+          }
+        }
       }
 
       const { from, to, userId, assetId, floorId, buildingId, status, page, limit } = result.data
@@ -112,6 +130,8 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         where['asset'] = { floorId }
       } else if (buildingId) {
         where['asset'] = { floor: { buildingId } }
+      } else if (!isSuperAdmin) {
+        where['asset'] = { floor: { buildingId: { in: managedBuildingIds } } }
       }
 
       const [bookings, total] = await Promise.all([
@@ -411,21 +431,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     if (!isSelf && !isAdmin) {
       const floorId = booking.asset?.floorId
-      const directRole = floorId
-        ? await prisma.userResourceRole.findFirst({
-            where: { userId: request.user.id, scopeType: 'FLOOR', floorId },
-          })
-        : null
-      const groupRole = (!directRole && floorId)
-        ? await prisma.groupResourceRole.findFirst({
-            where: {
-              scopeType: 'FLOOR',
-              floorId,
-              group: { members: { some: { userId: request.user.id } } },
-            },
-          })
-        : null
-      if (!directRole && !groupRole) {
+      if (!floorId || !(await isFloorManagerForFloor(request.user.id, floorId))) {
         return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
       }
     }
