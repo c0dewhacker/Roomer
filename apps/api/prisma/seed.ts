@@ -2,6 +2,7 @@ import { PrismaClient, BookableStatus, AssetStatus } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { Pool } from 'pg'
 import bcryptjs from 'bcryptjs'
+import { randomBytes } from 'crypto'
 
 const r = (name: string): string | undefined => process.env[`ROOMER_${name}`] ?? process.env[name]
 
@@ -26,28 +27,32 @@ async function seedCore() {
   })
   console.log(`[seed] Organisation: ${org.name} (${org.id})`)
 
-  // Super-admin — use SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD env vars.
-  // If SEED_ADMIN_PASSWORD is unset a secure random password is generated and
-  // printed once to stdout — there is no hardcoded default credential.
+  // Super-admin — created once only. Password is never overwritten on re-runs
+  // so the log line only ever appears on first startup, not on every restart.
   const adminEmail = r('SEED_ADMIN_EMAIL') ?? 'admin@roomer.local'
-  const rawAdminPassword = r('SEED_ADMIN_PASSWORD') ?? (() => {
-    const generated = require('crypto').randomBytes(16).toString('hex')
-    console.log(`[seed] SEED_ADMIN_PASSWORD not set — generated password: ${generated}`)
-    return generated
-  })()
-  const adminHash = bcryptjs.hashSync(rawAdminPassword, 12)
-  const admin = await prisma.user.upsert({
-    where: { email: adminEmail },
-    update: {},
-    create: {
-      email: adminEmail,
-      displayName: 'Admin',
-      passwordHash: adminHash,
-      globalRole: 'SUPER_ADMIN',
-      accountStatus: 'ACTIVE',
-    },
-  })
-  console.log(`[seed] Admin: ${admin.email}`)
+  const existingAdmin = await prisma.user.findUnique({ where: { email: adminEmail }, select: { id: true } })
+  if (!existingAdmin) {
+    const rawAdminPassword = r('SEED_ADMIN_PASSWORD') ?? (() => {
+      const generated = randomBytes(16).toString('hex')
+      console.log('[seed] ══════════════════════════════════════════════════')
+      console.log(`[seed] Admin password (shown once): ${generated}`)
+      console.log('[seed] ══════════════════════════════════════════════════')
+      return generated
+    })()
+    const adminHash = bcryptjs.hashSync(rawAdminPassword, 12)
+    await prisma.user.create({
+      data: {
+        email: adminEmail,
+        displayName: 'Admin',
+        passwordHash: adminHash,
+        globalRole: 'SUPER_ADMIN',
+        accountStatus: 'ACTIVE',
+      },
+    })
+    console.log(`[seed] Admin created: ${adminEmail}`)
+  } else {
+    console.log(`[seed] Admin already exists: ${adminEmail}`)
+  }
 
   return { org }
 }
@@ -57,25 +62,28 @@ async function seedCore() {
 // zones, six desks and a regular test user. Useful for demos and development.
 
 async function seedDemoData(orgId: string) {
-  // Regular test user
-  const rawUserPassword = r('SEED_USER_PASSWORD') ?? (() => {
-    const generated = require('crypto').randomBytes(16).toString('hex')
-    console.log(`[seed] SEED_USER_PASSWORD not set — generated password: ${generated}`)
-    return generated
-  })()
-  const userHash = bcryptjs.hashSync(rawUserPassword, 12)
-  const regularUser = await prisma.user.upsert({
-    where: { email: 'user@roomer.local' },
-    update: {},
-    create: {
-      email: 'user@roomer.local',
-      displayName: 'Test User',
-      passwordHash: userHash,
-      globalRole: 'USER',
-      accountStatus: 'ACTIVE',
-    },
-  })
-  console.log(`[seed] Test user: ${regularUser.email}`)
+  // Regular test user — created once only, same pattern as admin.
+  const existingUser = await prisma.user.findUnique({ where: { email: 'user@roomer.local' }, select: { id: true } })
+  if (!existingUser) {
+    const rawUserPassword = r('SEED_USER_PASSWORD') ?? (() => {
+      const generated = randomBytes(16).toString('hex')
+      console.log(`[seed] Test user password (shown once): ${generated}`)
+      return generated
+    })()
+    const userHash = bcryptjs.hashSync(rawUserPassword, 12)
+    await prisma.user.create({
+      data: {
+        email: 'user@roomer.local',
+        displayName: 'Test User',
+        passwordHash: userHash,
+        globalRole: 'USER',
+        accountStatus: 'ACTIVE',
+      },
+    })
+    console.log('[seed] Test user created: user@roomer.local')
+  } else {
+    console.log('[seed] Test user already exists: user@roomer.local')
+  }
 
   // Update org to demo name
   await prisma.organisation.update({
