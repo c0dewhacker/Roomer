@@ -324,6 +324,15 @@ export const assetsApi = {
   },
   createCategory: (body: { name: string; description?: string; defaultIsBookable?: boolean; defaultIcon?: string; colour?: string }) =>
     api.post<{ data: AssetCategory }>('/assets/categories', body),
+  updateCategory: (id: string, body: { name?: string; description?: string; defaultIsBookable?: boolean; defaultIcon?: string | null; colour?: string }) =>
+    api.patch<{ data: AssetCategory }>(`/assets/categories/${id}`, body),
+  deleteCategory: (id: string) =>
+    api.delete<{ data: { ok: true } }>(`/assets/categories/${id}`),
+  uploadCategoryIcon: (id: string, file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return api.post<{ data: AssetCategory }>(`/assets/categories/${id}/icon`, form)
+  },
   // Permanent assignments for current user
   getMyAssignments: () =>
     api.get<{ data: MyAssignment[] }>('/assets/my-assignments'),
