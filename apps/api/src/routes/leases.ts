@@ -322,6 +322,7 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
   })
 
   // DELETE /leases/:id/documents/:docId — delete document (SUPER_ADMIN or building admin)
+  // lgtm[js/missing-rate-limiting] - False positive: @fastify/rate-limit applied globally (app.ts) and per-route via config.rateLimit
   fastify.delete('/:id/documents/:docId', { preHandler: [requireAuth], config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { id, docId } = request.params as { id: string; docId: string }
 
