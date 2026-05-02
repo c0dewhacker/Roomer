@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import fs from 'fs'
 import { prisma } from '../lib/prisma'
 import { GlobalRole, BookableStatus, bulkUpdateAssetPositionsSchema, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth'
@@ -7,6 +8,7 @@ import { enqueueNotification, fanOutFloorAvailable } from '../lib/queue'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { checkGroupAccess } from './groups'
+import { saveCategoryIcon, deleteFile, resolveStoragePath } from '../lib/storage'
 
 const createCategorySchema = z.object({
   name: z.string().min(1).max(255),
@@ -302,7 +304,12 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       orderBy: { name: 'asc' },
       include: { _count: { select: { assets: true } } },
     })
-    return reply.status(200).send({ data: categories })
+    return reply.status(200).send({
+      data: categories.map((c) => ({
+        ...c,
+        iconUrl: c.iconUrl ? `/api/v1/assets/categories/${c.id}/icon` : null,
+      })),
+    })
   })
 
   // POST /categories — create category (admin)
@@ -325,6 +332,96 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           error: { message: 'Category name already exists', code: 'ALREADY_EXISTS' },
         })
       }
+    },
+  )
+
+  // PATCH /categories/:id — update category fields (admin)
+  fastify.patch(
+    '/categories/:id',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const result = z.object({
+        name: z.string().min(1).max(255).optional(),
+        description: z.string().optional(),
+        defaultIsBookable: z.boolean().optional(),
+        defaultIcon: z.string().max(255).optional().nullable(),
+        colour: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+      }).safeParse(request.body)
+      if (!result.success) {
+        return reply.status(400).send({ error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() } })
+      }
+      try {
+        const category = await prisma.assetCategory.update({ where: { id }, data: result.data })
+        return reply.status(200).send({ data: category })
+      } catch {
+        return reply.status(404).send({ error: { message: 'Category not found', code: 'NOT_FOUND' } })
+      }
+    },
+  )
+
+  // POST /categories/:id/icon — upload custom icon image (admin)
+  fastify.post(
+    '/categories/:id/icon',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const existing = await prisma.assetCategory.findUnique({ where: { id }, select: { iconUrl: true } })
+      if (!existing) return reply.status(404).send({ error: { message: 'Category not found', code: 'NOT_FOUND' } })
+
+      const file = await request.file()
+      if (!file) return reply.status(400).send({ error: { message: 'No file uploaded', code: 'NO_FILE' } })
+
+      try {
+        // Delete old file on disk if any (iconUrl stored as relative storage path)
+        if (existing.iconUrl) await deleteFile(existing.iconUrl).catch(() => {})
+        const relPath = await saveCategoryIcon(file, id)
+        // Store the relative storage path — the serve URL is /assets/categories/:id/icon
+        const category = await prisma.assetCategory.update({ where: { id }, data: { iconUrl: relPath } })
+        // Return with the serve URL so the client can use it immediately
+        return reply.status(200).send({ data: { ...category, iconUrl: `/api/v1/assets/categories/${id}/icon` } })
+      } catch (err: unknown) {
+        const e = err as { code?: string }
+        if (e.code === 'INVALID_MAGIC') {
+          return reply.status(400).send({ error: { message: 'Invalid image file', code: 'INVALID_FILE' } })
+        }
+        throw err
+      }
+    },
+  )
+
+  // GET /categories/:id/icon — serve the category icon image (authenticated)
+  fastify.get(
+    '/categories/:id/icon',
+    { preHandler: [requireAuth], config: { rateLimit: { max: 300, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const category = await prisma.assetCategory.findUnique({ where: { id }, select: { iconUrl: true } })
+      if (!category?.iconUrl) return reply.status(404).send({ error: { message: 'No icon set', code: 'NOT_FOUND' } })
+      try {
+        const absPath = resolveStoragePath(category.iconUrl)
+        await fs.promises.access(absPath)
+        const stream = fs.createReadStream(absPath)
+        reply.header('Content-Type', 'image/png')
+        reply.header('Cache-Control', 'public, max-age=86400')
+        return reply.send(stream)
+      } catch {
+        return reply.status(404).send({ error: { message: 'Icon file not found', code: 'FILE_NOT_FOUND' } })
+      }
+    },
+  )
+
+  // DELETE /categories/:id — delete category (admin)
+  fastify.delete(
+    '/categories/:id',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const existing = await prisma.assetCategory.findUnique({ where: { id }, select: { iconUrl: true } })
+      if (!existing) return reply.status(404).send({ error: { message: 'Category not found', code: 'NOT_FOUND' } })
+      if (existing.iconUrl) await deleteFile(existing.iconUrl).catch(() => {})
+      await prisma.assetCategory.delete({ where: { id } })
+      return reply.status(200).send({ data: { ok: true } })
     },
   )
 

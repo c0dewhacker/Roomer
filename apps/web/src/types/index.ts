@@ -236,6 +236,7 @@ export interface AssetCategory {
   description?: string
   defaultIsBookable?: boolean
   defaultIcon?: string
+  iconUrl?: string
   colour?: string
 }
 
