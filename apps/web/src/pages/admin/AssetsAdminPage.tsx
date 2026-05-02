@@ -410,10 +410,20 @@ const categorySchema = z.object({
 })
 type CategoryForm = z.infer<typeof categorySchema>
 
+// Only allow blob: (local file picker) or same-origin relative API paths.
+// Rejects javascript:, data:, and any absolute external URL.
+function sanitizeIconPreviewUrl(url: string | null): string | null {
+  if (!url) return null
+  if (url.startsWith('blob:') || url.startsWith('/api/v1/')) return url
+  return null
+}
+
 function CategoryDialog({ open, onClose, existing }: { open: boolean; onClose: () => void; existing?: AssetCategory }) {
   const qc = useQueryClient()
   const [iconFile, setIconFile] = useState<File | null>(null)
-  const [iconPreview, setIconPreview] = useState<string | null>(existing?.iconUrl ?? null)
+  const [iconPreview, setIconPreview] = useState<string | null>(
+    sanitizeIconPreviewUrl(existing?.iconUrl ?? null),
+  )
   const { register, handleSubmit, formState: { errors }, reset, watch, setValue } = useForm<CategoryForm>({
     resolver: zodResolver(categorySchema),
     defaultValues: {
@@ -436,7 +446,7 @@ function CategoryDialog({ open, onClose, existing }: { open: boolean; onClose: (
       colour: existing?.colour ?? '#6366f1',
     })
     setIconFile(null)
-    setIconPreview(existing?.iconUrl ?? null)
+    setIconPreview(sanitizeIconPreviewUrl(existing?.iconUrl ?? null))
   }, [existing, reset])
 
   const uploadIcon = useMutation({
@@ -469,6 +479,7 @@ function CategoryDialog({ open, onClose, existing }: { open: boolean; onClose: (
     const f = e.target.files?.[0]
     if (!f) return
     setIconFile(f)
+    // blob: URL is always safe — created locally from a File object
     setIconPreview(URL.createObjectURL(f))
   }
 
