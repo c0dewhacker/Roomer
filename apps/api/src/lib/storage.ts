@@ -12,6 +12,7 @@ const DxfParser = require('dxf-parser')
 const FLOOR_PLANS_DIR = 'floor-plans'
 const THUMBNAILS_DIR = 'floor-plans/thumbnails'
 const BRANDING_DIR = 'branding'
+const CATEGORY_ICONS_DIR = 'category-icons'
 
 /**
  * Resolve a path relative to FILE_STORAGE_PATH and reject anything that
@@ -35,6 +36,7 @@ export async function ensureUploadDirs(): Promise<void> {
     path.join(env.FILE_STORAGE_PATH, FLOOR_PLANS_DIR),
     path.join(env.FILE_STORAGE_PATH, THUMBNAILS_DIR),
     path.join(env.FILE_STORAGE_PATH, BRANDING_DIR),
+    path.join(env.FILE_STORAGE_PATH, CATEGORY_ICONS_DIR),
   ]
   for (const dir of dirs) {
     await fs.promises.mkdir(dir, { recursive: true })
@@ -289,6 +291,21 @@ export async function saveBrandingImage(
     // logo: max 512 wide, max 128 tall, preserve aspect ratio
     await sharp(buffer).resize(512, 128, { fit: 'inside', withoutEnlargement: true }).png().toFile(absPath)
   }
+  return relPath
+}
+
+// ─── Category icon storage ────────────────────────────────────────────────────
+
+export async function saveCategoryIcon(file: MultipartFile, categoryId: string): Promise<string> {
+  await fs.promises.mkdir(path.join(env.FILE_STORAGE_PATH, CATEGORY_ICONS_DIR), { recursive: true })
+  const buffer = await file.toBuffer()
+  if (!checkFileMagic(buffer, file.mimetype)) {
+    throw Object.assign(new Error('File content does not match the declared MIME type'), { code: 'INVALID_MAGIC' })
+  }
+  const relPath = path.join(CATEGORY_ICONS_DIR, `${categoryId}.png`)
+  const absPath = resolveStoragePath(relPath)
+  // Normalise to 64×64 PNG so the canvas can render it at a consistent size
+  await sharp(buffer).resize(64, 64, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toFile(absPath)
   return relPath
 }
 
