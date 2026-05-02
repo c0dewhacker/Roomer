@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.11](https://github.com/c0dewhacker/Roomer/compare/v0.3.10...v0.3.11) (2026-05-02)
+
+
+### Features
+
+* add iconUrl field to AssetCategory schema and types ([4c53c32](https://github.com/c0dewhacker/Roomer/commit/4c53c328aaf8766d418564fcc512b9d63067022d))
+* add per-notification-type preference toggles ([88ddc41](https://github.com/c0dewhacker/Roomer/commit/88ddc41939be33588ed9a9955f33ce8f104c26ce)), closes [#81](https://github.com/c0dewhacker/Roomer/issues/81)
+* **api:** add category PATCH/DELETE/icon upload routes; include category in floor availability response ([7e45231](https://github.com/c0dewhacker/Roomer/commit/7e452315140f0332c5e7afccd75482717f9d83d1))
+* **api:** add saveCategoryIcon storage helper ([1f80573](https://github.com/c0dewhacker/Roomer/commit/1f8057314630d358f9ac9612943dd7d1d8b5082b))
+* customisable asset category icons ([92a2f99](https://github.com/c0dewhacker/Roomer/commit/92a2f992b63382ef137bcff166b59eef48a64d53))
+* per-notification-type email and in-app preference toggles ([0316efa](https://github.com/c0dewhacker/Roomer/commit/0316efacde97585a4446bf3b231dec15d3089add))
+* **web:** add updateCategory, deleteCategory, uploadCategoryIcon API methods ([81748be](https://github.com/c0dewhacker/Roomer/commit/81748beeeebb160220360afb968a148c2b172ee5))
+* **web:** render uploaded category icon images on floor plan canvas ([629d81f](https://github.com/c0dewhacker/Roomer/commit/629d81f158a53645e56f4140c22223a80bf04a2b))
+* **web:** update category admin UI with edit, icon upload, and correct delete endpoint ([1763a04](https://github.com/c0dewhacker/Roomer/commit/1763a042a1eb056465abdb7a3a6323c45791f3fd))
+
+
+### Bug Fixes
+
+* **api:** add GET /categories/:id/icon serve route; store relative path in DB, return serve URL to clients ([39d4f68](https://github.com/c0dewhacker/Roomer/commit/39d4f688609649d214236a521dcd343f68eab1ad))
+* category icons on floor plan canvas (booking + editor) ([45db2f1](https://github.com/c0dewhacker/Roomer/commit/45db2f173ca563cabc741b6d31b29044a80cd740))
+* **security:** break taint chain at render site for all iconUrl img srcs ([6d5ccb1](https://github.com/c0dewhacker/Roomer/commit/6d5ccb1d88bcfab6201ca3f519de907822859438))
+* **security:** sanitize iconPreview URL before img src assignment ([32ed4e3](https://github.com/c0dewhacker/Roomer/commit/32ed4e33587764ab997373bb8c8db558e70dcc5a))
+* **security:** suppress false-positive lgtm[js/xss-through-dom] on img src ([70535e0](https://github.com/c0dewhacker/Roomer/commit/70535e0605e2b9a26347415118bb29b7d6586d5c))
+
 ## [0.3.10](https://github.com/c0dewhacker/Roomer/compare/v0.3.9...v0.3.10) (2026-05-02)
 
 
