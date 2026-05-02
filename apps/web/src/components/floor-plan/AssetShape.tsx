@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Group, Circle, Text, Arc } from 'react-konva'
+import { Group, Circle, Text, Arc, Image as KonvaImage } from 'react-konva'
+import useImage from 'use-image'
 import type { KonvaEventObject } from 'konva/lib/Node'
 import type { AssetWithStatus } from '@/types'
 
@@ -58,6 +59,21 @@ const STATUS_LIGHT: Record<string, string> = {
 const NON_BOOKABLE_FILL = '#9ca3af'
 const NON_BOOKABLE_RING = '#6b7280'
 
+function CategoryIconImage({ url, cx, cy, size }: { url: string; cx: number; cy: number; size: number }) {
+  const [img] = useImage(url, 'anonymous')
+  if (!img) return null
+  return (
+    <KonvaImage
+      image={img}
+      x={cx - size / 2}
+      y={cy - size / 2}
+      width={size}
+      height={size}
+      listening={false}
+    />
+  )
+}
+
 interface AssetShapeProps {
   asset: AssetWithStatus
   stageWidth: number
@@ -105,10 +121,12 @@ export function AssetShape({
   const fontSize = Math.max(7, Math.min(11, radius * 0.45))
   const labelText = asset.name.length > 7 ? asset.name.slice(0, 6) + '\u2026' : asset.name
 
-  // Category icon
+  // Category icon — prefer uploaded image, then emoji slug, then fallback text
+  const iconUrl = asset.category?.iconUrl ?? null
   const iconSlug = asset.category?.defaultIcon
   const iconChar = iconSlug ? (CATEGORY_ICONS[iconSlug] ?? asset.category?.name?.[0] ?? CATEGORY_ICONS.default) : undefined
   const iconFontSize = Math.max(10, Math.min(18, radius * 0.6))
+  const iconSize = radius * 1.1
 
   // Dot sizes for indicator dots
   const dotRadius = Math.max(3.5, radius * 0.22)
@@ -189,8 +207,10 @@ export function AssetShape({
         />
       )}
 
-      {/* Category icon (if available), otherwise asset name label */}
-      {iconChar ? (
+      {/* Category icon — uploaded image takes priority, then emoji, then name label */}
+      {iconUrl ? (
+        <CategoryIconImage url={iconUrl} cx={cx} cy={cy} size={iconSize} />
+      ) : iconChar ? (
         <Text
           x={cx - radius}
           y={cy - iconFontSize / 2}
