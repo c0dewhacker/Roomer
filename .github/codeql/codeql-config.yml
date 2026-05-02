@@ -1,0 +1,8 @@
+name: Roomer CodeQL Configuration
+
+# Note on js/missing-rate-limiting false positives:
+# This project uses @fastify/rate-limit registered globally in app.ts (max: 300 req/min)
+# and per-route overrides via `config: { rateLimit: { max: N } }` in route options.
+# CodeQL's js/missing-rate-limiting query only recognises Express app.use(rateLimit())
+# patterns and does not detect Fastify plugin registration or per-route config objects.
+# Affected routes carry `// lgtm[js/missing-rate-limiting]` inline suppressions.
