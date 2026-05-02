@@ -617,7 +617,14 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           name: asset.name,
           bookingLabel: asset.bookingLabel,
           isBookable: asset.isBookable,
-          category: asset.category,
+          category: asset.category
+            ? {
+                ...asset.category,
+                iconUrl: asset.category.iconUrl
+                  ? `/api/v1/assets/categories/${asset.category.id}/icon`
+                  : null,
+              }
+            : null,
           x: asset.x,
           y: asset.y,
           width: asset.width,
