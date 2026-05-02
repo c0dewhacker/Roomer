@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { format, addHours, startOfDay, addDays } from 'date-fns'
 import { formatDateTime } from '@/lib/utils'
-import { MapPin, Clock, Users, CheckCircle, XCircle, AlertCircle, Shield, UserPlus, UserMinus, ChevronDown, ChevronUp, Pencil, X } from 'lucide-react'
+import { MapPin, Clock, Users, CheckCircle, XCircle, AlertCircle, Shield, UserPlus, UserMinus, ChevronDown, ChevronUp, Pencil, X, Repeat } from 'lucide-react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -18,7 +18,7 @@ import { useCreateBooking, useJoinQueue, useLeaveQueue, useClaimDesk, useCancelB
 import { formatDateRange } from '@/lib/utils'
 import { getDateFormat } from '@/lib/dateFormat'
 import { useAuthStore } from '@/stores/auth'
-import { assetsApi, usersApi, settingsApi } from '@/lib/api'
+import { assetsApi, usersApi, settingsApi, recurringBookingsApi } from '@/lib/api'
 import type { AssetWithStatus } from '@/types'
 
 interface DeskPanelProps {
@@ -440,9 +440,14 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   const [customEnd, setCustomEnd] = useState('17:00')
   const [endDate, setEndDate] = useState<Date>(date)
   const [queueExpiry, setQueueExpiry] = useState('')
+  const [isRecurring, setIsRecurring] = useState(false)
+  const [recurringFrequency, setRecurringFrequency] = useState<'DAILY' | 'WEEKLY' | 'MONTHLY'>('WEEKLY')
+  const [recurringLastDate, setRecurringLastDate] = useState('')
 
   // Keep endDate in sync when the floor page navigates to a different day
   useEffect(() => { setEndDate(date) }, [date])
+  // Reset recurring state when a different asset is selected
+  useEffect(() => { setIsRecurring(false); setRecurringFrequency('WEEKLY'); setRecurringLastDate('') }, [desk?.id])
   const [showAdmin, setShowAdmin] = useState(false)
   const [editAssetOpen, setEditAssetOpen] = useState(false)
   const [addAllowListOpen, setAddAllowListOpen] = useState(false)
@@ -538,7 +543,37 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
     onError: () => toast.error('Failed to remove zone'),
   })
 
+  const getRecurringTimes = (): { startTime: string; endTime: string } => {
+    if (timePreset === 'full') return { startTime: '00:00', endTime: '23:59' }
+    if (timePreset === 'am') return { startTime: '08:00', endTime: '13:00' }
+    if (timePreset === 'pm') return { startTime: '13:00', endTime: '18:00' }
+    return { startTime: customStart, endTime: customEnd }
+  }
+
+  const createRecurring = useMutation({
+    mutationFn: () => {
+      const { startTime, endTime } = getRecurringTimes()
+      return recurringBookingsApi.create({
+        assetId: desk?.id ?? '',
+        frequency: recurringFrequency,
+        ...(recurringFrequency === 'WEEKLY' ? { dayOfWeek: date.getDay() } : {}),
+        startTime,
+        endTime,
+        firstDate: format(date, 'yyyy-MM-dd'),
+        lastDate: recurringLastDate,
+      })
+    },
+    onSuccess: () => {
+      toast.success('Recurring booking series created')
+      qc.invalidateQueries({ queryKey: ['recurring-bookings'] })
+      onBookingCreated()
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+
   if (!desk) return null
+
+  const categoryName = desk.category?.name ?? 'Asset'
 
   const getBookingTimes = () => {
     const base = startOfDay(date)
@@ -743,24 +778,27 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
 
             {desk.bookingStatus === 'available' && (
               <div className="space-y-4">
-                <div>
-                  <Label className="text-sm font-medium">End date</Label>
-                  <Input
-                    type="date"
-                    value={format(endDate, 'yyyy-MM-dd')}
-                    min={format(date, 'yyyy-MM-dd')}
-                    max={maxEndDateStr}
-                    onChange={(e) => {
-                      if (e.target.value) setEndDate(new Date(e.target.value + 'T00:00:00'))
-                    }}
-                    className="mt-1.5"
-                  />
-                  {isMultiDay && (
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {Math.round((startOfDay(endDate).getTime() - startOfDay(date).getTime()) / 86400000) + 1} day booking
-                    </p>
-                  )}
-                </div>
+                {/* End date — hidden when recurring (recurring uses its own "Repeat until" date) */}
+                {!isRecurring && (
+                  <div>
+                    <Label className="text-sm font-medium">End date</Label>
+                    <Input
+                      type="date"
+                      value={format(endDate, 'yyyy-MM-dd')}
+                      min={format(date, 'yyyy-MM-dd')}
+                      max={maxEndDateStr}
+                      onChange={(e) => {
+                        if (e.target.value) setEndDate(new Date(e.target.value + 'T00:00:00'))
+                      }}
+                      className="mt-1.5"
+                    />
+                    {isMultiDay && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {Math.round((startOfDay(endDate).getTime() - startOfDay(date).getTime()) / 86400000) + 1} day booking
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 <div>
                   <Label className="text-sm font-medium">Time</Label>
@@ -773,8 +811,8 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="full">Full Day (all day)</SelectItem>
-                      <SelectItem value="am" disabled={isMultiDay}>Morning (08:00 – 13:00)</SelectItem>
-                      <SelectItem value="pm" disabled={isMultiDay}>Afternoon (13:00 – 18:00)</SelectItem>
+                      <SelectItem value="am" disabled={isMultiDay && !isRecurring}>Morning (08:00 – 13:00)</SelectItem>
+                      <SelectItem value="pm" disabled={isMultiDay && !isRecurring}>Afternoon (13:00 – 18:00)</SelectItem>
                       <SelectItem value="custom">Custom time</SelectItem>
                     </SelectContent>
                   </Select>
@@ -783,7 +821,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                 {timePreset === 'custom' && (
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <Label className="text-xs">{isMultiDay ? 'Start time (day 1)' : 'Start time'}</Label>
+                      <Label className="text-xs">Start time</Label>
                       <Input
                         type="time"
                         value={customStart}
@@ -792,7 +830,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                       />
                     </div>
                     <div>
-                      <Label className="text-xs">{isMultiDay ? 'End time (last day)' : 'End time'}</Label>
+                      <Label className="text-xs">End time</Label>
                       <Input
                         type="time"
                         value={customEnd}
@@ -803,13 +841,75 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                   </div>
                 )}
 
+                {/* Recurring toggle — always visible */}
+                <div className="space-y-3 pt-1">
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="make-recurring"
+                      type="checkbox"
+                      checked={isRecurring}
+                      onChange={(e) => setIsRecurring(e.target.checked)}
+                      className="h-4 w-4 rounded border-border"
+                    />
+                    <Label htmlFor="make-recurring" className="cursor-pointer text-sm flex items-center gap-1.5">
+                      <Repeat className="h-3.5 w-3.5 text-muted-foreground" />
+                      Make this recurring
+                    </Label>
+                  </div>
+
+                  {isRecurring && (
+                    <div className="rounded-md border border-dashed px-3 py-3 space-y-3">
+                      <div>
+                        <Label className="text-xs">Frequency</Label>
+                        <Select
+                          value={recurringFrequency}
+                          onValueChange={(v) => setRecurringFrequency(v as 'DAILY' | 'WEEKLY' | 'MONTHLY')}
+                        >
+                          <SelectTrigger className="mt-1">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="DAILY">Daily</SelectItem>
+                            <SelectItem value="WEEKLY">Weekly</SelectItem>
+                            <SelectItem value="MONTHLY">Monthly</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {recurringFrequency === 'DAILY' && 'Repeats every day at the selected time'}
+                        {recurringFrequency === 'WEEKLY' && <>Repeats every <strong>{format(date, 'EEEE')}</strong> at the selected time</>}
+                        {recurringFrequency === 'MONTHLY' && <>Repeats on the <strong>{format(date, 'do')}</strong> of each month at the selected time</>}
+                      </p>
+                      <div>
+                        <Label className="text-xs">Repeat until</Label>
+                        <Input
+                          type="date"
+                          value={recurringLastDate}
+                          min={format(date, 'yyyy-MM-dd')}
+                          onChange={(e) => setRecurringLastDate(e.target.value)}
+                          className="mt-1"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <Button
-                  onClick={handleBook}
-                  disabled={createBooking.isPending}
+                  onClick={isRecurring ? () => createRecurring.mutate() : handleBook}
+                  disabled={
+                    isRecurring
+                      ? createRecurring.isPending || !recurringLastDate
+                      : createBooking.isPending
+                  }
                   className="w-full"
                 >
                   <CheckCircle className="mr-2 h-4 w-4" />
-                  {createBooking.isPending ? 'Booking…' : 'Book Desk'}
+                  {(isRecurring ? createRecurring : createBooking).isPending
+                    ? 'Booking…'
+                    : isRecurring
+                      ? `Book recurring ${categoryName}`
+                      : `Book ${categoryName}`
+                  }
                 </Button>
               </div>
             )}

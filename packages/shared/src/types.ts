@@ -42,6 +42,17 @@ export enum BookingStatus {
   COMPLETED = 'COMPLETED',
 }
 
+export enum RecurringRuleStatus {
+  ACTIVE = 'ACTIVE',
+  CANCELLED = 'CANCELLED',
+}
+
+export enum RecurringFrequency {
+  DAILY = 'DAILY',
+  WEEKLY = 'WEEKLY',
+  MONTHLY = 'MONTHLY',
+}
+
 export enum QueueEntryStatus {
   WAITING = 'WAITING',
   PROMOTED = 'PROMOTED',
@@ -96,6 +107,7 @@ export interface Organisation {
   id: string
   name: string
   slug: string
+  maxRecurringBookingWeeks: number
   createdAt: Date
   updatedAt: Date
 }
@@ -203,6 +215,22 @@ export interface Booking {
   status: BookingStatus
   notes: string | null
   reminderSentAt: Date | null
+  recurringRuleId: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface RecurringBookingRule {
+  id: string
+  userId: string
+  assetId: string
+  frequency: RecurringFrequency
+  dayOfWeek: number | null
+  startTime: string
+  endTime: string
+  firstDate: Date
+  lastDate: Date
+  status: RecurringRuleStatus
   createdAt: Date
   updatedAt: Date
 }

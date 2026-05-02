@@ -665,7 +665,8 @@ export const recurringBookingsApi = {
   get: (id: string) => api.get<{ data: RecurringBookingRule }>(`/recurring-bookings/${id}`),
   create: (body: {
     assetId: string
-    dayOfWeek: number
+    frequency: 'DAILY' | 'WEEKLY' | 'MONTHLY'
+    dayOfWeek?: number
     startTime: string
     endTime: string
     firstDate: string

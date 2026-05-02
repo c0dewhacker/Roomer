@@ -143,12 +143,14 @@ export interface AssetWithStatus extends Omit<Asset, 'bookingStatus'> {
 export type DeskWithStatus = AssetWithStatus
 
 export type RecurringRuleStatus = 'ACTIVE' | 'CANCELLED'
+export type RecurringFrequency = 'DAILY' | 'WEEKLY' | 'MONTHLY'
 
 export interface RecurringBookingRule {
   id: string
   userId: string
   assetId: string
-  dayOfWeek: number
+  frequency: RecurringFrequency
+  dayOfWeek: number | null
   startTime: string
   endTime: string
   firstDate: string

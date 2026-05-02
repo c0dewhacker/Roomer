@@ -12,8 +12,6 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -455,108 +453,6 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
-function CreateRecurringDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const qc = useQueryClient()
-  const [assetId, setAssetId] = useState('')
-  const [dayOfWeek, setDayOfWeek] = useState('')
-  const [startTime, setStartTime] = useState('')
-  const [endTime, setEndTime] = useState('')
-  const [firstDate, setFirstDate] = useState('')
-  const [lastDate, setLastDate] = useState('')
-
-  const { data: assetsData } = useQuery({
-    queryKey: ['assets-bookable'],
-    queryFn: () => assetsApi.list(),
-    select: (r) => r.data.filter((a) => a.isBookable && a.bookingStatus !== 'DISABLED'),
-  })
-
-  const create = useMutation({
-    mutationFn: () =>
-      recurringBookingsApi.create({
-        assetId,
-        dayOfWeek: Number(dayOfWeek),
-        startTime,
-        endTime,
-        firstDate,
-        lastDate,
-      }),
-    onSuccess: () => {
-      toast.success('Recurring booking series created')
-      qc.invalidateQueries({ queryKey: ['recurring-bookings'] })
-      onClose()
-    },
-    onError: (err: Error) => toast.error(err.message),
-  })
-
-  const canSubmit = assetId && dayOfWeek !== '' && startTime && endTime && firstDate && lastDate && !create.isPending
-
-  return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-sm">
-        <DialogHeader>
-          <DialogTitle>New recurring booking</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-4 py-2">
-          <div>
-            <Label>Asset</Label>
-            <Select value={assetId} onValueChange={setAssetId}>
-              <SelectTrigger className="mt-1.5">
-                <SelectValue placeholder="Select an asset…" />
-              </SelectTrigger>
-              <SelectContent>
-                {(assetsData ?? []).map((a) => (
-                  <SelectItem key={a.id} value={a.id}>
-                    {a.bookingLabel ?? a.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label>Day of week</Label>
-            <Select value={dayOfWeek} onValueChange={setDayOfWeek}>
-              <SelectTrigger className="mt-1.5">
-                <SelectValue placeholder="Select a day…" />
-              </SelectTrigger>
-              <SelectContent>
-                {DAY_NAMES.map((d, i) => (
-                  <SelectItem key={i} value={String(i)}>{d}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label>Start time</Label>
-              <Input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} className="mt-1.5" />
-            </div>
-            <div>
-              <Label>End time</Label>
-              <Input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} className="mt-1.5" />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label>First date</Label>
-              <Input type="date" value={firstDate} onChange={(e) => setFirstDate(e.target.value)} className="mt-1.5" />
-            </div>
-            <div>
-              <Label>Last date</Label>
-              <Input type="date" value={lastDate} onChange={(e) => setLastDate(e.target.value)} className="mt-1.5" />
-            </div>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={create.isPending}>Cancel</Button>
-          <Button onClick={() => create.mutate()} disabled={!canSubmit}>
-            {create.isPending ? 'Creating…' : 'Create series'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
 function RecurringRuleCard({ rule }: { rule: RecurringBookingRule }) {
   const qc = useQueryClient()
 
@@ -591,7 +487,9 @@ function RecurringRuleCard({ rule }: { rule: RecurringBookingRule }) {
             )}
             <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
               <Repeat className="h-3 w-3 shrink-0" />
-              Every {DAY_NAMES[rule.dayOfWeek]}, {rule.startTime}–{rule.endTime}
+              {rule.frequency === 'DAILY' && `Every day, ${rule.startTime}–${rule.endTime}`}
+              {rule.frequency === 'WEEKLY' && rule.dayOfWeek != null && `Every ${DAY_NAMES[rule.dayOfWeek]}, ${rule.startTime}–${rule.endTime}`}
+              {rule.frequency === 'MONTHLY' && `Monthly, ${rule.startTime}–${rule.endTime}`}
             </p>
             <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
               <Calendar className="h-3 w-3 shrink-0" />
@@ -634,42 +532,26 @@ function RecurringRuleCard({ rule }: { rule: RecurringBookingRule }) {
 }
 
 function RecurringBookingsSection() {
-  const [createOpen, setCreateOpen] = useState(false)
-
   const { data, isLoading } = useQuery({
     queryKey: ['recurring-bookings'],
     queryFn: () => recurringBookingsApi.list(),
     select: (r) => r.data,
   })
 
+  if (isLoading) return <div className="mb-8"><Skeleton className="h-20 w-full" /></div>
+  if (!data || data.length === 0) return null
+
   return (
     <div className="mb-8">
-      <div className="flex items-center justify-between gap-2 mb-3">
-        <div className="flex items-center gap-2">
-          <Repeat className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Recurring Bookings</h2>
-        </div>
-        <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => setCreateOpen(true)}>
-          <CalendarPlus className="h-3.5 w-3.5" />
-          New series
-        </Button>
+      <div className="flex items-center gap-2 mb-3">
+        <Repeat className="h-4 w-4 text-muted-foreground" />
+        <h2 className="text-base font-semibold">Recurring Bookings</h2>
       </div>
-
-      {isLoading && <Skeleton className="h-20 w-full" />}
-
-      {!isLoading && (!data || data.length === 0) && (
-        <p className="text-sm text-muted-foreground py-4 text-center">No recurring bookings</p>
-      )}
-
-      {!isLoading && data && data.length > 0 && (
-        <div className="space-y-3">
-          {data.map((rule) => (
-            <RecurringRuleCard key={rule.id} rule={rule} />
-          ))}
-        </div>
-      )}
-
-      {createOpen && <CreateRecurringDialog open={createOpen} onClose={() => setCreateOpen(false)} />}
+      <div className="space-y-3">
+        {data.map((rule) => (
+          <RecurringRuleCard key={rule.id} rule={rule} />
+        ))}
+      </div>
     </div>
   )
 }

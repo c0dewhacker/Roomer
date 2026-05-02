@@ -58,6 +58,17 @@ enum BookingStatus {
   COMPLETED
 }
 
+enum RecurringRuleStatus {
+  ACTIVE
+  CANCELLED
+}
+
+enum RecurringFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
 enum QueueEntryStatus {
   WAITING
   PROMOTED
@@ -116,6 +127,7 @@ model Organisation {
   emailTemplates              Json        @default("{}")
   branding                    Json        @default("{}")
   bookingReminderHours        Int         @default(24)
+  maxRecurringBookingWeeks    Int         @default(12)
   createdAt                   DateTime    @default(now())
   updatedAt                   DateTime    @updatedAt
   buildings                   Building[]
@@ -322,8 +334,9 @@ model Asset {
   /// Temporary assignments (checked-out to a user with a return date).
   assignments     AssetAssignment[]
   /// Bookings made against this asset (only populated when isBookable=true).
-  bookings        Booking[]
-  queueEntries    QueueEntry[]
+  bookings              Booking[]
+  queueEntries          QueueEntry[]
+  recurringBookingRules RecurringBookingRule[]
 
   @@index([floorId])
   @@index([primaryZoneId])
@@ -402,8 +415,9 @@ model User {
   assetAllowList       AssetAllowList[]
   groupMemberships     UserGroupMember[]
   assetUserAssignments AssetUserAssignment[]
-  availabilityWindows  AssetAvailabilityWindow[] @relation("AvailabilityWindowOwner")
-  floorSubscriptions   FloorSubscription[]
+  availabilityWindows   AssetAvailabilityWindow[] @relation("AvailabilityWindowOwner")
+  floorSubscriptions    FloorSubscription[]
+  recurringBookingRules RecurringBookingRule[]
 
   @@index([email])
   @@index([provider, externalId])
@@ -490,22 +504,53 @@ model GroupResourceRole {
 }
 
 model Booking {
-  id               String        @id @default(cuid())
-  userId           String
-  assetId          String
-  startsAt         DateTime
-  endsAt           DateTime
-  status           BookingStatus @default(CONFIRMED)
-  notes            String?
-  reminderSentAt   DateTime?
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
-  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  asset            Asset         @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  id                String               @id @default(cuid())
+  userId            String
+  assetId           String
+  startsAt          DateTime
+  endsAt            DateTime
+  status            BookingStatus        @default(CONFIRMED)
+  notes             String?
+  reminderSentAt    DateTime?
+  recurringRuleId   String?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  user              User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  asset             Asset                @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  recurringRule     RecurringBookingRule? @relation(fields: [recurringRuleId], references: [id], onDelete: SetNull)
 
   @@index([assetId, startsAt, endsAt])
   @@index([userId, startsAt])
+  @@index([recurringRuleId])
   @@index([status])
+}
+
+/// A weekly recurring booking rule. All individual Booking rows linked to this
+/// rule are materialized immediately at creation time.
+model RecurringBookingRule {
+  id          String               @id @default(cuid())
+  userId      String
+  assetId     String
+  frequency   RecurringFrequency   @default(WEEKLY)
+  /// ISO day of week: 0=Sunday … 6=Saturday. Required only for WEEKLY frequency.
+  dayOfWeek   Int?
+  /// Wall-clock start time in HH:MM UTC
+  startTime   String
+  /// Wall-clock end time in HH:MM UTC
+  endTime     String
+  /// Date of first occurrence (stored as midnight UTC)
+  firstDate   DateTime             @db.Date
+  /// Date of last occurrence (stored as midnight UTC)
+  lastDate    DateTime             @db.Date
+  status      RecurringRuleStatus  @default(ACTIVE)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  asset       Asset               @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  bookings    Booking[]
+
+  @@index([userId])
+  @@index([assetId])
 }
 
 model QueueEntry {
