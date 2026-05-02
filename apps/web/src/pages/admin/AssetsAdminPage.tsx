@@ -410,28 +410,75 @@ const categorySchema = z.object({
 })
 type CategoryForm = z.infer<typeof categorySchema>
 
-function CategoryDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+function CategoryDialog({ open, onClose, existing }: { open: boolean; onClose: () => void; existing?: AssetCategory }) {
   const qc = useQueryClient()
+  const [iconFile, setIconFile] = useState<File | null>(null)
+  const [iconPreview, setIconPreview] = useState<string | null>(existing?.iconUrl ?? null)
   const { register, handleSubmit, formState: { errors }, reset, watch, setValue } = useForm<CategoryForm>({
     resolver: zodResolver(categorySchema),
-    defaultValues: { name: '', description: '', defaultIsBookable: false, defaultIcon: '', colour: '#6366f1' },
+    defaultValues: {
+      name: existing?.name ?? '',
+      description: existing?.description ?? '',
+      defaultIsBookable: existing?.defaultIsBookable ?? false,
+      defaultIcon: existing?.defaultIcon ?? '',
+      colour: existing?.colour ?? '#6366f1',
+    },
   })
   const selectedIcon = watch('defaultIcon')
   const colour = watch('colour')
 
+  useEffect(() => {
+    reset({
+      name: existing?.name ?? '',
+      description: existing?.description ?? '',
+      defaultIsBookable: existing?.defaultIsBookable ?? false,
+      defaultIcon: existing?.defaultIcon ?? '',
+      colour: existing?.colour ?? '#6366f1',
+    })
+    setIconFile(null)
+    setIconPreview(existing?.iconUrl ?? null)
+  }, [existing, reset])
+
+  const uploadIcon = useMutation({
+    mutationFn: ({ id, file }: { id: string; file: File }) => assetsApi.uploadCategoryIcon(id, file),
+  })
+
   const create = useMutation({
-    mutationFn: (d: CategoryForm) => assetsApi.createCategory(d),
+    mutationFn: async (d: CategoryForm) => {
+      const res = await assetsApi.createCategory(d)
+      if (iconFile) await uploadIcon.mutateAsync({ id: res.data.id, file: iconFile })
+      return res
+    },
     onSuccess: () => { toast.success('Category created'); qc.invalidateQueries({ queryKey: ['asset-categories'] }); onClose(); reset() },
     onError: () => toast.error('Failed to create category'),
   })
+
+  const update = useMutation({
+    mutationFn: async (d: CategoryForm) => {
+      const res = await assetsApi.updateCategory(existing!.id, d)
+      if (iconFile) await uploadIcon.mutateAsync({ id: existing!.id, file: iconFile })
+      return res
+    },
+    onSuccess: () => { toast.success('Category updated'); qc.invalidateQueries({ queryKey: ['asset-categories'] }); onClose() },
+    onError: () => toast.error('Failed to update category'),
+  })
+
+  const isPending = create.isPending || update.isPending || uploadIcon.isPending
+
+  const handleIconFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]
+    if (!f) return
+    setIconFile(f)
+    setIconPreview(URL.createObjectURL(f))
+  }
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add Category</DialogTitle>
+          <DialogTitle>{existing ? 'Edit Category' : 'Add Category'}</DialogTitle>
         </DialogHeader>
-        <form onSubmit={handleSubmit((d) => create.mutate(d))} className="space-y-4">
+        <form onSubmit={handleSubmit((d) => existing ? update.mutate(d) : create.mutate(d))} className="space-y-4">
           <div>
             <Label htmlFor="catName">Name *</Label>
             <Input id="catName" {...register('name')} className="mt-1.5" placeholder="e.g. Desks" />
@@ -470,8 +517,28 @@ function CategoryDialog({ open, onClose }: { open: boolean; onClose: () => void 
             </div>
           </div>
           <div>
-            <Label>Default Icon</Label>
-            <p className="text-xs text-muted-foreground mb-2 mt-0.5">Select an icon for assets in this category</p>
+            <Label>Custom Icon Image</Label>
+            <p className="text-xs text-muted-foreground mb-2 mt-0.5">Upload a PNG/JPEG image (64×64 recommended). Overrides the emoji icon below.</p>
+            <div className="flex items-center gap-3">
+              {iconPreview && (
+                <img src={iconPreview} alt="icon preview" className="h-10 w-10 rounded border object-contain bg-muted" />
+              )}
+              <label className="cursor-pointer">
+                <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={handleIconFile} />
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-input bg-background px-3 py-1.5 text-sm hover:bg-muted transition-colors">
+                  {iconPreview ? 'Replace image' : 'Upload image'}
+                </span>
+              </label>
+              {iconPreview && (
+                <button type="button" className="text-xs text-muted-foreground hover:text-destructive" onClick={() => { setIconFile(null); setIconPreview(null) }}>
+                  Remove
+                </button>
+              )}
+            </div>
+          </div>
+          <div>
+            <Label>Emoji Icon</Label>
+            <p className="text-xs text-muted-foreground mb-2 mt-0.5">Used when no custom image is set</p>
             <div className="grid grid-cols-6 gap-2">
               {AVAILABLE_ICONS.map((icon) => (
                 <button
@@ -489,8 +556,8 @@ function CategoryDialog({ open, onClose }: { open: boolean; onClose: () => void 
           </div>
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={create.isPending}>
-              {create.isPending ? 'Creating…' : 'Create category'}
+            <Button type="submit" disabled={isPending}>
+              {isPending ? (existing ? 'Saving…' : 'Creating…') : (existing ? 'Save changes' : 'Create category')}
             </Button>
           </DialogFooter>
         </form>
@@ -728,6 +795,7 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
 function CategoriesTab() {
   const qc = useQueryClient()
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [editTarget, setEditTarget] = useState<AssetCategory | undefined>()
 
   const { data: categories, isLoading } = useQuery({
     queryKey: ['asset-categories'],
@@ -736,7 +804,7 @@ function CategoriesTab() {
   })
 
   const deleteCategory = useMutation({
-    mutationFn: (id: string) => assetsApi.delete(id),
+    mutationFn: (id: string) => assetsApi.deleteCategory(id),
     onSuccess: () => { toast.success('Category deleted'); qc.invalidateQueries({ queryKey: ['asset-categories'] }) },
     onError: () => toast.error('Failed to delete category'),
   })
@@ -744,7 +812,7 @@ function CategoriesTab() {
   return (
     <>
       <div className="flex items-center justify-end mb-4">
-        <Button onClick={() => setDialogOpen(true)}>
+        <Button onClick={() => { setEditTarget(undefined); setDialogOpen(true) }}>
           <Plus className="mr-2 h-4 w-4" /> Add Category
         </Button>
       </div>
@@ -764,13 +832,15 @@ function CategoriesTab() {
             <Card key={cat.id}>
               <CardContent className="p-4 flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  {cat.colour && (
+                  {cat.iconUrl ? (
+                    <img src={cat.iconUrl} alt={cat.name} className="h-8 w-8 rounded border object-contain bg-muted shrink-0" />
+                  ) : cat.colour ? (
                     <div className="h-8 w-8 rounded-full border shrink-0" style={{ backgroundColor: cat.colour }} />
-                  )}
+                  ) : null}
                   <div>
                     <div className="flex items-center gap-2">
                       <p className="font-medium">{cat.name}</p>
-                      {cat.defaultIcon && ICON_DISPLAY[cat.defaultIcon] && (
+                      {!cat.iconUrl && cat.defaultIcon && ICON_DISPLAY[cat.defaultIcon] && (
                         <span className="text-base" title={cat.defaultIcon}>{ICON_DISPLAY[cat.defaultIcon]}</span>
                       )}
                       {cat.defaultIsBookable && (
@@ -782,37 +852,42 @@ function CategoriesTab() {
                     )}
                   </div>
                 </div>
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive">
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Delete category?</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        Delete <strong>{cat.name}</strong>? Assets in this category will be unlinked.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction
-                        onClick={() => deleteCategory.mutate(cat.id)}
-                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                      >
-                        Delete
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
+                <div className="flex items-center gap-1">
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditTarget(cat); setDialogOpen(true) }}>
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Delete category?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Delete <strong>{cat.name}</strong>? Assets in this category will be unlinked.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={() => deleteCategory.mutate(cat.id)}
+                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        >
+                          Delete
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </div>
               </CardContent>
             </Card>
           ))}
         </div>
       )}
 
-      <CategoryDialog open={dialogOpen} onClose={() => setDialogOpen(false)} />
+      <CategoryDialog open={dialogOpen} existing={editTarget} onClose={() => { setDialogOpen(false); setEditTarget(undefined) }} />
     </>
   )
 }
