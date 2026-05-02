@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.10](https://github.com/c0dewhacker/Roomer/compare/v0.3.9...v0.3.10) (2026-05-02)
+
+
+### Features
+
+* add recurring frequency (daily/weekly/monthly) to recurring bookings ([7b2ea7f](https://github.com/c0dewhacker/Roomer/commit/7b2ea7fdfc83bd0f09a934347cd79dbd3a78e088))
+* **api:** add migration for recurring booking rules table ([5ac8d40](https://github.com/c0dewhacker/Roomer/commit/5ac8d4038bf244ef98b03ebbe9e339661c878ad1))
+* **api:** extend building admin role to floors, leases, analytics and bookings ([454b8c3](https://github.com/c0dewhacker/Roomer/commit/454b8c304b5c6f79b8bee19d57566e207fbc431d))
+* building admin role ([#73](https://github.com/c0dewhacker/Roomer/issues/73)) ([9645eba](https://github.com/c0dewhacker/Roomer/commit/9645ebae76b89851c32bd7bb5803aa74ba5c8658))
+* **notifications:** booking reminders ([#77](https://github.com/c0dewhacker/Roomer/issues/77)) ([e25ef3b](https://github.com/c0dewhacker/Roomer/commit/e25ef3b7dbbe814657a72ce72edc3a6ab00fe1ad))
+* **notifications:** implement booking reminders ([#77](https://github.com/c0dewhacker/Roomer/issues/77)) ([6aea378](https://github.com/c0dewhacker/Roomer/commit/6aea3787fe0a4e81cf0490599cc9da1ab0ac3698))
+* recurring bookings ([#67](https://github.com/c0dewhacker/Roomer/issues/67)) ([db40217](https://github.com/c0dewhacker/Roomer/commit/db402178e0c237d57ccee63c6745120438254e44))
+* recurring bookings with daily/weekly/monthly frequency ([d353703](https://github.com/c0dewhacker/Roomer/commit/d3537032c58ceafe356d868dd57305e91ae13c4e))
+* **web:** add building admin nav section with managed buildings ([4cbdb95](https://github.com/c0dewhacker/Roomer/commit/4cbdb9598540c3ced7648ee66b5ace021eb531c1))
+* **web:** add recurring bookings UI to bookings page ([064ad78](https://github.com/c0dewhacker/Roomer/commit/064ad78ee237da4483871c5b32b42ef68c5c8001))
+
+
+### Bug Fixes
+
+* **api:** register Subscriptions and Recurring Bookings Swagger tags ([3219fde](https://github.com/c0dewhacker/Roomer/commit/3219fde73b9cea83e7f1d4ed3cf89c6b46c39eeb))
+* **api:** suppress CodeQL false positive on leases document delete route ([765e544](https://github.com/c0dewhacker/Roomer/commit/765e544dbd446798d91f00b9626142adaa6c333d))
+* **seed:** only log generated admin password on first creation ([e46c466](https://github.com/c0dewhacker/Roomer/commit/e46c466b6023303ed66c2f9603aed69ec6c39f61))
+* **seed:** only log generated admin password on first creation ([b75e92d](https://github.com/c0dewhacker/Roomer/commit/b75e92dc62491ea845da7dbf2ec5913d4130cb75))
+
 ## [0.3.9](https://github.com/c0dewhacker/Roomer/compare/v0.3.8...v0.3.9) (2026-04-29)
 
 
