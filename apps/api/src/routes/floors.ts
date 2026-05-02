@@ -471,6 +471,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
               where: { isBookable: true },
               orderBy: { name: 'asc' },
               include: {
+                category: { select: { id: true, name: true, defaultIcon: true, colour: true, iconUrl: true } },
                 allowList: { select: { userId: true } },
                 userAssignments: {
                   select: {
@@ -615,6 +616,8 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           zoneColour: zone.colour,
           name: asset.name,
           bookingLabel: asset.bookingLabel,
+          isBookable: asset.isBookable,
+          category: asset.category,
           x: asset.x,
           y: asset.y,
           width: asset.width,
