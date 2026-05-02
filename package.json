@@ -1,6 +1,6 @@
 {
   "name": "roomer",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "private": true,
   "packageManager": "pnpm@10.30.1",
   "scripts": {
