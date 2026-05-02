@@ -31,6 +31,15 @@ const updateUserSchema = z.object({
   globalRole: z.nativeEnum(GlobalRole).optional(),
 })
 
+const notificationPrefValueSchema = z.object({
+  email: z.boolean().optional(),
+  inApp: z.boolean().optional(),
+})
+
+const updateNotificationPreferencesSchema = z.object({
+  preferences: z.record(z.string(), notificationPrefValueSchema),
+})
+
 const assignRoleSchema = z.object({
   role: z.nativeEnum(ResourceRoleType),
   scopeType: z.nativeEnum(ResourceScopeType),
@@ -249,6 +258,33 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     } catch {
       return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })
     }
+  })
+
+  // GET /users/me/notification-preferences — get current user's notification preferences
+  fastify.get('/me/notification-preferences', { preHandler: [requireAuth] }, async (request, reply) => {
+    const user = await prisma.user.findUnique({
+      where: { id: request.user.id },
+      select: { notificationPreferences: true },
+    })
+    const preferences = (user?.notificationPreferences ?? {}) as Record<string, { email?: boolean; inApp?: boolean }>
+    return reply.status(200).send({ data: { preferences } })
+  })
+
+  // PATCH /users/me/notification-preferences — update current user's notification preferences
+  fastify.patch('/me/notification-preferences', { preHandler: [requireAuth] }, async (request, reply) => {
+    const result = updateNotificationPreferencesSchema.safeParse(request.body)
+    if (!result.success) {
+      return reply.status(400).send({
+        error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
+      })
+    }
+
+    await prisma.user.update({
+      where: { id: request.user.id },
+      data: { notificationPreferences: result.data.preferences },
+    })
+
+    return reply.status(200).send({ data: { ok: true } })
   })
 
   // POST /users/me/password — self-service password change (local auth users only)

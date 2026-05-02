@@ -4,7 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { User, Mail, Shield, Building2, Layers, Users, KeyRound, Bell, BellOff } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { usersApi } from '@/lib/api'
 import { toast } from 'sonner'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -43,6 +43,66 @@ const PROVIDER_COLOURS: Record<string, string> = {
   LDAP: 'bg-blue-100 text-blue-700',
   OIDC: 'bg-violet-100 text-violet-700',
   SAML: 'bg-violet-100 text-violet-700',
+}
+
+type NotifPref = { email?: boolean; inApp?: boolean }
+
+const NOTIFICATION_GROUPS: Array<{ label: string; types: Array<{ key: string; label: string }> }> = [
+  {
+    label: 'Bookings',
+    types: [
+      { key: 'BOOKING_CONFIRMED', label: 'Booking confirmed' },
+      { key: 'BOOKING_CANCELLED', label: 'Booking cancelled' },
+      { key: 'BOOKING_CANCELLED_BY_ADMIN', label: 'Booking cancelled by admin' },
+      { key: 'BOOKING_REMINDER', label: 'Booking reminder' },
+    ],
+  },
+  {
+    label: 'Waitlist',
+    types: [
+      { key: 'QUEUE_JOINED', label: 'Joined a waitlist' },
+      { key: 'QUEUE_PROMOTED', label: 'Promoted from waitlist' },
+      { key: 'QUEUE_EXPIRED', label: 'Waitlist expired' },
+      { key: 'QUEUE_CLAIM_EXPIRING', label: 'Claim expiring soon' },
+    ],
+  },
+  {
+    label: 'Assets',
+    types: [
+      { key: 'ASSET_ASSIGNED', label: 'Asset assigned to you' },
+      { key: 'ASSET_DUE_RETURN', label: 'Asset due for return' },
+    ],
+  },
+  {
+    label: 'Other',
+    types: [
+      { key: 'WELCOME', label: 'Welcome email' },
+      { key: 'FLOOR_AVAILABLE', label: 'Floor availability alert' },
+    ],
+  },
+]
+
+function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`
+        relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full
+        transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring
+        ${checked ? 'bg-primary' : 'bg-input'}
+      `}
+    >
+      <span
+        className={`
+          pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform
+          ${checked ? 'translate-x-4' : 'translate-x-0.5'}
+        `}
+      />
+    </button>
+  )
 }
 
 export default function ProfilePage() {
@@ -85,6 +145,29 @@ export default function ProfilePage() {
     },
     onError: (err: Error) => toast.error(err.message ?? 'Failed to change password'),
   })
+
+  const { data: notifPrefsData } = useQuery({
+    queryKey: ['notification-preferences'],
+    queryFn: () => usersApi.getNotificationPreferences(),
+  })
+  const [localPrefs, setLocalPrefs] = useState<Record<string, NotifPref> | null>(null)
+  const savedPrefs = notifPrefsData?.data.preferences ?? {}
+  const prefs: Record<string, NotifPref> = localPrefs ?? savedPrefs
+
+  const updatePreferences = useMutation({
+    mutationFn: (p: Record<string, NotifPref>) => usersApi.updateNotificationPreferences(p),
+    onSuccess: () => {
+      toast.success('Notification preferences saved')
+      qc.invalidateQueries({ queryKey: ['notification-preferences'] })
+      setLocalPrefs(null)
+    },
+    onError: () => toast.error('Failed to save preferences'),
+  })
+
+  const handleToggle = (key: string, channel: 'email' | 'inApp', value: boolean) => {
+    const next = { ...prefs, [key]: { ...prefs[key], [channel]: value } }
+    setLocalPrefs(next)
+  }
 
   const { data: subscriptions } = useFloorSubscriptions()
   const unsubscribe = useUnsubscribeFromFloor()
@@ -296,6 +379,67 @@ export default function ProfilePage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Notification preferences */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center gap-2">
+            <Bell className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">Notification preferences</CardTitle>
+          </div>
+          <CardDescription>Choose which notifications to receive and how</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Header row */}
+          <div className="grid grid-cols-[1fr_56px_56px] gap-2 pb-1 border-b">
+            <span className="text-xs font-medium text-muted-foreground">Notification</span>
+            <span className="text-xs font-medium text-muted-foreground text-center">Email</span>
+            <span className="text-xs font-medium text-muted-foreground text-center">In‑app</span>
+          </div>
+
+          {NOTIFICATION_GROUPS.map((group) => (
+            <div key={group.label} className="space-y-2">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">{group.label}</p>
+              {group.types.map(({ key, label }) => {
+                const pref = prefs[key] ?? {}
+                const emailOn = pref.email !== false
+                const inAppOn = pref.inApp !== false
+                return (
+                  <div key={key} className="grid grid-cols-[1fr_56px_56px] items-center gap-2">
+                    <span className="text-sm">{label}</span>
+                    <div className="flex justify-center">
+                      <Toggle checked={emailOn} onChange={(v) => handleToggle(key, 'email', v)} />
+                    </div>
+                    <div className="flex justify-center">
+                      <Toggle checked={inAppOn} onChange={(v) => handleToggle(key, 'inApp', v)} />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          ))}
+
+          {localPrefs && (
+            <div className="flex gap-2 pt-2">
+              <Button
+                size="sm"
+                onClick={() => updatePreferences.mutate(localPrefs)}
+                disabled={updatePreferences.isPending}
+              >
+                {updatePreferences.isPending ? 'Saving…' : 'Save preferences'}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setLocalPrefs(null)}
+                disabled={updatePreferences.isPending}
+              >
+                Cancel
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Floor notification subscriptions */}
       {subscriptions && subscriptions.length > 0 && (

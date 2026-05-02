@@ -408,6 +408,12 @@ export const usersApi = {
       '/users/bulk-import',
       { rows },
     ),
+  getNotificationPreferences: () =>
+    api.get<{ data: { preferences: Record<string, { email?: boolean; inApp?: boolean }> } }>(
+      '/users/me/notification-preferences',
+    ),
+  updateNotificationPreferences: (preferences: Record<string, { email?: boolean; inApp?: boolean }>) =>
+    api.patch<{ data: { ok: boolean } }>('/users/me/notification-preferences', { preferences }),
   changePassword: (body: { currentPassword: string; newPassword: string }) =>
     api.post<{ data: { ok: boolean } }>('/users/me/password', body),
   resetPassword: (id: string, body: { password: string }) =>
