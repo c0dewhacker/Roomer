@@ -3,6 +3,20 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { Badge } from '@/components/ui/badge'
 import type { AssetWithStatus } from '@/types'
 
+const CATEGORY_ICONS: Record<string, string> = {
+  monitor: '🖥',
+  desk: '💺',
+  phone: '📞',
+  'phone-booth': '☎',
+  locker: '🔒',
+  printer: '🖨',
+  whiteboard: '📋',
+  room: '🚪',
+  chair: '🪑',
+  coffee: '☕',
+  wifi: '📶',
+}
+
 const STATUS_BG: Record<string, string> = {
   available:    'bg-green-500 hover:bg-green-600',
   mine:         'bg-blue-500 hover:bg-blue-600',
@@ -72,6 +86,12 @@ export function DeskMarker({
   // Scale icon size with zoom, clamped to a readable range
   const iconSize = Math.round(Math.min(Math.max(scale * 54, 42), 78))
   const fontSize = Math.round(Math.min(Math.max(scale * 13, 12), 18))
+  const iconFontSize = Math.round(iconSize * 0.42)
+
+  // Category icon resolution — prefer uploaded image, then emoji slug, then Monitor fallback
+  const iconUrl = desk.category?.iconUrl ?? null
+  const iconSlug = desk.category?.defaultIcon
+  const iconChar = iconSlug ? (CATEGORY_ICONS[iconSlug] ?? desk.category?.name?.[0]) : undefined
 
   return (
     <div
@@ -106,11 +126,28 @@ export function DeskMarker({
                   border: `3px solid ${desk.zoneColour ?? '#94a3b8'}`,
                 }}
               >
-                <Monitor
-                  className="text-white drop-shadow"
-                  style={{ width: iconSize * 0.42, height: iconSize * 0.42 }}
-                  strokeWidth={2.2}
-                />
+                {iconUrl ? (
+                  <img
+                    src={iconUrl}
+                    alt=""
+                    className="drop-shadow"
+                    style={{ width: iconSize * 0.52, height: iconSize * 0.52, objectFit: 'contain' }}
+                    onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+                  />
+                ) : iconChar ? (
+                  <span
+                    className="drop-shadow leading-none select-none"
+                    style={{ fontSize: iconFontSize }}
+                  >
+                    {iconChar}
+                  </span>
+                ) : (
+                  <Monitor
+                    className="text-white drop-shadow"
+                    style={{ width: iconSize * 0.42, height: iconSize * 0.42 }}
+                    strokeWidth={2.2}
+                  />
+                )}
                 {/* Assigned-user dot */}
                 {desk.assignedUsers && desk.assignedUsers.length > 0 && (
                   <span

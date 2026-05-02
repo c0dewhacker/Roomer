@@ -29,6 +29,9 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
             assets: {
               where: { isBookable: true },
               orderBy: { name: 'asc' },
+              include: {
+                category: { select: { id: true, name: true, defaultIcon: true, colour: true, iconUrl: true } },
+              },
             },
           },
         },
@@ -46,7 +49,26 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
-    return reply.status(200).send({ data: floor })
+    // Transform category iconUrl storage paths to serve URLs
+    const floorWithServeUrls = {
+      ...floor,
+      zones: floor.zones.map((zone) => ({
+        ...zone,
+        assets: zone.assets.map((asset) => ({
+          ...asset,
+          category: asset.category
+            ? {
+                ...asset.category,
+                iconUrl: asset.category.iconUrl
+                  ? `/api/v1/assets/categories/${asset.category.id}/icon`
+                  : null,
+              }
+            : null,
+        })),
+      })),
+    }
+
+    return reply.status(200).send({ data: floorWithServeUrls })
   })
 
   // GET /floors/:id/managers — list floor managers (SUPER_ADMIN or building admin)

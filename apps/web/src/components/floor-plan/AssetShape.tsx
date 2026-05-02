@@ -59,19 +59,53 @@ const STATUS_LIGHT: Record<string, string> = {
 const NON_BOOKABLE_FILL = '#9ca3af'
 const NON_BOOKABLE_RING = '#6b7280'
 
-function CategoryIconImage({ url, cx, cy, size }: { url: string; cx: number; cy: number; size: number }) {
-  const [img] = useImage(url, 'anonymous')
-  if (!img) return null
-  return (
-    <KonvaImage
-      image={img}
-      x={cx - size / 2}
-      y={cy - size / 2}
-      width={size}
-      height={size}
-      listening={false}
-    />
-  )
+function CategoryIconImage({
+  url,
+  cx,
+  cy,
+  size,
+  fallbackChar,
+  fallbackFontSize,
+}: {
+  url: string
+  cx: number
+  cy: number
+  size: number
+  fallbackChar?: string
+  fallbackFontSize?: number
+}) {
+  const [img, status] = useImage(url, 'use-credentials')
+  if (status === 'loaded' && img) {
+    return (
+      <KonvaImage
+        image={img}
+        x={cx - size / 2}
+        y={cy - size / 2}
+        width={size}
+        height={size}
+        listening={false}
+      />
+    )
+  }
+  if (status === 'failed' && fallbackChar) {
+    return (
+      <Text
+        x={cx - size / 2}
+        y={cy - (fallbackFontSize ?? size * 0.5) / 2}
+        width={size}
+        align="center"
+        text={fallbackChar}
+        fontSize={fallbackFontSize ?? size * 0.5}
+        fill="#fff"
+        shadowColor="rgba(0,0,0,0.4)"
+        shadowBlur={2}
+        shadowOffsetX={0}
+        shadowOffsetY={1}
+        listening={false}
+      />
+    )
+  }
+  return null
 }
 
 interface AssetShapeProps {
@@ -209,7 +243,14 @@ export function AssetShape({
 
       {/* Category icon — uploaded image takes priority, then emoji, then name label */}
       {iconUrl ? (
-        <CategoryIconImage url={iconUrl} cx={cx} cy={cy} size={iconSize} />
+        <CategoryIconImage
+          url={iconUrl}
+          cx={cx}
+          cy={cy}
+          size={iconSize}
+          fallbackChar={iconChar}
+          fallbackFontSize={iconFontSize}
+        />
       ) : iconChar ? (
         <Text
           x={cx - radius}
