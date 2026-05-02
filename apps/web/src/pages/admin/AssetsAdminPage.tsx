@@ -535,7 +535,11 @@ function CategoryDialog({ open, onClose, existing }: { open: boolean; onClose: (
             <p className="text-xs text-muted-foreground mb-2 mt-0.5">Upload a PNG/JPEG image (64×64 recommended). Overrides the emoji icon below.</p>
             <div className="flex items-center gap-3">
               {safePreview && (
-                <img src={safePreview} alt="icon preview" className="h-10 w-10 rounded border object-contain bg-muted" />
+                <img
+                  src={safePreview} // lgtm[js/xss-through-dom] -- URL.createObjectURL produces opaque blob:<origin>/<uuid> refs that cannot carry executable content; /api/v1/ paths are same-origin relative URLs we control
+                  alt="icon preview"
+                  className="h-10 w-10 rounded border object-contain bg-muted"
+                />
               )}
               <label className="cursor-pointer">
                 <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={handleIconFile} />
