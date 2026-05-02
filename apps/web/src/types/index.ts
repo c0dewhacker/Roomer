@@ -142,6 +142,32 @@ export interface AssetWithStatus extends Omit<Asset, 'bookingStatus'> {
 /** @deprecated Use AssetWithStatus instead */
 export type DeskWithStatus = AssetWithStatus
 
+export type RecurringRuleStatus = 'ACTIVE' | 'CANCELLED'
+export type RecurringFrequency = 'DAILY' | 'WEEKLY' | 'MONTHLY'
+
+export interface RecurringBookingRule {
+  id: string
+  userId: string
+  assetId: string
+  frequency: RecurringFrequency
+  dayOfWeek: number | null
+  startTime: string
+  endTime: string
+  firstDate: string
+  lastDate: string
+  status: RecurringRuleStatus
+  createdAt: string
+  updatedAt: string
+  asset?: {
+    id: string
+    name: string
+    bookingLabel?: string | null
+    floor?: { name: string; building: { name: string } } | null
+  }
+  bookings?: Array<{ id: string; startsAt: string; endsAt: string; status?: string }>
+  _count?: { bookings: number }
+}
+
 export interface Booking {
   id: string
   userId: string
@@ -150,6 +176,7 @@ export interface Booking {
   endsAt: string
   status: BookingStatus
   notes?: string
+  recurringRuleId?: string | null
   user?: User
   asset?: Asset & {
     floor?: Floor & { building?: Building }

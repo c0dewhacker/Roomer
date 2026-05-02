@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { parseISO, isToday } from 'date-fns'
-import { Calendar, MapPin, Clock, Trash2, Pencil, CalendarPlus, X, Armchair } from 'lucide-react'
+import { Calendar, MapPin, Clock, Trash2, Pencil, CalendarPlus, X, Armchair, Repeat } from 'lucide-react'
 import { useMyBookings, useCancelBooking, useUpdateBooking } from '@/hooks/useBookings'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -32,8 +32,8 @@ import {
 } from '@/components/ui/dialog'
 import { formatDateRange, formatDate } from '@/lib/utils'
 import { DateTimeLocalInput } from '@/components/ui/date-time-input'
-import { assetsApi, type MyAssignment, type AvailabilityWindow } from '@/lib/api'
-import type { Booking } from '@/types'
+import { assetsApi, recurringBookingsApi, type MyAssignment, type AvailabilityWindow } from '@/lib/api'
+import type { Booking, RecurringBookingRule } from '@/types'
 
 type Tab = 'upcoming' | 'past' | 'all'
 
@@ -449,6 +449,113 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
   )
 }
 
+// ─── Recurring bookings ───────────────────────────────────────────────────────
+
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+
+function RecurringRuleCard({ rule }: { rule: RecurringBookingRule }) {
+  const qc = useQueryClient()
+
+  const cancel = useMutation({
+    mutationFn: () => recurringBookingsApi.cancel(rule.id),
+    onSuccess: () => {
+      toast.success('Recurring series cancelled')
+      qc.invalidateQueries({ queryKey: ['recurring-bookings'] })
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+
+  const assetLabel = rule.asset?.bookingLabel ?? rule.asset?.name ?? 'Unknown asset'
+  const location = [rule.asset?.floor?.building.name, rule.asset?.floor?.name].filter(Boolean).join(' › ')
+  const upcomingCount = rule.bookings?.length ?? rule._count?.bookings ?? 0
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="font-medium truncate">{assetLabel}</p>
+              <Badge variant={rule.status === 'ACTIVE' ? 'default' : 'destructive'} className="shrink-0 text-xs">
+                {rule.status}
+              </Badge>
+            </div>
+            {location && (
+              <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
+                <MapPin className="h-3 w-3 shrink-0" />{location}
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
+              <Repeat className="h-3 w-3 shrink-0" />
+              {rule.frequency === 'DAILY' && `Every day, ${rule.startTime}–${rule.endTime}`}
+              {rule.frequency === 'WEEKLY' && rule.dayOfWeek != null && `Every ${DAY_NAMES[rule.dayOfWeek]}, ${rule.startTime}–${rule.endTime}`}
+              {rule.frequency === 'MONTHLY' && `Monthly, ${rule.startTime}–${rule.endTime}`}
+            </p>
+            <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
+              <Calendar className="h-3 w-3 shrink-0" />
+              {formatDate(rule.firstDate)} → {formatDate(rule.lastDate)}
+              {upcomingCount > 0 && <span className="ml-1">({upcomingCount} upcoming)</span>}
+            </p>
+          </div>
+
+          {rule.status === 'ACTIVE' && (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive">
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Cancel recurring series?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    All future bookings in this series for <strong>{assetLabel}</strong> will be cancelled.
+                    Past bookings are not affected.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Keep series</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={() => cancel.mutate()}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    Cancel series
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function RecurringBookingsSection() {
+  const { data, isLoading } = useQuery({
+    queryKey: ['recurring-bookings'],
+    queryFn: () => recurringBookingsApi.list(),
+    select: (r) => r.data,
+  })
+
+  if (isLoading) return <div className="mb-8"><Skeleton className="h-20 w-full" /></div>
+  if (!data || data.length === 0) return null
+
+  return (
+    <div className="mb-8">
+      <div className="flex items-center gap-2 mb-3">
+        <Repeat className="h-4 w-4 text-muted-foreground" />
+        <h2 className="text-base font-semibold">Recurring Bookings</h2>
+      </div>
+      <div className="space-y-3">
+        {data.map((rule) => (
+          <RecurringRuleCard key={rule.id} rule={rule} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function BookingList({ tab }: { tab: Tab }) {
   const status = tab === 'upcoming' ? 'upcoming' : tab === 'past' ? 'past' : 'all'
   const { data, isLoading } = useMyBookings(status)
@@ -493,6 +600,7 @@ export default function BookingsPage() {
       </div>
 
       <MyAssignedDesks />
+      <RecurringBookingsSection />
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
         <TabsList className="mb-4">

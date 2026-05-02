@@ -1,0 +1,283 @@
+import type { FastifyInstance } from 'fastify'
+import { prisma } from '../lib/prisma'
+import { GlobalRole, NotificationType } from '@roomer/shared'
+import { requireAuth } from '../middleware/requireAuth'
+import { z } from 'zod'
+import { enqueueNotification } from '../lib/queue'
+
+const createRecurringSchema = z.object({
+  assetId: z.string().min(1),
+  frequency: z.enum(['DAILY', 'WEEKLY', 'MONTHLY']).default('WEEKLY'),
+  dayOfWeek: z.number().int().min(0).max(6).optional(),
+  startTime: z.string().regex(/^\d{2}:\d{2}$/, 'startTime must be HH:MM'),
+  endTime: z.string().regex(/^\d{2}:\d{2}$/, 'endTime must be HH:MM'),
+  firstDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'firstDate must be YYYY-MM-DD'),
+  lastDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'lastDate must be YYYY-MM-DD'),
+}).refine(
+  (d) => d.frequency !== 'WEEKLY' || d.dayOfWeek !== undefined,
+  { message: 'dayOfWeek is required for weekly recurrence', path: ['dayOfWeek'] },
+)
+
+function parseTimeToMinutes(time: string): number {
+  const [h, m] = time.split(':').map(Number)
+  return h * 60 + m
+}
+
+function buildSlotDatetime(dateUtcMidnight: Date, timeHHMM: string): Date {
+  const [h, m] = timeHHMM.split(':').map(Number)
+  const dt = new Date(dateUtcMidnight)
+  dt.setUTCHours(h, m, 0, 0)
+  return dt
+}
+
+function getOccurrenceDates(
+  frequency: 'DAILY' | 'WEEKLY' | 'MONTHLY',
+  dayOfWeek: number | undefined,
+  firstDate: string,
+  lastDate: string,
+): Date[] {
+  const start = new Date(firstDate + 'T00:00:00.000Z')
+  const end = new Date(lastDate + 'T00:00:00.000Z')
+  const dates: Date[] = []
+  const cursor = new Date(start)
+
+  if (frequency === 'DAILY') {
+    while (cursor <= end) {
+      dates.push(new Date(cursor))
+      cursor.setUTCDate(cursor.getUTCDate() + 1)
+    }
+  } else if (frequency === 'WEEKLY') {
+    while (cursor.getUTCDay() !== dayOfWeek!) {
+      cursor.setUTCDate(cursor.getUTCDate() + 1)
+    }
+    while (cursor <= end) {
+      dates.push(new Date(cursor))
+      cursor.setUTCDate(cursor.getUTCDate() + 7)
+    }
+  } else {
+    // MONTHLY — repeat on the same day-of-month; clamp to last day when month is shorter
+    const targetDay = start.getUTCDate()
+    while (cursor <= end) {
+      dates.push(new Date(cursor))
+      const nextMonth = (cursor.getUTCMonth() + 1) % 12
+      const nextYear = cursor.getUTCMonth() === 11 ? cursor.getUTCFullYear() + 1 : cursor.getUTCFullYear()
+      const daysInNextMonth = new Date(Date.UTC(nextYear, nextMonth + 1, 0)).getUTCDate()
+      cursor.setUTCFullYear(nextYear, nextMonth, Math.min(targetDay, daysInNextMonth))
+    }
+  }
+
+  return dates
+}
+
+export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Recurring Bookings'], ...route.schema } })
+
+  // POST /recurring-bookings — create rule + materialise all bookings
+  fastify.post('/', { preHandler: [requireAuth] }, async (request, reply) => {
+    const result = createRecurringSchema.safeParse(request.body)
+    if (!result.success) {
+      return reply.status(400).send({
+        error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
+      })
+    }
+
+    const { assetId, frequency, dayOfWeek, startTime, endTime, firstDate, lastDate } = result.data
+
+    if (parseTimeToMinutes(startTime) >= parseTimeToMinutes(endTime)) {
+      return reply.status(400).send({ error: { message: 'startTime must be before endTime', code: 'VALIDATION_ERROR' } })
+    }
+
+    const today = new Date()
+    today.setUTCHours(0, 0, 0, 0)
+    const firstDateObj = new Date(firstDate + 'T00:00:00.000Z')
+    const lastDateObj = new Date(lastDate + 'T00:00:00.000Z')
+
+    if (firstDateObj < today) {
+      return reply.status(400).send({ error: { message: 'firstDate must be today or in the future', code: 'VALIDATION_ERROR' } })
+    }
+    if (lastDateObj < firstDateObj) {
+      return reply.status(400).send({ error: { message: 'lastDate must be on or after firstDate', code: 'VALIDATION_ERROR' } })
+    }
+
+    const org = await prisma.organisation.findFirst({
+      select: { maxRecurringBookingWeeks: true, maxAdvanceBookingDays: true },
+    })
+    const maxWeeks = org?.maxRecurringBookingWeeks ?? 12
+    const spanMs = lastDateObj.getTime() - firstDateObj.getTime()
+    const spanWeeks = spanMs / (7 * 24 * 60 * 60 * 1000)
+    if (spanWeeks > maxWeeks) {
+      return reply.status(400).send({
+        error: { message: `Recurring booking span cannot exceed ${maxWeeks} weeks`, code: 'MAX_RECURRENCE_EXCEEDED' },
+      })
+    }
+
+    const asset = await prisma.asset.findUnique({
+      where: { id: assetId },
+      include: {
+        allowList: { select: { userId: true } },
+        userAssignments: { select: { userId: true } },
+        floor: { select: { id: true, buildingId: true } },
+      },
+    })
+    if (!asset) return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+    if (!asset.isBookable) return reply.status(409).send({ error: { message: 'Asset is not bookable', code: 'ASSET_NOT_BOOKABLE' } })
+    if (asset.bookingStatus === 'DISABLED') return reply.status(409).send({ error: { message: 'Asset is disabled', code: 'ASSET_DISABLED' } })
+
+    if (asset.bookingStatus === 'RESTRICTED') {
+      const onList = asset.allowList.some((e) => e.userId === request.user.id)
+      const isAssigned = asset.userAssignments.some((ua) => ua.userId === request.user.id)
+      if (!onList && !isAssigned && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        return reply.status(403).send({ error: { message: 'You are not permitted to book this asset', code: 'FORBIDDEN' } })
+      }
+    }
+
+    const occurrenceDates = getOccurrenceDates(frequency, dayOfWeek, firstDate, lastDate)
+    if (occurrenceDates.length === 0) {
+      return reply.status(400).send({ error: { message: 'No occurrences found for the given day and date range', code: 'NO_OCCURRENCES' } })
+    }
+
+    const slots = occurrenceDates.map((d) => ({
+      startsAt: buildSlotDatetime(d, startTime),
+      endsAt: buildSlotDatetime(d, endTime),
+    }))
+
+    try {
+      const rule = await prisma.$transaction(async (tx) => {
+        // Check all slots for conflicts atomically
+        for (const slot of slots) {
+          const conflict = await tx.booking.findFirst({
+            where: {
+              assetId,
+              status: 'CONFIRMED',
+              startsAt: { lt: slot.endsAt },
+              endsAt: { gt: slot.startsAt },
+            },
+            select: { id: true, startsAt: true },
+          })
+          if (conflict) {
+            throw Object.assign(new Error('CONFLICT'), {
+              code: 'BOOKING_CONFLICT',
+              conflictAt: conflict.startsAt.toISOString().split('T')[0],
+            })
+          }
+        }
+
+        const createdRule = await tx.recurringBookingRule.create({
+          data: {
+            userId: request.user.id,
+            assetId,
+            frequency,
+            dayOfWeek: dayOfWeek ?? null,
+            startTime,
+            endTime,
+            firstDate: firstDateObj,
+            lastDate: lastDateObj,
+            bookings: {
+              create: slots.map((s) => ({
+                userId: request.user.id,
+                assetId,
+                startsAt: s.startsAt,
+                endsAt: s.endsAt,
+                status: 'CONFIRMED',
+              })),
+            },
+          },
+          include: {
+            bookings: { select: { id: true, startsAt: true, endsAt: true } },
+            asset: { select: { id: true, name: true, floor: { select: { name: true, building: { select: { name: true } } } } } },
+          },
+        })
+
+        return createdRule
+      })
+
+      // Single confirmation notification for the first booking in the series
+      await enqueueNotification({
+        type: NotificationType.BOOKING_CONFIRMED,
+        userId: request.user.id,
+        bookingId: rule.bookings[0].id,
+      })
+
+      return reply.status(201).send({ data: rule })
+    } catch (err: unknown) {
+      const e = err as { code?: string; conflictAt?: string }
+      if (e.code === 'BOOKING_CONFLICT') {
+        return reply.status(409).send({
+          error: {
+            message: `Booking conflict on ${e.conflictAt} — the entire series was not created`,
+            code: 'BOOKING_CONFLICT',
+          },
+        })
+      }
+      throw err
+    }
+  })
+
+  // GET /recurring-bookings — list current user's rules
+  fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
+    const rules = await prisma.recurringBookingRule.findMany({
+      where: { userId: request.user.id },
+      include: {
+        asset: { select: { id: true, name: true, bookingLabel: true, floor: { select: { name: true, building: { select: { name: true } } } } } },
+        bookings: {
+          where: { status: 'CONFIRMED', startsAt: { gte: new Date() } },
+          select: { id: true, startsAt: true, endsAt: true },
+          orderBy: { startsAt: 'asc' },
+        },
+        _count: { select: { bookings: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+    return reply.status(200).send({ data: rules })
+  })
+
+  // GET /recurring-bookings/:id — get rule with all bookings
+  fastify.get('/:id', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const rule = await prisma.recurringBookingRule.findUnique({
+      where: { id },
+      include: {
+        asset: { select: { id: true, name: true, bookingLabel: true, floor: { select: { name: true, building: { select: { name: true } } } } } },
+        bookings: {
+          select: { id: true, startsAt: true, endsAt: true, status: true },
+          orderBy: { startsAt: 'asc' },
+        },
+      },
+    })
+    if (!rule) return reply.status(404).send({ error: { message: 'Rule not found', code: 'NOT_FOUND' } })
+    if (rule.userId !== request.user.id && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+    }
+    return reply.status(200).send({ data: rule })
+  })
+
+  // DELETE /recurring-bookings/:id — cancel rule + all future bookings
+  fastify.delete('/:id', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const rule = await prisma.recurringBookingRule.findUnique({
+      where: { id },
+      select: { id: true, userId: true, status: true },
+    })
+    if (!rule) return reply.status(404).send({ error: { message: 'Rule not found', code: 'NOT_FOUND' } })
+    if (rule.userId !== request.user.id && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+    }
+    if (rule.status === 'CANCELLED') {
+      return reply.status(409).send({ error: { message: 'Rule is already cancelled', code: 'ALREADY_CANCELLED' } })
+    }
+
+    const now = new Date()
+    await prisma.$transaction([
+      prisma.booking.updateMany({
+        where: { recurringRuleId: id, status: 'CONFIRMED', startsAt: { gt: now } },
+        data: { status: 'CANCELLED' },
+      }),
+      prisma.recurringBookingRule.update({
+        where: { id },
+        data: { status: 'CANCELLED' },
+      }),
+    ])
+
+    return reply.status(200).send({ data: { ok: true } })
+  })
+}
