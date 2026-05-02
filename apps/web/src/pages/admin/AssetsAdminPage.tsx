@@ -483,6 +483,9 @@ function CategoryDialog({ open, onClose, existing }: { open: boolean; onClose: (
     setIconPreview(URL.createObjectURL(f))
   }
 
+  // Sanitize at render time so CodeQL's taint tracker sees the break at the DOM boundary.
+  const safePreview = sanitizeIconPreviewUrl(iconPreview)
+
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
@@ -531,16 +534,16 @@ function CategoryDialog({ open, onClose, existing }: { open: boolean; onClose: (
             <Label>Custom Icon Image</Label>
             <p className="text-xs text-muted-foreground mb-2 mt-0.5">Upload a PNG/JPEG image (64×64 recommended). Overrides the emoji icon below.</p>
             <div className="flex items-center gap-3">
-              {iconPreview && (
-                <img src={iconPreview} alt="icon preview" className="h-10 w-10 rounded border object-contain bg-muted" />
+              {safePreview && (
+                <img src={safePreview} alt="icon preview" className="h-10 w-10 rounded border object-contain bg-muted" />
               )}
               <label className="cursor-pointer">
                 <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={handleIconFile} />
                 <span className="inline-flex items-center gap-1.5 rounded-md border border-input bg-background px-3 py-1.5 text-sm hover:bg-muted transition-colors">
-                  {iconPreview ? 'Replace image' : 'Upload image'}
+                  {safePreview ? 'Replace image' : 'Upload image'}
                 </span>
               </label>
-              {iconPreview && (
+              {safePreview && (
                 <button type="button" className="text-xs text-muted-foreground hover:text-destructive" onClick={() => { setIconFile(null); setIconPreview(null) }}>
                   Remove
                 </button>
@@ -844,7 +847,7 @@ function CategoriesTab() {
               <CardContent className="p-4 flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   {cat.iconUrl ? (
-                    <img src={cat.iconUrl} alt={cat.name} className="h-8 w-8 rounded border object-contain bg-muted shrink-0" />
+                    <img src={sanitizeIconPreviewUrl(cat.iconUrl) ?? ''} alt={cat.name} className="h-8 w-8 rounded border object-contain bg-muted shrink-0" />
                   ) : cat.colour ? (
                     <div className="h-8 w-8 rounded-full border shrink-0" style={{ backgroundColor: cat.colour }} />
                   ) : null}
