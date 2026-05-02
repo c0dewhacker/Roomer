@@ -275,6 +275,8 @@ model AssetCategory {
   defaultIsBookable Boolean @default(false)
   /// Icon slug used on the floor-plan canvas (e.g. "monitor", "phone", "lock").
   defaultIcon      String?
+  /// Relative storage path for a custom uploaded icon image.
+  iconUrl          String?
   /// Hex colour for map markers in this category.
   colour           String   @default("#6366f1")
   createdAt        DateTime @default(now())
