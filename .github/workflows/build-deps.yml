@@ -1,0 +1,36 @@
+name: Build (dependency PRs)
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled]
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    if: |
+      contains(github.event.pull_request.labels.*.name, 'dependencies') &&
+      contains(github.event.pull_request.labels.*.name, 'javascript') &&
+      startsWith(github.event.pull_request.title, 'build(deps): ')
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (all packages)
+        run: pnpm turbo build
