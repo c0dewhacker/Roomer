@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.13](https://github.com/c0dewhacker/Roomer/compare/v0.3.12...v0.3.13) (2026-05-03)
+
+
+### Bug Fixes
+
+* **ci:** generate Prisma client before build in dependency PR workflow ([a044f7c](https://github.com/c0dewhacker/Roomer/commit/a044f7cf7cd2d07c9686bbe20f6279c163dceda0))
+* **ci:** generate Prisma client before build in dependency PR workflow ([8170dd8](https://github.com/c0dewhacker/Roomer/commit/8170dd80853ab66d162d1e2f7f025e874ab42a89))
+
 ## [0.3.12](https://github.com/c0dewhacker/Roomer/compare/v0.3.11...v0.3.12) (2026-05-03)
 
 
