@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { prisma } from '../lib/prisma.js'
 import { env } from '../env.js'
-import { getOidcClientConfig, getOidcConfig, generateState, generateNonce, invalidateOidcCache } from '../lib/oidc.js'
+import { getOidcClientConfig, getOidcConfig, generateState, generateNonce } from '../lib/oidc.js'
 import { buildAuthorizationUrl, authorizationCodeGrant, fetchUserInfo, skipSubjectCheck } from 'openid-client'
 import { getSamlConfig, buildSaml, extractEmailFromProfile, extractDisplayNameFromProfile, extractGroupsFromProfile, type SamlProfile } from '../lib/saml.js'
 import { applyGroupMappings } from '../lib/group-mapping.js'

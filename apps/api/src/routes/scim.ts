@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma.js'
 import {
   userToScim, groupToScim, scimError, listResponse, parseScimFilter,
   applyUserPatchOps, applyGroupPatchOps, hashScimToken,
-  SCIM_SCHEMAS, scimUserLocation, scimGroupLocation,
+  SCIM_SCHEMAS,
 } from '../lib/scim-helpers.js'
 import { env } from '../env.js'
 

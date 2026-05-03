@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Send, ChevronDown, ChevronUp, Plus, Trash2, Zap, Upload, Image as ImageIcon, AlertTriangle, RefreshCw, Copy, Eye, EyeOff, Shield } from 'lucide-react'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -1357,6 +1357,14 @@ function ImageUpload({
   uploading: boolean
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
+  // Increment rev when upload completes (uploading true→false) to bust the browser cache.
+  const [rev, setRev] = useState(0)
+  const prevUploadingRef = useRef(uploading)
+  useEffect(() => {
+    if (prevUploadingRef.current && !uploading) setRev((r) => r + 1)
+    prevUploadingRef.current = uploading
+  }, [uploading])
+  const cacheBustedUrl = useMemo(() => `${imageUrl}?t=${rev}`, [imageUrl, rev])
   return (
     <div>
       <Label className="text-xs">{label}</Label>
@@ -1364,7 +1372,7 @@ function ImageUpload({
         <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-md border bg-muted">
           {hasImage ? (
             <img
-              src={`${imageUrl}?t=${Date.now()}`}
+              src={cacheBustedUrl}
               alt={label}
               className="max-h-full max-w-full object-contain"
             />

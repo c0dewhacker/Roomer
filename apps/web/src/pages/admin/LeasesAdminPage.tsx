@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useMemo } from 'react'
 import { useForm, type Resolver } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -229,9 +229,11 @@ function LeaseCard({ lease }: { lease: Lease }) {
     onError: () => toast.error('Failed to delete document'),
   })
 
+  // eslint-disable-next-line react-hooks/purity -- Date.now() inside useMemo with empty deps is stable at mount; React Compiler-safe
+  const now = useMemo(() => Date.now(), [])
   const isExpired = lease.endDate ? isPast(new Date(lease.endDate)) : false
   const isExpiringSoon = lease.endDate && !isExpired
-    ? (new Date(lease.endDate).getTime() - Date.now()) < 90 * 24 * 60 * 60 * 1000
+    ? (new Date(lease.endDate).getTime() - now) < 90 * 24 * 60 * 60 * 1000
     : false
 
   const formatCurrency = (amount: number, currency: string) =>
@@ -442,9 +444,11 @@ export default function LeasesAdminPage() {
     select: (r) => r.data,
   })
 
+  // eslint-disable-next-line react-hooks/purity -- Date.now() inside useMemo with empty deps is stable at mount; React Compiler-safe
+  const listNow = useMemo(() => Date.now(), [])
   const expiringSoon = (leases ?? []).filter((l) => {
     if (!l.endDate) return false
-    const daysLeft = (new Date(l.endDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+    const daysLeft = (new Date(l.endDate).getTime() - listNow) / (1000 * 60 * 60 * 24)
     return daysLeft > 0 && daysLeft <= 90
   })
 

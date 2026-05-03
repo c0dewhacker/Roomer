@@ -39,7 +39,10 @@ async function authPlugin(fastify: FastifyInstance): Promise<void> {
       sameSite: 'strict',
       maxAge: 10 * 60 * 1000, // 10 minutes — only needs to survive the IdP redirect
     },
-    store: store as any,
+    // connect-pg-simple uses express-session's Store interface; @fastify/session expects a
+    // slightly different shape — no shared type exists, so the double-cast is necessary.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    store: store as unknown as any,
   })
 }
 

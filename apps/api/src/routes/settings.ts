@@ -534,7 +534,7 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
   ] as const
   type TemplateType = (typeof ALLOWED_TEMPLATE_TYPES)[number]
 
-  function buildTestVars(type: TemplateType): Record<string, string> {
+  function buildTestVars(_type: TemplateType): Record<string, string> {
     const now = new Date()
     const later = new Date(now.getTime() + 8 * 60 * 60 * 1000)
     const claimDeadline = new Date(now.getTime() + 2 * 60 * 60 * 1000)

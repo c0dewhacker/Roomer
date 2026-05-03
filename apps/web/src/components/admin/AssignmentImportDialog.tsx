@@ -271,6 +271,7 @@ export default function AssignmentImportDialog({
                 </thead>
                 <tbody className="divide-y">
                   {rows.map((r, i) => (
+                    // eslint-disable-next-line @eslint-react/no-array-index-key -- rows are parsed from a fixed CSV; no stable IDs exist and order never changes
                     <tr key={i} className={r.rowError ? 'bg-destructive/5' : ''}>
                       <td className="px-3 py-1.5 text-muted-foreground">{i + 1}</td>
                       <td className="px-3 py-1.5 font-mono">{r.assetId || <span className="text-muted-foreground italic">—</span>}</td>

@@ -7,7 +7,6 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole, isFloorManagerForFloor, isBuildingManagerForBuilding } from '../middleware/requireRole.js'
 import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage.js'
 import { canUserAccessBuilding } from './groups.js'
-import { env } from '../env.js'
 import { z } from 'zod'
 
 export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
