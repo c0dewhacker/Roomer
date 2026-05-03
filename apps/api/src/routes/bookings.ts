@@ -1,12 +1,12 @@
 import type { FastifyInstance } from 'fastify'
 import { Prisma } from '@prisma/client'
-import { prisma } from '../lib/prisma'
+import { prisma } from '../lib/prisma.js'
 import { createBookingSchema, updateBookingSchema, GlobalRole, NotificationType } from '@roomer/shared'
-import { requireAuth } from '../middleware/requireAuth'
-import { requireGlobalRole, isFloorManagerForFloor, getManagedBuildingIds } from '../middleware/requireRole'
-import { enqueueNotification, fanOutFloorAvailable, CLAIM_DEADLINE_MS } from '../lib/queue'
+import { requireAuth } from '../middleware/requireAuth.js'
+import { requireGlobalRole, isFloorManagerForFloor, getManagedBuildingIds } from '../middleware/requireRole.js'
+import { enqueueNotification, fanOutFloorAvailable, CLAIM_DEADLINE_MS } from '../lib/queue.js'
 import { randomUUID } from 'crypto'
-import { checkGroupAccess } from './groups'
+import { checkGroupAccess } from './groups.js'
 import { z } from 'zod'
 
 class BookingConflictError extends Error {

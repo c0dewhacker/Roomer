@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'crypto'
-import { env } from '../env'
+import { env } from '../env.js'
 
 const ALGORITHM = 'aes-256-gcm'
 const IV_BYTES = 12   // 96-bit IV — recommended for GCM

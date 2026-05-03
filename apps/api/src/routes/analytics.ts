@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify'
-import { prisma } from '../lib/prisma'
+import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
-import { requireAuth } from '../middleware/requireAuth'
-import { requireGlobalRole, getManagedBuildingIds } from '../middleware/requireRole'
+import { requireAuth } from '../middleware/requireAuth.js'
+import { requireGlobalRole, getManagedBuildingIds } from '../middleware/requireRole.js'
 import { z } from 'zod'
 
 const analyticsQuerySchema = z.object({

@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify'
-import { prisma } from '../lib/prisma'
+import { prisma } from '../lib/prisma.js'
 import { createZoneSchema, updateZoneSchema, createZoneGroupSchema, GlobalRole } from '@roomer/shared'
-import { requireAuth } from '../middleware/requireAuth'
-import { requireGlobalRole, isFloorManagerForFloor } from '../middleware/requireRole'
+import { requireAuth } from '../middleware/requireAuth.js'
+import { requireGlobalRole, isFloorManagerForFloor } from '../middleware/requireRole.js'
 
 export async function zoneRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Zones'], ...route.schema } })

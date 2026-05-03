@@ -1,4 +1,4 @@
-import { prisma } from './prisma'
+import { prisma } from './prisma.js'
 import { GlobalRole } from '@roomer/shared'
 
 export interface GroupMapping {

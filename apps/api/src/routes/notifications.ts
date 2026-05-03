@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
-import { prisma } from '../lib/prisma'
-import { requireAuth } from '../middleware/requireAuth'
+import { prisma } from '../lib/prisma.js'
+import { requireAuth } from '../middleware/requireAuth.js'
 import { z } from 'zod'
 
 const paginationSchema = z.object({

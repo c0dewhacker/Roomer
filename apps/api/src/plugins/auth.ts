@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify'
 import fastifyCookie from '@fastify/cookie'
 import fastifySession from '@fastify/session'
 import ConnectPgSimple from 'connect-pg-simple'
-import { env } from '../env'
+import { env } from '../env.js'
 
 // Session is kept exclusively for OIDC redirect-flow state storage
 // (nonce + state parameters that must survive the browser round-trip).

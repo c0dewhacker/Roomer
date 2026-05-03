@@ -3,11 +3,10 @@ import path from 'path'
 import { randomBytes } from 'crypto'
 import type { MultipartFile } from '@fastify/multipart'
 import sharp from 'sharp'
-import { env } from '../env'
+import { env } from '../env.js'
 import { FloorPlanFileType } from '@roomer/shared'
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const DxfParser = require('dxf-parser')
+import { DxfParser } from 'dxf-parser'
 
 const FLOOR_PLANS_DIR = 'floor-plans'
 const THUMBNAILS_DIR = 'floor-plans/thumbnails'

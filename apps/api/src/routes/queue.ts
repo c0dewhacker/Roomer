@@ -1,10 +1,10 @@
 import type { FastifyInstance } from 'fastify'
-import { prisma } from '../lib/prisma'
+import { prisma } from '../lib/prisma.js'
 import { createQueueEntrySchema, NotificationType, GlobalRole } from '@roomer/shared'
-import { requireAuth } from '../middleware/requireAuth'
-import { enqueueNotification } from '../lib/queue'
+import { requireAuth } from '../middleware/requireAuth.js'
+import { enqueueNotification } from '../lib/queue.js'
 import { randomUUID } from 'crypto'
-import { checkGroupAccess } from './groups'
+import { checkGroupAccess } from './groups.js'
 import { z } from 'zod'
 
 export async function queueRoutes(fastify: FastifyInstance): Promise<void> {

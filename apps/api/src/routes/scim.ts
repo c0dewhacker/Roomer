@@ -1,12 +1,12 @@
 import { timingSafeEqual } from 'crypto'
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { prisma } from '../lib/prisma'
+import { prisma } from '../lib/prisma.js'
 import {
   userToScim, groupToScim, scimError, listResponse, parseScimFilter,
   applyUserPatchOps, applyGroupPatchOps, hashScimToken,
   SCIM_SCHEMAS, scimUserLocation, scimGroupLocation,
-} from '../lib/scim-helpers'
-import { env } from '../env'
+} from '../lib/scim-helpers.js'
+import { env } from '../env.js'
 
 const SCIM_CONTENT_TYPE = 'application/scim+json'
 

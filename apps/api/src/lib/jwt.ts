@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken'
 import { randomUUID } from 'crypto'
-import { env } from '../env'
+import { env } from '../env.js'
 
 /** Cookie name used for the access token throughout the application. */
 export const TOKEN_COOKIE = 'access_token'

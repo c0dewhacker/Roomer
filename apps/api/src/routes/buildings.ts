@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify'
-import { prisma } from '../lib/prisma'
+import { prisma } from '../lib/prisma.js'
 import { createBuildingSchema, updateBuildingSchema, GlobalRole } from '@roomer/shared'
-import { requireAuth } from '../middleware/requireAuth'
-import { requireGlobalRole } from '../middleware/requireRole'
-import { canUserAccessBuilding } from './groups'
+import { requireAuth } from '../middleware/requireAuth.js'
+import { requireGlobalRole } from '../middleware/requireRole.js'
+import { canUserAccessBuilding } from './groups.js'
 import { z } from 'zod'
 export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Buildings'], ...route.schema } })

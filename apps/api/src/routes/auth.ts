@@ -1,12 +1,12 @@
 import type { FastifyInstance } from 'fastify'
 import bcryptjs from 'bcryptjs'
-import { prisma } from '../lib/prisma'
+import { prisma } from '../lib/prisma.js'
 import { loginSchema } from '@roomer/shared'
-import { requireAuth } from '../middleware/requireAuth'
-import { authenticateWithLdap, getLdapConfig } from '../lib/ldap'
-import { applyGroupMappings } from '../lib/group-mapping'
-import { signAccessToken, verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE, MAX_SESSION_SECONDS } from '../lib/jwt'
-import { blockToken } from '../lib/token-blocklist'
+import { requireAuth } from '../middleware/requireAuth.js'
+import { authenticateWithLdap, getLdapConfig } from '../lib/ldap.js'
+import { applyGroupMappings } from '../lib/group-mapping.js'
+import { signAccessToken, verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE, MAX_SESSION_SECONDS } from '../lib/jwt.js'
+import { blockToken } from '../lib/token-blocklist.js'
 
 export async function authRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Auth'], ...route.schema } })
