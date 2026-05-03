@@ -107,7 +107,7 @@ function PreviewTree({ buildings }: { buildings: Map<string, PreviewBuilding> })
   const toggle = (key: string) =>
     setExpanded((prev) => {
       const next = new Set(prev)
-      next.has(key) ? next.delete(key) : next.add(key)
+      if (next.has(key)) { next.delete(key) } else { next.add(key) }
       return next
     })
 
