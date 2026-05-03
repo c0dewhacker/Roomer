@@ -56,12 +56,10 @@ function useDraggable(storageKey: string, getDefault: () => Pos) {
   })
 
   const elRef = useRef<HTMLDivElement>(null)
-  const posRef = useRef(pos)
-  posRef.current = pos
   const drag = useRef({ active: false, startX: 0, startY: 0, origX: 0, origY: 0 })
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    drag.current = { active: true, startX: e.clientX, startY: e.clientY, origX: posRef.current.x, origY: posRef.current.y }
+    drag.current = { active: true, startX: e.clientX, startY: e.clientY, origX: pos.x, origY: pos.y }
     e.currentTarget.setPointerCapture(e.pointerId)
     e.preventDefault()
   }
@@ -96,7 +94,6 @@ function useDraggable(storageKey: string, getDefault: () => Pos) {
     })
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return { pos, elRef, gripProps: { onPointerDown, onPointerMove, onPointerUp } as const }
@@ -175,8 +172,6 @@ export function FloatingNav() {
   const navRef    = useRef<HTMLDivElement>(null)
   const pillRef   = useRef<HTMLDivElement>(null)   // tracks visual pill bounds after rotation
   const panelElRef = useRef<HTMLDivElement | null>(null)
-  const navPosRef  = useRef(navPos)
-  navPosRef.current = navPos
   const navDrag = useRef({ active: false, startX: 0, startY: 0, origX: 0, origY: 0 })
 
   const wheelHandler = useRef((e: WheelEvent) => {
@@ -192,7 +187,7 @@ export function FloatingNav() {
   const closePanel = () => { setOpenPanel(null); setPanelState(null) }
 
   const onNavGripDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    navDrag.current = { active: true, startX: e.clientX, startY: e.clientY, origX: navPosRef.current.x, origY: navPosRef.current.y }
+    navDrag.current = { active: true, startX: e.clientX, startY: e.clientY, origX: navPos.x, origY: navPos.y }
     e.currentTarget.setPointerCapture(e.pointerId)
     e.preventDefault()
     closePanel()  // dismiss any open panel when dragging starts
@@ -248,7 +243,7 @@ export function FloatingNav() {
   }
 
   // Close panel on navigation
-  useEffect(() => { closePanel() }, [location.pathname]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { closePanel() }, [location.pathname])
 
   // Close panel on outside click (checks both nav and panel elements)
   useEffect(() => {
@@ -260,9 +255,10 @@ export function FloatingNav() {
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
-  }, [openPanel]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [openPanel])
 
   const gripClass = 'cursor-grab active:cursor-grabbing select-none touch-none text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors'
+  const SecIcon = secondarySection?.items[0]?.icon
 
   return (
     <>
@@ -282,8 +278,10 @@ export function FloatingNav() {
       </div>
 
       {/* ── Utility float ─────────────────────────────────────────────────── */}
+      {/* eslint-disable-next-line react-hooks/refs -- util.elRef is passed to ref=, not read; util.pos is useState not a ref */}
       <div ref={util.elRef} style={{ position: 'fixed', left: util.pos.x, top: util.pos.y, zIndex: 50 }}>
         <div className="flex items-center gap-1 rounded-xl border border-border/60 bg-background/80 px-2 py-1.5 shadow-lg backdrop-blur-xl">
+          {/* eslint-disable-next-line react-hooks/refs -- gripProps contains event handlers, not ref values */}
           <div {...util.gripProps} className={`${gripClass} px-0.5`} title="Drag to reposition">
             <GripHorizontal className="h-3 w-3" />
           </div>
@@ -381,28 +379,25 @@ export function FloatingNav() {
           </button>
 
           {/* Secondary section trigger (Admin / Manager) */}
-          {secondarySection && (() => {
-            const SecIcon = secondarySection.items[0].icon
-            return (
-              <>
-                <div style={{ transform: `rotate(${-rotation}deg)` }} className="mx-1 h-8 w-px bg-border/60" />
-                <button
-                  onClick={() => togglePanel(secondarySection.id as PanelId)}
-                  className={cn(
-                    'flex items-center justify-center rounded-xl p-2 transition-all duration-150',
-                    openPanel === secondarySection.id
-                      ? 'bg-primary text-primary-foreground shadow-sm'
-                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-                  )}
-                >
-                  <div style={{ transform: `rotate(${-rotation}deg)` }} className="flex flex-col items-center gap-0.5">
-                    <SecIcon className="h-5 w-5" />
-                    <span className="text-[10px] font-medium leading-none">{secondarySection.label}</span>
-                  </div>
-                </button>
-              </>
-            )
-          })()}
+          {secondarySection && SecIcon && (
+            <>
+              <div style={{ transform: `rotate(${-rotation}deg)` }} className="mx-1 h-8 w-px bg-border/60" />
+              <button
+                onClick={() => togglePanel(secondarySection.id as PanelId)}
+                className={cn(
+                  'flex items-center justify-center rounded-xl p-2 transition-all duration-150',
+                  openPanel === secondarySection.id
+                    ? 'bg-primary text-primary-foreground shadow-sm'
+                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                )}
+              >
+                <div style={{ transform: `rotate(${-rotation}deg)` }} className="flex flex-col items-center gap-0.5">
+                  <SecIcon className="h-5 w-5" />
+                  <span className="text-[10px] font-medium leading-none">{secondarySection.label}</span>
+                </div>
+              </button>
+            </>
+          )}
         </div>
       </div>
 

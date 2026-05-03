@@ -3,7 +3,6 @@ import { prisma } from '../lib/prisma.js'
 import { createQueueEntrySchema, NotificationType, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { enqueueNotification } from '../lib/queue.js'
-import { randomUUID } from 'crypto'
 import { checkGroupAccess } from './groups.js'
 import { z } from 'zod'
 
