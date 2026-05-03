@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.12](https://github.com/c0dewhacker/Roomer/compare/v0.3.11...v0.3.12) (2026-05-03)
+
+
+### Bug Fixes
+
+* resolve all ESLint errors blocking CI ([435fc25](https://github.com/c0dewhacker/Roomer/commit/435fc259f848d0918317a4cdbe5f584cf19cd6f5))
+* resolve all ESLint errors blocking CI lint check ([d20019d](https://github.com/c0dewhacker/Roomer/commit/d20019d4effec4231de9c3ba1fd0233c7a5df8db))
+
 ## [0.3.11](https://github.com/c0dewhacker/Roomer/compare/v0.3.10...v0.3.11) (2026-05-02)
 
 
