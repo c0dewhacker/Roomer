@@ -32,5 +32,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Generate Prisma client
+        run: pnpm --filter @roomer/api exec prisma generate
+
       - name: Build (all packages)
         run: pnpm turbo build
