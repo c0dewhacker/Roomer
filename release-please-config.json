@@ -9,18 +9,18 @@
           "type": "yaml",
           "path": "charts/roomer/Chart.yaml",
           "jsonpath": "$.appVersion"
+        },
+        {
+          "type": "json",
+          "path": "apps/api/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "apps/web/package.json",
+          "jsonpath": "$.version"
         }
       ]
-    },
-    "apps/api": {
-      "release-type": "node",
-      "component": "api",
-      "bootstrap-sha": "435fc25"
-    },
-    "apps/web": {
-      "release-type": "node",
-      "component": "web",
-      "bootstrap-sha": "435fc25"
     }
   },
   "bump-minor-pre-major": true,
