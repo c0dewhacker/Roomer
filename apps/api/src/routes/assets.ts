@@ -3,7 +3,7 @@ import fs from 'fs'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole, BookableStatus, bulkUpdateAssetPositionsSchema, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { requireGlobalRole, getManagedFloorIds, isFloorManagerForFloor } from '../middleware/requireRole.js'
+import { requireGlobalRole, getManagedFloorIds, getManagedBuildingIds, isFloorManagerForFloor } from '../middleware/requireRole.js'
 import { enqueueNotification, fanOutFloorAvailable } from '../lib/queue.js'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
@@ -101,7 +101,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /bulk-import — create multiple bookable assets and place them on a floor
   fastify.post(
     '/bulk-import',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const result = bulkImportSchema.safeParse(request.body)
       if (!result.success) {
@@ -118,6 +118,11 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       })
       if (!floor) {
         return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+      }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isFloorManagerForFloor(request.user.id, floorId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
 
       const created: { id: string; name: string }[] = []
@@ -622,12 +627,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // DELETE /user-assignments/by-floor/:floorId — clear all permanent assignments on a floor
   fastify.delete(
     '/user-assignments/by-floor/:floorId',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { floorId } = request.params as { floorId: string }
       const floor = await prisma.floor.findUnique({ where: { id: floorId } })
       if (!floor) {
         return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+      }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isFloorManagerForFloor(request.user.id, floorId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
       const assets = await prisma.asset.findMany({ where: { floorId }, select: { id: true } })
       const assetIds = assets.map((a) => a.id)
@@ -648,7 +658,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /user-assignments/bulk — bulk create/update permanent user assignments
   fastify.post(
     '/user-assignments/bulk',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const bodySchema = z.object({
         rows: z.array(z.object({
@@ -667,20 +677,37 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       let assigned = 0
       const errors: Array<{ row: number; assetId: string; userEmail: string; error: string }> = []
 
+      const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      let managedFloorIds: Set<string> = new Set()
+      if (!isAdmin) {
+        const ids = await getManagedFloorIds(request.user.id)
+        if (ids.length === 0) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        managedFloorIds = new Set(ids)
+      }
+
       // Pre-fetch all referenced assets and users in two batch queries
       const allAssetIds = [...new Set(rows.map((r) => r.assetId))]
       const allEmails = [...new Set(rows.map((r) => r.userEmail))]
       const [assetRows, userRows] = await Promise.all([
-        prisma.asset.findMany({ where: { id: { in: allAssetIds } }, select: { id: true } }),
+        prisma.asset.findMany({ where: { id: { in: allAssetIds } }, select: { id: true, floorId: true } }),
         prisma.user.findMany({ where: { email: { in: allEmails } }, select: { id: true, email: true } }),
       ])
-      const assetIds = new Set(assetRows.map((a) => a.id))
+      const assetFloorMap = new Map(assetRows.map((a) => [a.id, a.floorId]))
       const userByEmail = new Map(userRows.map((u) => [u.email, u.id]))
 
       for (let i = 0; i < rows.length; i++) {
         const { assetId, userEmail, isPrimary } = rows[i]
         try {
-          if (!assetIds.has(assetId)) { errors.push({ row: i + 1, assetId, userEmail, error: 'Asset not found' }); continue }
+          if (!assetFloorMap.has(assetId)) { errors.push({ row: i + 1, assetId, userEmail, error: 'Asset not found' }); continue }
+          if (!isAdmin) {
+            const floorId = assetFloorMap.get(assetId)
+            if (!floorId || !managedFloorIds.has(floorId)) {
+              errors.push({ row: i + 1, assetId, userEmail, error: 'Asset not on a managed floor' })
+              continue
+            }
+          }
           const userId = userByEmail.get(userEmail)
           if (!userId) { errors.push({ row: i + 1, assetId, userEmail, error: 'User not found' }); continue }
           if (isPrimary) {
@@ -708,14 +735,27 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /user-assignments/export — export asset+assignment data for CSV generation
   fastify.get(
     '/user-assignments/export',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const queryResult = z.object({ buildingId: z.string().cuid().optional() }).safeParse(request.query)
       if (!queryResult.success) {
         return reply.status(400).send({ error: { message: 'Invalid query parameters', code: 'VALIDATION_ERROR' } })
       }
       const { buildingId } = queryResult.data
-      const whereClause = buildingId ? { floor: { building: { id: buildingId } } } : {}
+      const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      let whereClause: Record<string, unknown> = buildingId ? { floor: { building: { id: buildingId } } } : {}
+      if (!isSuperAdmin) {
+        const managedBuildingIds = await getManagedBuildingIds(request.user.id)
+        if (managedBuildingIds.length === 0) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        if (buildingId && !managedBuildingIds.includes(buildingId)) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        if (!buildingId) {
+          whereClause = { floor: { buildingId: { in: managedBuildingIds } } }
+        }
+      }
       const assets = await prisma.asset.findMany({
         where: whereClause,
         select: {
@@ -782,16 +822,24 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.status(200).send({ data: asset })
   })
 
-  // POST / — create asset (admin)
+  // POST / — create asset (SUPER_ADMIN, or floor manager/building admin when floorId is provided)
   fastify.post(
     '/',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const result = createAssetSchema.safeParse(request.body)
       if (!result.success) {
         return reply.status(400).send({
           error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
         })
+      }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        if (!result.data.floorId) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        const canManage = await isFloorManagerForFloor(request.user.id, result.data.floorId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
 
       const category = await prisma.assetCategory.findUnique({
@@ -886,12 +934,20 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // DELETE /:id — delete asset (admin)
+  // DELETE /:id — delete asset (SUPER_ADMIN or floor manager/building admin for assets on managed floors)
   fastify.delete(
     '/:id',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const existing = await prisma.asset.findUnique({ where: { id }, select: { floorId: true } })
+        if (!existing) return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+        if (!existing.floorId) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        const canManage = await isFloorManagerForFloor(request.user.id, existing.floorId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
 
       try {
         await prisma.asset.delete({ where: { id } })
@@ -994,12 +1050,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /:id/user-assignments — list permanent user assignments
   fastify.get(
     '/:id/user-assignments',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
       const asset = await prisma.asset.findUnique({ where: { id } })
       if (!asset) {
         return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+      }
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        if (!asset.floorId) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        const canManage = await isFloorManagerForFloor(request.user.id, asset.floorId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
       const assignments = await prisma.assetUserAssignment.findMany({
         where: { assetId: id },
@@ -1015,7 +1076,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /:id/user-assignments — add permanent user
   fastify.post(
     '/:id/user-assignments',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
       const schema = z.object({ userId: z.string().min(1), isPrimary: z.boolean().default(false) })
@@ -1028,6 +1089,11 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       const asset = await prisma.asset.findUnique({ where: { id } })
       if (!asset) {
         return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+      }
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        if (!asset.floorId) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        const canManage = await isFloorManagerForFloor(request.user.id, asset.floorId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
       const user = await prisma.user.findUnique({ where: { id: result.data.userId } })
       if (!user) {
@@ -1053,9 +1119,16 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // DELETE /:id/user-assignments/:userId — remove permanent user
   fastify.delete(
     '/:id/user-assignments/:userId',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id, userId } = request.params as { id: string; userId: string }
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const asset = await prisma.asset.findUnique({ where: { id }, select: { floorId: true } })
+        if (!asset) return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+        if (!asset.floorId) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        const canManage = await isFloorManagerForFloor(request.user.id, asset.floorId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
       try {
         await prisma.assetUserAssignment.delete({
           where: { assetId_userId: { assetId: id, userId } },
@@ -1074,9 +1147,16 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // PATCH /:id/user-assignments/:userId/primary — set as primary
   fastify.patch(
     '/:id/user-assignments/:userId/primary',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id, userId } = request.params as { id: string; userId: string }
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const asset = await prisma.asset.findUnique({ where: { id }, select: { floorId: true } })
+        if (!asset) return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+        if (!asset.floorId) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        const canManage = await isFloorManagerForFloor(request.user.id, asset.floorId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
       const existing = await prisma.assetUserAssignment.findUnique({
         where: { assetId_userId: { assetId: id, userId } },
       })
@@ -1100,13 +1180,18 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /:id/history — assignment history
   fastify.get(
     '/:id/history',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
 
       const asset = await prisma.asset.findUnique({ where: { id } })
       if (!asset) {
         return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+      }
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        if (!asset.floorId) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        const canManage = await isFloorManagerForFloor(request.user.id, asset.floorId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
 
       const history = await prisma.assetAssignment.findMany({
@@ -1124,7 +1209,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /:id/allow-list — add userId to allow list (bookable assets)
   fastify.post(
     '/:id/allow-list',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
       const result = addToAllowListSchema.safeParse(request.body)
@@ -1137,6 +1222,11 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       const asset = await prisma.asset.findUnique({ where: { id } })
       if (!asset) {
         return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+      }
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        if (!asset.floorId) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        const canManage = await isFloorManagerForFloor(request.user.id, asset.floorId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
 
       const user = await prisma.user.findUnique({ where: { id: result.data.userId } })
@@ -1160,9 +1250,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // DELETE /:id/allow-list/:userId
   fastify.delete(
     '/:id/allow-list/:userId',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id, userId } = request.params as { id: string; userId: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const asset = await prisma.asset.findUnique({ where: { id }, select: { floorId: true } })
+        if (!asset) return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+        if (!asset.floorId) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        const canManage = await isFloorManagerForFloor(request.user.id, asset.floorId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
 
       try {
         await prisma.assetAllowList.delete({
@@ -1180,13 +1278,18 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /:id/allow-list — list allow-list entries
   fastify.get(
     '/:id/allow-list',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
 
       const asset = await prisma.asset.findUnique({ where: { id } })
       if (!asset) {
         return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+      }
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        if (!asset.floorId) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        const canManage = await isFloorManagerForFloor(request.user.id, asset.floorId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
 
       const entries = await prisma.assetAllowList.findMany({
@@ -1202,9 +1305,16 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /:id/zones — list additional zone memberships
   fastify.get(
     '/:id/zones',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const asset = await prisma.asset.findUnique({ where: { id }, select: { floorId: true } })
+        if (!asset) return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+        if (!asset.floorId) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        const canManage = await isFloorManagerForFloor(request.user.id, asset.floorId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
       const assetZones = await prisma.assetZone.findMany({
         where: { assetId: id },
         include: { zone: { select: { id: true, name: true, colour: true } } },
@@ -1217,7 +1327,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /:id/zones — add asset to an additional zone
   fastify.post(
     '/:id/zones',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
       const result = addZoneSchema.safeParse(request.body)
@@ -1233,6 +1343,12 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       ])
       if (!asset) return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
       if (!zone) return reply.status(404).send({ error: { message: 'Zone not found', code: 'NOT_FOUND' } })
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        if (!asset.floorId) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        const canManage = await isFloorManagerForFloor(request.user.id, asset.floorId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
 
       // Prevent adding the primary zone as an additional zone
       if (asset.primaryZoneId === result.data.zoneId) {
@@ -1257,9 +1373,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // DELETE /:id/zones/:zoneId — remove asset from additional zone
   fastify.delete(
     '/:id/zones/:zoneId',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id, zoneId } = request.params as { id: string; zoneId: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const asset = await prisma.asset.findUnique({ where: { id }, select: { floorId: true } })
+        if (!asset) return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+        if (!asset.floorId) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        const canManage = await isFloorManagerForFloor(request.user.id, asset.floorId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
 
       try {
         await prisma.assetZone.delete({ where: { assetId_zoneId: { assetId: id, zoneId } } })

@@ -137,12 +137,18 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // POST /floors/:id/group-managers — assign a group as floor manager (SUPER_ADMIN only)
+  // POST /floors/:id/group-managers — assign a group as floor manager (SUPER_ADMIN or building admin)
   fastify.post(
     '/:id/group-managers',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const floor = await prisma.floor.findUnique({ where: { id }, select: { buildingId: true } })
+        if (!floor) return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+        const canManage = await isBuildingManagerForBuilding(request.user.id, floor.buildingId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
       const bodyResult = z.object({ groupId: z.string().min(1) }).safeParse(request.body)
       if (!bodyResult.success) {
         return reply.status(400).send({ error: { message: 'groupId is required', code: 'VALIDATION_ERROR' } })
@@ -169,12 +175,18 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // DELETE /floors/:id/group-managers/:groupId — remove a group floor manager (SUPER_ADMIN only)
+  // DELETE /floors/:id/group-managers/:groupId — remove a group floor manager (SUPER_ADMIN or building admin)
   fastify.delete(
     '/:id/group-managers/:groupId',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id, groupId } = request.params as { id: string; groupId: string }
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const floor = await prisma.floor.findUnique({ where: { id }, select: { buildingId: true } })
+        if (!floor) return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+        const canManage = await isBuildingManagerForBuilding(request.user.id, floor.buildingId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
 
       const role = await prisma.groupResourceRole.findFirst({
         where: { groupId, scopeType: 'FLOOR', floorId: id },
@@ -191,13 +203,18 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /floors — create floor
   fastify.post(
     '/',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const result = createFloorSchema.safeParse(request.body)
       if (!result.success) {
         return reply.status(400).send({
           error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
         })
+      }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, result.data.buildingId)
+        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
 
       const building = await prisma.building.findUnique({ where: { id: result.data.buildingId } })
