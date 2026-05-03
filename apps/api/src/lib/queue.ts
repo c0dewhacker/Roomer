@@ -1,9 +1,9 @@
 import { PgBoss, type Job } from 'pg-boss'
-import { env } from '../env'
-import { prisma } from './prisma'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderWelcome, renderFloorAvailable, interpolateTemplate, stripHtmlToText, formatDate } from './mailer'
+import { env } from '../env.js'
+import { prisma } from './prisma.js'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderWelcome, renderFloorAvailable, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
 import { randomUUID } from 'crypto'
-import { pruneExpiredBlocklistEntries } from './token-blocklist'
+import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
 
 let boss: PgBoss | null = null

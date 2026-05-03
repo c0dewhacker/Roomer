@@ -1,6 +1,6 @@
 import { discovery, randomState, randomNonce, type Configuration, ClientSecretPost } from 'openid-client'
-import { findAuthConfig } from './prisma'
-import type { GroupMapping } from './group-mapping'
+import { findAuthConfig } from './prisma.js'
+import type { GroupMapping } from './group-mapping.js'
 
 export interface OidcConfig {
   issuerUrl: string

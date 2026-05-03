@@ -11,6 +11,14 @@
           "jsonpath": "$.appVersion"
         }
       ]
+    },
+    "apps/api": {
+      "release-type": "node",
+      "component": "api"
+    },
+    "apps/web": {
+      "release-type": "node",
+      "component": "web"
     }
   },
   "bump-minor-pre-major": true,

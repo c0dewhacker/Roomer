@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { prisma } from '../lib/prisma'
-import { requireAuth } from '../middleware/requireAuth'
-import { canUserAccessBuilding } from './groups'
+import { prisma } from '../lib/prisma.js'
+import { requireAuth } from '../middleware/requireAuth.js'
+import { canUserAccessBuilding } from './groups.js'
 
 const createSchema = z.object({
   floorId: z.string().min(1),

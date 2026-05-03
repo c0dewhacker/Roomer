@@ -1,4 +1,4 @@
-import { prisma } from './prisma'
+import { prisma } from './prisma.js'
 
 // In-process negative-result cache: if a JTI is NOT in the blocklist, we cache that
 // result for 30 seconds to avoid a DB round-trip on every authenticated request.

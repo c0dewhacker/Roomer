@@ -1,5 +1,5 @@
 import crypto from 'crypto'
-import { env } from '../env'
+import { env } from '../env.js'
 
 export const SCIM_SCHEMAS = {
   USER: 'urn:ietf:params:scim:schemas:core:2.0:User',

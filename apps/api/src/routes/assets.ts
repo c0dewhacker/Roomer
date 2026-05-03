@@ -1,14 +1,14 @@
 import type { FastifyInstance } from 'fastify'
 import fs from 'fs'
-import { prisma } from '../lib/prisma'
+import { prisma } from '../lib/prisma.js'
 import { GlobalRole, BookableStatus, bulkUpdateAssetPositionsSchema, NotificationType } from '@roomer/shared'
-import { requireAuth } from '../middleware/requireAuth'
-import { requireGlobalRole, getManagedFloorIds, isFloorManagerForFloor } from '../middleware/requireRole'
-import { enqueueNotification, fanOutFloorAvailable } from '../lib/queue'
+import { requireAuth } from '../middleware/requireAuth.js'
+import { requireGlobalRole, getManagedFloorIds, isFloorManagerForFloor } from '../middleware/requireRole.js'
+import { enqueueNotification, fanOutFloorAvailable } from '../lib/queue.js'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
-import { checkGroupAccess } from './groups'
-import { saveCategoryIcon, deleteFile, resolveStoragePath } from '../lib/storage'
+import { checkGroupAccess } from './groups.js'
+import { saveCategoryIcon, deleteFile, resolveStoragePath } from '../lib/storage.js'
 
 const createCategorySchema = z.object({
   name: z.string().min(1).max(255),

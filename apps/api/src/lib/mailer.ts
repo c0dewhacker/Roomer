@@ -1,6 +1,6 @@
 import nodemailer from 'nodemailer'
 import type { Transporter } from 'nodemailer'
-import { env } from '../env'
+import { env } from '../env.js'
 import type { Booking, User, Asset, QueueEntry } from '@roomer/shared'
 
 let transporter: Transporter | null = null

@@ -1,6 +1,6 @@
 import ldap from 'ldapjs'
-import { prisma, findAuthConfig } from './prisma'
-import type { GroupMapping } from './group-mapping'
+import { prisma, findAuthConfig } from './prisma.js'
+import type { GroupMapping } from './group-mapping.js'
 
 export interface LdapConfig {
   url: string
@@ -141,7 +141,7 @@ export async function syncLdapUsers(cfg: LdapConfig): Promise<LdapSyncResult> {
 
         const userId = existing?.id ?? (await prisma.user.findUnique({ where: { email }, select: { id: true } }))!.id
         if (cfg.groupMappings?.length && groups.length) {
-          const { applyGroupMappings } = await import('./group-mapping')
+          const { applyGroupMappings } = await import('./group-mapping.js')
           await applyGroupMappings(userId, groups, cfg.groupMappings, true)
         }
       } catch (err) {

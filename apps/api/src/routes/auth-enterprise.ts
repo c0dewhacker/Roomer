@@ -1,11 +1,11 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
-import { prisma } from '../lib/prisma'
-import { env } from '../env'
-import { getOidcClientConfig, getOidcConfig, generateState, generateNonce, invalidateOidcCache } from '../lib/oidc'
+import { prisma } from '../lib/prisma.js'
+import { env } from '../env.js'
+import { getOidcClientConfig, getOidcConfig, generateState, generateNonce, invalidateOidcCache } from '../lib/oidc.js'
 import { buildAuthorizationUrl, authorizationCodeGrant, fetchUserInfo, skipSubjectCheck } from 'openid-client'
-import { getSamlConfig, buildSaml, extractEmailFromProfile, extractDisplayNameFromProfile, extractGroupsFromProfile, type SamlProfile } from '../lib/saml'
-import { applyGroupMappings } from '../lib/group-mapping'
-import { signAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE } from '../lib/jwt'
+import { getSamlConfig, buildSaml, extractEmailFromProfile, extractDisplayNameFromProfile, extractGroupsFromProfile, type SamlProfile } from '../lib/saml.js'
+import { applyGroupMappings } from '../lib/group-mapping.js'
+import { signAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE } from '../lib/jwt.js'
 import type { User } from '@prisma/client'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

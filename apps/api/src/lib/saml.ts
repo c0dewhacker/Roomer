@@ -1,6 +1,6 @@
 import { SAML } from '@node-saml/node-saml'
-import { findAuthConfig } from './prisma'
-import type { GroupMapping } from './group-mapping'
+import { findAuthConfig } from './prisma.js'
+import type { GroupMapping } from './group-mapping.js'
 
 export interface SamlConfig {
   entryPoint: string

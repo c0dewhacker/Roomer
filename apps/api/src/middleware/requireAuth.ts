@@ -1,9 +1,9 @@
 import type { FastifyRequest, FastifyReply } from 'fastify'
 import type { User } from '@prisma/client'
-import { prisma } from '../lib/prisma'
-import { verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS } from '../lib/jwt'
-import { isTokenBlocked } from '../lib/token-blocklist'
-import { env } from '../env'
+import { prisma } from '../lib/prisma.js'
+import { verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS } from '../lib/jwt.js'
+import { isTokenBlocked } from '../lib/token-blocklist.js'
+import { env } from '../env.js'
 
 declare module 'fastify' {
   interface FastifyRequest {

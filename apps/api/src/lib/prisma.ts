@@ -1,7 +1,7 @@
 import { PrismaClient, Prisma } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { Pool } from 'pg'
-import { encryptJson, decryptJson } from './encryption'
+import { encryptJson, decryptJson } from './encryption.js'
 
 const dbUrl = process.env['ROOMER_DATABASE_URL'] ?? process.env['DATABASE_URL']
 const nodeEnv = process.env['ROOMER_NODE_ENV'] ?? process.env['NODE_ENV']

@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify'
-import { prisma } from '../lib/prisma'
+import { prisma } from '../lib/prisma.js'
 import { GlobalRole, NotificationType } from '@roomer/shared'
-import { requireAuth } from '../middleware/requireAuth'
+import { requireAuth } from '../middleware/requireAuth.js'
 import { z } from 'zod'
-import { enqueueNotification } from '../lib/queue'
+import { enqueueNotification } from '../lib/queue.js'
 
 const createRecurringSchema = z.object({
   assetId: z.string().min(1),

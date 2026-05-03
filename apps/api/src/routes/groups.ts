@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify'
-import { prisma } from '../lib/prisma'
+import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
-import { requireAuth } from '../middleware/requireAuth'
-import { requireGlobalRole } from '../middleware/requireRole'
+import { requireAuth } from '../middleware/requireAuth.js'
+import { requireGlobalRole } from '../middleware/requireRole.js'
 import { z } from 'zod'
 
 const globalRoleEnum = z.enum([GlobalRole.USER, GlobalRole.SUPER_ADMIN])

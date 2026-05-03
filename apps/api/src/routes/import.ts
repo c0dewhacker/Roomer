@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { prisma } from '../lib/prisma'
-import { requireAuth } from '../middleware/requireAuth'
-import { requireGlobalRole } from '../middleware/requireRole'
+import { prisma } from '../lib/prisma.js'
+import { requireAuth } from '../middleware/requireAuth.js'
+import { requireGlobalRole } from '../middleware/requireRole.js'
 import { GlobalRole } from '@roomer/shared'
 
 // ─── Palette used when zone_colour is omitted ─────────────────────────────────
