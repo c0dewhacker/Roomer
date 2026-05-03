@@ -884,7 +884,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         })
       }
 
-      // Authorization: super admin can edit any asset; floor managers can edit assets on their floor
+      // Authorization: super admin can edit any asset; floor managers and building admins can edit assets on their floors
       const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
       if (!isAdmin) {
         const existing = await prisma.asset.findUnique({ where: { id }, select: { floorId: true } })
@@ -894,20 +894,8 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         if (!existing.floorId) {
           return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
         }
-        const directRole = await prisma.userResourceRole.findFirst({
-          where: { userId: request.user.id, scopeType: 'FLOOR', floorId: existing.floorId, role: 'FLOOR_MANAGER' },
-        })
-        const groupRole = !directRole
-          ? await prisma.groupResourceRole.findFirst({
-              where: {
-                scopeType: 'FLOOR',
-                floorId: existing.floorId,
-                role: 'FLOOR_MANAGER',
-                group: { members: { some: { userId: request.user.id } } },
-              },
-            })
-          : null
-        if (!directRole && !groupRole) {
+        const canManage = await isFloorManagerForFloor(request.user.id, existing.floorId)
+        if (!canManage) {
           return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
         }
       }

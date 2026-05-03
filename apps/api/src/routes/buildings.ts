@@ -25,20 +25,25 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(200).send({ data: buildings })
     }
 
-    // For regular users: return open buildings plus any restricted buildings
-    // their groups grant access to.
-    const userGroupIds = (
-      await prisma.userGroupMember.findMany({
+    // For regular users: return open buildings, group-accessible buildings,
+    // and any buildings where this user is a building admin.
+    const [userGroupIds, adminBuildingIds] = await Promise.all([
+      prisma.userGroupMember.findMany({
         where: { userId: request.user.id },
         select: { groupId: true },
-      })
-    ).map((m) => m.groupId)
+      }).then((rows) => rows.map((m) => m.groupId)),
+      prisma.userResourceRole.findMany({
+        where: { userId: request.user.id, scopeType: 'BUILDING', role: 'BUILDING_ADMIN' },
+        select: { buildingId: true },
+      }).then((rows) => rows.flatMap((r) => r.buildingId ? [r.buildingId] : [])),
+    ])
 
     const buildings = await prisma.building.findMany({
       where: {
         OR: [
           { groupAccess: { none: {} } },                                    // open
           { groupAccess: { some: { groupId: { in: userGroupIds } } } },     // user's group has access
+          ...(adminBuildingIds.length > 0 ? [{ id: { in: adminBuildingIds } }] : []),  // user is building admin
         ],
       },
       include: {
