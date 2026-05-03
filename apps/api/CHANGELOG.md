@@ -1,5 +1,63 @@
 # Changelog
 
+## [0.3.1](https://github.com/c0dewhacker/Roomer/compare/v0.3.0...v0.3.1) (2026-05-03)
+
+
+### Features
+
+* adapt DXF floor plan stroke colour for dark/light mode ([2f91641](https://github.com/c0dewhacker/Roomer/commit/2f91641e2aa99df03e3a40e9f8fc9d729cefa418))
+* add iconUrl field to AssetCategory schema and types ([4c53c32](https://github.com/c0dewhacker/Roomer/commit/4c53c328aaf8766d418564fcc512b9d63067022d))
+* add per-notification-type preference toggles ([88ddc41](https://github.com/c0dewhacker/Roomer/commit/88ddc41939be33588ed9a9955f33ce8f104c26ce)), closes [#81](https://github.com/c0dewhacker/Roomer/issues/81)
+* add recurring frequency (daily/weekly/monthly) to recurring bookings ([7b2ea7f](https://github.com/c0dewhacker/Roomer/commit/7b2ea7fdfc83bd0f09a934347cd79dbd3a78e088))
+* AES-256-GCM encryption at rest for AuthConfig secrets ([#94](https://github.com/c0dewhacker/Roomer/issues/94)) ([8d6451e](https://github.com/c0dewhacker/Roomer/commit/8d6451ea3a779e581553595854e08960e9f469ea))
+* **api:** add category PATCH/DELETE/icon upload routes; include category in floor availability response ([7e45231](https://github.com/c0dewhacker/Roomer/commit/7e452315140f0332c5e7afccd75482717f9d83d1))
+* **api:** add migration for recurring booking rules table ([5ac8d40](https://github.com/c0dewhacker/Roomer/commit/5ac8d4038bf244ef98b03ebbe9e339661c878ad1))
+* **api:** add navStyle field to branding schema ([7019f04](https://github.com/c0dewhacker/Roomer/commit/7019f0486781d537c661deb9b74757ff28442df8))
+* **api:** add saveCategoryIcon storage helper ([1f80573](https://github.com/c0dewhacker/Roomer/commit/1f8057314630d358f9ac9612943dd7d1d8b5082b))
+* **api:** extend building admin role to floors, leases, analytics and bookings ([454b8c3](https://github.com/c0dewhacker/Roomer/commit/454b8c304b5c6f79b8bee19d57566e207fbc431d))
+* auto-complete past bookings via pg-boss cron job ([abcf591](https://github.com/c0dewhacker/Roomer/commit/abcf591904213d0630988dce4d973a10dbdea800))
+* auto-complete past bookings via pg-boss cron job ([adb6686](https://github.com/c0dewhacker/Roomer/commit/adb668698cc4fa22387c0a05000ec4122b492899))
+* building admin role ([#73](https://github.com/c0dewhacker/Roomer/issues/73)) ([9645eba](https://github.com/c0dewhacker/Roomer/commit/9645ebae76b89851c32bd7bb5803aa74ba5c8658))
+* configurable navigation styles with draggable floating island ([d51c9fc](https://github.com/c0dewhacker/Roomer/commit/d51c9fcc6f4e6c3b25a915027f9c68f83b7bed49))
+* customisable asset category icons ([92a2f99](https://github.com/c0dewhacker/Roomer/commit/92a2f992b63382ef137bcff166b59eef48a64d53))
+* DXF floor plan stroke colour adapts to dark/light mode ([4819c91](https://github.com/c0dewhacker/Roomer/commit/4819c9197f1ff9c34a91576b2ba5591e3fa66379))
+* **notifications:** booking reminders ([#77](https://github.com/c0dewhacker/Roomer/issues/77)) ([e25ef3b](https://github.com/c0dewhacker/Roomer/commit/e25ef3b7dbbe814657a72ce72edc3a6ab00fe1ad))
+* **notifications:** implement booking reminders ([#77](https://github.com/c0dewhacker/Roomer/issues/77)) ([6aea378](https://github.com/c0dewhacker/Roomer/commit/6aea3787fe0a4e81cf0490599cc9da1ab0ac3698))
+* per-notification-type email and in-app preference toggles ([0316efa](https://github.com/c0dewhacker/Roomer/commit/0316efacde97585a4446bf3b231dec15d3089add))
+* production observability — /metrics, health probes, x-request-id ([4fdc068](https://github.com/c0dewhacker/Roomer/commit/4fdc06874572b3adcf9959f5ee540cd9b32a7b6d))
+* production observability — /metrics, improved health checks, x-request-id ([962e846](https://github.com/c0dewhacker/Roomer/commit/962e84694a59afe0a5a79d85cb0d2e3bed5f1d17))
+* recurring bookings ([#67](https://github.com/c0dewhacker/Roomer/issues/67)) ([db40217](https://github.com/c0dewhacker/Roomer/commit/db402178e0c237d57ccee63c6745120438254e44))
+* recurring bookings with daily/weekly/monthly frequency ([d353703](https://github.com/c0dewhacker/Roomer/commit/d3537032c58ceafe356d868dd57305e91ae13c4e))
+* ROOMER_ env namespace + AES-256-GCM encryption at rest ([0d7f019](https://github.com/c0dewhacker/Roomer/commit/0d7f0197b4941790042bded418ba35b62975dafa))
+* ROOMER_ env namespace with backward-compatible fallback ([#93](https://github.com/c0dewhacker/Roomer/issues/93)) ([158324c](https://github.com/c0dewhacker/Roomer/commit/158324c1cda92566279fbbff88948d6cb2ed8e56))
+
+
+### Bug Fixes
+
+* **api:** add GET /categories/:id/icon serve route; store relative path in DB, return serve URL to clients ([39d4f68](https://github.com/c0dewhacker/Roomer/commit/39d4f688609649d214236a521dcd343f68eab1ad))
+* **api:** register Subscriptions and Recurring Bookings Swagger tags ([3219fde](https://github.com/c0dewhacker/Roomer/commit/3219fde73b9cea83e7f1d4ed3cf89c6b46c39eeb))
+* **api:** silence TS6.0 moduleResolution deprecation error ([5c2eaf3](https://github.com/c0dewhacker/Roomer/commit/5c2eaf37a3bbe5e843dd26354fe14351d04d4731))
+* **api:** silence TS6.0 moduleResolution=node10 deprecation error ([086f5cd](https://github.com/c0dewhacker/Roomer/commit/086f5cdca2fbf44d936756db6067a28db8ee858d)), closes [#22](https://github.com/c0dewhacker/Roomer/issues/22)
+* **api:** suppress CodeQL false positive on leases document delete route ([765e544](https://github.com/c0dewhacker/Roomer/commit/765e544dbd446798d91f00b9626142adaa6c333d))
+* canvas background + simplify stroke param to plain 6-char hex ([a386393](https://github.com/c0dewhacker/Roomer/commit/a386393af542531f810321e92c628126024f6601))
+* category icons on floor plan canvas (booking + editor) ([45db2f1](https://github.com/c0dewhacker/Roomer/commit/45db2f173ca563cabc741b6d31b29044a80cd740))
+* prisma.config.ts falls back to ROOMER_DATABASE_URL for migrations ([9620e8a](https://github.com/c0dewhacker/Roomer/commit/9620e8a0c3b1153e45ec48e8630137ba644d084e))
+* prisma.config.ts reads ROOMER_DATABASE_URL for migrations ([5620868](https://github.com/c0dewhacker/Roomer/commit/56208685b2c288b674a58b996daf74451dff55e4))
+* resolve all ESLint errors blocking CI ([435fc25](https://github.com/c0dewhacker/Roomer/commit/435fc259f848d0918317a4cdbe5f584cf19cd6f5))
+* resolve all ESLint errors blocking CI lint check ([d20019d](https://github.com/c0dewhacker/Roomer/commit/d20019d4effec4231de9c3ba1fd0233c7a5df8db))
+* resolve all open CodeQL security alerts ([714493c](https://github.com/c0dewhacker/Roomer/commit/714493c9ea267f4ea8d3c5b49ab083fbfefed748))
+* resolve all open CodeQL security alerts ([284becb](https://github.com/c0dewhacker/Roomer/commit/284becb4388dba4a2cc7941b388ac454d08f6643))
+* resolve remaining CodeQL incomplete-sanitization alert in stripHtmlToText ([4198a44](https://github.com/c0dewhacker/Roomer/commit/4198a4485539cb959ffdeb4e7564382ed3409358))
+* **security:** add explicit per-route rate limits to auth and floor-plan endpoints ([aefe1b7](https://github.com/c0dewhacker/Roomer/commit/aefe1b77037c4e9717c4d7a89bc22cb790d313ee))
+* **security:** harden lease document endpoints ([cabc68e](https://github.com/c0dewhacker/Roomer/commit/cabc68ed05c258f32fa591884e68ac3e2f60472a))
+* **security:** remove incomplete HTML entity decoding from stripHtmlToText ([b5cf776](https://github.com/c0dewhacker/Roomer/commit/b5cf77667a41cc4ce27468be249692324e392b49))
+* **security:** replace backtracking-prone regexes in SCIM handlers ([d1fd0a8](https://github.com/c0dewhacker/Roomer/commit/d1fd0a8c2c5c21e8ddff3c724de2eae053b463d8))
+* **security:** resolve all Dependabot and code scanning alerts ([542d6f5](https://github.com/c0dewhacker/Roomer/commit/542d6f558e67a732eaaf4946c56b5317391ef85d))
+* **seed:** only log generated admin password on first creation ([e46c466](https://github.com/c0dewhacker/Roomer/commit/e46c466b6023303ed66c2f9603aed69ec6c39f61))
+* **seed:** only log generated admin password on first creation ([b75e92d](https://github.com/c0dewhacker/Roomer/commit/b75e92dc62491ea845da7dbf2ec5913d4130cb75))
+* strip angle brackets as single characters to resolve CodeQL incomplete-sanitization alert ([1d99f8c](https://github.com/c0dewhacker/Roomer/commit/1d99f8c7defbfb3068a28d8da8cd38f663911d21))
+* use stray-bracket elimination to satisfy CodeQL incomplete-sanitization check ([aaa6cce](https://github.com/c0dewhacker/Roomer/commit/aaa6ccee79bf6f5cb918e649c93e4fa98fc4876f))
+
 ## [0.3.0](https://github.com/c0dewhacker/Roomer/compare/v0.1.0...v0.3.0) (2026-05-03)
 
 
