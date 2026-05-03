@@ -14,11 +14,13 @@
     },
     "apps/api": {
       "release-type": "node",
-      "component": "api"
+      "component": "api",
+      "bootstrap-sha": "435fc25"
     },
     "apps/web": {
       "release-type": "node",
-      "component": "web"
+      "component": "web",
+      "bootstrap-sha": "435fc25"
     }
   },
   "bump-minor-pre-major": true,
