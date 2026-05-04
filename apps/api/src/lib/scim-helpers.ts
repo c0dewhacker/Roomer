@@ -32,10 +32,14 @@ export function userToScim(user: {
   externalId: string | null
   createdAt: Date
   updatedAt: Date
+  department?: { name: string } | null
 }): ScimUser {
   const [givenName, ...rest] = user.displayName.split(' ')
+  const schemas: string[] = [SCIM_SCHEMAS.USER]
+  if (user.department) schemas.push(SCIM_SCHEMAS.ENTERPRISE_USER)
+
   return {
-    schemas: [SCIM_SCHEMAS.USER],
+    schemas,
     id: user.id,
     externalId: user.externalId ?? undefined,
     userName: user.email,
@@ -47,6 +51,7 @@ export function userToScim(user: {
     },
     emails: [{ value: user.email, primary: true, type: 'work' }],
     active: user.accountStatus === 'ACTIVE',
+    ...(user.department ? { [SCIM_SCHEMAS.ENTERPRISE_USER]: { department: user.department.name } } : {}),
     meta: {
       resourceType: 'User',
       created: user.createdAt.toISOString(),
@@ -125,6 +130,8 @@ export interface UserPatch {
   displayName?: string
   accountStatus?: 'ACTIVE' | 'BLOCKED'
   externalId?: string
+  /** Resolved from the EnterpriseUser extension — callers must convert to departmentId */
+  departmentName?: string
 }
 
 /**
@@ -167,6 +174,19 @@ export function applyUserPatchOps(
 
     const eid = path === 'externalId' ? val : obj?.externalId
     if (typeof eid === 'string') patch.externalId = eid
+
+    // EnterpriseUser department — Entra sends either:
+    //   path: "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:department", value: "Engineering"
+    //   path: "", value: { "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User": { department: "Engineering" } }
+    const enterprisePrefix = SCIM_SCHEMAS.ENTERPRISE_USER
+    if (path.startsWith(enterprisePrefix) && path.endsWith('department') && typeof val === 'string') {
+      patch.departmentName = val.trim() || undefined
+    } else {
+      const enterprise = obj?.[enterprisePrefix] as Record<string, unknown> | undefined
+      if (typeof enterprise?.department === 'string' && enterprise.department.trim()) {
+        patch.departmentName = enterprise.department.trim()
+      }
+    }
   }
 
   return patch

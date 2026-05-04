@@ -116,22 +116,23 @@ model AuthConfig {
 }
 
 model Organisation {
-  id                          String      @id @default(cuid())
+  id                          String       @id @default(cuid())
   name                        String
-  slug                        String      @unique
-  defaultBookingDurationHours Int         @default(8)
-  maxAdvanceBookingDays       Int         @default(14)
-  maxBookingsPerUser          Int         @default(5)
-  queueClaimWindowHours       Int         @default(4)
-  dateFormat                  String      @default("dd/MM/yyyy")
-  emailTemplates              Json        @default("{}")
-  branding                    Json        @default("{}")
-  bookingReminderHours        Int         @default(24)
-  maxRecurringBookingWeeks    Int         @default(12)
-  createdAt                   DateTime    @default(now())
-  updatedAt                   DateTime    @updatedAt
+  slug                        String       @unique
+  defaultBookingDurationHours Int          @default(8)
+  maxAdvanceBookingDays       Int          @default(14)
+  maxBookingsPerUser          Int          @default(5)
+  queueClaimWindowHours       Int          @default(4)
+  dateFormat                  String       @default("dd/MM/yyyy")
+  emailTemplates              Json         @default("{}")
+  branding                    Json         @default("{}")
+  bookingReminderHours        Int          @default(24)
+  maxRecurringBookingWeeks    Int          @default(12)
+  createdAt                   DateTime     @default(now())
+  updatedAt                   DateTime     @updatedAt
   buildings                   Building[]
   groups                      UserGroup[]
+  departments                 Department[]
 }
 
 model Building {
@@ -395,6 +396,23 @@ model AssetAssignment {
   @@index([userId])
 }
 
+model Department {
+  id             String       @id @default(cuid())
+  organisationId String
+  name           String
+  parentId       String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  parent         Department?  @relation("DepartmentParent", fields: [parentId], references: [id], onDelete: SetNull)
+  children       Department[] @relation("DepartmentParent")
+  members        User[]
+
+  @@unique([organisationId, name])
+  @@index([organisationId])
+  @@index([parentId])
+}
+
 model User {
   id                      String        @id @default(cuid())
   email                   String        @unique
@@ -404,10 +422,12 @@ model User {
   externalId              String?
   accountStatus           AccountStatus @default(ACTIVE)
   globalRole              GlobalRole    @default(USER)
+  departmentId            String?
   notificationPreferences Json          @default("{}")
   createdAt               DateTime      @default(now())
   updatedAt               DateTime      @updatedAt
 
+  department           Department?  @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   resourceRoles        UserResourceRole[]
   bookings             Booking[]
   queueEntries         QueueEntry[]
@@ -423,6 +443,7 @@ model User {
 
   @@index([email])
   @@index([provider, externalId])
+  @@index([departmentId])
 }
 
 model UserGroup {
