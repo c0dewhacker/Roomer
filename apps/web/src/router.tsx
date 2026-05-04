@@ -69,9 +69,10 @@ function AdminRoute() {
   return <Outlet />
 }
 
-// Admits SUPER_ADMIN or any user with at least one FLOOR_MANAGER resource role
-// (direct or via group). Used for routes floor managers should be able to access.
-function FloorManagerOrAdminRoute() {
+// Admits SUPER_ADMIN, any user with at least one BUILDING_ADMIN resource role
+// (direct or via group), or any user with at least one FLOOR_MANAGER resource role.
+// Used for admin routes that building admins and floor managers should be able to access.
+function BuildingManagerOrAdminRoute() {
   const { isLoading, user } = useAuth()
 
   if (isLoading) {
@@ -83,13 +84,18 @@ function FloorManagerOrAdminRoute() {
   }
 
   const isSuperAdmin = user?.globalRole === 'SUPER_ADMIN'
+  const isBuildingAdmin =
+    (user?.resourceRoles ?? []).some((r) => r.role === 'BUILDING_ADMIN') ||
+    (user?.groupMemberships ?? []).some((m) =>
+      (m.group.groupResourceRoles ?? []).some((r) => r.role === 'BUILDING_ADMIN'),
+    )
   const isFloorManager =
     (user?.resourceRoles ?? []).some((r) => r.role === 'FLOOR_MANAGER') ||
     (user?.groupMemberships ?? []).some((m) =>
       (m.group.groupResourceRoles ?? []).some((r) => r.role === 'FLOOR_MANAGER'),
     )
 
-  if (!isSuperAdmin && !isFloorManager) {
+  if (!isSuperAdmin && !isBuildingAdmin && !isFloorManager) {
     return <Navigate to="/bookings" replace />
   }
 
@@ -130,18 +136,18 @@ export function AppRouter() {
           {/* Strictly SUPER_ADMIN routes */}
           <Route element={<AdminRoute />}>
             <Route path="/admin/buildings" element={<BuildingsAdminPage />} />
-            <Route path="/admin/buildings/:buildingId" element={<BuildingDetailAdminPage />} />
             <Route path="/admin/users" element={<UsersAdminPage />} />
             <Route path="/admin/settings" element={<SettingsAdminPage />} />
-            <Route path="/admin/reports" element={<Suspense fallback={<PageLoader />}><ReportsAdminPage /></Suspense>} />
-            <Route path="/admin/leases" element={<LeasesAdminPage />} />
             <Route path="/admin/groups" element={<GroupsAdminPage />} />
           </Route>
 
-          {/* SUPER_ADMIN or FLOOR_MANAGER routes */}
-          <Route element={<FloorManagerOrAdminRoute />}>
+          {/* SUPER_ADMIN, BUILDING_ADMIN, or FLOOR_MANAGER routes */}
+          <Route element={<BuildingManagerOrAdminRoute />}>
+            <Route path="/admin/buildings/:buildingId" element={<BuildingDetailAdminPage />} />
             <Route path="/admin/floors/:floorId" element={<Suspense fallback={<PageLoader />}><FloorAdminPage /></Suspense>} />
             <Route path="/admin/assets" element={<AssetsAdminPage />} />
+            <Route path="/admin/leases" element={<LeasesAdminPage />} />
+            <Route path="/admin/reports" element={<Suspense fallback={<PageLoader />}><ReportsAdminPage /></Suspense>} />
           </Route>
         </Route>
       </Route>
