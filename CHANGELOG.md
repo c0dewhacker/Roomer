@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.3.14](https://github.com/c0dewhacker/Roomer/compare/v0.3.13...v0.3.14) (2026-05-05)
+
+
+### Features
+
+* add department attribute field to LDAP and SAML settings UI ([3cbe04a](https://github.com/c0dewhacker/Roomer/commit/3cbe04a57c995c326d83b96e10c978b878a04ee3))
+* add departments admin frontend ([4e25dd0](https://github.com/c0dewhacker/Roomer/commit/4e25dd093f4c2a3667925f979ce16657e1f1fc2c))
+* building admin route access ([#73](https://github.com/c0dewhacker/Roomer/issues/73)) ([e88e213](https://github.com/c0dewhacker/Roomer/commit/e88e213b36b5d640f38995485a234bf66c1765f1))
+* department hierarchy support ([#86](https://github.com/c0dewhacker/Roomer/issues/86)) ([ea9879b](https://github.com/c0dewhacker/Roomer/commit/ea9879b45580626ede746650d81b4c2e354adfce))
+* department support ([#86](https://github.com/c0dewhacker/Roomer/issues/86)) ([056b595](https://github.com/c0dewhacker/Roomer/commit/056b5953246222dbd153dae2f9273754a972ec75))
+* **reports:** add department activity table to analytics page ([a9cd810](https://github.com/c0dewhacker/Roomer/commit/a9cd81096aad7dc28f43e251d1ce607bfdeca13d))
+* **users:** server-side pagination with configurable page size ([57c2ebf](https://github.com/c0dewhacker/Roomer/commit/57c2ebf22bb8c35160e81554135a1fc8acdb624d))
+* **users:** server-side pagination with configurable page size ([3a46a2e](https://github.com/c0dewhacker/Roomer/commit/3a46a2e098076dcc98d4f06b6db57b5d434c2717))
+* wire building admin access into floor/asset/analytics routes ([#73](https://github.com/c0dewhacker/Roomer/issues/73)) ([8add798](https://github.com/c0dewhacker/Roomer/commit/8add79838535574a4cbb6516cf43a19c6e610956))
+
+
+### Bug Fixes
+
+* allow building admins and floor managers to access their routes ([0a4dc19](https://github.com/c0dewhacker/Roomer/commit/0a4dc190bd99621e6c7c3dc6ec82e704d0ffe9ee))
+* allow building admins and floor managers to access their routes ([2fe0fc7](https://github.com/c0dewhacker/Roomer/commit/2fe0fc77ac603c3e9551ed23e3efdfa66e8a661c))
+* allow LDAP optional fields (syncBase) to be cleared via settings UI ([ff3ff5d](https://github.com/c0dewhacker/Roomer/commit/ff3ff5dded4020d9438322065482393af263a55a))
+* allow LDAP optional fields (syncBase) to be cleared via settings UI ([a478117](https://github.com/c0dewhacker/Roomer/commit/a478117ebaa7f0666d1e320dd30c8249254cf58a))
+* make PATCH /assets/:id and GET /buildings use isFloorManagerForFloor ([ffd8d16](https://github.com/c0dewhacker/Roomer/commit/ffd8d16d57e2165966ae4199f2d48040fffa13dd))
+* **settings:** add departmentAttribute to LDAP and SAML config schemas ([5ea5aa0](https://github.com/c0dewhacker/Roomer/commit/5ea5aa065356e65508ac5782b337d8d678d29d3a))
+
 ## [0.3.13](https://github.com/c0dewhacker/Roomer/compare/v0.3.12...v0.3.13) (2026-05-03)
 
 
