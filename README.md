@@ -4,7 +4,7 @@
 
 [![License: ELv2](https://img.shields.io/badge/license-Elastic%20v2-blue)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-c0dewhacker%2Froomer-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/u/c0dewhacker)
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/c0dewhacker/Roomer/docker.yml)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/c0dewhacker/Roomer/release-please.yml)
 
 ---
 
