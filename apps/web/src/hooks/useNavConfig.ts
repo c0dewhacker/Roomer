@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useAuthStore } from '@/stores/auth'
 import { useQuery } from '@tanstack/react-query'
 import { buildingsApi } from '@/lib/api'
-import { Calendar, Clock, Building2, Users, Settings, Package, BarChart3, FileText, Shield, Layers } from 'lucide-react'
+import { Calendar, Clock, Building2, Users, Settings, Package, BarChart3, FileText, Shield, Layers, Network } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
 export interface NavItem {
@@ -84,6 +84,7 @@ export function useNavConfig() {
         items: [
           { to: '/admin/buildings', icon: Building2, label: 'Buildings' },
           { to: '/admin/users', icon: Users, label: 'Users' },
+          { to: '/admin/departments', icon: Network, label: 'Departments' },
           { to: '/admin/assets', icon: Package, label: 'Assets' },
           { to: '/admin/leases', icon: FileText, label: 'Leases' },
           { to: '/admin/groups', icon: Shield, label: 'Access Groups' },
