@@ -929,7 +929,9 @@ function LdapConfigForm({
       syncFilter, syncScope, deactivateMissing,
     }
     if (bindCredentials) cfg.bindCredentials = bindCredentials
-    if (syncBase.trim()) cfg.syncBase = syncBase.trim()
+    // Send null (not omit) when empty so the server knows to clear any previously stored value.
+    // This fixes the case where syncBase was set to an invalid DN and the user wants to reset it.
+    cfg.syncBase = syncBase.trim() || null
     onSave(cfg)
   }
 
