@@ -17,6 +17,7 @@ import BuildingPage from './pages/BuildingPage'
 import AssetsAdminPage from './pages/admin/AssetsAdminPage'
 import LeasesAdminPage from './pages/admin/LeasesAdminPage'
 import GroupsAdminPage from './pages/admin/GroupsAdminPage'
+import DepartmentsAdminPage from './pages/admin/DepartmentsAdminPage'
 import { Loader2 } from 'lucide-react'
 
 // Lazy-load pages that pull in large dependencies (pdfjs-dist, react-konva, recharts)
@@ -139,6 +140,7 @@ export function AppRouter() {
             <Route path="/admin/users" element={<UsersAdminPage />} />
             <Route path="/admin/settings" element={<SettingsAdminPage />} />
             <Route path="/admin/groups" element={<GroupsAdminPage />} />
+            <Route path="/admin/departments" element={<DepartmentsAdminPage />} />
           </Route>
 
           {/* SUPER_ADMIN, BUILDING_ADMIN, or FLOOR_MANAGER routes */}

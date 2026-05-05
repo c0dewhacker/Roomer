@@ -18,6 +18,8 @@ export interface SamlConfig {
   wantAssertionsSigned?: boolean
   /** Accepted clock skew in milliseconds for timestamp validation (default: 0) */
   allowClockSkewMs?: number
+  /** SAML attribute containing department name (default: department) */
+  departmentAttribute?: string
 }
 
 export async function getSamlConfig(): Promise<SamlConfig | null> {
@@ -77,4 +79,13 @@ export function extractDisplayNameFromProfile(profile: SamlProfile): string {
     profile['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name'] ??
     'SSO User'
   )
+}
+
+export function extractDepartmentFromProfile(profile: SamlProfile, attribute?: string): string | null {
+  const attr = attribute ?? 'department'
+  const val = profile[attr]
+  if (typeof val === 'string' && val.trim()) return val.trim()
+  const msVal = profile['http://schemas.microsoft.com/identity/claims/department']
+  if (typeof msVal === 'string' && msVal.trim()) return msVal.trim()
+  return null
 }

@@ -1,6 +1,7 @@
 export * from './types'
 export * from './schemas/auth'
 export * from './schemas/building'
+export * from './schemas/department'
 export * from './schemas/floor'
 export * from './schemas/zone'
 export * from './schemas/booking'

@@ -708,6 +708,7 @@ function SamlConfigForm({
   )
   const [label, setLabel] = useState((current.label as string) ?? 'Sign in with SAML SSO')
   const [groupAttribute, setGroupAttribute] = useState((current.groupAttribute as string) ?? 'groups')
+  const [departmentAttribute, setDepartmentAttribute] = useState((current.departmentAttribute as string) ?? '')
   const [groupMappings, setGroupMappings] = useState<GroupMapping[]>(
     (current.groupMappings as GroupMapping[]) ?? [],
   )
@@ -722,7 +723,9 @@ function SamlConfigForm({
   )
 
   function handleSave() {
-    onSave({ entryPoint, issuer, cert, callbackUrl, label, groupAttribute, groupMappings, wantAuthnResponseSigned, wantAssertionsSigned, allowClockSkewMs })
+    const cfg: Record<string, unknown> = { entryPoint, issuer, cert, callbackUrl, label, groupAttribute, groupMappings, wantAuthnResponseSigned, wantAssertionsSigned, allowClockSkewMs }
+    if (departmentAttribute.trim()) cfg.departmentAttribute = departmentAttribute.trim()
+    onSave(cfg)
   }
 
   return (
@@ -752,6 +755,12 @@ function SamlConfigForm({
           <Label className="text-xs">Group attribute name</Label>
           <Input value={groupAttribute} onChange={(e) => setGroupAttribute(e.target.value)}
             className="mt-1 h-8 text-sm" placeholder="groups" />
+        </div>
+        <div>
+          <Label className="text-xs">Department attribute name <span className="text-muted-foreground font-normal">(optional)</span></Label>
+          <Input value={departmentAttribute} onChange={(e) => setDepartmentAttribute(e.target.value)}
+            className="mt-1 h-8 text-sm" placeholder="department" />
+          <p className="text-[11px] text-muted-foreground mt-1">Maps to Roomer departments on login. Falls back to the Microsoft identity claim if blank.</p>
         </div>
         <div className="sm:col-span-2">
           <Label className="text-xs">IdP Certificate (PEM, without headers)</Label>
@@ -886,6 +895,9 @@ function LdapConfigForm({
   const [groupAttribute, setGroupAttribute] = useState(
     (current.groupAttribute as string) ?? 'memberOf',
   )
+  const [departmentAttribute, setDepartmentAttribute] = useState(
+    (current.departmentAttribute as string) ?? '',
+  )
   const [tlsEnabled, setTlsEnabled] = useState((current.tlsEnabled as boolean) ?? false)
   const [tlsRejectUnauthorized, setTlsRejectUnauthorized] = useState(
     (current.tlsRejectUnauthorized as boolean) ?? true,
@@ -929,9 +941,14 @@ function LdapConfigForm({
       syncFilter, syncScope, deactivateMissing,
     }
     if (bindCredentials) cfg.bindCredentials = bindCredentials
+<<<<<<< feat/department-support
+    if (syncBase.trim()) cfg.syncBase = syncBase.trim()
+    if (departmentAttribute.trim()) cfg.departmentAttribute = departmentAttribute.trim()
+=======
     // Send null (not omit) when empty so the server knows to clear any previously stored value.
     // This fixes the case where syncBase was set to an invalid DN and the user wants to reset it.
     cfg.syncBase = syncBase.trim() || null
+>>>>>>> main
     onSave(cfg)
   }
 
@@ -1021,6 +1038,12 @@ function LdapConfigForm({
           <Label className="text-xs">Group membership attribute</Label>
           <Input value={groupAttribute} onChange={(e) => setGroupAttribute(e.target.value)}
             className="mt-1 h-8 text-sm" placeholder="memberOf" />
+        </div>
+        <div>
+          <Label className="text-xs">Department attribute <span className="text-muted-foreground font-normal">(optional)</span></Label>
+          <Input value={departmentAttribute} onChange={(e) => setDepartmentAttribute(e.target.value)}
+            className="mt-1 h-8 text-sm" placeholder="department" />
+          <p className="text-[11px] text-muted-foreground mt-1">Syncs the user's department on login and during directory sync.</p>
         </div>
 
         <Separator className="sm:col-span-2" />

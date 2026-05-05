@@ -35,6 +35,7 @@ async function scimAuth(request: FastifyRequest, reply: FastifyReply): Promise<v
 const userSelect = {
   id: true, email: true, displayName: true,
   accountStatus: true, externalId: true, createdAt: true, updatedAt: true,
+  department: { select: { name: true } },
 }
 
 // ─── Discovery ────────────────────────────────────────────────────────────────
@@ -123,6 +124,8 @@ function registerUsers(fastify: FastifyInstance): void {
     const displayName = (body.displayName as string) ?? email
     const externalId = body.externalId as string | undefined
     const active = body.active !== false
+    const enterpriseExt = body[SCIM_SCHEMAS.ENTERPRISE_USER] as Record<string, unknown> | undefined
+    const incomingDeptName = typeof enterpriseExt?.department === 'string' ? enterpriseExt.department.trim() : undefined
 
     if (!email) {
       return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
@@ -142,6 +145,19 @@ function registerUsers(fastify: FastifyInstance): void {
         .send(scimError(409, `User ${email} already exists`))
     }
 
+    let departmentId: string | undefined
+    if (incomingDeptName) {
+      const org = await prisma.organisation.findFirst({ select: { id: true } })
+      if (org) {
+        const dept = await prisma.department.upsert({
+          where: { organisationId_name: { organisationId: org.id, name: incomingDeptName } },
+          create: { organisationId: org.id, name: incomingDeptName },
+          update: {},
+        })
+        departmentId = dept.id
+      }
+    }
+
     const user = await prisma.user.create({
       data: {
         email,
@@ -149,6 +165,7 @@ function registerUsers(fastify: FastifyInstance): void {
         externalId: externalId ?? null,
         accountStatus: active ? 'ACTIVE' : 'BLOCKED',
         provider: 'OIDC',
+        ...(departmentId ? { departmentId } : {}),
       },
       select: userSelect,
     })
@@ -175,6 +192,23 @@ function registerUsers(fastify: FastifyInstance): void {
     const displayName = body.displayName as string | undefined
     const externalId = body.externalId as string | undefined
     const active = body.active as boolean | undefined
+    const enterpriseExt = body[SCIM_SCHEMAS.ENTERPRISE_USER] as Record<string, unknown> | undefined
+    const incomingDeptName = typeof enterpriseExt?.department === 'string' ? enterpriseExt.department.trim() : undefined
+
+    let departmentId: string | null | undefined
+    if (incomingDeptName) {
+      const org = await prisma.organisation.findFirst({ select: { id: true } })
+      if (org) {
+        const dept = await prisma.department.upsert({
+          where: { organisationId_name: { organisationId: org.id, name: incomingDeptName } },
+          create: { organisationId: org.id, name: incomingDeptName },
+          update: {},
+        })
+        departmentId = dept.id
+      }
+    } else if (incomingDeptName === '') {
+      departmentId = null
+    }
 
     try {
       const user = await prisma.user.update({
@@ -184,6 +218,7 @@ function registerUsers(fastify: FastifyInstance): void {
           ...(displayName ? { displayName } : {}),
           ...(externalId !== undefined ? { externalId } : {}),
           ...(active !== undefined ? { accountStatus: active ? 'ACTIVE' : 'BLOCKED' } : {}),
+          ...(departmentId !== undefined ? { departmentId } : {}),
         },
         select: userSelect,
       })
@@ -199,15 +234,32 @@ function registerUsers(fastify: FastifyInstance): void {
     const body = request.body as { Operations?: Array<{ op: string; path?: string; value?: unknown }> }
     const ops = body.Operations ?? []
 
-    const patch = applyUserPatchOps(ops)
-    if (Object.keys(patch).length === 0) {
+    const { departmentName, ...userPatch } = applyUserPatchOps(ops)
+    if (Object.keys(userPatch).length === 0 && !departmentName) {
       const user = await prisma.user.findUnique({ where: { id }, select: userSelect })
       if (!user) return reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
       return reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
     }
 
+    let departmentId: string | undefined
+    if (departmentName) {
+      const org = await prisma.organisation.findFirst({ select: { id: true } })
+      if (org) {
+        const dept = await prisma.department.upsert({
+          where: { organisationId_name: { organisationId: org.id, name: departmentName } },
+          create: { organisationId: org.id, name: departmentName },
+          update: {},
+        })
+        departmentId = dept.id
+      }
+    }
+
     try {
-      const user = await prisma.user.update({ where: { id }, data: patch, select: userSelect })
+      const user = await prisma.user.update({
+        where: { id },
+        data: { ...userPatch, ...(departmentId !== undefined ? { departmentId } : {}) },
+        select: userSelect,
+      })
       reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
     } catch {
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))

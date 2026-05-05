@@ -3,7 +3,7 @@ import { prisma } from '../lib/prisma.js'
 import { env } from '../env.js'
 import { getOidcClientConfig, getOidcConfig, generateState, generateNonce } from '../lib/oidc.js'
 import { buildAuthorizationUrl, authorizationCodeGrant, fetchUserInfo, skipSubjectCheck } from 'openid-client'
-import { getSamlConfig, buildSaml, extractEmailFromProfile, extractDisplayNameFromProfile, extractGroupsFromProfile, type SamlProfile } from '../lib/saml.js'
+import { getSamlConfig, buildSaml, extractEmailFromProfile, extractDisplayNameFromProfile, extractGroupsFromProfile, extractDepartmentFromProfile, type SamlProfile } from '../lib/saml.js'
 import { applyGroupMappings } from '../lib/group-mapping.js'
 import { signAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE } from '../lib/jwt.js'
 import type { User } from '@prisma/client'
@@ -229,6 +229,19 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
       const idpGroups = extractGroupsFromProfile(samlProfile, cfg.groupAttribute)
       if (idpGroups.length && cfg.groupMappings?.length) {
         await applyGroupMappings(user.id, idpGroups, cfg.groupMappings, true)
+      }
+
+      const deptName = extractDepartmentFromProfile(samlProfile, cfg.departmentAttribute)
+      if (deptName) {
+        const org = await prisma.organisation.findFirst({ select: { id: true } })
+        if (org) {
+          const dept = await prisma.department.upsert({
+            where: { organisationId_name: { organisationId: org.id, name: deptName } },
+            create: { organisationId: org.id, name: deptName },
+            update: {},
+          })
+          await prisma.user.update({ where: { id: user.id }, data: { departmentId: dept.id } })
+        }
       }
 
       // Issue JWT cookie

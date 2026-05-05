@@ -9,6 +9,7 @@ import {
   type StatusBreakdownPoint,
   type PeakDayPoint,
   type FloorUtilisationPoint,
+  type DepartmentAnalyticsPoint,
 } from '@/lib/api'
 import type { UtilisationDataPoint, BookingDataPoint, TopUserDataPoint } from '@/types'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -478,6 +479,74 @@ function TopUsersChart({ params }: { params: AnalyticsParams }) {
   )
 }
 
+// ─── Department Analytics ─────────────────────────────────────────────────────
+
+function DepartmentAnalyticsTable({ params }: { params: AnalyticsParams }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['analytics', 'departments', params],
+    queryFn: () => analyticsApi.departments(params),
+    select: (r) => r.data,
+  })
+
+  const maxDeskDays = data ? Math.max(...data.map((d) => d.deskDays), 1) : 1
+
+  return (
+    <Card className="col-span-2">
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <div>
+          <CardTitle className="text-base">Department Activity</CardTitle>
+          <CardDescription className="text-xs">Bookings and desk-days by department</CardDescription>
+        </div>
+        {data && data.length > 0 && (
+          <ExportBtn onClick={() => downloadCsv('department-activity.csv', [
+            ['Department', 'Members', 'Bookings', 'Desk-Days'],
+            ...(data as DepartmentAnalyticsPoint[]).map((d) => [d.departmentName, String(d.memberCount), String(d.bookingCount), String(d.deskDays)]),
+          ])} />
+        )}
+      </CardHeader>
+      <CardContent className="p-0">
+        {isLoading ? (
+          <div className="p-6 space-y-2">{[1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-9 w-full" />)}</div>
+        ) : !data || data.length === 0 ? (
+          <EmptyState message="No departments configured" />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-muted/40">
+                  <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground">Department</th>
+                  <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground">Members</th>
+                  <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground">Bookings</th>
+                  <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground">Desk-Days</th>
+                  <th className="px-4 py-2.5 text-xs font-medium text-muted-foreground w-36"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {(data as DepartmentAnalyticsPoint[]).map((d) => (
+                  <tr key={d.departmentId} className="hover:bg-muted/30 transition-colors">
+                    <td className="px-4 py-2.5 font-medium">{d.departmentName}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{d.memberCount}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums">{d.bookingCount}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums font-medium">{d.deskDays}</td>
+                    <td className="px-4 py-2.5">
+                      <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-primary"
+                          style={{ width: `${Math.round((d.deskDays / maxDeskDays) * 100)}%` }}
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 // ─── Export All ───────────────────────────────────────────────────────────────
 
 function ExportAllButton({ params, days }: { params: AnalyticsParams; days: Preset }) {
@@ -488,6 +557,7 @@ function ExportAllButton({ params, days }: { params: AnalyticsParams; days: Pres
   const { data: status } = useQuery({ queryKey: ['analytics', 'status-breakdown', params], queryFn: () => analyticsApi.statusBreakdown(params), select: (r) => r.data })
   const { data: peakDays } = useQuery({ queryKey: ['analytics', 'peak-days', params], queryFn: () => analyticsApi.peakDays(params), select: (r) => r.data })
   const { data: floorUtil } = useQuery({ queryKey: ['analytics', 'floor-utilisation', params], queryFn: () => analyticsApi.floorUtilisation(params), select: (r) => r.data })
+  const { data: deptData } = useQuery({ queryKey: ['analytics', 'departments', params], queryFn: () => analyticsApi.departments(params), select: (r) => r.data })
 
   const handleExportAll = () => {
     const rangeStr = days === 'custom' ? `${params.startDate}_${params.endDate}` : `last-${days}d`
@@ -550,6 +620,13 @@ function ExportAllButton({ params, days }: { params: AnalyticsParams; days: Pres
       sections.push(['=== TOP BOOKERS ===', ''])
       sections.push(['Name', 'Email', 'Bookings'])
       topUsers.forEach((d) => sections.push([d.displayName, d.email, String(d.bookingCount)]))
+      sections.push(['', ''])
+    }
+
+    if (deptData && deptData.length > 0) {
+      sections.push(['=== DEPARTMENT ACTIVITY ===', ''])
+      sections.push(['Department', 'Members', 'Bookings', 'Desk-Days'])
+      deptData.forEach((d) => sections.push([d.departmentName, String(d.memberCount), String(d.bookingCount), String(d.deskDays)]))
     }
 
     downloadCsv(`roomer-report-${rangeStr}.csv`, sections)
@@ -660,6 +737,7 @@ export default function ReportsAdminPage() {
         <TopUsersChart params={params} />
         <FloorUtilisationChart params={params} />
         <ZoneUtilisationTable params={params} />
+        <DepartmentAnalyticsTable params={params} />
       </div>
     </div>
   )

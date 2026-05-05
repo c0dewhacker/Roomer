@@ -24,6 +24,7 @@ import { settingsRoutes } from './routes/settings.js'
 import { enterpriseAuthRoutes } from './routes/auth-enterprise.js'
 import { importRoutes } from './routes/import.js'
 import { scimRoutes } from './routes/scim.js'
+import { departmentRoutes } from './routes/departments.js'
 import { subscriptionRoutes } from './routes/subscriptions.js'
 import { recurringBookingRoutes } from './routes/recurring.js'
 import { getBoss } from './lib/queue.js'
@@ -116,6 +117,7 @@ export async function buildApp(): Promise<FastifyInstance> {
           { name: 'Import', description: 'Bulk data import (admin only)' },
           { name: 'Subscriptions', description: 'Floor availability subscriptions and notifications' },
           { name: 'Recurring Bookings', description: 'Weekly recurring booking rules and series management' },
+          { name: 'Departments', description: 'Department hierarchy and user membership (admin only)' },
         ],
         components: {
           securitySchemes: {
@@ -229,6 +231,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await fastify.register(subscriptionRoutes, { prefix: '/api/v1/subscriptions' })
   await fastify.register(recurringBookingRoutes, { prefix: '/api/v1/recurring-bookings' })
   await fastify.register(scimRoutes, { prefix: '/scim/v2' })
+  await fastify.register(departmentRoutes, { prefix: '/api/v1/departments' })
 
   // ─── Health checks ─────────────────────────────────────────────────────────
   // /health/live — process is running (Kubernetes liveness probe)

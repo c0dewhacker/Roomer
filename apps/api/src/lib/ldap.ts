@@ -23,6 +23,8 @@ export interface LdapConfig {
   syncScope?: 'sub' | 'one'
   /** When true, deactivate LDAP-provider users absent from the sync results */
   deactivateMissing?: boolean
+  /** LDAP attribute containing the user's department name (e.g. 'department') */
+  departmentAttribute?: string
 }
 
 export interface LdapSyncResult {
@@ -87,6 +89,8 @@ export interface LdapAuthResult {
   dn: string
   /** Raw group values (e.g. memberOf DNs) for group mapping */
   groups: string[]
+  /** Department attribute value, if departmentAttribute is configured */
+  department?: string
 }
 
 export async function syncLdapUsers(cfg: LdapConfig): Promise<LdapSyncResult> {
@@ -95,18 +99,29 @@ export async function syncLdapUsers(cfg: LdapConfig): Promise<LdapSyncResult> {
   const emailAttr = cfg.emailAttribute ?? 'mail'
   const nameAttr = cfg.displayNameAttribute ?? 'displayName'
   const groupAttr = cfg.groupAttribute ?? 'memberOf'
+  const deptAttr = cfg.departmentAttribute
   const syncBase = cfg.syncBase?.trim() || cfg.searchBase
   const syncFilter = cfg.syncFilter?.trim() || '(objectClass=person)'
   const syncScope = cfg.syncScope ?? 'sub'
+
+  // Resolve org ID once upfront if we need to upsert departments
+  let orgId: string | null = null
+  if (deptAttr) {
+    const org = await prisma.organisation.findFirst({ select: { id: true } })
+    orgId = org?.id ?? null
+  }
 
   const client = createLdapClient(cfg)
   try {
     await bindAsync(client, cfg.bindDN, cfg.bindCredentials)
 
+    const attrs = ['dn', emailAttr, nameAttr, groupAttr]
+    if (deptAttr) attrs.push(deptAttr)
+
     const entries = await searchAsync(client, syncBase, {
       filter: syncFilter,
       scope: syncScope,
-      attributes: ['dn', emailAttr, nameAttr, groupAttr],
+      attributes: attrs,
     })
 
     const seenEmails = new Set<string>()
@@ -120,6 +135,7 @@ export async function syncLdapUsers(cfg: LdapConfig): Promise<LdapSyncResult> {
 
       const displayName = getAttr(nameAttr)?.values[0]?.trim() || email
       const groups = (getAttr(groupAttr)?.values ?? []).map((g) => g.trim().toLowerCase())
+      const departmentName = deptAttr ? getAttr(deptAttr)?.values[0]?.trim() : undefined
       const dn = entry.dn.toString()
 
       seenEmails.add(email)
@@ -143,6 +159,15 @@ export async function syncLdapUsers(cfg: LdapConfig): Promise<LdapSyncResult> {
         if (cfg.groupMappings?.length && groups.length) {
           const { applyGroupMappings } = await import('./group-mapping.js')
           await applyGroupMappings(userId, groups, cfg.groupMappings, true)
+        }
+
+        if (departmentName && orgId) {
+          const dept = await prisma.department.upsert({
+            where: { organisationId_name: { organisationId: orgId, name: departmentName } },
+            create: { organisationId: orgId, name: departmentName },
+            update: {},
+          })
+          await prisma.user.update({ where: { id: userId }, data: { departmentId: dept.id } })
         }
       } catch (err) {
         result.errors.push({ dn, message: err instanceof Error ? err.message : 'Unknown error' })
@@ -187,11 +212,15 @@ export async function authenticateWithLdap(
     const emailAttr = cfg.emailAttribute ?? 'mail'
     const nameAttr = cfg.displayNameAttribute ?? 'displayName'
     const groupAttr = cfg.groupAttribute ?? 'memberOf'
+    const deptAttr = cfg.departmentAttribute
+
+    const searchAttrs = ['dn', emailAttr, nameAttr, groupAttr]
+    if (deptAttr) searchAttrs.push(deptAttr)
 
     const entries = await searchAsync(adminClient, cfg.searchBase, {
       filter,
       scope: 'sub',
-      attributes: ['dn', emailAttr, nameAttr, groupAttr],
+      attributes: searchAttrs,
     })
 
     if (entries.length === 0) return null
@@ -208,6 +237,7 @@ export async function authenticateWithLdap(
     const userDisplayName = getAttr(nameAttr)?.values[0] ?? email
     // Group values are trimmed to avoid whitespace issues in DN comparisons
     const groups = (getAttr(groupAttr)?.values ?? []).map((g) => g.trim().toLowerCase())
+    const department = deptAttr ? getAttr(deptAttr)?.values[0]?.trim() : undefined
 
     // 3. Try binding as the user to verify password
     const userClient = createLdapClient(cfg)
@@ -219,7 +249,7 @@ export async function authenticateWithLdap(
       return null
     }
 
-    return { email: userEmail, displayName: userDisplayName, dn: userDn, groups }
+    return { email: userEmail, displayName: userDisplayName, dn: userDn, groups, department }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code ?? 'unknown'
     const message = err instanceof Error ? err.message : 'Unknown error'

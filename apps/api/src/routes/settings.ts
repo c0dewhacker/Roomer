@@ -83,6 +83,7 @@ const samlConfigSchema = z.object({
   label: z.string().optional(),
   groupAttribute: z.string().optional(),
   groupMappings: z.array(groupMappingSchema).optional(),
+  departmentAttribute: z.string().optional(),
   // Refuse to disable signature verification in production — disabling either flag
   // turns SAML into an unauthenticated identity assertion (signature-stripping attack).
   wantAuthnResponseSigned: z.boolean()

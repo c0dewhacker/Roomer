@@ -609,4 +609,64 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(200).send({ data })
     },
   )
+
+  // GET /analytics/departments — desk-days and booking counts grouped by department (SUPER_ADMIN only)
+  fastify.get(
+    '/departments',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+      }
+
+      const result = analyticsQuerySchema.safeParse(request.query)
+      if (!result.success) {
+        return reply.status(400).send({ error: { message: 'Invalid query parameters', code: 'VALIDATION_ERROR' } })
+      }
+
+      const { startDate: sd, endDate: ed } = defaultDateRange()
+      const startDate = parseDateParam(result.data.startDate, 'T00:00:00.000Z', sd)
+      const endDate = parseDateParam(result.data.endDate, 'T23:59:59.999Z', ed)
+
+      type DeptRow = {
+        departmentId: string
+        departmentName: string
+        bookingCount: bigint
+        deskDays: string | null
+        memberCount: bigint
+      }
+
+      const rows = await prisma.$queryRaw<DeptRow[]>`
+        SELECT
+          d.id                                                                         AS "departmentId",
+          d.name                                                                       AS "departmentName",
+          COUNT(DISTINCT b.id)::bigint                                                 AS "bookingCount",
+          ROUND(
+            CAST(
+              COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0)
+              AS NUMERIC
+            ), 2
+          )::text                                                                      AS "deskDays",
+          COUNT(DISTINCT u.id)::bigint                                                 AS "memberCount"
+        FROM "Department" d
+        LEFT JOIN "User" u   ON u."departmentId" = d.id
+        LEFT JOIN "Booking" b ON b."userId" = u.id
+          AND b."startsAt" >= ${startDate}
+          AND b."startsAt" <= ${endDate}
+          AND b.status = 'CONFIRMED'
+        GROUP BY d.id, d.name
+        ORDER BY "deskDays"::numeric DESC NULLS LAST
+      `
+
+      const data = rows.map((r) => ({
+        departmentId: r.departmentId,
+        departmentName: r.departmentName,
+        bookingCount: Number(r.bookingCount),
+        deskDays: Number(r.deskDays ?? 0),
+        memberCount: Number(r.memberCount),
+      }))
+
+      return reply.status(200).send({ data })
+    },
+  )
 }

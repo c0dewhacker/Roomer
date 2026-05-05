@@ -44,6 +44,17 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         if (ldapResult.groups.length && mappings.length) {
           await applyGroupMappings(user.id, ldapResult.groups, mappings, true)
         }
+        if (ldapResult.department) {
+          const org = await prisma.organisation.findFirst({ select: { id: true } })
+          if (org) {
+            const dept = await prisma.department.upsert({
+              where: { organisationId_name: { organisationId: org.id, name: ldapResult.department } },
+              create: { organisationId: org.id, name: ldapResult.department },
+              update: {},
+            })
+            await prisma.user.update({ where: { id: user.id }, data: { departmentId: dept.id } })
+          }
+        }
       } else if (!user || !user.passwordHash) {
         return reply.status(401).send({
           error: { message: 'Invalid email or password', code: 'INVALID_CREDENTIALS' },

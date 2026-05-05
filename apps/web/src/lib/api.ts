@@ -617,6 +617,10 @@ export type FloorUtilisationPoint = {
   totalDesks: number; bookableDesks: number; assignedDesks: number; disabledDesks: number
   bookingCount: number; utilisationPct: number
 }
+export type DepartmentAnalyticsPoint = {
+  departmentId: string; departmentName: string
+  bookingCount: number; deskDays: number; memberCount: number
+}
 
 export const analyticsApi = {
   summary: (params?: AnalyticsParams) =>
@@ -633,6 +637,8 @@ export const analyticsApi = {
     api.get<{ data: PeakDayPoint[] }>(`/analytics/peak-days${analyticsQs(params)}`),
   floorUtilisation: (params?: AnalyticsParams) =>
     api.get<{ data: FloorUtilisationPoint[] }>(`/analytics/floor-utilisation${analyticsQs(params)}`),
+  departments: (params?: AnalyticsParams) =>
+    api.get<{ data: DepartmentAnalyticsPoint[] }>(`/analytics/departments${analyticsQs(params)}`),
 }
 
 // --- Notifications ---
@@ -688,4 +694,40 @@ export const recurringBookingsApi = {
     lastDate: string
   }) => api.post<{ data: RecurringBookingRule }>('/recurring-bookings', body),
   cancel: (id: string) => api.delete<{ data: { ok: true } }>(`/recurring-bookings/${id}`),
+}
+
+// --- Departments ---
+export interface Department {
+  id: string
+  name: string
+  parentId: string | null
+  parent?: { id: string; name: string } | null
+  children?: Array<{ id: string; name: string; _count: { members: number } }>
+  _count?: { members: number; children: number }
+}
+
+export interface DepartmentMember {
+  id: string
+  email: string
+  displayName: string
+  globalRole: string
+  accountStatus: string
+}
+
+export const departmentsApi = {
+  list: () => api.get<{ data: Department[] }>('/departments'),
+  get: (id: string) => api.get<{ data: Department }>(`/departments/${id}`),
+  create: (body: { name: string; parentId?: string }) =>
+    api.post<{ data: Department }>('/departments', body),
+  update: (id: string, body: { name?: string; parentId?: string | null }) =>
+    api.put<{ data: Department }>(`/departments/${id}`, body),
+  delete: (id: string) => api.delete<{ data: { ok: true } }>(`/departments/${id}`),
+  listMembers: (id: string, search?: string) =>
+    api.get<{ data: DepartmentMember[] }>(
+      `/departments/${id}/members${search ? `?search=${encodeURIComponent(search)}` : ''}`,
+    ),
+  addMember: (id: string, userId: string) =>
+    api.post<{ data: { ok: true } }>(`/departments/${id}/members`, { userId }),
+  removeMember: (id: string, userId: string) =>
+    api.delete<{ data: { ok: true } }>(`/departments/${id}/members/${userId}`),
 }
