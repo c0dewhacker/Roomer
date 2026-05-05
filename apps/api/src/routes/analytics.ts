@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { requireGlobalRole, getManagedBuildingIds } from '../middleware/requireRole.js'
+import { getManagedBuildingIds } from '../middleware/requireRole.js'
 import { z } from 'zod'
 
 const analyticsQuerySchema = z.object({
@@ -235,20 +235,39 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // GET /summary — KPI summary stats
+  // GET /summary — KPI summary stats (SUPER_ADMIN or building admin scoped to managed buildings)
   fastify.get(
     '/summary',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const result = analyticsQuerySchema.safeParse(request.query)
       if (!result.success) return reply.status(400).send({ error: { message: 'Invalid query', code: 'VALIDATION_ERROR' } })
+
+      const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      let managedBuildingIds: string[] = []
+      if (!isSuperAdmin) {
+        managedBuildingIds = await getManagedBuildingIds(request.user.id)
+        if (managedBuildingIds.length === 0) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       const defaults = defaultDateRange()
       const startDate = parseDateParam(result.data.startDate, 'T00:00:00.000Z', defaults.startDate)
       const endDate = parseDateParam(result.data.endDate, 'T23:59:59.999Z', defaults.endDate)
       const workingDays = countWorkingDays(startDate, endDate)
 
-      const bookingWhere: Record<string, unknown> = { startsAt: { gte: startDate, lte: endDate } }
+      const bookingBuildingFilter = !isSuperAdmin
+        ? { asset: { floor: { buildingId: { in: managedBuildingIds } } } }
+        : {}
+      const assetBuildingFilter = !isSuperAdmin
+        ? { floor: { buildingId: { in: managedBuildingIds } } }
+        : {}
+      const queueBuildingFilter = !isSuperAdmin
+        ? { asset: { floor: { buildingId: { in: managedBuildingIds } } } }
+        : {}
+
+      const bookingWhere: Record<string, unknown> = { startsAt: { gte: startDate, lte: endDate }, ...bookingBuildingFilter }
 
       const [confirmed, cancelled, completed, uniqueBookers, bookableDesks, assignedDesks, disabledDesks, queueDepth] = await Promise.all([
         prisma.booking.count({ where: { ...bookingWhere, status: 'CONFIRMED' } }),
@@ -260,10 +279,10 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           distinct: ['userId'],
         }),
         // OPEN + RESTRICTED = freely bookable assets
-        prisma.asset.count({ where: { isBookable: true, bookingStatus: { in: ['OPEN', 'RESTRICTED'] } } }),
-        prisma.asset.count({ where: { isBookable: true, bookingStatus: 'ASSIGNED' } }),
-        prisma.asset.count({ where: { isBookable: true, bookingStatus: 'DISABLED' } }),
-        prisma.queueEntry.count({ where: { status: 'WAITING' } }),
+        prisma.asset.count({ where: { isBookable: true, bookingStatus: { in: ['OPEN', 'RESTRICTED'] }, ...assetBuildingFilter } }),
+        prisma.asset.count({ where: { isBookable: true, bookingStatus: 'ASSIGNED', ...assetBuildingFilter } }),
+        prisma.asset.count({ where: { isBookable: true, bookingStatus: 'DISABLED', ...assetBuildingFilter } }),
+        prisma.queueEntry.count({ where: { status: 'WAITING', ...queueBuildingFilter } }),
       ])
 
       const totalDesks = bookableDesks + assignedDesks + disabledDesks
@@ -294,22 +313,35 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // GET /status-breakdown — booking counts by status
+  // GET /status-breakdown — booking counts by status (SUPER_ADMIN or building admin scoped to managed buildings)
   fastify.get(
     '/status-breakdown',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const result = analyticsQuerySchema.safeParse(request.query)
       if (!result.success) return reply.status(400).send({ error: { message: 'Invalid query', code: 'VALIDATION_ERROR' } })
+
+      const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      let managedBuildingIds: string[] = []
+      if (!isSuperAdmin) {
+        managedBuildingIds = await getManagedBuildingIds(request.user.id)
+        if (managedBuildingIds.length === 0) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       const defaults = defaultDateRange()
       const startDate = result.data.startDate ? new Date(result.data.startDate + 'T00:00:00.000Z') : defaults.startDate
       const endDate = result.data.endDate ? new Date(result.data.endDate + 'T23:59:59.999Z') : defaults.endDate
 
+      const buildingFilter = !isSuperAdmin
+        ? { asset: { floor: { buildingId: { in: managedBuildingIds } } } }
+        : {}
+
       const [confirmed, cancelled, completed] = await Promise.all([
-        prisma.booking.count({ where: { startsAt: { gte: startDate, lte: endDate }, status: 'CONFIRMED' } }),
-        prisma.booking.count({ where: { startsAt: { gte: startDate, lte: endDate }, status: 'CANCELLED' } }),
-        prisma.booking.count({ where: { startsAt: { gte: startDate, lte: endDate }, status: 'COMPLETED' } }),
+        prisma.booking.count({ where: { startsAt: { gte: startDate, lte: endDate }, status: 'CONFIRMED', ...buildingFilter } }),
+        prisma.booking.count({ where: { startsAt: { gte: startDate, lte: endDate }, status: 'CANCELLED', ...buildingFilter } }),
+        prisma.booking.count({ where: { startsAt: { gte: startDate, lte: endDate }, status: 'COMPLETED', ...buildingFilter } }),
       ])
 
       return reply.status(200).send({
@@ -322,28 +354,53 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // GET /peak-days — bookings grouped by day of week
+  // GET /peak-days — bookings grouped by day of week (SUPER_ADMIN or building admin scoped to managed buildings)
   fastify.get(
     '/peak-days',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const result = analyticsQuerySchema.safeParse(request.query)
       if (!result.success) return reply.status(400).send({ error: { message: 'Invalid query', code: 'VALIDATION_ERROR' } })
+
+      const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      let managedBuildingIds: string[] = []
+      if (!isSuperAdmin) {
+        managedBuildingIds = await getManagedBuildingIds(request.user.id)
+        if (managedBuildingIds.length === 0) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       const defaults = defaultDateRange()
       const startDate = result.data.startDate ? new Date(result.data.startDate + 'T00:00:00.000Z') : defaults.startDate
       const endDate = result.data.endDate ? new Date(result.data.endDate + 'T23:59:59.999Z') : defaults.endDate
 
       type DowRow = { dow: string; count: bigint }
-      const rows = await prisma.$queryRaw<DowRow[]>`
-        SELECT EXTRACT(DOW FROM "startsAt") AS dow, COUNT(*)::bigint AS count
-        FROM "Booking"
-        WHERE "startsAt" >= ${startDate}
-          AND "startsAt" <= ${endDate}
-          AND status = 'CONFIRMED'
-        GROUP BY EXTRACT(DOW FROM "startsAt")
-        ORDER BY dow ASC
-      `
+      let rows: DowRow[]
+      if (isSuperAdmin) {
+        rows = await prisma.$queryRaw<DowRow[]>`
+          SELECT EXTRACT(DOW FROM "startsAt") AS dow, COUNT(*)::bigint AS count
+          FROM "Booking"
+          WHERE "startsAt" >= ${startDate}
+            AND "startsAt" <= ${endDate}
+            AND status = 'CONFIRMED'
+          GROUP BY EXTRACT(DOW FROM "startsAt")
+          ORDER BY dow ASC
+        `
+      } else {
+        rows = await prisma.$queryRaw<DowRow[]>`
+          SELECT EXTRACT(DOW FROM b."startsAt") AS dow, COUNT(*)::bigint AS count
+          FROM "Booking" b
+          JOIN "Asset" a ON a.id = b."assetId"
+          JOIN "Floor" f ON f.id = a."floorId"
+          WHERE b."startsAt" >= ${startDate}
+            AND b."startsAt" <= ${endDate}
+            AND b.status = 'CONFIRMED'
+            AND f."buildingId" = ANY(${managedBuildingIds})
+          GROUP BY EXTRACT(DOW FROM b."startsAt")
+          ORDER BY dow ASC
+        `
+      }
 
       const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
       const countByDow: Record<number, number> = {}
