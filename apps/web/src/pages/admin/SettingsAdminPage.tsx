@@ -941,14 +941,8 @@ function LdapConfigForm({
       syncFilter, syncScope, deactivateMissing,
     }
     if (bindCredentials) cfg.bindCredentials = bindCredentials
-<<<<<<< feat/department-support
-    if (syncBase.trim()) cfg.syncBase = syncBase.trim()
-    if (departmentAttribute.trim()) cfg.departmentAttribute = departmentAttribute.trim()
-=======
-    // Send null (not omit) when empty so the server knows to clear any previously stored value.
-    // This fixes the case where syncBase was set to an invalid DN and the user wants to reset it.
     cfg.syncBase = syncBase.trim() || null
->>>>>>> main
+    if (departmentAttribute.trim()) cfg.departmentAttribute = departmentAttribute.trim()
     onSave(cfg)
   }
 

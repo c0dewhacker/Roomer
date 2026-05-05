@@ -7,6 +7,12 @@ name: Release Please
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Existing tag to rebuild images for (e.g. v0.3.13)'
+        required: true
+        type: string
 
 jobs:
   # ── Release Please ────────────────────────────────────────────────────────────
@@ -16,12 +22,13 @@ jobs:
       contents: write
       pull-requests: write
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-      version: ${{ steps.release.outputs.version }}
+      release_created: ${{ github.event_name == 'workflow_dispatch' || steps.release.outputs.release_created }}
+      tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || steps.release.outputs.tag_name }}
+      version: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || steps.release.outputs.version }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
+        if: github.event_name == 'push'
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
@@ -38,6 +45,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.sha }}
 
       - name: Docker metadata
         id: meta
@@ -84,6 +93,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.sha }}
 
       - name: Docker metadata
         id: meta
