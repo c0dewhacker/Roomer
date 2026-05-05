@@ -1,6 +1,13 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, Shield, UserX, UserCheck, ChevronDown, UserPlus, Upload, KeyRound } from 'lucide-react'
+import { Search, Shield, UserX, UserCheck, ChevronDown, UserPlus, Upload, KeyRound, ChevronLeft, ChevronRight } from 'lucide-react'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { usersApi } from '@/lib/api'
 import { UserImportDialog } from '@/components/admin/UserImportDialog'
 import { toast } from 'sonner'
@@ -292,24 +299,34 @@ function UserRow({ user, onRefresh }: { user: User; onRefresh: () => void }) {
   )
 }
 
+const PAGE_SIZE_OPTIONS = [25, 50, 100]
+
 export default function UsersAdminPage() {
   const qc = useQueryClient()
   const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(25)
   const [inviteOpen, setInviteOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
 
-  const { data: users, isLoading } = useQuery({
-    queryKey: ['admin', 'users'],
-    queryFn: () => usersApi.list(),
-    select: (r) => r.data,
+  // Reset to page 1 whenever the search term or page size changes
+  useEffect(() => { setPage(1) }, [search, pageSize])
+
+  const { data, isLoading, isPlaceholderData } = useQuery({
+    queryKey: ['admin', 'users', page, pageSize, search],
+    queryFn: () => usersApi.list({ page, limit: pageSize, q: search || undefined }),
+    placeholderData: (prev) => prev,
   })
+
+  const users = data?.data ?? []
+  const meta = data?.meta
+  const totalPages = meta?.totalPages ?? 1
+  const total = meta?.total ?? 0
 
   const refresh = () => qc.invalidateQueries({ queryKey: ['admin', 'users'] })
 
-  const filtered = (users ?? []).filter((u) =>
-    u.displayName.toLowerCase().includes(search.toLowerCase()) ||
-    u.email.toLowerCase().includes(search.toLowerCase())
-  )
+  const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1
+  const rangeEnd = Math.min(page * pageSize, total)
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
@@ -340,21 +357,33 @@ export default function UsersAdminPage() {
         onClose={() => setImportOpen(false)}
       />
 
-      <div className="relative mb-4">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input
-          placeholder="Search by name or email…"
-          className="pl-9"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
+      <div className="flex items-center gap-3 mb-4">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search by name or email…"
+            className="pl-9"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <Select value={String(pageSize)} onValueChange={(v) => setPageSize(Number(v))}>
+          <SelectTrigger className="w-32 shrink-0">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {PAGE_SIZE_OPTIONS.map((n) => (
+              <SelectItem key={n} value={String(n)}>Show {n}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       {isLoading ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => <Skeleton key={i} className="h-20" />)}
         </div>
-      ) : filtered.length === 0 ? (
+      ) : users.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12 text-center">
             <p className="text-sm text-muted-foreground">
@@ -363,11 +392,43 @@ export default function UsersAdminPage() {
           </CardContent>
         </Card>
       ) : (
-        <div className="space-y-3">
-          {filtered.map((u) => (
-            <UserRow key={u.id} user={u} onRefresh={refresh} />
-          ))}
-        </div>
+        <>
+          <div className={`space-y-3 ${isPlaceholderData ? 'opacity-60' : ''}`}>
+            {users.map((u) => (
+              <UserRow key={u.id} user={u} onRefresh={refresh} />
+            ))}
+          </div>
+
+          {/* Pagination controls */}
+          <div className="flex items-center justify-between mt-5">
+            <p className="text-sm text-muted-foreground">
+              {total > 0 ? `${rangeStart}–${rangeEnd} of ${total} users` : ''}
+            </p>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+              >
+                <ChevronLeft className="h-4 w-4" />
+                Previous
+              </Button>
+              <span className="text-sm text-muted-foreground px-1">
+                Page {page} of {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+              >
+                Next
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </>
       )}
     </div>
   )

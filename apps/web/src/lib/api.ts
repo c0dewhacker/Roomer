@@ -388,7 +388,7 @@ export const usersApi = {
     if (params?.page) qs.set('page', String(params.page))
     if (params?.limit) qs.set('limit', String(params.limit))
     if (params?.q) qs.set('search', params.q) // backend uses 'search' param
-    return api.get<{ data: User[]; meta: { total: number; page: number; limit: number } }>(
+    return api.get<{ data: User[]; meta: { total: number; page: number; limit: number; totalPages: number } }>(
       `/users${qs.toString() ? `?${qs}` : ''}`,
     )
   },
