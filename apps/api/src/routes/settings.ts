@@ -111,10 +111,9 @@ const ldapConfigSchema = z.object({
   tlsRejectUnauthorized: z.boolean().optional(),
   groupAttribute: z.string().optional(),
   groupMappings: z.array(groupMappingSchema).optional(),
-  departmentAttribute: z.string().optional(),
-  // Directory sync settings
-  syncBase: z.string().optional(),
-  syncFilter: z.string().optional(),
+  // Directory sync settings — nullish so the UI can explicitly clear them
+  syncBase: z.string().nullish(),
+  syncFilter: z.string().nullish(),
   syncScope: z.enum(['sub', 'one']).optional(),
   deactivateMissing: z.boolean().optional(),
 })
@@ -381,9 +380,14 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
           })
         }
 
-        // Apply provided values; skip null/undefined secrets (means "keep existing")
+        // Apply provided values:
+        //   null   → explicitly clear the field (e.g. unsetting syncBase)
+        //   ''     → skip (secrets omit their value rather than send empty)
+        //   other  → set the value
         for (const [key, val] of Object.entries(body.config)) {
-          if (val !== null && val !== undefined && val !== '') {
+          if (val === null) {
+            delete mergedConfig[key]
+          } else if (val !== undefined && val !== '') {
             mergedConfig[key] = val
           }
         }
