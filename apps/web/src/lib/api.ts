@@ -617,6 +617,10 @@ export type FloorUtilisationPoint = {
   totalDesks: number; bookableDesks: number; assignedDesks: number; disabledDesks: number
   bookingCount: number; utilisationPct: number
 }
+export type DepartmentAnalyticsPoint = {
+  departmentId: string; departmentName: string
+  bookingCount: number; deskDays: number; memberCount: number
+}
 
 export const analyticsApi = {
   summary: (params?: AnalyticsParams) =>
@@ -633,6 +637,8 @@ export const analyticsApi = {
     api.get<{ data: PeakDayPoint[] }>(`/analytics/peak-days${analyticsQs(params)}`),
   floorUtilisation: (params?: AnalyticsParams) =>
     api.get<{ data: FloorUtilisationPoint[] }>(`/analytics/floor-utilisation${analyticsQs(params)}`),
+  departments: (params?: AnalyticsParams) =>
+    api.get<{ data: DepartmentAnalyticsPoint[] }>(`/analytics/departments${analyticsQs(params)}`),
 }
 
 // --- Notifications ---
