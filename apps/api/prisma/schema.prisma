@@ -690,3 +690,37 @@ model Session {
   @@index([expire], name: "IDX_session_expire")
   @@map("sessions")
 }
+
+/// Outbound webhook endpoint registered by an admin.
+/// The secret is used to sign every delivery with HMAC-SHA256 (X-Roomer-Signature header).
+/// Events is an array of event-type strings — e.g. ["booking.created", "asset.updated"].
+model WebhookEndpoint {
+  id         String            @id @default(cuid())
+  url        String
+  secret     String
+  events     String[]
+  enabled    Boolean           @default(true)
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+  deliveries WebhookDelivery[]
+
+  @@index([enabled])
+}
+
+/// Log of each attempt to deliver a webhook payload to an endpoint.
+model WebhookDelivery {
+  id         String          @id @default(cuid())
+  endpointId String
+  endpoint   WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+  event      String
+  payload    Json
+  statusCode Int?
+  success    Boolean
+  error      String?
+  attempt    Int             @default(1)
+  createdAt  DateTime        @default(now())
+
+  @@index([endpointId, createdAt])
+  @@index([event])
+  @@index([success])
+}

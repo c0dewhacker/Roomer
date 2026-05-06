@@ -696,6 +696,41 @@ export const recurringBookingsApi = {
   cancel: (id: string) => api.delete<{ data: { ok: true } }>(`/recurring-bookings/${id}`),
 }
 
+// --- Webhooks ---
+export interface WebhookEndpoint {
+  id: string
+  url: string
+  events: string[]
+  enabled: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WebhookDelivery {
+  id: string
+  event: string
+  statusCode: number | null
+  success: boolean
+  error: string | null
+  attempt: number
+  createdAt: string
+}
+
+export const webhooksApi = {
+  listEvents: () => api.get<{ data: string[] }>('/webhooks/events'),
+  list: () => api.get<{ data: WebhookEndpoint[] }>('/webhooks'),
+  create: (body: { url: string; events: string[]; secret?: string; enabled?: boolean }) =>
+    api.post<{ data: WebhookEndpoint & { secret: string } }>('/webhooks', body),
+  update: (id: string, body: { url?: string; events?: string[]; secret?: string; enabled?: boolean }) =>
+    api.patch<{ data: WebhookEndpoint }>(`/webhooks/${id}`, body),
+  delete: (id: string) => api.delete<{ data: { ok: true } }>(`/webhooks/${id}`),
+  ping: (id: string) => api.post<{ data: { ok: true } }>(`/webhooks/${id}/ping`),
+  deliveries: (id: string, page = 1, limit = 50) =>
+    api.get<{ data: WebhookDelivery[]; meta: { total: number; page: number; limit: number; totalPages: number } }>(
+      `/webhooks/${id}/deliveries?page=${page}&limit=${limit}`,
+    ),
+}
+
 // --- Departments ---
 export interface Department {
   id: string

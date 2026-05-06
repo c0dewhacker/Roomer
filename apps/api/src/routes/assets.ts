@@ -5,6 +5,7 @@ import { GlobalRole, BookableStatus, bulkUpdateAssetPositionsSchema, Notificatio
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole, getManagedFloorIds, getManagedBuildingIds, isFloorManagerForFloor } from '../middleware/requireRole.js'
 import { enqueueNotification, fanOutFloorAvailable } from '../lib/queue.js'
+import { dispatchWebhook } from '../lib/webhook.js'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { checkGroupAccess } from './groups.js'
@@ -861,6 +862,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           },
           include: { category: true },
         })
+        dispatchWebhook('asset.created', { id: asset.id, name: asset.name, categoryId: asset.categoryId }).catch(() => {})
         return reply.status(201).send({ data: asset })
       } catch {
         return reply.status(409).send({
@@ -911,6 +913,12 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           },
           include: { category: true },
         })
+        const statusChanged = result.data.status !== undefined || result.data.bookingStatus !== undefined
+        if (statusChanged) {
+          dispatchWebhook('asset.status_changed', { id: asset.id, name: asset.name, status: asset.status, bookingStatus: asset.bookingStatus }).catch(() => {})
+        } else {
+          dispatchWebhook('asset.updated', { id: asset.id, name: asset.name }).catch(() => {})
+        }
         return reply.status(200).send({ data: asset })
       } catch (err) {
         if ((err as { code?: string }).code === 'P2025') {
@@ -992,6 +1000,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         prisma.asset.update({ where: { id }, data: { status: 'ASSIGNED' } }),
       ])
 
+      dispatchWebhook('asset_assignment.created', { assetId: id, userId, assignedById: request.user.id }).catch(() => {})
       return reply.status(201).send({ data: assignment })
     },
   )
@@ -1031,6 +1040,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         prisma.asset.update({ where: { id }, data: { status: 'AVAILABLE' } }),
       ])
 
+      dispatchWebhook('asset_assignment.returned', { assetId: id, userId: activeAssignment.userId, returnedAt: assignment.returnedAt }).catch(() => {})
       return reply.status(200).send({ data: assignment })
     },
   )
