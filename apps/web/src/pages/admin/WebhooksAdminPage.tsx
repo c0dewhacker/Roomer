@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { Webhook, Plus, Trash2, Send, Eye, CheckCircle2, XCircle, Pencil } from 'lucide-react'
+import { Plus, Trash2, Send, Eye, CheckCircle2, XCircle, Pencil } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { webhooksApi, type WebhookEndpoint, type WebhookDelivery } from '@/lib/api'
 import { toast } from 'sonner'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -22,6 +22,31 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
+
+// ─── Toggle (matches ProfilePage notification preference style) ───────────────
+
+function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`
+        relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full
+        transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring
+        ${checked ? 'bg-primary' : 'bg-input'}
+      `}
+    >
+      <span
+        className={`
+          pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform
+          ${checked ? 'translate-x-4' : 'translate-x-0.5'}
+        `}
+      />
+    </button>
+  )
+}
 
 // ─── Endpoint form dialog ─────────────────────────────────────────────────────
 
@@ -107,30 +132,27 @@ function EndpointDialog({
             <Label htmlFor="ep-secret">{isEdit ? 'New secret (leave blank to keep existing)' : 'Secret (optional — auto-generated if blank)'}</Label>
             <Input id="ep-secret" className="mt-1.5" type="password" placeholder={isEdit ? 'Leave blank to keep existing' : 'Auto-generated'} value={secret} onChange={(e) => setSecret(e.target.value)} />
           </div>
-          <div className="flex items-center gap-2">
-            <input type="checkbox" id="ep-enabled" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="h-4 w-4 rounded border-border" />
-            <Label htmlFor="ep-enabled">Enabled</Label>
+          <div className="flex items-center gap-3">
+            <Toggle checked={enabled} onChange={setEnabled} />
+            <Label htmlFor="ep-enabled" className="cursor-pointer" onClick={() => setEnabled((v) => !v)}>Enabled</Label>
           </div>
           <div>
             <Label>Events *</Label>
             <div className="mt-2 space-y-3 rounded-md border p-3 max-h-64 overflow-y-auto">
               {Object.entries(grouped).map(([prefix, events]) => (
                 <div key={prefix}>
-                  <div className="flex items-center gap-2 mb-1">
-                    <input
-                      type="checkbox"
-                      id={`group-${prefix}`}
+                  <div className="flex items-center gap-3 mb-2">
+                    <Toggle
                       checked={events.every((e) => selectedEvents.has(e))}
                       onChange={() => toggleGroup(events)}
-                      className="h-4 w-4 rounded border-border"
                     />
-                    <label htmlFor={`group-${prefix}`} className="text-sm font-medium capitalize cursor-pointer">{prefix}</label>
+                    <span className="text-sm font-medium capitalize">{prefix}</span>
                   </div>
-                  <div className="ml-6 space-y-1">
+                  <div className="ml-12 space-y-2">
                     {events.map((e) => (
-                      <div key={e} className="flex items-center gap-2">
-                        <input type="checkbox" id={`ev-${e}`} checked={selectedEvents.has(e)} onChange={() => toggleEvent(e)} className="h-4 w-4 rounded border-border" />
-                        <label htmlFor={`ev-${e}`} className="text-xs font-mono cursor-pointer">{e}</label>
+                      <div key={e} className="flex items-center gap-3">
+                        <Toggle checked={selectedEvents.has(e)} onChange={() => toggleEvent(e)} />
+                        <span className="text-xs font-mono">{e}</span>
                       </div>
                     ))}
                   </div>
@@ -257,12 +279,8 @@ export default function WebhooksAdminPage() {
   })
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Webhook className="h-6 w-6 text-primary" />
-          <h1 className="text-2xl font-bold">Webhooks</h1>
-        </div>
+    <div className="p-6 space-y-4">
+      <div className="flex items-center justify-end">
         <Button onClick={() => setShowCreate(true)}>
           <Plus className="h-4 w-4 mr-2" />
           Add endpoint
@@ -270,9 +288,6 @@ export default function WebhooksAdminPage() {
       </div>
 
       <Card>
-        <CardHeader>
-          <CardTitle>Endpoints</CardTitle>
-        </CardHeader>
         <CardContent className="p-0">
           {isLoading ? (
             <div className="p-4 space-y-3">
@@ -305,11 +320,9 @@ export default function WebhooksAdminPage() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <input
-                        type="checkbox"
+                      <Toggle
                         checked={ep.enabled}
-                        onChange={(e) => toggleEnabled.mutate({ id: ep.id, enabled: e.target.checked })}
-                        className="h-4 w-4 rounded border-border"
+                        onChange={(v) => toggleEnabled.mutate({ id: ep.id, enabled: v })}
                       />
                     </TableCell>
                     <TableCell className="text-right">
