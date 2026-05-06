@@ -279,15 +279,19 @@ export default function WebhooksAdminPage() {
   })
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-end">
-        <Button onClick={() => setShowCreate(true)}>
+    <div className="p-6 max-w-4xl mx-auto">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-bold">Webhooks</h1>
+          <p className="text-muted-foreground text-sm mt-1">Manage webhook endpoints and delivery history</p>
+        </div>
+        <Button onClick={() => setShowCreate(true)} size="sm">
           <Plus className="h-4 w-4 mr-2" />
           Add endpoint
         </Button>
       </div>
 
-      <Card>
+      <Card className="mb-6">
         <CardContent className="p-0">
           {isLoading ? (
             <div className="p-4 space-y-3">
