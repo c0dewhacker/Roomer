@@ -5,6 +5,7 @@ import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookin
 import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
+import { dispatchWebhook } from './webhook.js'
 
 let boss: PgBoss | null = null
 
@@ -304,13 +305,22 @@ async function handleExpireQueueEntries(): Promise<void> {
 // ─── Worker: auto-complete-bookings (cron every 30 min) ──────────────────────
 
 async function handleAutoCompleteBookings(): Promise<void> {
-  const result = await prisma.booking.updateMany({
+  const bookings = await prisma.booking.findMany({
     where: { status: 'CONFIRMED', endsAt: { lt: new Date() } },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true },
+  })
+  if (bookings.length === 0) return
+
+  await prisma.booking.updateMany({
+    where: { id: { in: bookings.map((b) => b.id) } },
     data: { status: 'COMPLETED' },
   })
-  if (result.count > 0) {
-    process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Auto-completed past bookings', count: result.count }) + '\n')
+
+  for (const booking of bookings) {
+    dispatchWebhook('booking.completed', booking).catch(() => {})
   }
+
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Auto-completed past bookings', count: bookings.length }) + '\n')
 }
 
 // ─── Worker: expire-claim-deadlines (cron every 5 min) ───────────────────────
@@ -333,6 +343,10 @@ async function handleExpireClaimDeadlines(): Promise<void> {
     where: { id: { in: expiredPromoted.map((e) => e.id) } },
     data: { status: 'EXPIRED' },
   })
+
+  for (const entry of expiredPromoted) {
+    dispatchWebhook('queue.expired', { id: entry.id, userId: entry.userId, assetId: entry.assetId }).catch(() => {})
+  }
 
   // Find the next WAITING entry for each expired slot in parallel
   const claimDeadline = new Date(Date.now() + CLAIM_DEADLINE_MS)
@@ -373,6 +387,10 @@ async function handleExpireClaimDeadlines(): Promise<void> {
         } satisfies NotificationJobData,
       })),
     )
+
+    for (const nextEntry of toPromote) {
+      dispatchWebhook('queue.promoted', { id: nextEntry.id, userId: nextEntry.userId, assetId: nextEntry.assetId, claimDeadline: claimDeadline.toISOString() }).catch(() => {})
+    }
   }
 
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Processed expired claim deadlines', count: expiredPromoted.length }) + '\n')
@@ -433,8 +451,12 @@ export async function startQueue(): Promise<void> {
   await b.createQueue('prune-revoked-tokens')
   await b.createQueue('auto-complete-bookings')
   await b.createQueue('send-booking-reminders')
+  await b.createQueue('webhook-delivery')
 
   await b.work<NotificationJobData>('send-notification', handleSendNotification)
+
+  const { deliverWebhookJob } = await import('./webhook.js')
+  await b.work('webhook-delivery', deliverWebhookJob)
 
   await b.work('expire-queue-entries', async () => {
     await handleExpireQueueEntries()

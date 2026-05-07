@@ -1,6 +1,7 @@
 import ldap from 'ldapjs'
 import { prisma, findAuthConfig } from './prisma.js'
 import type { GroupMapping } from './group-mapping.js'
+import { dispatchWebhook } from './webhook.js'
 
 export interface LdapConfig {
   url: string
@@ -183,6 +184,10 @@ export async function syncLdapUsers(cfg: LdapConfig): Promise<LdapSyncResult> {
     }
   } finally {
     unbind(client)
+  }
+
+  if (result.created > 0 || result.updated > 0) {
+    dispatchWebhook('user.imported', { created: result.created, updated: result.updated, deactivated: result.deactivated }).catch(() => {})
   }
 
   return result

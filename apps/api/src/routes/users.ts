@@ -6,6 +6,7 @@ import { GlobalRole, ResourceRoleType, ResourceScopeType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole } from '../middleware/requireRole.js'
 import { enqueueNotification } from '../lib/queue.js'
+import { dispatchWebhook } from '../lib/webhook.js'
 import { NotificationType } from '@roomer/shared'
 import { z } from 'zod'
 
@@ -116,6 +117,8 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       enqueueNotification({ type: NotificationType.WELCOME, userId: user.id }).catch((err) =>
         fastify.log.warn({ err }, 'Failed to enqueue welcome notification'),
       )
+
+      dispatchWebhook('user.created', { id: user.id, email: user.email, displayName: user.displayName, globalRole: user.globalRole }).catch(() => {})
 
       return reply.status(201).send({ data: user })
     },
@@ -254,6 +257,13 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
           updatedAt: true,
         },
       })
+
+      if (result.data.accountStatus === 'BLOCKED') {
+        dispatchWebhook('user.suspended', { id: updated.id, email: updated.email }).catch(() => {})
+      } else {
+        dispatchWebhook('user.updated', { id: updated.id, email: updated.email, displayName: updated.displayName }).catch(() => {})
+      }
+
       return reply.status(200).send({ data: updated })
     } catch {
       return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })

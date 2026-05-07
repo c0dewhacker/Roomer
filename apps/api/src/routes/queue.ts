@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma.js'
 import { createQueueEntrySchema, NotificationType, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { enqueueNotification } from '../lib/queue.js'
+import { dispatchWebhook } from '../lib/webhook.js'
 import { checkGroupAccess } from './groups.js'
 import { z } from 'zod'
 
@@ -130,6 +131,8 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       queueEntryId: entry.id,
     })
 
+    dispatchWebhook('queue.joined', { id: entry.id, userId: entry.userId, assetId: entry.assetId, position: entry.position }).catch(() => {})
+
     return reply.status(201).send({ data: entry })
   })
 
@@ -156,6 +159,8 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       where: { id },
       data: { status: 'CANCELLED' },
     })
+
+    dispatchWebhook('queue.cancelled', { id: entry.id, userId: entry.userId, assetId: entry.assetId }).catch(() => {})
 
     // Compact positions: decrement all WAITING entries for the same asset/period that were behind the cancelled one
     await prisma.queueEntry.updateMany({
@@ -237,6 +242,8 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       bookingId: result.id,
     })
 
+    dispatchWebhook('queue.claimed', { id: entry.id, userId: entry.userId, assetId: entry.assetId, bookingId: result.id }).catch(() => {})
+
     return reply.status(201).send({ data: { booking: result, queueEntry: { id: entry.id, status: 'CLAIMED' } } })
   })
 
@@ -310,6 +317,8 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       userId: request.user.id,
       bookingId: booking.id,
     })
+
+    dispatchWebhook('queue.claimed', { id: entry.id, userId: entry.userId, assetId: entry.assetId, bookingId: booking.id }).catch(() => {})
 
     return reply.status(201).send({ data: { booking, queueEntry: { id, status: 'CLAIMED' } } })
   })

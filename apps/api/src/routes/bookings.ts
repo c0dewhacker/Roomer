@@ -5,6 +5,7 @@ import { createBookingSchema, updateBookingSchema, GlobalRole, NotificationType 
 import { requireAuth } from '../middleware/requireAuth.js'
 import { isFloorManagerForFloor, getManagedBuildingIds } from '../middleware/requireRole.js'
 import { enqueueNotification, fanOutFloorAvailable, CLAIM_DEADLINE_MS } from '../lib/queue.js'
+import { dispatchWebhook } from '../lib/webhook.js'
 import { randomUUID } from 'crypto'
 import { checkGroupAccess } from './groups.js'
 import { z } from 'zod'
@@ -317,6 +318,8 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       bookingId: booking.id,
     })
 
+    dispatchWebhook('booking.created', { id: booking.id, userId: booking.userId, assetId: booking.assetId, startsAt: booking.startsAt, endsAt: booking.endsAt }).catch(() => {})
+
     return reply.status(201).send({ data: booking })
   })
 
@@ -411,6 +414,8 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       throw err
     }
 
+    dispatchWebhook('booking.modified', { id: updated.id, userId: updated.userId, assetId: updated.assetId, startsAt: updated.startsAt, endsAt: updated.endsAt }).catch(() => {})
+
     return reply.status(200).send({ data: updated })
   })
 
@@ -442,6 +447,8 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     // Cancel the booking
     await prisma.booking.update({ where: { id }, data: { status: 'CANCELLED' } })
+
+    dispatchWebhook('booking.cancelled', { id: booking.id, userId: booking.userId, assetId: booking.assetId }).catch(() => {})
 
     // Notify the original booker
     const notificationType = !isSelf
