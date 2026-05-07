@@ -40,6 +40,76 @@ function sign(secret: string, body: string): string {
   return `sha256=${crypto.createHmac('sha256', secret).update(body).digest('hex')}`
 }
 
+const assetInclude = {
+  category: { select: { name: true } },
+  primaryZone: { select: { name: true } },
+  floor: { select: { name: true, building: { select: { name: true } } } },
+} as const
+
+async function enrichPayload(event: WebhookEvent, data: unknown): Promise<unknown> {
+  const d = data as Record<string, unknown>
+
+  if (event.startsWith('booking.')) {
+    const booking = await prisma.booking.findUnique({
+      where: { id: d.id as string },
+      select: {
+        user: { select: { id: true, email: true, displayName: true } },
+        asset: { select: { id: true, name: true, ...assetInclude } },
+      },
+    }).catch(() => null)
+    return {
+      ...d,
+      ...(booking?.user && { user: booking.user }),
+      ...(booking?.asset && { asset: booking.asset }),
+    }
+  }
+
+  if (event.startsWith('queue.')) {
+    const entry = await prisma.queueEntry.findUnique({
+      where: { id: d.id as string },
+      select: {
+        user: { select: { id: true, email: true, displayName: true } },
+        asset: { select: { id: true, name: true, ...assetInclude } },
+      },
+    }).catch(() => null)
+    return {
+      ...d,
+      ...(entry?.user && { user: entry.user }),
+      ...(entry?.asset && { asset: entry.asset }),
+    }
+  }
+
+  if (event === 'asset.created' || event === 'asset.updated' || event === 'asset.status_changed') {
+    const asset = await prisma.asset.findUnique({
+      where: { id: d.id as string },
+      select: { name: true, ...assetInclude },
+    }).catch(() => null)
+    return { ...d, ...(asset && { asset }) }
+  }
+
+  if (event === 'asset_assignment.created' || event === 'asset_assignment.returned') {
+    const [asset, user] = await Promise.all([
+      prisma.asset.findUnique({ where: { id: d.assetId as string }, select: { name: true, ...assetInclude } }).catch(() => null),
+      prisma.user.findUnique({ where: { id: d.userId as string }, select: { id: true, email: true, displayName: true } }).catch(() => null),
+    ])
+    return {
+      ...d,
+      ...(asset && { asset: { id: d.assetId, ...asset } }),
+      ...(user && { user }),
+    }
+  }
+
+  if (event === 'user.created' || event === 'user.updated' || event === 'user.suspended') {
+    const user = await prisma.user.findUnique({
+      where: { id: d.id as string },
+      select: { id: true, email: true, displayName: true, globalRole: true, accountStatus: true, departmentId: true },
+    }).catch(() => null)
+    return { ...d, ...(user && { user }) }
+  }
+
+  return data
+}
+
 /** Enqueue a webhook delivery job for every enabled endpoint subscribed to the event. */
 export async function dispatchWebhook(event: WebhookEvent, data: unknown): Promise<void> {
   const endpoints = await prisma.webhookEndpoint.findMany({
@@ -49,7 +119,8 @@ export async function dispatchWebhook(event: WebhookEvent, data: unknown): Promi
   if (endpoints.length === 0) return
 
   const timestamp = new Date().toISOString()
-  const payload = JSON.stringify({ event, timestamp, data })
+  const enriched = await enrichPayload(event, data)
+  const payload = JSON.stringify({ event, timestamp, data: enriched })
 
   const boss = getBoss()
   await boss.insert(
