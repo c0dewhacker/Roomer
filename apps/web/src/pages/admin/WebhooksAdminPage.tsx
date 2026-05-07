@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Plus, Trash2, Send, Eye, CheckCircle2, XCircle, Pencil } from 'lucide-react'
+import { Plus, Trash2, Send, Eye, CheckCircle2, XCircle, Pencil, Copy, Check } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { webhooksApi, type WebhookEndpoint, type WebhookDelivery } from '@/lib/api'
 import { toast } from 'sonner'
@@ -69,6 +69,8 @@ function EndpointDialog({
   const [selectedEvents, setSelectedEvents] = useState<Set<string>>(
     new Set(endpoint?.events ?? []),
   )
+  const [revealedSecret, setRevealedSecret] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
 
   function toggleEvent(event: string) {
     setSelectedEvents((prev) => {
@@ -89,6 +91,14 @@ function EndpointDialog({
     })
   }
 
+  function copySecret() {
+    if (!revealedSecret) return
+    navigator.clipboard.writeText(revealedSecret).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+
   const save = useMutation({
     mutationFn: () => {
       const body = { url, events: [...selectedEvents], ...(secret ? { secret } : {}), enabled }
@@ -97,14 +107,14 @@ function EndpointDialog({
         : webhooksApi.create(body)
     },
     onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['webhooks'] })
       if (!isEdit) {
         const created = (data as { data: WebhookEndpoint & { secret: string } }).data
-        toast.success(`Endpoint created. Secret: ${created.secret}`, { duration: 15000, description: 'Copy this secret now — it will not be shown again.' })
+        setRevealedSecret(created.secret)
       } else {
         toast.success('Endpoint updated')
+        onClose()
       }
-      qc.invalidateQueries({ queryKey: ['webhooks'] })
-      onClose()
     },
     onError: () => toast.error(isEdit ? 'Failed to update endpoint' : 'Failed to create endpoint'),
   })
@@ -116,6 +126,37 @@ function EndpointDialog({
   }, {})
 
   const canSave = url.trim().length > 0 && selectedEvents.size > 0
+
+  if (revealedSecret) {
+    return (
+      <Dialog open={open} onOpenChange={() => {}}>
+        <DialogContent className="max-w-md" onInteractOutside={(e) => e.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle>Save your webhook secret</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-1">
+            <p className="text-sm text-muted-foreground">
+              This secret will <span className="font-semibold text-foreground">not be shown again</span>. Copy it now and store it somewhere safe — you'll need it to verify webhook signatures.
+            </p>
+            <div className="flex gap-2">
+              <Input
+                readOnly
+                value={revealedSecret}
+                className="font-mono text-sm"
+                onFocus={(e) => e.target.select()}
+              />
+              <Button size="icon" variant="outline" onClick={copySecret} title="Copy secret">
+                {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+              </Button>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button onClick={onClose}>I've saved my secret</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    )
+  }
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
