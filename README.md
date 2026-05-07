@@ -29,6 +29,7 @@ Roomer is a self-hosted platform for managing desk and asset reservations across
 | **Role-based access** | Super admin, building admin, floor manager, and user roles |
 | **Multi-provider login** | Local, LDAP, OIDC, and SAML — mix providers with a configurable default and URL overrides |
 | **SCIM 2.0 provisioning** | Automated user and group sync from Okta, Azure AD / Entra ID, OneLogin, etc. |
+| **Webhooks** | Outbound webhook endpoints with HMAC-SHA256 signed payloads, delivery log with retry, and 18 event types across booking, queue, asset, and user domains |
 | **Email notifications** | Booking confirmations and queue promotions via SMTP |
 
 ---
@@ -284,6 +285,7 @@ The REST API runs on port `3001` by default.
 | `/api/v1/users` | User management |
 | `/api/v1/groups` | Group management |
 | `/api/v1/settings` | Organisation settings, auth provider config, SCIM provisioning |
+| `/api/v1/webhooks` | Webhook endpoint management, delivery log |
 | `/scim/v2` | SCIM 2.0 provisioning (separate prefix, bearer token auth) |
 | `/health/live` | Liveness probe — always 200 while the process is running |
 | `/health/ready` | Readiness probe — 200 when the DB is reachable, 503 otherwise |
@@ -326,7 +328,7 @@ All API environment variables. Every variable accepts a `ROOMER_` prefix (e.g. `
 | Role | Scope | Permissions |
 |---|---|---|
 | `SUPER_ADMIN` | Global | Full access to all resources and settings |
-| `BUILDING_ADMIN` | Per building | Superset of floor manager for every floor in the building (full implementation in progress) |
+| `BUILDING_ADMIN` | Per building | Superset of floor manager for every floor in the building |
 | `FLOOR_MANAGER` | Per floor | Manage zones, assets, and bookings on assigned floors |
 | `USER` | Global | Book available assets, manage own bookings |
 
