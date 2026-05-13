@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.15](https://github.com/c0dewhacker/Roomer/compare/v0.3.14...v0.3.15) (2026-05-13)
+
+
+### Features
+
+* webhook support — HMAC-signed delivery, retry, admin UI ([#82](https://github.com/c0dewhacker/Roomer/issues/82)) ([b4bcd83](https://github.com/c0dewhacker/Roomer/commit/b4bcd838216d72d17ebc12ec6b44b47237e47181))
+* webhook support ([#82](https://github.com/c0dewhacker/Roomer/issues/82)) ([c5ab03d](https://github.com/c0dewhacker/Roomer/commit/c5ab03d31fe4c31e286cb763cd63c1fd0b3591d0))
+* **webhooks:** enrich payloads with human-readable data ([ec614f6](https://github.com/c0dewhacker/Roomer/commit/ec614f6705bd17045d9215182b0b39c59644922e))
+* **webhooks:** show one-time secret in a confirmation modal ([df3b2ae](https://github.com/c0dewhacker/Roomer/commit/df3b2ae7cd7baf93295156c663271accf7024229))
+
+
+### Bug Fixes
+
+* **security:** bump fast-uri to 3.1.2 and hono to 4.12.18 ([26d4232](https://github.com/c0dewhacker/Roomer/commit/26d42325a7194ca915123c8e342bf7bb156f732f))
+* **security:** bump fast-uri to 3.1.2 and hono to 4.12.18 via pnpm overrides ([511b04a](https://github.com/c0dewhacker/Roomer/commit/511b04a3f0953ef6d7f9844773e0bdfa35d5ea83))
+* **webhooks:** match admin page layout — centered, max-w-4xl, title restored ([8b0b88a](https://github.com/c0dewhacker/Roomer/commit/8b0b88a43ddbe74cf5214cb78d5fb15ebb4c7933))
+* **webhooks:** remove double titles, add page padding, switch to toggles ([b62f5bd](https://github.com/c0dewhacker/Roomer/commit/b62f5bd9200b0c2f090fddd7738b2af38c6e9e3e))
+
 ## [0.3.14](https://github.com/c0dewhacker/Roomer/compare/v0.3.13...v0.3.14) (2026-05-05)
 
 
