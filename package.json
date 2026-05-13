@@ -25,7 +25,9 @@
       "@prisma/engines"
     ],
     "overrides": {
-      "@xmldom/xmldom": "^0.9.7"
+      "@xmldom/xmldom": "^0.9.7",
+      "fast-uri": "^3.1.2",
+      "hono": "^4.12.18"
     }
   }
 }
