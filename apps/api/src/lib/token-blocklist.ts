@@ -29,6 +29,9 @@ function isCachedNotBlocked(jti: string): boolean {
  *   }
  */
 export async function blockToken(jti: string, expUnix: number): Promise<void> {
+  // Drop any cached "not blocked" result so the revocation is effective immediately
+  // within this process (other instances pick it up within NOT_BLOCKED_TTL_MS).
+  NOT_BLOCKED_CACHE.delete(jti)
   await prisma.revokedToken.upsert({
     where: { jti },
     update: { expiresAt: new Date(expUnix * 1000) },

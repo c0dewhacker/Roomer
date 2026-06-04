@@ -5,7 +5,8 @@ import { prisma } from '../lib/prisma.js'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole } from '../middleware/requireRole.js'
 import { GlobalRole } from '@roomer/shared'
-import { WEBHOOK_EVENTS } from '../lib/webhook.js'
+import { WEBHOOK_EVENTS, assertPublicWebhookUrl, dispatchPing } from '../lib/webhook.js'
+import { encrypt } from '../lib/encryption.js'
 
 const createEndpointSchema = z.object({
   url: z.string().url(),
@@ -46,16 +47,24 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
     if (!result.success) {
       return reply.status(400).send({ error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() } })
     }
+    try {
+      await assertPublicWebhookUrl(result.data.url)
+    } catch (err) {
+      return reply.status(400).send({ error: { message: err instanceof Error ? err.message : 'Invalid webhook URL', code: 'INVALID_WEBHOOK_URL' } })
+    }
+
     const secret = result.data.secret ?? randomBytes(32).toString('hex')
     const endpoint = await prisma.webhookEndpoint.create({
       data: {
         url: result.data.url,
-        secret,
+        secret: encrypt(secret),               // encrypted at rest
         events: result.data.events,
         enabled: result.data.enabled ?? true,
       },
+      select: { id: true, url: true, events: true, enabled: true, createdAt: true, updatedAt: true },
     })
-    return reply.status(201).send({ data: { ...endpoint } })
+    // Return the plaintext secret exactly once so the admin can configure the receiver.
+    return reply.status(201).send({ data: { ...endpoint, secret } })
   })
 
   // PATCH /webhooks/:id — update endpoint
@@ -68,9 +77,19 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
     const existing = await prisma.webhookEndpoint.findUnique({ where: { id } })
     if (!existing) return reply.status(404).send({ error: { message: 'Webhook endpoint not found', code: 'NOT_FOUND' } })
 
+    if (result.data.url !== undefined) {
+      try {
+        await assertPublicWebhookUrl(result.data.url)
+      } catch (err) {
+        return reply.status(400).send({ error: { message: err instanceof Error ? err.message : 'Invalid webhook URL', code: 'INVALID_WEBHOOK_URL' } })
+      }
+    }
+
+    // Encrypt the secret at rest when it is being rotated.
+    const { secret, ...rest } = result.data
     const endpoint = await prisma.webhookEndpoint.update({
       where: { id },
-      data: result.data,
+      data: { ...rest, ...(secret !== undefined ? { secret: encrypt(secret) } : {}) },
       select: { id: true, url: true, events: true, enabled: true, createdAt: true, updatedAt: true },
     })
     return reply.send({ data: endpoint })
@@ -85,22 +104,14 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.send({ data: { ok: true } })
   })
 
-  // POST /webhooks/:id/ping — send a test ping to an endpoint
+  // POST /webhooks/:id/ping — send a test ping to this endpoint only
   fastify.post('/:id/ping', { preHandler: adminGuard }, async (request, reply) => {
     const { id } = request.params as { id: string }
     const existing = await prisma.webhookEndpoint.findUnique({ where: { id } })
     if (!existing) return reply.status(404).send({ error: { message: 'Webhook endpoint not found', code: 'NOT_FOUND' } })
-    const { dispatchWebhook } = await import('../lib/webhook.js')
-    // Temporarily use the endpoint directly regardless of enabled state
-    const { prisma: db } = await import('../lib/prisma.js')
-    // Re-enable temporarily if disabled so dispatchWebhook finds it
-    const wasDisabled = !existing.enabled
-    if (wasDisabled) await db.webhookEndpoint.update({ where: { id }, data: { enabled: true } })
-    try {
-      await dispatchWebhook('booking.created', { ping: true, endpointId: id })
-    } finally {
-      if (wasDisabled) await db.webhookEndpoint.update({ where: { id }, data: { enabled: false } })
-    }
+    // Deliver a ping to exactly this endpoint — does not touch enabled state and
+    // does not fan out to other endpoints.
+    await dispatchPing(id)
     return reply.send({ data: { ok: true } })
   })
 

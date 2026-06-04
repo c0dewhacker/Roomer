@@ -4,6 +4,7 @@ import { GlobalRole, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { z } from 'zod'
 import { enqueueNotification } from '../lib/queue.js'
+import { assertBookable, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
 
 const createRecurringSchema = z.object({
   assetId: z.string().min(1),
@@ -111,26 +112,6 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       })
     }
 
-    const asset = await prisma.asset.findUnique({
-      where: { id: assetId },
-      include: {
-        allowList: { select: { userId: true } },
-        userAssignments: { select: { userId: true } },
-        floor: { select: { id: true, buildingId: true } },
-      },
-    })
-    if (!asset) return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
-    if (!asset.isBookable) return reply.status(409).send({ error: { message: 'Asset is not bookable', code: 'ASSET_NOT_BOOKABLE' } })
-    if (asset.bookingStatus === 'DISABLED') return reply.status(409).send({ error: { message: 'Asset is disabled', code: 'ASSET_DISABLED' } })
-
-    if (asset.bookingStatus === 'RESTRICTED') {
-      const onList = asset.allowList.some((e) => e.userId === request.user.id)
-      const isAssigned = asset.userAssignments.some((ua) => ua.userId === request.user.id)
-      if (!onList && !isAssigned && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
-        return reply.status(403).send({ error: { message: 'You are not permitted to book this asset', code: 'FORBIDDEN' } })
-      }
-    }
-
     const occurrenceDates = getOccurrenceDates(frequency, dayOfWeek, firstDate, lastDate)
     if (occurrenceDates.length === 0) {
       return reply.status(400).send({ error: { message: 'No occurrences found for the given day and date range', code: 'NO_OCCURRENCES' } })
@@ -141,8 +122,17 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       endsAt: buildSlotDatetime(d, endTime),
     }))
 
+    // Centralised bookability gate (bookable / disabled / restricted / assigned / group access)
+    const gate = await assertBookable(prisma, request.user, assetId, slots[0].startsAt, slots[slots.length - 1].endsAt)
+    if (!gate.ok) {
+      return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+    }
+
     try {
       const rule = await prisma.$transaction(async (tx) => {
+        // Serialise booking creation for this asset against all other paths
+        await lockAssetForBooking(tx, assetId)
+
         // Check all slots for conflicts atomically
         for (const slot of slots) {
           const conflict = await tx.booking.findFirst({
@@ -207,6 +197,12 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
             message: `Booking conflict on ${e.conflictAt} — the entire series was not created`,
             code: 'BOOKING_CONFLICT',
           },
+        })
+      }
+      // Database-level backstop: the booking_no_overlap exclusion constraint
+      if (isOverlapConstraintViolation(err)) {
+        return reply.status(409).send({
+          error: { message: 'One or more occurrences conflict with an existing booking — the series was not created', code: 'BOOKING_CONFLICT' },
         })
       }
       throw err

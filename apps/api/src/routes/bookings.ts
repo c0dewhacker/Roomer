@@ -8,6 +8,7 @@ import { enqueueNotification, fanOutFloorAvailable, CLAIM_DEADLINE_MS } from '..
 import { dispatchWebhook } from '../lib/webhook.js'
 import { randomUUID } from 'crypto'
 import { checkGroupAccess } from './groups.js'
+import { assertBookable, hasConfirmedOverlap, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
 import { z } from 'zod'
 
 class BookingConflictError extends Error {
@@ -28,25 +29,6 @@ const reportQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),
 })
-
-async function checkAssetOverlap(
-  tx: Prisma.TransactionClient,
-  assetId: string,
-  startsAt: Date,
-  endsAt: Date,
-  excludeBookingId?: string,
-): Promise<boolean> {
-  const conflict = await tx.booking.findFirst({
-    where: {
-      assetId,
-      status: 'CONFIRMED',
-      id: excludeBookingId ? { not: excludeBookingId } : undefined,
-      startsAt: { lt: endsAt },
-      endsAt: { gt: startsAt },
-    },
-  })
-  return conflict !== null
-}
 
 async function checkZoneGroupOverlap(
   tx: Prisma.TransactionClient,
@@ -212,73 +194,19 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     const startsAt = new Date(result.data.startsAt)
     const endsAt = new Date(result.data.endsAt)
 
-    const asset = await prisma.asset.findUnique({
-      where: { id: assetId },
-      include: {
-        allowList: { select: { userId: true } },
-        userAssignments: { select: { userId: true } },
-        floor: { select: { id: true, buildingId: true } },
-      },
-    })
-
-    if (!asset) {
-      return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
-    }
-
-    if (!asset.isBookable) {
-      return reply.status(409).send({ error: { message: 'Asset is not bookable', code: 'ASSET_NOT_BOOKABLE' } })
-    }
-
-    if (asset.bookingStatus === 'DISABLED') {
-      return reply.status(409).send({ error: { message: 'Asset is disabled', code: 'ASSET_DISABLED' } })
-    }
-
-    if (asset.bookingStatus === 'RESTRICTED') {
-      const onList = asset.allowList.some((e) => e.userId === request.user.id)
-      const isAssigned = asset.userAssignments.some((ua) => ua.userId === request.user.id)
-      if (!onList && !isAssigned && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
-        return reply.status(403).send({ error: { message: 'You are not on the allow list for this asset', code: 'NOT_ON_ALLOW_LIST' } })
-      }
-    }
-
-    if (asset.bookingStatus === 'ASSIGNED') {
-      const isAssignedUser = asset.userAssignments.some((ua) => ua.userId === request.user.id)
-      if (!isAssignedUser && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
-        // Allow if there is an active availability window covering the requested slot
-        const window = await prisma.assetAvailabilityWindow.findFirst({
-          where: {
-            assetId,
-            startsAt: { lte: startsAt },
-            endsAt: { gte: endsAt },
-          },
-        })
-        if (!window) {
-          return reply.status(403).send({ error: { message: 'This asset is permanently assigned to another user', code: 'ASSET_ASSIGNED' } })
-        }
-      }
-    }
-
-    // Check group-based access restrictions (non-admins only)
-    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN && asset.floor) {
-      const allowed = await checkGroupAccess(
-        request.user.id,
-        asset.floor.buildingId,
-        asset.floor.id,
-      )
-      if (!allowed) {
-        return reply.status(403).send({
-          error: { message: 'Your group does not have access to this building or floor', code: 'GROUP_ACCESS_DENIED' },
-        })
-      }
+    // Centralised bookability gate (bookable / disabled / restricted / assigned / group access)
+    const gate = await assertBookable(prisma, request.user, assetId, startsAt, endsAt)
+    if (!gate.ok) {
+      return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
     }
 
     let booking: Awaited<ReturnType<typeof prisma.booking.create>>
     try {
       booking = await prisma.$transaction(async (tx) => {
-        // Serialize concurrent bookings for the same asset using an advisory lock
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1, hashtext(${assetId}))`
+        // Serialize concurrent bookings for the same asset using the shared advisory lock
+        await lockAssetForBooking(tx, assetId)
 
-        if (await checkAssetOverlap(tx, assetId, startsAt, endsAt)) {
+        if (await hasConfirmedOverlap(tx, assetId, startsAt, endsAt)) {
           throw new BookingConflictError('ASSET_CONFLICT', 'Asset is already booked for this time')
         }
 
@@ -308,6 +236,10 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     } catch (err) {
       if (err instanceof BookingConflictError) {
         return reply.status(409).send({ error: { message: err.message, code: err.code } })
+      }
+      // Database-level backstop: the booking_no_overlap exclusion constraint
+      if (isOverlapConstraintViolation(err)) {
+        return reply.status(409).send({ error: { message: 'Asset is already booked for this time', code: 'ASSET_CONFLICT' } })
       }
       throw err
     }
@@ -388,9 +320,9 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     let updated: Awaited<ReturnType<typeof prisma.booking.update>>
     try {
       updated = await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1, hashtext(${booking.assetId}))`
+        await lockAssetForBooking(tx, booking.assetId)
 
-        if (await checkAssetOverlap(tx, booking.assetId, newStartsAt, newEndsAt, id)) {
+        if (await hasConfirmedOverlap(tx, booking.assetId, newStartsAt, newEndsAt, id)) {
           throw new BookingConflictError('ASSET_CONFLICT', 'Asset is already booked for this time')
         }
 
@@ -410,6 +342,10 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     } catch (err) {
       if (err instanceof BookingConflictError) {
         return reply.status(409).send({ error: { message: err.message, code: err.code } })
+      }
+      // Database-level backstop: the booking_no_overlap exclusion constraint
+      if (isOverlapConstraintViolation(err)) {
+        return reply.status(409).send({ error: { message: 'Asset is already booked for this time', code: 'ASSET_CONFLICT' } })
       }
       throw err
     }

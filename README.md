@@ -24,6 +24,12 @@ Roomer is a self-hosted platform for managing desk and asset reservations across
 | **Zone management** | Group assets into colour-coded zones with optional conflict rules |
 | **Building & floor management** | Building admins and floor managers for delegated admin without full super-admin access |
 | **Queue & waitlist** | Users join a waitlist and are automatically promoted when a desk frees up |
+| **Recurring bookings** | Daily/weekly/monthly recurring booking rules that materialise the whole series up front |
+| **Availability windows** | Permanently-assigned desks can be opened for booking on specific date ranges |
+| **Floor subscriptions** | Users subscribe to a floor and are notified when matching space frees up |
+| **Analytics** | Utilisation and booking analytics for admins and building managers |
+| **Building leases** | Track building lease terms and costs (admin) |
+| **Departments** | Department hierarchy with user membership, mappable from OIDC/SAML/LDAP/SCIM |
 | **Bulk CSV import** | Import buildings, floors, zones, and assets in a single pass |
 | **Asset registry** | Track non-bookable inventory (laptops, monitors, etc.) alongside bookable space |
 | **Role-based access** | Super admin, building admin, floor manager, and user roles |
@@ -309,7 +315,9 @@ All API environment variables. Every variable accepts a `ROOMER_` prefix (e.g. `
 | `TRUST_PROXY` | `false` in dev | Trust `X-Forwarded-For` headers |
 | `ALLOW_BEARER_AUTH` | `true` in dev | Accept `Authorization: Bearer` tokens |
 | `SWAGGER_ENABLED` | `true` in dev | Expose Swagger UI at `/docs` |
-| `ROOMER_METRICS_ENABLED` | `false` | Set to `true` to expose a Prometheus `/metrics` endpoint. Unauthenticated — protect at the network/ingress level. |
+| `ROOMER_METRICS_ENABLED` | `false` | Set to `true` to expose a Prometheus `/metrics` endpoint. Unauthenticated unless `METRICS_TOKEN` is set — protect at the network/ingress level. |
+| `METRICS_TOKEN` | — | Optional bearer token for `/metrics`. When set, scrapers must send `Authorization: Bearer <token>`. |
+| `WEBHOOK_ALLOW_PRIVATE` | `false` | Allow webhook delivery to private/RFC1918 addresses (internal integrations). Loopback and link-local (incl. cloud metadata) remain blocked regardless. |
 | `FILE_STORAGE_PATH` | `./uploads` | Directory for floor plan images |
 | `MAX_FILE_SIZE_MB` | `20` | Maximum upload size |
 | `API_PUBLIC_URL` | `http://localhost:3001` | Public URL of the API — shown in the SCIM settings panel as the endpoint base URL |

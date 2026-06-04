@@ -242,6 +242,23 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
+    // Guard against removing the last active super admin (would lock the org out).
+    const demotesAdmin = result.data.globalRole !== undefined && result.data.globalRole !== GlobalRole.SUPER_ADMIN
+    const blocksAccount = result.data.accountStatus === 'BLOCKED'
+    if (demotesAdmin || blocksAccount) {
+      const target = await prisma.user.findUnique({ where: { id }, select: { globalRole: true, accountStatus: true } })
+      if (target?.globalRole === GlobalRole.SUPER_ADMIN && target.accountStatus === 'ACTIVE') {
+        const otherActiveAdmins = await prisma.user.count({
+          where: { id: { not: id }, globalRole: GlobalRole.SUPER_ADMIN, accountStatus: 'ACTIVE' },
+        })
+        if (otherActiveAdmins === 0) {
+          return reply.status(409).send({
+            error: { message: 'Cannot remove the last active super admin', code: 'LAST_SUPER_ADMIN' },
+          })
+        }
+      }
+    }
+
     try {
       const updated = await prisma.user.update({
         where: { id },

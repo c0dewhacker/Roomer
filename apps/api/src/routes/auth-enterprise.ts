@@ -157,6 +157,14 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
         return reply.redirect(`${env.APP_URL}/login?error=oidc_no_email`)
       }
 
+      // Refuse explicitly-unverified emails. Because SSO users are matched/linked
+      // by email, accepting an unverified address would let a malicious or
+      // misconfigured IdP take over an existing account by asserting its email.
+      if (userinfo.email_verified === false) {
+        fastify.log.warn({ email }, 'OIDC login rejected: email not verified')
+        return reply.redirect(`${env.APP_URL}/login?error=oidc_email_unverified`)
+      }
+
       const user = await findOrCreateSsoUser(email, displayName ?? email, 'OIDC', userinfo.sub)
       if (!user) {
         return reply.redirect(`${env.APP_URL}/login?error=account_blocked`)

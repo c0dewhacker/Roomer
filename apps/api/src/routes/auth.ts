@@ -6,7 +6,13 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { authenticateWithLdap, getLdapConfig } from '../lib/ldap.js'
 import { applyGroupMappings } from '../lib/group-mapping.js'
 import { signAccessToken, verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE, MAX_SESSION_SECONDS } from '../lib/jwt.js'
-import { blockToken } from '../lib/token-blocklist.js'
+import { blockToken, isTokenBlocked } from '../lib/token-blocklist.js'
+
+// A valid bcrypt hash (cost 12) of a random string, used to equalise response
+// timing when an account has no local password (non-existent user or SSO-only).
+// Without this, the local-auth path runs bcrypt.compare while the "no password"
+// path returns immediately, leaking account existence via a timing side channel.
+const DUMMY_PASSWORD_HASH = bcryptjs.hashSync('roomer-timing-equaliser', 12)
 
 export async function authRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Auth'], ...route.schema } })
@@ -56,6 +62,9 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
           }
         }
       } else if (!user || !user.passwordHash) {
+        // Run a dummy bcrypt comparison so this path takes a similar amount of
+        // time to the local-password path — avoids account-enumeration via timing.
+        await bcryptjs.compare(password, DUMMY_PASSWORD_HASH)
         return reply.status(401).send({
           error: { message: 'Invalid email or password', code: 'INVALID_CREDENTIALS' },
         })
@@ -146,6 +155,13 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
     } catch {
       reply.clearCookie(TOKEN_COOKIE, TOKEN_COOKIE_OPTS)
       return reply.status(401).send({ error: { message: 'Invalid or expired token', code: 'TOKEN_INVALID' } })
+    }
+
+    // Reject revoked tokens — otherwise a token blocklisted at logout could be
+    // exchanged here for a fresh one, defeating logout/refresh revocation.
+    if (payload.jti && await isTokenBlocked(payload.jti)) {
+      reply.clearCookie(TOKEN_COOKIE, TOKEN_COOKIE_OPTS)
+      return reply.status(401).send({ error: { message: 'Token has been revoked', code: 'TOKEN_REVOKED' } })
     }
 
     // Enforce absolute session ceiling — prevents indefinite session extension

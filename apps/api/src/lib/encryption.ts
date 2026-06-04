@@ -27,6 +27,13 @@ export function decrypt(envelope: string): string {
   return decipher.update(ciphertext) + decipher.final('utf8')
 }
 
+// Decrypt a value that may be an enc:v1: envelope or legacy plaintext.
+// Used for single-string secrets (e.g. webhook signing secrets) where rows
+// written before encryption-at-rest was introduced are stored in the clear.
+export function decryptStringMaybe(value: string): string {
+  return value.startsWith('enc:v1:') ? decrypt(value) : value
+}
+
 // Serialize an object to JSON, encrypt, and return the enc:v1: envelope string.
 // Store the result directly in a Prisma Json field — Postgres stores it as a JSON string.
 export function encryptJson(value: unknown): string {

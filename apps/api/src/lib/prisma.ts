@@ -8,7 +8,6 @@ const nodeEnv = process.env['ROOMER_NODE_ENV'] ?? process.env['NODE_ENV']
 
 declare global {
   // Allow global prisma in development to survive hot reloads
-  // eslint-disable-next-line no-var
   var __prisma: PrismaClient | undefined
 }
 

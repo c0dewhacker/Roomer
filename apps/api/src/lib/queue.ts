@@ -456,7 +456,8 @@ export async function startQueue(): Promise<void> {
   await b.work<NotificationJobData>('send-notification', handleSendNotification)
 
   const { deliverWebhookJob } = await import('./webhook.js')
-  await b.work('webhook-delivery', deliverWebhookJob)
+  // includeMetadata exposes retryCount on each job so delivery attempts are logged accurately.
+  await b.work('webhook-delivery', { includeMetadata: true }, deliverWebhookJob)
 
   await b.work('expire-queue-entries', async () => {
     await handleExpireQueueEntries()
