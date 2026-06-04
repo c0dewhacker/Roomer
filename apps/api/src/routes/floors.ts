@@ -4,13 +4,57 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
 import { createFloorSchema, updateFloorSchema, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { isFloorManagerForFloor, isBuildingManagerForBuilding } from '../middleware/requireRole.js'
+import { isFloorManagerForFloor, isBuildingManagerForBuilding, requireGlobalRole } from '../middleware/requireRole.js'
 import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage.js'
 import { canUserAccessBuilding } from './groups.js'
 import { z } from 'zod'
 
 export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Floors'], ...route.schema } })
+
+  // GET /floors/:id/access-summary — "who can access / manage this floor?"
+  fastify.get('/:id/access-summary', { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const floor = await prisma.floor.findUnique({
+      where: { id },
+      select: { id: true, name: true, building: { select: { id: true, name: true } } },
+    })
+    if (!floor) return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+
+    const [accessGroups, directManagers, groupManagers, buildingAdmins] = await Promise.all([
+      prisma.groupFloorAccess.findMany({ where: { floorId: id }, select: { group: { select: { id: true, name: true } } } }),
+      prisma.userResourceRole.findMany({
+        where: { scopeType: 'FLOOR', floorId: id, role: 'FLOOR_MANAGER' },
+        select: { source: true, user: { select: { id: true, displayName: true, email: true } } },
+      }),
+      prisma.groupResourceRole.findMany({
+        where: { scopeType: 'FLOOR', floorId: id, role: 'FLOOR_MANAGER' },
+        select: { source: true, group: { select: { id: true, name: true, _count: { select: { members: true } } } } },
+      }),
+      // Building admins inherit floor-manager rights on every floor in their building
+      prisma.userResourceRole.findMany({
+        where: { scopeType: 'BUILDING', buildingId: floor.building.id, role: 'BUILDING_ADMIN' },
+        select: { user: { select: { id: true, displayName: true, email: true } } },
+      }),
+    ])
+
+    return reply.status(200).send({
+      data: {
+        floorId: floor.id,
+        name: floor.name,
+        building: floor.building,
+        access: {
+          restricted: accessGroups.length > 0,
+          groups: accessGroups.map((a) => a.group),
+        },
+        managers: {
+          direct: directManagers.map((m) => ({ ...m.user, source: m.source })),
+          viaGroups: groupManagers.map((m) => ({ ...m.group, memberCount: m.group._count.members, source: m.source })),
+          inheritedFromBuildingAdmins: buildingAdmins.map((m) => m.user),
+        },
+      },
+    })
+  })
 
   // GET /floors/:id — floor with zones, bookable assets, floorPlan
   fastify.get('/:id', { preHandler: [requireAuth] }, async (request, reply) => {

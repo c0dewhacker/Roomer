@@ -1,5 +1,17 @@
 import { prisma } from './prisma.js'
-import { GlobalRole } from '@roomer/shared'
+import { GlobalRole, RoleSource } from '@roomer/shared'
+
+/**
+ * Record the raw IdP group values seen on this login so admins can copy exact
+ * identifiers when configuring mappings, and the mapping dry-run can use them.
+ * Safe to call on every SSO/LDAP login regardless of whether mappings exist.
+ */
+export async function recordLastIdpGroups(userId: string, idpGroups: string[]): Promise<void> {
+  await prisma.user.update({
+    where: { id: userId },
+    data: { lastIdpGroups: idpGroups, lastSsoLoginAt: new Date() },
+  })
+}
 
 export interface GroupMapping {
   /** The group name or identifier as it comes from the IdP (e.g. "Admins" or full LDAP DN) */
@@ -36,6 +48,11 @@ function groupMatches(g: string, idpGroup: string): boolean {
   const ng = normaliseDn(g)
   const ni = normaliseDn(idpGroup)
   return ng === ni
+}
+
+/** True when any of the supplied IdP group values matches the configured idpGroup. */
+export function idpGroupMatchesAny(idpGroups: string[], idpGroup: string): boolean {
+  return idpGroups.some((g) => groupMatches(g, idpGroup))
 }
 
 /**
@@ -85,21 +102,23 @@ export async function applyGroupMappings(
   }
 
   if (sync) {
-    // Remove user from mapped groups they no longer match
+    // Remove user from mapped groups they no longer match — but ONLY IDP-sourced
+    // memberships, so a membership an admin added manually is never evicted.
     const staleGroupIds = [...allMappedGroupIds].filter((gid) => !matchedGroupIds.includes(gid))
     if (staleGroupIds.length) {
       await prisma.userGroupMember.deleteMany({
-        where: { userId, groupId: { in: staleGroupIds } },
+        where: { userId, groupId: { in: staleGroupIds }, source: RoleSource.IDP },
       })
     }
   }
 
-  // Add user to each matched Roomer group
+  // Add user to each matched Roomer group, tagging the membership as IDP-sourced.
+  // If the membership already exists as a manual grant we leave its source alone.
   for (const groupId of matchedGroupIds) {
     try {
       await prisma.userGroupMember.upsert({
         where: { groupId_userId: { groupId, userId } },
-        create: { groupId, userId },
+        create: { groupId, userId, source: RoleSource.IDP },
         update: {},
       })
     } catch {
@@ -117,17 +136,24 @@ export async function applyGroupMappings(
 
   const hasAdminRole = directAdminGrant || effectiveGroups.some((g) => g.globalRole === GlobalRole.SUPER_ADMIN)
 
-  if (sync) {
-    // Re-derive role; may downgrade from SUPER_ADMIN → USER if no matching grants remain
+  if (hasAdminRole) {
+    // IdP grants admin — record IDP provenance so a later sync can revoke it.
     await prisma.user.update({
       where: { id: userId },
-      data: { globalRole: hasAdminRole ? GlobalRole.SUPER_ADMIN : GlobalRole.USER },
+      data: { globalRole: GlobalRole.SUPER_ADMIN, globalRoleSource: RoleSource.IDP },
     })
-  } else if (hasAdminRole) {
-    // Legacy: only elevate, never downgrade
-    await prisma.user.update({
+  } else if (sync) {
+    // No IdP admin grant. Only downgrade if the current admin role was itself
+    // IDP-derived — never strip an admin role an operator set manually.
+    const current = await prisma.user.findUnique({
       where: { id: userId },
-      data: { globalRole: GlobalRole.SUPER_ADMIN },
+      select: { globalRole: true, globalRoleSource: true },
     })
+    if (current?.globalRole === GlobalRole.SUPER_ADMIN && current.globalRoleSource === RoleSource.IDP) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { globalRole: GlobalRole.USER, globalRoleSource: RoleSource.MANUAL },
+      })
+    }
   }
 }

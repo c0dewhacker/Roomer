@@ -8,6 +8,40 @@ import { z } from 'zod'
 export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Buildings'], ...route.schema } })
 
+  // GET /buildings/:id/access-summary — "who can access / manage this building?"
+  fastify.get('/:id/access-summary', { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const building = await prisma.building.findUnique({ where: { id }, select: { id: true, name: true } })
+    if (!building) return reply.status(404).send({ error: { message: 'Building not found', code: 'NOT_FOUND' } })
+
+    const [accessGroups, directManagers, groupManagers] = await Promise.all([
+      prisma.groupBuildingAccess.findMany({ where: { buildingId: id }, select: { group: { select: { id: true, name: true } } } }),
+      prisma.userResourceRole.findMany({
+        where: { scopeType: 'BUILDING', buildingId: id, role: 'BUILDING_ADMIN' },
+        select: { source: true, user: { select: { id: true, displayName: true, email: true } } },
+      }),
+      prisma.groupResourceRole.findMany({
+        where: { scopeType: 'BUILDING', buildingId: id, role: 'BUILDING_ADMIN' },
+        select: { source: true, group: { select: { id: true, name: true, _count: { select: { members: true } } } } },
+      }),
+    ])
+
+    return reply.status(200).send({
+      data: {
+        buildingId: building.id,
+        name: building.name,
+        access: {
+          restricted: accessGroups.length > 0,
+          groups: accessGroups.map((a) => a.group),
+        },
+        managers: {
+          direct: directManagers.map((m) => ({ ...m.user, source: m.source })),
+          viaGroups: groupManagers.map((m) => ({ ...m.group, memberCount: m.group._count.members, source: m.source })),
+        },
+      },
+    })
+  })
+
   // GET /buildings — list buildings the requesting user can access
   // SUPER_ADMINs see every building. Regular users only see buildings that are
   // either unrestricted (no GroupBuildingAccess rows) or have a matching group.

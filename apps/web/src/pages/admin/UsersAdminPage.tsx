@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, Shield, UserX, UserCheck, ChevronDown, UserPlus, Upload, KeyRound, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Search, Shield, UserX, UserCheck, ChevronDown, UserPlus, Upload, KeyRound, ChevronLeft, ChevronRight, Eye } from 'lucide-react'
 import {
   Select,
   SelectContent,
@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/select'
 import { usersApi } from '@/lib/api'
 import { UserImportDialog } from '@/components/admin/UserImportDialog'
+import { EffectiveAccessDialog } from '@/components/rbac/AccessInspector'
 import { toast } from 'sonner'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -174,6 +175,7 @@ const statusConfig: Record<string, { label: string; variant: 'default' | 'second
 
 function UserRow({ user, onRefresh }: { user: User; onRefresh: () => void }) {
   const [resetPasswordOpen, setResetPasswordOpen] = useState(false)
+  const [accessOpen, setAccessOpen] = useState(false)
 
   const updateStatus = useMutation({
     mutationFn: (accountStatus: string) => usersApi.update(user.id, { accountStatus } as any),
@@ -206,6 +208,7 @@ function UserRow({ user, onRefresh }: { user: User; onRefresh: () => void }) {
           onClose={() => setResetPasswordOpen(false)}
         />
       )}
+      <EffectiveAccessDialog userId={user.id} userName={user.displayName} open={accessOpen} onOpenChange={setAccessOpen} />
       <Card>
         <CardContent className="p-4">
           <div className="flex items-center justify-between gap-3">
@@ -236,8 +239,17 @@ function UserRow({ user, onRefresh }: { user: User; onRefresh: () => void }) {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => setAccessOpen(true)}>
+                    <Eye className="mr-2 h-3.5 w-3.5" />
+                    View access
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
                   {user.globalRole !== 'SUPER_ADMIN' ? (
-                    <DropdownMenuItem onClick={() => updateRole.mutate('SUPER_ADMIN')}>
+                    <DropdownMenuItem onClick={() => {
+                      if (window.confirm(`Make ${user.displayName} a Super Administrator? This grants full, org-wide access to every building, user and setting.`)) {
+                        updateRole.mutate('SUPER_ADMIN')
+                      }
+                    }}>
                       <Shield className="mr-2 h-3.5 w-3.5" />
                       Make Administrator
                     </DropdownMenuItem>

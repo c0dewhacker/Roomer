@@ -15,8 +15,12 @@ export enum GlobalRole {
 export enum ResourceRoleType {
   BUILDING_ADMIN = 'BUILDING_ADMIN',
   FLOOR_MANAGER = 'FLOOR_MANAGER',
-  USER = 'USER',
-  VIEWER = 'VIEWER',
+}
+
+/** Provenance of a group membership or role grant. */
+export enum RoleSource {
+  MANUAL = 'MANUAL',
+  IDP = 'IDP',
 }
 
 export enum ResourceScopeType {

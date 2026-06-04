@@ -10,6 +10,7 @@ import { invalidateOidcCache } from '../lib/oidc.js'
 import { syncLdapUsers, getLdapConfig } from '../lib/ldap.js'
 import { hashScimToken, generateScimToken } from '../lib/scim-helpers.js'
 import { findAuthConfig, listAuthConfigs, upsertAuthConfig } from '../lib/prisma.js'
+import { idpGroupMatchesAny } from '../lib/group-mapping.js'
 import { saveBrandingImage, resolveStoragePath } from '../lib/storage.js'
 import { DEFAULT_TEMPLATE_STRINGS, interpolateTemplate, stripHtmlToText, formatDate, sendEmail } from '../lib/mailer.js'
 import { z } from 'zod'
@@ -459,6 +460,77 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
         const message = err instanceof Error ? err.message : 'Unknown error'
         return reply.status(502).send({ error: { message: `LDAP sync failed: ${message}`, code: 'LDAP_SYNC_ERROR' } })
       }
+    },
+  )
+
+  // POST /settings/auth-config/:provider/test-mapping — dry-run IdP group → Roomer
+  // resolution. Evaluate against provided groups, a specific user's last-seen IdP
+  // groups, or the union of all users' last-seen groups (to flag dead mappings).
+  fastify.post(
+    '/auth-config/:provider/test-mapping',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)], config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      const { provider } = request.params as { provider: string }
+      const upperProvider = provider.toUpperCase() as ProviderKey
+      if (!ALLOWED_PROVIDERS.includes(upperProvider)) {
+        return reply.status(400).send({ error: { message: `Unknown provider: ${provider}`, code: 'VALIDATION_ERROR' } })
+      }
+
+      const parsed = z.object({
+        groups: z.array(z.string()).optional(),
+        userId: z.string().optional(),
+      }).safeParse(request.body ?? {})
+      if (!parsed.success) {
+        return reply.status(400).send({ error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: parsed.error.flatten() } })
+      }
+
+      const cfg = await findAuthConfig(upperProvider)
+      const mappings = (((cfg?.config as Record<string, unknown> | undefined)?.groupMappings) ?? []) as Array<{ idpGroup: string; roomerGroupId?: string; targetGlobalRole?: string }>
+
+      let inputGroups: string[]
+      let evaluatedAgainst: 'provided' | 'user' | 'all-known'
+      if (parsed.data.groups && parsed.data.groups.length > 0) {
+        inputGroups = parsed.data.groups
+        evaluatedAgainst = 'provided'
+      } else if (parsed.data.userId) {
+        const u = await prisma.user.findUnique({ where: { id: parsed.data.userId }, select: { lastIdpGroups: true } })
+        inputGroups = u?.lastIdpGroups ?? []
+        evaluatedAgainst = 'user'
+      } else {
+        const all = await prisma.user.findMany({ where: { lastIdpGroups: { isEmpty: false } }, select: { lastIdpGroups: true } })
+        inputGroups = [...new Set(all.flatMap((u) => u.lastIdpGroups))]
+        evaluatedAgainst = 'all-known'
+      }
+
+      const groupIds = mappings.map((m) => m.roomerGroupId).filter((x): x is string => !!x)
+      const groups = groupIds.length
+        ? await prisma.userGroup.findMany({ where: { id: { in: groupIds } }, select: { id: true, name: true, globalRole: true } })
+        : []
+      const byId = new Map(groups.map((g) => [g.id, g]))
+
+      const perMapping = mappings.map((m) => {
+        const matched = idpGroupMatchesAny(inputGroups, m.idpGroup)
+        const rg = m.roomerGroupId ? byId.get(m.roomerGroupId) : undefined
+        const confersAdmin = m.targetGlobalRole === 'SUPER_ADMIN' || rg?.globalRole === 'SUPER_ADMIN'
+        return {
+          idpGroup: m.idpGroup,
+          matched,
+          roomerGroup: rg ? { id: rg.id, name: rg.name } : null,
+          confersAdmin,
+        }
+      })
+
+      return reply.status(200).send({
+        data: {
+          evaluatedAgainst,
+          inputGroups,
+          mappings: perMapping,
+          resolvedGroups: perMapping.filter((p) => p.matched && p.roomerGroup).map((p) => p.roomerGroup),
+          resolvedGlobalRole: perMapping.some((p) => p.matched && p.confersAdmin) ? 'SUPER_ADMIN' : 'USER',
+          // Configured mappings that did not match any evaluated group — likely typos / dead rules.
+          unmatchedMappings: perMapping.filter((p) => !p.matched).map((p) => p.idpGroup),
+        },
+      })
     },
   )
 

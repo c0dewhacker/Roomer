@@ -4,7 +4,7 @@ import { env } from '../env.js'
 import { getOidcClientConfig, getOidcConfig, generateState, generateNonce } from '../lib/oidc.js'
 import { buildAuthorizationUrl, authorizationCodeGrant, fetchUserInfo, skipSubjectCheck } from 'openid-client'
 import { getSamlConfig, buildSaml, extractEmailFromProfile, extractDisplayNameFromProfile, extractGroupsFromProfile, extractDepartmentFromProfile, type SamlProfile } from '../lib/saml.js'
-import { applyGroupMappings } from '../lib/group-mapping.js'
+import { applyGroupMappings, recordLastIdpGroups } from '../lib/group-mapping.js'
 import { signAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE } from '../lib/jwt.js'
 import type { User } from '@prisma/client'
 
@@ -173,6 +173,7 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
       const groupsClaimName = cfg.groupsClaimName ?? 'groups'
       const rawGroups = (userinfo as Record<string, unknown>)[groupsClaimName]
       const idpGroups = Array.isArray(rawGroups) ? rawGroups.map(String) : []
+      await recordLastIdpGroups(user.id, idpGroups)
       if (idpGroups.length && cfg.groupMappings?.length) {
         await applyGroupMappings(user.id, idpGroups, cfg.groupMappings, true)
       }
@@ -235,6 +236,7 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
       }
 
       const idpGroups = extractGroupsFromProfile(samlProfile, cfg.groupAttribute)
+      await recordLastIdpGroups(user.id, idpGroups)
       if (idpGroups.length && cfg.groupMappings?.length) {
         await applyGroupMappings(user.id, idpGroups, cfg.groupMappings, true)
       }

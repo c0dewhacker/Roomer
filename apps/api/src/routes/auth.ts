@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma.js'
 import { loginSchema } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { authenticateWithLdap, getLdapConfig } from '../lib/ldap.js'
-import { applyGroupMappings } from '../lib/group-mapping.js'
+import { applyGroupMappings, recordLastIdpGroups } from '../lib/group-mapping.js'
 import { signAccessToken, verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE, MAX_SESSION_SECONDS } from '../lib/jwt.js'
 import { blockToken, isTokenBlocked } from '../lib/token-blocklist.js'
 
@@ -45,6 +45,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
             passwordHash: null,
           },
         })
+        await recordLastIdpGroups(user.id, ldapResult.groups)
         const ldapCfg = await getLdapConfig()
         const mappings = ldapCfg?.groupMappings ?? []
         if (ldapResult.groups.length && mappings.length) {

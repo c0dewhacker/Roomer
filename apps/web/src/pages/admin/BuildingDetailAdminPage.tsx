@@ -10,6 +10,7 @@ import AssignmentImportDialog from '@/components/admin/AssignmentImportDialog'
 import { toast } from 'sonner'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { AccessSummaryDialog } from '@/components/rbac/AccessInspector'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
@@ -697,6 +698,7 @@ export default function BuildingDetailAdminPage() {
   const { buildingId } = useParams<{ buildingId: string }>()
   const [addFloorOpen, setAddFloorOpen] = useState(false)
   const [bulkAssignOpen, setBulkAssignOpen] = useState(false)
+  const [accessOpen, setAccessOpen] = useState(false)
 
   const { data: building, isLoading } = useQuery({
     queryKey: ['buildings', buildingId],
@@ -723,6 +725,9 @@ export default function BuildingDetailAdminPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setAccessOpen(true)}>
+            <Shield className="mr-2 h-4 w-4" /> Access summary
+          </Button>
           <Button variant="outline" onClick={() => setBulkAssignOpen(true)}>
             <UserPlus className="mr-2 h-4 w-4" /> Bulk assign users
           </Button>
@@ -731,6 +736,8 @@ export default function BuildingDetailAdminPage() {
           </Button>
         </div>
       </div>
+
+      <AccessSummaryDialog kind="building" id={buildingId!} name={building?.name ?? 'Building'} open={accessOpen} onOpenChange={setAccessOpen} />
 
       <BuildingManagersPanel buildingId={buildingId!} />
 
