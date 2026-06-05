@@ -281,37 +281,42 @@ export async function canUserAccessBuilding(userId: string, buildingId: string):
 }
 
 /**
- * Returns true if the user is allowed to book in the given building/floor.
+ * Floor-centric access check — symmetric with canUserAccessBuilding.
  *
- * Two-stage check:
- *   1. Building-centric: if the building has GroupBuildingAccess rows, the user
- *      must be in at least one of those groups.
- *   2. Floor-centric (user-driven): for each of the user's groups that carries
- *      explicit floor restrictions, the target floor must be listed.
+ * A floor is "restricted" when at least one GroupFloorAccess row points to it.
+ * If restricted, the user must be a member of at least one of those groups.
+ * If unrestricted (no rows), any authenticated user can access it.
+ *
+ * (Previously this was "user-centric": a floor only excluded users who happened
+ * to be in some floor-restricted group, so a user in no such group could reach
+ * any floor. That asymmetry with building access was a frequent misconfiguration
+ * trap — you couldn't actually lock a floor down. This now mirrors buildings.)
+ */
+export async function canUserAccessFloor(userId: string, floorId: string): Promise<boolean> {
+  const accessCount = await prisma.groupFloorAccess.count({ where: { floorId } })
+  if (accessCount === 0) return true  // open floor — no restrictions configured
+
+  const userGroupIds = (
+    await prisma.userGroupMember.findMany({ where: { userId }, select: { groupId: true } })
+  ).map((m) => m.groupId)
+
+  if (userGroupIds.length === 0) return false
+
+  const match = await prisma.groupFloorAccess.findFirst({
+    where: { floorId, groupId: { in: userGroupIds } },
+  })
+  return match !== null
+}
+
+/**
+ * Returns true if the user is allowed to book in the given building/floor.
+ * Both gates use the same "restricted only if a rule exists, else open" model.
  */
 export async function checkGroupAccess(
   userId: string,
   buildingId: string,
   floorId: string,
 ): Promise<boolean> {
-  // Stage 1 — building-level gate
-  const buildingOk = await canUserAccessBuilding(userId, buildingId)
-  if (!buildingOk) return false
-
-  // Stage 2 — floor-level gate (user-centric: only applies when the user's own
-  // groups carry explicit floor restrictions)
-  const memberships = await prisma.userGroupMember.findMany({
-    where: { userId },
-    include: { group: { include: { floorAccess: true } } },
-  })
-
-  const groupsWithFloorRules = memberships
-    .map((m) => m.group)
-    .filter((g) => g.floorAccess.length > 0)
-
-  if (groupsWithFloorRules.length === 0) return true  // no floor restrictions
-
-  return groupsWithFloorRules.some((group) =>
-    group.floorAccess.map((f) => f.floorId).includes(floorId)
-  )
+  if (!(await canUserAccessBuilding(userId, buildingId))) return false
+  return canUserAccessFloor(userId, floorId)
 }

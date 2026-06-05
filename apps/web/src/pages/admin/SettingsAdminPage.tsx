@@ -14,6 +14,7 @@ import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
 import { settingsApi, groupsApi, brandingApi, authProvidersApi, type Branding, type BrandingBanner, type LoginProvider } from '@/lib/api'
 import { EmailTemplatesCard } from '@/components/settings/EmailTemplatesCard'
+import { MappingTestPanel } from '@/components/rbac/AccessInspector'
 import { DATE_FORMAT_OPTIONS } from '@/lib/dateFormat'
 import {
   Select,
@@ -215,9 +216,11 @@ type GroupMapping = { idpGroup: string; roomerGroupId?: string; targetGlobalRole
 function GroupMappingsEditor({
   mappings,
   onChange,
+  provider,
 }: {
   mappings: GroupMapping[]
   onChange: (m: GroupMapping[]) => void
+  provider: 'OIDC' | 'SAML' | 'LDAP'
 }) {
   const { data: groups } = useQuery({
     queryKey: ['groups'],
@@ -336,6 +339,7 @@ function GroupMappingsEditor({
           })}
         </div>
       )}
+      <MappingTestPanel provider={provider} />
     </div>
   )
 }
@@ -681,7 +685,7 @@ function OidcConfigForm({
         </div>
       </div>
       <Separator />
-      <GroupMappingsEditor mappings={groupMappings} onChange={setGroupMappings} />
+      <GroupMappingsEditor mappings={groupMappings} onChange={setGroupMappings} provider="OIDC" />
       <Button size="sm" className="h-7 text-xs" disabled={saving || !issuerUrl || !clientId} onClick={handleSave}>
         {saving ? 'Saving…' : 'Save OIDC config'}
       </Button>
@@ -817,7 +821,7 @@ function SamlConfigForm({
         </div>
       </div>
       <Separator />
-      <GroupMappingsEditor mappings={groupMappings} onChange={setGroupMappings} />
+      <GroupMappingsEditor mappings={groupMappings} onChange={setGroupMappings} provider="SAML" />
       <Button size="sm" className="h-7 text-xs" disabled={saving || !entryPoint || !cert} onClick={handleSave}>
         {saving ? 'Saving…' : 'Save SAML config'}
       </Button>
@@ -1072,7 +1076,7 @@ function LdapConfigForm({
         )}
       </div>
       <Separator />
-      <GroupMappingsEditor mappings={groupMappings} onChange={setGroupMappings} />
+      <GroupMappingsEditor mappings={groupMappings} onChange={setGroupMappings} provider="LDAP" />
 
       <Separator />
 

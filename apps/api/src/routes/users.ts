@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import bcryptjs from 'bcryptjs'
 import crypto from 'crypto'
 import { prisma } from '../lib/prisma.js'
-import { GlobalRole, ResourceRoleType, ResourceScopeType } from '@roomer/shared'
+import { GlobalRole, ResourceRoleType, ResourceScopeType, RoleSource } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole } from '../middleware/requireRole.js'
 import { enqueueNotification } from '../lib/queue.js'
@@ -262,7 +262,12 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     try {
       const updated = await prisma.user.update({
         where: { id },
-        data: result.data,
+        data: {
+          ...result.data,
+          // An admin explicitly setting the role marks it MANUAL so directory
+          // sync will not later downgrade it.
+          ...(result.data.globalRole !== undefined ? { globalRoleSource: RoleSource.MANUAL } : {}),
+        },
         select: {
           id: true,
           email: true,
@@ -363,6 +368,99 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(200).send({ data: { ok: true } })
     },
   )
+
+  // GET /users/:id/effective-access — explain WHAT a user can do and WHERE each
+  // permission comes from (provenance). Visible to the user themselves or admins.
+  fastify.get('/:id/effective-access', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const isSelf = request.user.id === id
+    const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+    if (!isSelf && !isAdmin) {
+      return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true, email: true, displayName: true, globalRole: true, globalRoleSource: true,
+        lastIdpGroups: true, lastSsoLoginAt: true,
+        resourceRoles: {
+          select: {
+            role: true, scopeType: true, source: true,
+            building: { select: { id: true, name: true } },
+            floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
+          },
+        },
+        groupMemberships: {
+          select: {
+            source: true,
+            group: {
+              select: {
+                id: true, name: true, globalRole: true,
+                groupResourceRoles: {
+                  select: {
+                    role: true, scopeType: true,
+                    building: { select: { id: true, name: true } },
+                    floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+    if (!user) {
+      return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })
+    }
+
+    type Grant = { scope: 'BUILDING' | 'FLOOR'; role: string; targetId: string; targetName: string; buildingName?: string; via: string; source: string }
+    const grants: Grant[] = []
+
+    for (const r of user.resourceRoles) {
+      if (r.scopeType === 'BUILDING' && r.building) {
+        grants.push({ scope: 'BUILDING', role: r.role, targetId: r.building.id, targetName: r.building.name, via: 'Direct grant', source: r.source })
+      } else if (r.scopeType === 'FLOOR' && r.floor) {
+        grants.push({ scope: 'FLOOR', role: r.role, targetId: r.floor.id, targetName: r.floor.name, buildingName: r.floor.building?.name, via: 'Direct grant', source: r.source })
+      }
+    }
+
+    const groups = user.groupMemberships.map((m) => ({
+      id: m.group.id,
+      name: m.group.name,
+      source: m.source,
+      confersAdmin: m.group.globalRole === GlobalRole.SUPER_ADMIN,
+    }))
+
+    for (const m of user.groupMemberships) {
+      for (const r of m.group.groupResourceRoles) {
+        if (r.scopeType === 'BUILDING' && r.building) {
+          grants.push({ scope: 'BUILDING', role: r.role, targetId: r.building.id, targetName: r.building.name, via: `Group "${m.group.name}"`, source: m.source })
+        } else if (r.scopeType === 'FLOOR' && r.floor) {
+          grants.push({ scope: 'FLOOR', role: r.role, targetId: r.floor.id, targetName: r.floor.name, buildingName: r.floor.building?.name, via: `Group "${m.group.name}"`, source: m.source })
+        }
+      }
+    }
+
+    const adminViaGroup = groups.find((g) => g.confersAdmin)
+
+    return reply.status(200).send({
+      data: {
+        user: { id: user.id, email: user.email, displayName: user.displayName },
+        globalRole: user.globalRole,
+        globalRoleSource: user.globalRoleSource,
+        globalRoleVia: user.globalRole === GlobalRole.SUPER_ADMIN
+          ? (user.globalRoleSource === RoleSource.IDP ? 'Granted via IdP group mapping' : (adminViaGroup ? `Group "${adminViaGroup.name}"` : 'Set manually'))
+          : null,
+        groups,
+        grants,
+        idp: {
+          lastSsoLoginAt: user.lastSsoLoginAt,
+          lastIdpGroups: user.lastIdpGroups,
+        },
+      },
+    })
+  })
 
   // GET /users/:id/bookings — get user's bookings
   fastify.get('/:id/bookings', { preHandler: [requireAuth] }, async (request, reply) => {

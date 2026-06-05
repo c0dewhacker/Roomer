@@ -96,11 +96,22 @@ function CreateGroupDialog({ open, onClose }: { open: boolean; onClose: () => vo
                 <SelectItem value="SUPER_ADMIN">Super Admin — full admin access</SelectItem>
               </SelectContent>
             </Select>
+            {globalRole === 'SUPER_ADMIN' && (
+              <p className="mt-1.5 text-xs text-destructive">
+                ⚠ Every member of this group — and anyone your identity provider maps into it — will get full org-wide admin.
+              </p>
+            )}
           </div>
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => create.mutate()} disabled={!name.trim() || create.isPending}>
+          <Button
+            onClick={() => {
+              if (globalRole === 'SUPER_ADMIN' && !window.confirm('This group grants Super Admin to every member (and anyone the IdP maps in). Continue?')) return
+              create.mutate()
+            }}
+            disabled={!name.trim() || create.isPending}
+          >
             {create.isPending ? 'Creating…' : 'Create group'}
           </Button>
         </DialogFooter>
@@ -265,7 +276,10 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
                     <Button
                       size="sm"
                       className="h-8"
-                      onClick={() => updateRole.mutate(editRole)}
+                      onClick={() => {
+                        if (editRole === 'SUPER_ADMIN' && !window.confirm('This grants Super Admin to every member of this group (and anyone the IdP maps in). Continue?')) return
+                        updateRole.mutate(editRole)
+                      }}
                       disabled={updateRole.isPending}
                     >
                       {updateRole.isPending ? 'Saving…' : 'Save'}

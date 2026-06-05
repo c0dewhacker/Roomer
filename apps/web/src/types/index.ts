@@ -7,7 +7,7 @@ export type QueueEntryStatus = 'WAITING' | 'PROMOTED' | 'CLAIMED' | 'EXPIRED' | 
 export type AssetBookingStatus = 'available' | 'mine' | 'booked' | 'restricted' | 'assigned' | 'disabled' | 'queued' | 'promoted' | 'zone_conflict'
 /** @deprecated Use AssetBookingStatus instead */
 export type DeskBookingStatus = AssetBookingStatus
-export type ResourceRoleType = 'FLOOR_MANAGER' | 'BUILDING_ADMIN' | 'VIEWER' | 'USER'
+export type ResourceRoleType = 'FLOOR_MANAGER' | 'BUILDING_ADMIN'
 export type ResourceScopeType = 'FLOOR' | 'BUILDING'
 
 export interface ResourceRole {

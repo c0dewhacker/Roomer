@@ -30,8 +30,14 @@ enum GlobalRole {
 enum ResourceRoleType {
   BUILDING_ADMIN
   FLOOR_MANAGER
-  USER
-  VIEWER
+}
+
+/// Provenance of a group membership or role grant: set by an admin (MANUAL) or
+/// derived from an IdP group claim on SSO login (IDP). Directory sync only
+/// evicts/downgrades IDP-sourced grants so it never undoes manual changes.
+enum RoleSource {
+  MANUAL
+  IDP
 }
 
 enum ResourceScopeType {
@@ -422,8 +428,16 @@ model User {
   externalId              String?
   accountStatus           AccountStatus @default(ACTIVE)
   globalRole              GlobalRole    @default(USER)
+  /// Provenance of globalRole. When IDP, directory sync may downgrade it; when
+  /// MANUAL (an admin set it), sync leaves it untouched.
+  globalRoleSource        RoleSource    @default(MANUAL)
   departmentId            String?
   notificationPreferences Json          @default("{}")
+  /// Raw IdP group values received on the user's most recent SSO/LDAP login.
+  /// Surfaced in the admin UI so admins can copy exact group identifiers when
+  /// configuring mappings, and used by the mapping dry-run preview.
+  lastIdpGroups           String[]      @default([])
+  lastSsoLoginAt          DateTime?
   createdAt               DateTime      @default(now())
   updatedAt               DateTime      @updatedAt
 
@@ -467,9 +481,10 @@ model UserGroup {
 model UserGroupMember {
   groupId   String
   userId    String
-  createdAt DateTime  @default(now())
-  group     UserGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  source    RoleSource @default(MANUAL)
+  createdAt DateTime   @default(now())
+  group     UserGroup  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@id([groupId, userId])
 }
@@ -501,6 +516,7 @@ model UserResourceRole {
   scopeType  ResourceScopeType
   buildingId String?
   floorId    String?
+  source     RoleSource        @default(MANUAL)
   createdAt  DateTime          @default(now())
   user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   building   Building?         @relation(fields: [buildingId], references: [id], onDelete: Cascade)
@@ -517,6 +533,7 @@ model GroupResourceRole {
   scopeType  ResourceScopeType
   buildingId String?
   floorId    String?
+  source     RoleSource        @default(MANUAL)
   createdAt  DateTime          @default(now())
   group      UserGroup         @relation(fields: [groupId], references: [id], onDelete: Cascade)
   building   Building?         @relation(fields: [buildingId], references: [id], onDelete: Cascade)

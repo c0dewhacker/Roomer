@@ -141,6 +141,7 @@ export const buildingsApi = {
     ),
   removeGroupManager: (id: string, groupId: string) =>
     api.delete<{ data: { ok: true } }>(`/buildings/${id}/group-managers/${groupId}`),
+  accessSummary: (id: string) => api.get<{ data: AccessSummary }>(`/buildings/${id}/access-summary`),
 }
 
 // --- Floors ---
@@ -181,6 +182,7 @@ export const floorsApi = {
     api.delete<{ data: { ok: true } }>(`/floors/${id}/group-managers/${groupId}`),
   updateFloorPlanTransform: (id: string, displayScale: number) =>
     api.patch<{ data: { displayScale: number } }>(`/floors/${id}/floor-plan/transform`, { displayScale }),
+  accessSummary: (id: string) => api.get<{ data: AccessSummary }>(`/floors/${id}/access-summary`),
 }
 
 // --- Zones ---
@@ -418,6 +420,41 @@ export const usersApi = {
     api.post<{ data: { ok: boolean } }>('/users/me/password', body),
   resetPassword: (id: string, body: { password: string }) =>
     api.post<{ data: { ok: boolean } }>(`/users/${id}/password/reset`, body),
+  effectiveAccess: (id: string) =>
+    api.get<{ data: EffectiveAccess }>(`/users/${id}/effective-access`),
+}
+
+// --- RBAC inspection types ---
+export type RoleSource = 'MANUAL' | 'IDP'
+
+export interface EffectiveAccess {
+  user: { id: string; email: string; displayName: string }
+  globalRole: string
+  globalRoleSource: RoleSource
+  globalRoleVia: string | null
+  groups: Array<{ id: string; name: string; source: RoleSource; confersAdmin: boolean }>
+  grants: Array<{ scope: 'BUILDING' | 'FLOOR'; role: string; targetId: string; targetName: string; buildingName?: string; via: string; source: RoleSource }>
+  idp: { lastSsoLoginAt: string | null; lastIdpGroups: string[] }
+}
+
+export interface AccessSummary {
+  name: string
+  building?: { id: string; name: string }
+  access: { restricted: boolean; groups: Array<{ id: string; name: string }> }
+  managers: {
+    direct: Array<{ id: string; displayName: string; email: string; source: RoleSource }>
+    viaGroups: Array<{ id: string; name: string; memberCount: number; source: RoleSource }>
+    inheritedFromBuildingAdmins?: Array<{ id: string; displayName: string; email: string }>
+  }
+}
+
+export interface MappingTestResult {
+  evaluatedAgainst: 'provided' | 'user' | 'all-known'
+  inputGroups: string[]
+  mappings: Array<{ idpGroup: string; matched: boolean; roomerGroup: { id: string; name: string } | null; confersAdmin: boolean }>
+  resolvedGroups: Array<{ id: string; name: string }>
+  resolvedGlobalRole: string
+  unmatchedMappings: string[]
 }
 
 // --- Settings ---
@@ -530,6 +567,8 @@ export interface AuthProviders {
 }
 export const authProvidersApi = {
   list: () => api.get<{ data: AuthProviders }>('/auth/providers'),
+  testMapping: (provider: string, body: { groups?: string[]; userId?: string }) =>
+    api.post<{ data: MappingTestResult }>(`/settings/auth-config/${provider}/test-mapping`, body),
 }
 
 

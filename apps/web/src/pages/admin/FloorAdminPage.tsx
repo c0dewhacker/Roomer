@@ -6,13 +6,14 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import {
   Plus, Upload, List, LayoutTemplate, Pencil, Trash2, ChevronRight,
   ChevronDown, GripVertical, X, Users, UserMinus, UserPlus, FileText, Download,
-  AlertCircle, CheckCircle2,
+  AlertCircle, CheckCircle2, Shield,
 } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { floorsApi, assetsApi, zonesApi, usersApi, groupsApi } from '@/lib/api'
 import { toast } from 'sonner'
 import { FloorPlanCanvas } from '@/components/floor-plan/FloorPlanCanvas'
 import { Button } from '@/components/ui/button'
+import { AccessSummaryDialog } from '@/components/rbac/AccessInspector'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
@@ -958,6 +959,7 @@ export default function FloorAdminPage() {
   const [bulkImportOpen, setBulkImportOpen] = useState(false)
   const [pendingUploadFile, setPendingUploadFile] = useState<File | null>(null)
   const [replaceConfirmOpen, setReplaceConfirmOpen] = useState(false)
+  const [accessOpen, setAccessOpen] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const { data: floor, isLoading } = useQuery({
@@ -1060,6 +1062,9 @@ export default function FloorAdminPage() {
           <Button variant="outline" size="sm" onClick={() => setBulkImportOpen(true)}>
             <FileText className="mr-1.5 h-3.5 w-3.5" /> Bulk Import
           </Button>
+          <Button variant="outline" size="sm" onClick={() => setAccessOpen(true)}>
+            <Shield className="mr-1.5 h-3.5 w-3.5" /> Access
+          </Button>
 
           <div className="flex rounded-md border overflow-hidden">
             <Button variant={view === 'layout' ? 'secondary' : 'ghost'} size="sm"
@@ -1077,6 +1082,8 @@ export default function FloorAdminPage() {
           </div>
         </div>
       </div>
+
+      <AccessSummaryDialog kind="floor" id={floorId!} name={floor?.name ?? 'Floor'} open={accessOpen} onOpenChange={setAccessOpen} />
 
       {/* Content */}
       <div className="flex-1 overflow-hidden">

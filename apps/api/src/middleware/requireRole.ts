@@ -3,8 +3,6 @@ import { GlobalRole, ResourceRoleType, ResourceScopeType } from '@roomer/shared'
 import { prisma } from '../lib/prisma.js'
 
 const ROLE_HIERARCHY: Record<ResourceRoleType, number> = {
-  [ResourceRoleType.VIEWER]: 0,
-  [ResourceRoleType.USER]: 1,
   [ResourceRoleType.FLOOR_MANAGER]: 2,
   [ResourceRoleType.BUILDING_ADMIN]: 3,
 }
