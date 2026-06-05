@@ -12,6 +12,7 @@ import {
   FileText,
   Shield,
   Layers,
+  MapPin,
 } from 'lucide-react'
 import { useState, useMemo } from 'react'
 import { cn } from '@/lib/utils'
@@ -87,6 +88,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
         {navItem('/bookings', Calendar, 'My Bookings')}
         {navItem('/queue', Clock, 'My Queue')}
         {navItem('/assets', Package, 'My Assets')}
+        {navItem('/whos-in', MapPin, "Who's In")}
 
         {/* Buildings with floor expansion */}
         <div>

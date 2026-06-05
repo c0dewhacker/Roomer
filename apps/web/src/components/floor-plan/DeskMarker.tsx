@@ -61,6 +61,8 @@ interface DeskMarkerProps {
   stageY: number
   scale: number
   onClick: () => void
+  /** Emphasise this marker (e.g. when navigated to from the colleague finder). */
+  highlighted?: boolean
 }
 
 export function DeskMarker({
@@ -71,6 +73,7 @@ export function DeskMarker({
   stageY,
   scale,
   onClick,
+  highlighted = false,
 }: DeskMarkerProps) {
   // Convert percentage world coords → screen pixel coords
   const assetX = desk.x ?? 50
@@ -126,6 +129,13 @@ export function DeskMarker({
                   border: `3px solid ${desk.zoneColour ?? '#94a3b8'}`,
                 }}
               >
+                {/* Wayfinder highlight ring */}
+                {highlighted && (
+                  <>
+                    <span className="absolute -inset-2 rounded-full ring-4 ring-primary/70 animate-ping" />
+                    <span className="absolute -inset-2 rounded-full ring-4 ring-primary" />
+                  </>
+                )}
                 {iconUrl ? (
                   <img
                     src={iconUrl}

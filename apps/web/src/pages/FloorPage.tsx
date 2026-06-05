@@ -1,5 +1,5 @@
-import { useState, useCallback, useMemo } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useState, useCallback, useMemo, useEffect } from 'react'
+import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { format, addDays } from 'date-fns'
 import { ChevronLeft, ChevronRight, CalendarDays, Info, Users, Bell, BellRing } from 'lucide-react'
 import { FloorPlanCanvas } from '@/components/floor-plan/FloorPlanCanvas'
@@ -26,7 +26,14 @@ const STATUS_LEGEND: Array<{ label: string; colour: string; status: string }> = 
 
 export default function FloorPage() {
   const { floorId } = useParams<{ floorId: string }>()
-  const [selectedDate, setSelectedDate] = useState(new Date())
+  const [searchParams] = useSearchParams()
+  // Deep-link support from the colleague finder: ?date=YYYY-MM-DD&highlight=<assetId>
+  const highlightAssetId = searchParams.get('highlight') ?? undefined
+  const dateParam = searchParams.get('date')
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const d = dateParam ? new Date(`${dateParam}T00:00:00`) : new Date()
+    return Number.isNaN(d.getTime()) ? new Date() : d
+  })
   const [selectedDeskId, setSelectedDeskId] = useState<string | null>(null)
   const qc = useQueryClient()
 
@@ -43,6 +50,16 @@ export default function FloorPage() {
     () => (selectedDeskId && desks ? desks.find((d) => d.id === selectedDeskId) ?? null : null),
     [selectedDeskId, desks],
   )
+
+  // When deep-linked from the colleague finder, open the highlighted desk's panel
+  // once its data is available (one-shot, so the user can close it afterwards).
+  const [highlightApplied, setHighlightApplied] = useState(false)
+  useEffect(() => {
+    if (!highlightApplied && highlightAssetId && desks?.some((d) => d.id === highlightAssetId)) {
+      setSelectedDeskId(highlightAssetId)
+      setHighlightApplied(true)
+    }
+  }, [highlightApplied, highlightAssetId, desks])
 
   const whoIsIn = useMemo(() => {
     if (!desks) return []
@@ -187,6 +204,7 @@ export default function FloorPage() {
               floorId={floorId}
               date={selectedDate}
               onAssetClick={handleDeskClick}
+              highlightAssetId={highlightAssetId}
             />
           )}
         </div>

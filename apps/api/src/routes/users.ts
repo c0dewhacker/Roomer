@@ -30,6 +30,8 @@ const updateUserSchema = z.object({
   displayName: z.string().min(1).max(255).optional(),
   accountStatus: z.enum(['ACTIVE', 'BLOCKED']).optional(),
   globalRole: z.nativeEnum(GlobalRole).optional(),
+  // Self-serviceable privacy flag — controls visibility in the colleague finder.
+  visibleInColleagueSearch: z.boolean().optional(),
 })
 
 const notificationPrefValueSchema = z.object({
@@ -275,6 +277,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
           provider: true,
           accountStatus: true,
           globalRole: true,
+          visibleInColleagueSearch: true,
           createdAt: true,
           updatedAt: true,
         },

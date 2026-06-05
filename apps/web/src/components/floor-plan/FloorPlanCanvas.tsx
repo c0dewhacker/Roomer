@@ -49,6 +49,8 @@ interface FloorPlanCanvasProps {
   ) => void
   /** Called when the user adjusts the floor plan display scale in edit mode. */
   onDisplayScaleChange?: (scale: number) => void
+  /** Asset to emphasise (deep-linked from the colleague finder). */
+  highlightAssetId?: string
 }
 
 // ─── Hook: load a PDF URL and rasterize page 1 to HTMLImageElement ────────────
@@ -135,6 +137,7 @@ export function FloorPlanCanvas({
   onDeskClick,
   onLayoutSave,
   onDisplayScaleChange,
+  highlightAssetId,
 }: FloorPlanCanvasProps) {
   const handleAssetClick = onAssetClick ?? onDeskClick
   const containerRef = useRef<HTMLDivElement>(null)
@@ -424,6 +427,7 @@ export function FloorPlanCanvas({
               stageX={position.x}
               stageY={position.y}
               scale={scale}
+              highlighted={asset.id === highlightAssetId}
               onClick={asset.isBookable !== false ? () => handleAssetClick?.(asset) : () => {}}
             />
           ))}
