@@ -805,3 +805,32 @@ export const departmentsApi = {
   removeMember: (id: string, userId: string) =>
     api.delete<{ data: { ok: true } }>(`/departments/${id}/members/${userId}`),
 }
+
+// --- Directory / colleague finder ---
+export interface WhereaboutsLocation {
+  assetId: string
+  assetName: string
+  zoneId: string | null
+  zoneName: string | null
+  floorId: string | null
+  floorName: string | null
+  buildingId: string | null
+  buildingName: string | null
+}
+export interface WhereaboutsPerson {
+  user: { id: string; displayName: string; email: string }
+  today: WhereaboutsLocation[]
+  assignedDesks: (WhereaboutsLocation & { isPrimary: boolean })[]
+}
+export const directoryApi = {
+  whereabouts: (params?: { search?: string; date?: string; buildingId?: string; floorId?: string }) => {
+    const qs = new URLSearchParams()
+    if (params?.search) qs.set('search', params.search)
+    if (params?.date) qs.set('date', params.date)
+    if (params?.buildingId) qs.set('buildingId', params.buildingId)
+    if (params?.floorId) qs.set('floorId', params.floorId)
+    return api.get<{ data: WhereaboutsPerson[]; meta: { total: number; date: string } }>(
+      `/directory/whereabouts${qs.toString() ? `?${qs}` : ''}`,
+    )
+  },
+}

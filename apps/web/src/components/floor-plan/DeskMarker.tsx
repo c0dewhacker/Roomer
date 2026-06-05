@@ -61,6 +61,8 @@ interface DeskMarkerProps {
   stageY: number
   scale: number
   onClick: () => void
+  /** Emphasise this marker (e.g. when navigated to from the colleague finder). */
+  highlighted?: boolean
 }
 
 export function DeskMarker({
@@ -71,6 +73,7 @@ export function DeskMarker({
   stageY,
   scale,
   onClick,
+  highlighted = false,
 }: DeskMarkerProps) {
   // Convert percentage world coords → screen pixel coords
   const assetX = desk.x ?? 50
@@ -82,6 +85,12 @@ export function DeskMarker({
 
   const bgClass = STATUS_BG[desk.bookingStatus] ?? 'bg-slate-400 hover:bg-slate-500 border-slate-200'
   const dotClass = STATUS_DOT[desk.bookingStatus] ?? 'bg-slate-400'
+
+  // Flip the tooltip below the desk when there isn't enough room above it within
+  // the canvas (markers near the top would otherwise render up under the toolbar).
+  // cy is the marker's screen-Y within the canvas viewport.
+  const TOOLTIP_CLEARANCE = 230
+  const tooltipSide = cy < TOOLTIP_CLEARANCE ? 'bottom' : 'top'
 
   // Scale icon size with zoom, clamped to a readable range
   const iconSize = Math.round(Math.min(Math.max(scale * 54, 42), 78))
@@ -126,6 +135,13 @@ export function DeskMarker({
                   border: `3px solid ${desk.zoneColour ?? '#94a3b8'}`,
                 }}
               >
+                {/* Wayfinder highlight ring */}
+                {highlighted && (
+                  <>
+                    <span className="absolute -inset-2 rounded-full ring-4 ring-primary/70 animate-ping" />
+                    <span className="absolute -inset-2 rounded-full ring-4 ring-primary" />
+                  </>
+                )}
                 {iconUrl ? (
                   <img
                     src={iconUrl}
@@ -179,7 +195,7 @@ export function DeskMarker({
             </button>
           </TooltipTrigger>
 
-          <TooltipContent side="top" className="p-3 max-w-[220px]">
+          <TooltipContent side={tooltipSide} collisionPadding={8} className="p-3 max-w-[220px]">
             <div className="space-y-2">
               <p className="font-semibold text-sm">{desk.name}</p>
 

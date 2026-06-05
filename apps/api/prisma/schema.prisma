@@ -433,6 +433,10 @@ model User {
   globalRoleSource        RoleSource    @default(MANUAL)
   departmentId            String?
   notificationPreferences Json          @default("{}")
+  /// When false, the user is hidden from the colleague finder / "who's in"
+  /// directory (their bookings and assigned desks are not surfaced to others).
+  /// Users can always see their own whereabouts regardless of this flag.
+  visibleInColleagueSearch Boolean      @default(true)
   /// Raw IdP group values received on the user's most recent SSO/LDAP login.
   /// Surfaced in the admin UI so admins can copy exact group identifiers when
   /// configuring mappings, and used by the mapping dry-run preview.

@@ -28,6 +28,7 @@ import { departmentRoutes } from './routes/departments.js'
 import { subscriptionRoutes } from './routes/subscriptions.js'
 import { recurringBookingRoutes } from './routes/recurring.js'
 import { webhookRoutes } from './routes/webhooks.js'
+import { directoryRoutes } from './routes/directory.js'
 import { getBoss } from './lib/queue.js'
 import { prisma } from './lib/prisma.js'
 import { register, httpRequestDuration, setupMetrics } from './lib/metrics.js'
@@ -120,6 +121,7 @@ export async function buildApp(): Promise<FastifyInstance> {
           { name: 'Recurring Bookings', description: 'Weekly recurring booking rules and series management' },
           { name: 'Departments', description: 'Department hierarchy and user membership (admin only)' },
           { name: 'Webhooks', description: 'Webhook endpoint management and delivery log (super admin only)' },
+          { name: 'Directory', description: 'Colleague finder / "who is in" whereabouts lookup' },
         ],
         components: {
           securitySchemes: {
@@ -235,6 +237,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await fastify.register(scimRoutes, { prefix: '/scim/v2' })
   await fastify.register(departmentRoutes, { prefix: '/api/v1/departments' })
   await fastify.register(webhookRoutes, { prefix: '/api/v1/webhooks' })
+  await fastify.register(directoryRoutes, { prefix: '/api/v1/directory' })
 
   // ─── Health checks ─────────────────────────────────────────────────────────
   // /health/live — process is running (Kubernetes liveness probe)

@@ -48,6 +48,7 @@ export interface User {
   accountStatus: 'ACTIVE' | 'BLOCKED'
   provider: 'LOCAL' | 'LDAP' | 'OIDC' | 'SAML'
   externalId?: string
+  visibleInColleagueSearch?: boolean
   createdAt: string
   resourceRoles?: ResourceRole[]
   groupMemberships?: UserGroupMembership[]

@@ -7,6 +7,7 @@ import BookingsPage from './pages/BookingsPage'
 import QueuePage from './pages/QueuePage'
 import QueueClaimPage from './pages/QueueClaimPage'
 import ProfilePage from './pages/ProfilePage'
+import WhosInPage from './pages/WhosInPage'
 import BuildingsAdminPage from './pages/admin/BuildingsAdminPage'
 import BuildingDetailAdminPage from './pages/admin/BuildingDetailAdminPage'
 import UsersAdminPage from './pages/admin/UsersAdminPage'
@@ -129,6 +130,7 @@ export function AppRouter() {
         <Route element={<Layout />}>
           <Route path="/floors/:floorId" element={<Suspense fallback={<PageLoader />}><FloorPage /></Suspense>} />
           <Route path="/bookings" element={<BookingsPage />} />
+          <Route path="/whos-in" element={<WhosInPage />} />
           <Route path="/queue" element={<QueuePage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/assets" element={<AssetsPage />} />

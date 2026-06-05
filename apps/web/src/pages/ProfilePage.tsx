@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { User, Mail, Shield, Building2, Layers, Users, KeyRound, Bell, BellOff } from 'lucide-react'
+import { User, Mail, Shield, Building2, Layers, Users, KeyRound, Bell, BellOff, MapPin, EyeOff } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { usersApi } from '@/lib/api'
@@ -135,6 +135,16 @@ export default function ProfilePage() {
     onError: () => toast.error('Failed to update profile'),
   })
 
+  const updateVisibility = useMutation({
+    mutationFn: (visible: boolean) => usersApi.update(user!.id, { visibleInColleagueSearch: visible }),
+    onSuccess: (res) => {
+      setUser({ ...user!, visibleInColleagueSearch: res.data.visibleInColleagueSearch })
+      toast.success('Privacy preference saved')
+      qc.invalidateQueries({ queryKey: ['auth', 'me'] })
+    },
+    onError: () => toast.error('Failed to save preference'),
+  })
+
   const changePassword = useMutation({
     mutationFn: (data: ChangePasswordForm) =>
       usersApi.changePassword({ currentPassword: data.currentPassword, newPassword: data.newPassword }),
@@ -248,6 +258,32 @@ export default function ProfilePage() {
                 {user.accountStatus}
               </Badge>
             </div>
+          </div>
+
+          <Separator />
+
+          {/* Colleague-finder privacy */}
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-start gap-2">
+              <MapPin className="h-4 w-4 text-muted-foreground mt-0.5" />
+              <div>
+                <p className="text-sm font-medium">Show me in “Who's In”</p>
+                <p className="text-xs text-muted-foreground">
+                  When off, your bookings and assigned desk are hidden from the colleague finder.
+                </p>
+              </div>
+            </div>
+            <Button
+              variant={user.visibleInColleagueSearch === false ? 'outline' : 'secondary'}
+              size="sm"
+              className="shrink-0 gap-1.5"
+              disabled={updateVisibility.isPending}
+              onClick={() => updateVisibility.mutate(user.visibleInColleagueSearch === false)}
+            >
+              {user.visibleInColleagueSearch === false
+                ? <><EyeOff className="h-3.5 w-3.5" /> Hidden</>
+                : <><Users className="h-3.5 w-3.5" /> Visible</>}
+            </Button>
           </div>
 
           {/* IdP-specific info */}
