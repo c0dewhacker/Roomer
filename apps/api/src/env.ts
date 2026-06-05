@@ -53,6 +53,15 @@ const envSchema = z.object({
   METRICS_ENABLED: z.string()
     .default('false')
     .transform((v) => v === 'true'),
+  // Optional bearer token protecting the /metrics endpoint. When set, scrapers
+  // must send `Authorization: Bearer <token>`. When unset, /metrics is
+  // unauthenticated (protect at the network/ingress level).
+  METRICS_TOKEN: z.string().optional(),
+  // Allow webhook delivery to private/RFC1918 targets (internal integrations).
+  // Defaults to false (SSRF-safe). Loopback and link-local remain blocked regardless.
+  WEBHOOK_ALLOW_PRIVATE: z.string()
+    .default('false')
+    .transform((v) => v === 'true'),
   FILE_STORAGE_PATH: z.string().default('./uploads'),
   MAX_FILE_SIZE_MB: z.coerce.number().default(20),
   SMTP_HOST: z.string().default('localhost'),
@@ -88,6 +97,8 @@ const parsed = envSchema.safeParse({
   ALLOW_BEARER_AUTH:      r('ALLOW_BEARER_AUTH'),
   SWAGGER_ENABLED:        r('SWAGGER_ENABLED'),
   METRICS_ENABLED:        r('METRICS_ENABLED'),
+  METRICS_TOKEN:          r('METRICS_TOKEN'),
+  WEBHOOK_ALLOW_PRIVATE:  r('WEBHOOK_ALLOW_PRIVATE'),
   FILE_STORAGE_PATH:      r('FILE_STORAGE_PATH'),
   MAX_FILE_SIZE_MB:       r('MAX_FILE_SIZE_MB'),
   SMTP_HOST:              r('SMTP_HOST'),

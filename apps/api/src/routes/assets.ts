@@ -6,6 +6,7 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole, getManagedFloorIds, getManagedBuildingIds, isFloorManagerForFloor } from '../middleware/requireRole.js'
 import { enqueueNotification, fanOutFloorAvailable } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
+import { lockAssetForBooking, hasConfirmedOverlap, isOverlapConstraintViolation } from '../lib/booking.js'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { checkGroupAccess } from './groups.js'
@@ -581,19 +582,33 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     const first = waiting[0]
 
     if (waiting.length === 1) {
-      // Single waiter — confirm booking immediately
-      const [booking] = await prisma.$transaction([
-        prisma.booking.create({
-          data: {
-            userId: first.userId,
-            assetId: id,
-            startsAt: first.wantedStartsAt,
-            endsAt: first.wantedEndsAt,
-            status: 'CONFIRMED',
-          },
-        }),
-        prisma.queueEntry.update({ where: { id: first.id }, data: { status: 'CLAIMED' } }),
-      ])
+      // Single waiter — confirm booking immediately. Serialise against all other
+      // booking-creating paths and re-check overlap so this cannot double-book.
+      let booking: Awaited<ReturnType<typeof prisma.booking.create>> | null
+      try {
+        booking = await prisma.$transaction(async (tx) => {
+          await lockAssetForBooking(tx, id)
+          if (await hasConfirmedOverlap(tx, id, first.wantedStartsAt, first.wantedEndsAt)) return null
+          const created = await tx.booking.create({
+            data: {
+              userId: first.userId,
+              assetId: id,
+              startsAt: first.wantedStartsAt,
+              endsAt: first.wantedEndsAt,
+              status: 'CONFIRMED',
+            },
+          })
+          await tx.queueEntry.update({ where: { id: first.id }, data: { status: 'CLAIMED' } })
+          return created
+        })
+      } catch (err) {
+        if (isOverlapConstraintViolation(err)) booking = null
+        else throw err
+      }
+
+      if (!booking) {
+        return reply.status(409).send({ error: { message: 'Asset is already booked for this period', code: 'ASSET_CONFLICT' } })
+      }
 
       await enqueueNotification({
         type: NotificationType.BOOKING_CONFIRMED,

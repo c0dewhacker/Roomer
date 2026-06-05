@@ -1,10 +1,16 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
-import { createQueueEntrySchema, NotificationType, GlobalRole } from '@roomer/shared'
+import { createQueueEntrySchema, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { enqueueNotification } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
-import { checkGroupAccess } from './groups.js'
+import {
+  assertBookable,
+  hasConfirmedOverlap,
+  lockAssetForBooking,
+  lockAssetForQueue,
+  isOverlapConstraintViolation,
+} from '../lib/booking.js'
 import { z } from 'zod'
 
 export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
@@ -56,20 +62,11 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
     const wantedEndsAt = new Date(result.data.wantedEndsAt)
     const expiresAtDate = new Date(expiresAt)
 
-    const asset = await prisma.asset.findUnique({ where: { id: assetId }, include: { floor: true } })
-    if (!asset) {
-      return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
-    }
-
-    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN && asset.floor) {
-      const allowed = await checkGroupAccess(request.user.id, asset.floor.buildingId, asset.floor.id)
-      if (!allowed) {
-        return reply.status(403).send({ error: { message: 'Your group does not have access to this building or floor', code: 'GROUP_ACCESS_DENIED' } })
-      }
-    }
-
-    if (asset.bookingStatus === 'DISABLED') {
-      return reply.status(409).send({ error: { message: 'Asset is disabled', code: 'ASSET_DISABLED' } })
+    // Same bookability gate as a direct booking — you may not queue for an asset
+    // you would not be permitted to book (restricted/assigned/group access).
+    const gate = await assertBookable(prisma, request.user, assetId, wantedStartsAt, wantedEndsAt)
+    if (!gate.ok) {
+      return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
     }
 
     // Check duplicate
@@ -91,7 +88,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
 
     // Count + create in one transaction with advisory lock to prevent position race
     const entry = await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(2, hashtext(${assetId}))`
+      await lockAssetForQueue(tx, assetId)
 
       const position = await tx.queueEntry.count({
         where: {
@@ -186,7 +183,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
 
     const entry = await prisma.queueEntry.findUnique({
       where: { claimToken: token },
-      include: { asset: true },
+      include: { asset: true, user: { select: { id: true, globalRole: true } } },
     })
 
     if (!entry) {
@@ -201,34 +198,39 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(409).send({ error: { message: 'Claim deadline has passed', code: 'TOKEN_EXPIRED' } })
     }
 
-    const result = await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(2, hashtext(${entry.assetId}))`
+    // Re-validate bookability at claim time — the allow list / assignment may have
+    // changed since the user joined the queue.
+    const gate = await assertBookable(prisma, entry.user, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)
+    if (!gate.ok) {
+      return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+    }
 
-      const conflict = await tx.booking.findFirst({
-        where: {
-          assetId: entry.assetId,
-          status: 'CONFIRMED',
-          startsAt: { lt: entry.wantedEndsAt },
-          endsAt: { gt: entry.wantedStartsAt },
-        },
-      })
-      if (conflict) return null
+    let result: Awaited<ReturnType<typeof prisma.booking.create>> | null
+    try {
+      result = await prisma.$transaction(async (tx) => {
+        await lockAssetForBooking(tx, entry.assetId)
 
-      const booking = await tx.booking.create({
-        data: {
-          userId: entry.userId,
-          assetId: entry.assetId,
-          startsAt: entry.wantedStartsAt,
-          endsAt: entry.wantedEndsAt,
-          status: 'CONFIRMED',
-        },
+        if (await hasConfirmedOverlap(tx, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)) return null
+
+        const booking = await tx.booking.create({
+          data: {
+            userId: entry.userId,
+            assetId: entry.assetId,
+            startsAt: entry.wantedStartsAt,
+            endsAt: entry.wantedEndsAt,
+            status: 'CONFIRMED',
+          },
+        })
+        await tx.queueEntry.update({
+          where: { id: entry.id },
+          data: { status: 'CLAIMED', claimToken: null },
+        })
+        return booking
       })
-      await tx.queueEntry.update({
-        where: { id: entry.id },
-        data: { status: 'CLAIMED', claimToken: null },
-      })
-      return booking
-    })
+    } catch (err) {
+      if (isOverlapConstraintViolation(err)) result = null
+      else throw err
+    }
 
     if (!result) {
       return reply.status(409).send({
@@ -276,35 +278,40 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
+    // Re-validate bookability at claim time — the allow list / assignment may have
+    // changed since the user joined the queue.
+    const gate = await assertBookable(prisma, request.user, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)
+    if (!gate.ok) {
+      return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+    }
+
     // Serialize on the asset ID, then check availability and create booking atomically
-    const booking = await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(2, hashtext(${entry.assetId}))`
+    let booking: Awaited<ReturnType<typeof prisma.booking.create>> | null
+    try {
+      booking = await prisma.$transaction(async (tx) => {
+        await lockAssetForBooking(tx, entry.assetId)
 
-      const conflict = await tx.booking.findFirst({
-        where: {
-          assetId: entry.assetId,
-          status: 'CONFIRMED',
-          startsAt: { lt: entry.wantedEndsAt },
-          endsAt: { gt: entry.wantedStartsAt },
-        },
-      })
-      if (conflict) return null
+        if (await hasConfirmedOverlap(tx, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)) return null
 
-      const created = await tx.booking.create({
-        data: {
-          userId: request.user.id,
-          assetId: entry.assetId,
-          startsAt: entry.wantedStartsAt,
-          endsAt: entry.wantedEndsAt,
-          status: 'CONFIRMED',
-        },
+        const created = await tx.booking.create({
+          data: {
+            userId: request.user.id,
+            assetId: entry.assetId,
+            startsAt: entry.wantedStartsAt,
+            endsAt: entry.wantedEndsAt,
+            status: 'CONFIRMED',
+          },
+        })
+        await tx.queueEntry.update({
+          where: { id },
+          data: { status: 'CLAIMED', claimToken: null },
+        })
+        return created
       })
-      await tx.queueEntry.update({
-        where: { id },
-        data: { status: 'CLAIMED', claimToken: null },
-      })
-      return created
-    })
+    } catch (err) {
+      if (isOverlapConstraintViolation(err)) booking = null
+      else throw err
+    }
 
     if (!booking) {
       return reply.status(409).send({

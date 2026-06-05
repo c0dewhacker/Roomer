@@ -265,7 +265,17 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // ─── Prometheus metrics ────────────────────────────────────────────────────
   if (env.METRICS_ENABLED) {
-    fastify.get('/metrics', { config: { rateLimit: false } }, async (_request, reply) => {
+    fastify.get('/metrics', { config: { rateLimit: false } }, async (request, reply) => {
+      // Optional bearer-token protection. When METRICS_TOKEN is unset the endpoint
+      // is unauthenticated and must be protected at the network/ingress level.
+      if (env.METRICS_TOKEN) {
+        const auth = request.headers.authorization
+        if (auth !== `Bearer ${env.METRICS_TOKEN}`) {
+          return reply.status(401).header('WWW-Authenticate', 'Bearer').send({
+            error: { message: 'Unauthorized', code: 'UNAUTHENTICATED' },
+          })
+        }
+      }
       const content = await register.metrics()
       return reply.status(200).header('Content-Type', register.contentType).send(content)
     })
