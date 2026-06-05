@@ -178,6 +178,24 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
         await applyGroupMappings(user.id, idpGroups, cfg.groupMappings, true)
       }
 
+      // Department mapping — opt-in via a configured claim name (blank = disabled).
+      // Mirrors the SAML/LDAP department-attribute behaviour.
+      if (cfg.departmentClaimName) {
+        const rawDept = (userinfo as Record<string, unknown>)[cfg.departmentClaimName]
+        const deptName = typeof rawDept === 'string' ? rawDept.trim() : undefined
+        if (deptName) {
+          const org = await prisma.organisation.findFirst({ select: { id: true } })
+          if (org) {
+            const dept = await prisma.department.upsert({
+              where: { organisationId_name: { organisationId: org.id, name: deptName } },
+              create: { organisationId: org.id, name: deptName },
+              update: {},
+            })
+            await prisma.user.update({ where: { id: user.id }, data: { departmentId: dept.id } })
+          }
+        }
+      }
+
       // Issue JWT cookie — OIDC session state is no longer needed
       issueSsoToken(reply, user)
     } catch (err) {

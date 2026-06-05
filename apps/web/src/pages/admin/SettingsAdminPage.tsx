@@ -634,13 +634,14 @@ function OidcConfigForm({
   const [scope, setScope] = useState((current.scope as string) ?? 'openid profile email groups')
   const [label, setLabel] = useState((current.label as string) ?? 'Sign in with SSO')
   const [groupsClaimName, setGroupsClaimName] = useState((current.groupsClaimName as string) ?? 'groups')
+  const [departmentClaimName, setDepartmentClaimName] = useState((current.departmentClaimName as string) ?? '')
   const [groupMappings, setGroupMappings] = useState<GroupMapping[]>(
     (current.groupMappings as GroupMapping[]) ?? [],
   )
 
   function handleSave() {
     const cfg: Record<string, unknown> = {
-      issuerUrl, clientId, redirectUri, scope, label, groupsClaimName, groupMappings,
+      issuerUrl, clientId, redirectUri, scope, label, groupsClaimName, departmentClaimName, groupMappings,
     }
     if (clientSecret) cfg.clientSecret = clientSecret
     onSave(cfg)
@@ -682,6 +683,11 @@ function OidcConfigForm({
           <Label className="text-xs">Groups claim name</Label>
           <Input value={groupsClaimName} onChange={(e) => setGroupsClaimName(e.target.value)}
             className="mt-1 h-8 text-sm" placeholder="groups" />
+        </div>
+        <div>
+          <Label className="text-xs">Department claim name <span className="text-muted-foreground font-normal">(optional)</span></Label>
+          <Input value={departmentClaimName} onChange={(e) => setDepartmentClaimName(e.target.value)}
+            className="mt-1 h-8 text-sm" placeholder="department" />
         </div>
       </div>
       <Separator />

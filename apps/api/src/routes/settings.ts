@@ -72,6 +72,7 @@ const oidcConfigSchema = z.object({
   scope: z.string().optional(),
   label: z.string().optional(),
   groupsClaimName: z.string().optional(),
+  departmentClaimName: z.string().optional(),
   groupMappings: z.array(groupMappingSchema).optional(),
 })
 

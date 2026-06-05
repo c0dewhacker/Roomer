@@ -11,6 +11,8 @@ export interface OidcConfig {
   label?: string
   /** JWT/userinfo claim name containing the user's groups (default: groups) */
   groupsClaimName?: string
+  /** Userinfo claim name to map to the user's Roomer department. Blank = disabled. */
+  departmentClaimName?: string
   groupMappings?: GroupMapping[]
 }
 
