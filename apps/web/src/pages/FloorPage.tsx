@@ -56,7 +56,7 @@ export default function FloorPage() {
   const [highlightApplied, setHighlightApplied] = useState(false)
   useEffect(() => {
     if (!highlightApplied && highlightAssetId && desks?.some((d) => d.id === highlightAssetId)) {
-      setSelectedDeskId(highlightAssetId)
+      //setSelectedDeskId(highlightAssetId)
       setHighlightApplied(true)
     }
   }, [highlightApplied, highlightAssetId, desks])
