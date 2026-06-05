@@ -531,13 +531,21 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
   // Returns zones with nested bookable assets and computed bookingStatus for the requesting user.
   fastify.get('/:id/availability', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
-    const queryResult = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).safeParse(request.query)
+    const queryResult = z.object({
+      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      // Optional comma-separated amenity filter, e.g. ?amenities=monitor,standing.
+      // Returns only assets that have ALL listed amenities.
+      amenities: z.string().optional(),
+    }).safeParse(request.query)
     if (!queryResult.success || !queryResult.data.date) {
       return reply.status(400).send({
         error: { message: 'date query param required (YYYY-MM-DD)', code: 'INVALID_DATE' },
       })
     }
     const { date } = queryResult.data
+    const amenityFilter = queryResult.data.amenities
+      ? queryResult.data.amenities.split(',').map((s) => s.trim()).filter(Boolean)
+      : []
 
     const currentUserId = request.user.id
     const dayStart = new Date(`${date}T00:00:00.000Z`)
@@ -550,7 +558,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           orderBy: { name: 'asc' },
           include: {
             assets: {
-              where: { isBookable: true },
+              where: { isBookable: true, ...(amenityFilter.length ? { amenities: { hasEvery: amenityFilter } } : {}) },
               orderBy: { name: 'asc' },
               include: {
                 category: { select: { id: true, name: true, defaultIcon: true, colour: true, iconUrl: true } },
