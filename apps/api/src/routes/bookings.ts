@@ -6,6 +6,7 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { isFloorManagerForFloor, getManagedBuildingIds } from '../middleware/requireRole.js'
 import { enqueueNotification, fanOutFloorAvailable, CLAIM_DEADLINE_MS } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
+import { buildBookingIcs } from '../lib/ical.js'
 import { randomUUID } from 'crypto'
 import { checkGroupAccess } from './groups.js'
 import { assertBookable, hasConfirmedOverlap, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
@@ -282,6 +283,42 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     return reply.status(200).send({ data: booking })
+  })
+
+  // GET /bookings/:id/calendar.ics — download an iCalendar invite for the booking
+  fastify.get('/:id/calendar.ics', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const booking = await prisma.booking.findUnique({
+      where: { id },
+      include: {
+        asset: {
+          include: {
+            floor: { select: { name: true, building: { select: { name: true } } } },
+            primaryZone: { select: { name: true } },
+          },
+        },
+      },
+    })
+    if (!booking) {
+      return reply.status(404).send({ error: { message: 'Booking not found', code: 'NOT_FOUND' } })
+    }
+    if (booking.userId !== request.user.id && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+    }
+
+    const method = booking.status === 'CANCELLED' ? 'CANCEL' : 'PUBLISH'
+    const ics = buildBookingIcs({
+      id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
+      assetName: booking.asset.name,
+      zoneName: booking.asset.primaryZone?.name,
+      floorName: booking.asset.floor?.name,
+      buildingName: booking.asset.floor?.building?.name,
+    }, method)
+
+    return reply
+      .header('Content-Type', 'text/calendar; charset=utf-8')
+      .header('Content-Disposition', `attachment; filename="booking-${booking.id}.ics"`)
+      .send(ics)
   })
 
   // PATCH /bookings/:id — modify booking
