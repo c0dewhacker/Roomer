@@ -1,6 +1,7 @@
 import { PgBoss, type Job } from 'pg-boss'
 import { env } from '../env.js'
 import { prisma } from './prisma.js'
+import { buildBookingIcs } from './ical.js'
 import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderWelcome, renderFloorAvailable, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
 import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
@@ -58,11 +59,12 @@ async function processSendNotification(
   let body = ''
   let emailPayload: { subject: string; html: string; text: string } | null = null
   let templateVars: Record<string, string> = {}
+  let icalEvent: { method: string; content: string } | undefined
 
   if (type === NotificationType.BOOKING_CONFIRMED && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true } } } } },
+      include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true, building: { select: { name: true } } } } } } },
     })
     if (booking) {
       title = `Booking confirmed — ${booking.asset.name}`
@@ -72,6 +74,16 @@ async function processSendNotification(
         zoneName: booking.asset.primaryZone?.name ?? '',
         floorName: booking.asset.floor?.name ?? '',
       })
+      icalEvent = {
+        method: 'REQUEST',
+        content: buildBookingIcs({
+          id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
+          assetName: booking.asset.name,
+          zoneName: booking.asset.primaryZone?.name,
+          floorName: booking.asset.floor?.name,
+          buildingName: booking.asset.floor?.building?.name,
+        }, 'REQUEST'),
+      }
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
@@ -92,6 +104,13 @@ async function processSendNotification(
       title = `Booking cancelled — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} has been cancelled.`
       emailPayload = renderBookingCancelled(booking, user, booking.asset)
+      icalEvent = {
+        method: 'CANCEL',
+        content: buildBookingIcs({
+          id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
+          assetName: booking.asset.name,
+        }, 'CANCEL'),
+      }
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
@@ -108,6 +127,13 @@ async function processSendNotification(
       title = `Booking cancelled by admin — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} has been cancelled by an administrator.`
       emailPayload = renderBookingCancelled(booking, user, booking.asset)
+      icalEvent = {
+        method: 'CANCEL',
+        content: buildBookingIcs({
+          id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
+          assetName: booking.asset.name,
+        }, 'CANCEL'),
+      }
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
@@ -260,7 +286,7 @@ async function processSendNotification(
   // Send email if we have a template and user hasn't opted out
   if (sendEmailNotif && emailPayload) {
     try {
-      await sendEmail({ to: user.email, ...emailPayload })
+      await sendEmail({ to: user.email, ...emailPayload, ...(icalEvent && { icalEvent }) })
     } catch (err) {
       process.stderr.write(JSON.stringify({ level: 'error', msg: '[queue] Failed to send email', to: user.email, err: String(err) }) + '\n')
       // Don't re-throw — notification is persisted, email failure is non-fatal

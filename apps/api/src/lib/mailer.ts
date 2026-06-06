@@ -25,6 +25,8 @@ interface SendEmailOptions {
   subject: string
   html: string
   text: string
+  /** Optional calendar invite/cancellation attached as a text/calendar part. */
+  icalEvent?: { method: string; filename?: string; content: string }
 }
 
 export async function sendEmail(opts: SendEmailOptions): Promise<void> {
@@ -35,6 +37,13 @@ export async function sendEmail(opts: SendEmailOptions): Promise<void> {
     subject: opts.subject,
     html: opts.html,
     text: opts.text,
+    ...(opts.icalEvent && {
+      icalEvent: {
+        method: opts.icalEvent.method,
+        filename: opts.icalEvent.filename ?? 'invite.ics',
+        content: opts.icalEvent.content,
+      },
+    }),
   })
 }
 
