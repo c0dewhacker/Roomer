@@ -2,7 +2,7 @@
 
 > Self-hosted workspace booking — desks, assets, and floor plans, fully under your control.
 
-[![License: ELv2](https://img.shields.io/badge/license-Elastic%20v2-blue)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPL%20v3-blue)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-c0dewhacker%2Froomer-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/u/c0dewhacker)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/c0dewhacker/Roomer/release-please.yml)
 
@@ -385,8 +385,8 @@ roomer/
 
 ## License
 
-Roomer is licensed under the [Elastic License 2.0](LICENSE).
+Roomer is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0).
 
-**In short:** you can use, modify, and self-host Roomer freely — including for commercial internal use. You may **not** provide Roomer as a managed hosted service to third parties (i.e. you cannot run a Roomer-as-a-Service business).
+**In short:** you can use, modify, self-host, and distribute Roomer freely, including commercially. If you modify Roomer and make it available to others over a network (e.g. as a hosted service), you must release your modified source under the same license.
 
 See the [LICENSE](LICENSE) file for the full terms.
