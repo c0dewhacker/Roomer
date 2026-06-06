@@ -51,6 +51,8 @@ interface FloorPlanCanvasProps {
   onDisplayScaleChange?: (scale: number) => void
   /** Asset to emphasise (deep-linked from the colleague finder). */
   highlightAssetId?: string
+  /** Assets to fade back because they don't match the active amenity filter. */
+  dimmedAssetIds?: Set<string>
 }
 
 // ─── Hook: load a PDF URL and rasterize page 1 to HTMLImageElement ────────────
@@ -138,6 +140,7 @@ export function FloorPlanCanvas({
   onLayoutSave,
   onDisplayScaleChange,
   highlightAssetId,
+  dimmedAssetIds,
 }: FloorPlanCanvasProps) {
   const handleAssetClick = onAssetClick ?? onDeskClick
   const containerRef = useRef<HTMLDivElement>(null)
@@ -428,6 +431,7 @@ export function FloorPlanCanvas({
               stageY={position.y}
               scale={scale}
               highlighted={asset.id === highlightAssetId}
+              dimmed={dimmedAssetIds?.has(asset.id) ?? false}
               onClick={asset.isBookable !== false ? () => handleAssetClick?.(asset) : () => {}}
             />
           ))}

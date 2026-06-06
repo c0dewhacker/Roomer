@@ -1,8 +1,9 @@
 import { useState, useCallback, useMemo, useEffect } from 'react'
 import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { format, addDays } from 'date-fns'
-import { ChevronLeft, ChevronRight, CalendarDays, Info, Users, Bell, BellRing } from 'lucide-react'
+import { ChevronLeft, ChevronRight, CalendarDays, Info, Users, Bell, BellRing, SlidersHorizontal } from 'lucide-react'
 import { FloorPlanCanvas } from '@/components/floor-plan/FloorPlanCanvas'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { DeskPanel } from '@/components/floor-plan/DeskPanel'
 import { FloorSubscribeDialog } from '@/components/floor-plan/FloorSubscribeDialog'
 import { useFloorData, useFloorAvailability } from '@/hooks/useFloor'
@@ -79,6 +80,34 @@ export default function FloorPage() {
     return Array.from(seen.values()).sort((a, b) => a.displayName.localeCompare(b.displayName))
   }, [desks])
 
+  // ─── Amenity filter ─────────────────────────────────────────────────────────
+  const [selectedAmenities, setSelectedAmenities] = useState<Set<string>>(new Set())
+
+  const availableAmenities = useMemo(() => {
+    const set = new Set<string>()
+    for (const d of desks ?? []) for (const a of d.amenities ?? []) set.add(a)
+    return [...set].sort((a, b) => a.localeCompare(b))
+  }, [desks])
+
+  // Desks that do NOT have every selected amenity are faded back.
+  const dimmedAssetIds = useMemo(() => {
+    if (selectedAmenities.size === 0) return undefined
+    const ids = new Set<string>()
+    for (const d of desks ?? []) {
+      const has = new Set(d.amenities ?? [])
+      if (![...selectedAmenities].every((a) => has.has(a))) ids.add(d.id)
+    }
+    return ids
+  }, [desks, selectedAmenities])
+
+  const toggleAmenity = (a: string) =>
+    setSelectedAmenities((prev) => {
+      const next = new Set(prev)
+      if (next.has(a)) next.delete(a)
+      else next.add(a)
+      return next
+    })
+
   const handlePrevDay = () => setSelectedDate((d) => addDays(d, -1))
   const handleNextDay = () => setSelectedDate((d) => addDays(d, 1))
 
@@ -154,6 +183,35 @@ export default function FloorPage() {
             </div>
           ))}
           <div className="ml-2 border-l pl-3 flex items-center gap-1">
+            {availableAmenities.length > 0 && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant={selectedAmenities.size > 0 ? 'secondary' : 'ghost'} size="sm" className="h-7 gap-1.5 text-xs">
+                    <SlidersHorizontal className="h-3.5 w-3.5" />
+                    Amenities
+                    {selectedAmenities.size > 0 && (
+                      <Badge variant="secondary" className="ml-0.5 h-4 rounded-full px-1.5 text-xs">{selectedAmenities.size}</Badge>
+                    )}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-56 p-2">
+                  <div className="flex items-center justify-between px-1 pb-1.5">
+                    <span className="text-xs font-medium">Filter by amenity</span>
+                    {selectedAmenities.size > 0 && (
+                      <button className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setSelectedAmenities(new Set())}>Clear</button>
+                    )}
+                  </div>
+                  <div className="max-h-64 overflow-y-auto">
+                    {availableAmenities.map((a) => (
+                      <label key={a} className="flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-accent cursor-pointer">
+                        <input type="checkbox" checked={selectedAmenities.has(a)} onChange={() => toggleAmenity(a)} className="h-3.5 w-3.5" />
+                        <span className="capitalize">{a}</span>
+                      </label>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
+            )}
             <Button
               variant={showWhoIsIn ? 'secondary' : 'ghost'}
               size="sm"
@@ -205,6 +263,7 @@ export default function FloorPage() {
               date={selectedDate}
               onAssetClick={handleDeskClick}
               highlightAssetId={highlightAssetId}
+              dimmedAssetIds={dimmedAssetIds}
             />
           )}
         </div>

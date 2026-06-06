@@ -63,6 +63,8 @@ interface DeskMarkerProps {
   onClick: () => void
   /** Emphasise this marker (e.g. when navigated to from the colleague finder). */
   highlighted?: boolean
+  /** Fade this marker back when it doesn't match the active amenity filter. */
+  dimmed?: boolean
 }
 
 export function DeskMarker({
@@ -74,6 +76,7 @@ export function DeskMarker({
   scale,
   onClick,
   highlighted = false,
+  dimmed = false,
 }: DeskMarkerProps) {
   // Convert percentage world coords → screen pixel coords
   const assetX = desk.x ?? 50
@@ -104,12 +107,13 @@ export function DeskMarker({
 
   return (
     <div
-      className="absolute"
+      className="absolute transition-opacity"
       style={{
         left: cx,
         top: cy,
         transform: 'translate(-50%, -50%)',
         pointerEvents: 'auto',
+        opacity: dimmed ? 0.25 : 1,
       }}
     >
       <TooltipProvider delayDuration={150}>
