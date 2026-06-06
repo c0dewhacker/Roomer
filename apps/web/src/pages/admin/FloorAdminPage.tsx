@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { floorsApi, assetsApi, zonesApi, usersApi, groupsApi } from '@/lib/api'
+import { NoShowOverrideControl } from '@/components/admin/NoShowOverrideControl'
 import { toast } from 'sonner'
 import { FloorPlanCanvas } from '@/components/floor-plan/FloorPlanCanvas'
 import { Button } from '@/components/ui/button'
@@ -969,6 +970,12 @@ export default function FloorAdminPage() {
     enabled: !!floorId,
   })
 
+  const saveNoShow = useMutation({
+    mutationFn: (v: boolean | null) => floorsApi.update(floorId!, { noShowReleaseEnabled: v }),
+    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['floors', floorId] }) },
+    onError: () => toast.error('Failed to save'),
+  })
+
   const upload = useMutation({
     mutationFn: (file: File) => floorsApi.uploadFloorPlan(floorId!, file),
     onSuccess: () => {
@@ -1088,7 +1095,12 @@ export default function FloorAdminPage() {
       {/* Content */}
       <div className="flex-1 overflow-hidden">
         {view === 'managers' ? (
-          <FloorManagersPanel floorId={floorId!} />
+          <div className="h-full overflow-y-auto">
+            <div className="p-4 max-w-sm">
+              <NoShowOverrideControl scope="floor" value={floor?.noShowReleaseEnabled} onChange={(v) => saveNoShow.mutate(v)} disabled={saveNoShow.isPending} />
+            </div>
+            <FloorManagersPanel floorId={floorId!} />
+          </div>
         ) : view === 'layout' ? (
           floorId && (
             <div className="relative h-full w-full">

@@ -108,7 +108,7 @@ export const buildingsApi = {
   get: (id: string) => api.get<{ data: Building & { floors: Floor[] } }>(`/buildings/${id}`),
   create: (body: { name: string; address?: string }) =>
     api.post<{ data: Building }>('/buildings', body),
-  update: (id: string, body: Partial<{ name: string; address: string }>) =>
+  update: (id: string, body: Partial<{ name: string; address: string; noShowReleaseEnabled: boolean | null }>) =>
     api.put<{ data: Building }>(`/buildings/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/buildings/${id}`),
   getAccessGroups: (id: string) =>
@@ -152,7 +152,7 @@ export const floorsApi = {
     ),
   create: (body: { buildingId: string; name: string; level?: number }) =>
     api.post<{ data: Floor }>('/floors', body),
-  update: (id: string, body: Partial<{ name: string; level: number }>) =>
+  update: (id: string, body: Partial<{ name: string; level: number; noShowReleaseEnabled: boolean | null }>) =>
     api.put<{ data: Floor }>(`/floors/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/floors/${id}`),
   uploadFloorPlan: (id: string, file: File) => {
@@ -359,6 +359,7 @@ export const bookingsApi = {
   update: (id: string, body: Partial<{ startsAt: string; endsAt: string; notes: string }>) =>
     api.patch<{ data: Booking }>(`/bookings/${id}`, body),
   cancel: (id: string) => api.delete<{ data: { ok: true } }>(`/bookings/${id}`),
+  checkIn: (id: string) => api.post<{ data: { id: string; checkedInAt: string } }>(`/bookings/${id}/check-in`),
 }
 
 // --- Queue ---
@@ -467,6 +468,8 @@ type OrgSettings = {
   maxBookingsPerUser: number
   queueClaimWindowHours: number
   dateFormat: string
+  noShowReleaseEnabled?: boolean
+  checkInGraceMinutes?: number
 }
 
 export interface BrandingBanner {

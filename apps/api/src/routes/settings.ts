@@ -54,6 +54,9 @@ const updateOrgSchema = z.object({
   maxBookingsPerUser: z.number().int().min(1).max(100).optional(),
   queueClaimWindowHours: z.number().int().min(1).max(48).optional(),
   dateFormat: z.enum(ALLOWED_DATE_FORMATS).optional(),
+  // Check-in / no-show release (global default; buildings & floors can override).
+  noShowReleaseEnabled: z.boolean().optional(),
+  checkInGraceMinutes: z.number().int().min(5).max(240).optional(),
 })
 
 const groupMappingSchema = z.object({

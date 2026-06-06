@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { Layers, Plus, ChevronRight, Pencil, Trash2, Shield, Users, UserMinus, UserPlus, UserX } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { buildingsApi, floorsApi, groupsApi, usersApi, assetsApi, ApiError } from '@/lib/api'
+import { NoShowOverrideControl } from '@/components/admin/NoShowOverrideControl'
 import AssignmentImportDialog from '@/components/admin/AssignmentImportDialog'
 import { toast } from 'sonner'
 import { Card, CardContent } from '@/components/ui/card'
@@ -700,11 +701,18 @@ export default function BuildingDetailAdminPage() {
   const [bulkAssignOpen, setBulkAssignOpen] = useState(false)
   const [accessOpen, setAccessOpen] = useState(false)
 
+  const qc = useQueryClient()
   const { data: building, isLoading } = useQuery({
     queryKey: ['buildings', buildingId],
     queryFn: () => buildingsApi.get(buildingId!),
     select: (r) => r.data,
     enabled: !!buildingId,
+  })
+
+  const saveNoShow = useMutation({
+    mutationFn: (v: boolean | null) => buildingsApi.update(buildingId!, { noShowReleaseEnabled: v }),
+    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['buildings', buildingId] }) },
+    onError: () => toast.error('Failed to save'),
   })
 
   return (
@@ -738,6 +746,10 @@ export default function BuildingDetailAdminPage() {
       </div>
 
       <AccessSummaryDialog kind="building" id={buildingId!} name={building?.name ?? 'Building'} open={accessOpen} onOpenChange={setAccessOpen} />
+
+      <div className="mb-6 max-w-sm">
+        <NoShowOverrideControl scope="building" value={building?.noShowReleaseEnabled} onChange={(v) => saveNoShow.mutate(v)} disabled={saveNoShow.isPending} />
+      </div>
 
       <BuildingManagersPanel buildingId={buildingId!} />
 

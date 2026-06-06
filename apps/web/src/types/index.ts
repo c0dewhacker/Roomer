@@ -59,6 +59,8 @@ export interface Building {
   name: string
   address?: string
   organisationId: string
+  /** null = inherit org default; true/false = explicit override */
+  noShowReleaseEnabled?: boolean | null
 }
 
 export interface Floor {
@@ -69,6 +71,8 @@ export interface Floor {
   floorPlan?: FloorPlan
   building?: Building
   zones?: Zone[]
+  /** null = inherit (floor → building → org) */
+  noShowReleaseEnabled?: boolean | null
 }
 
 export interface FloorPlan {
@@ -177,6 +181,7 @@ export interface Booking {
   endsAt: string
   status: BookingStatus
   notes?: string
+  checkedInAt?: string | null
   recurringRuleId?: string | null
   user?: User
   asset?: Asset & {

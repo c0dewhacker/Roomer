@@ -8,6 +8,8 @@ export const createBuildingSchema = z.object({
 export const updateBuildingSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   address: z.string().max(500).nullable().optional(),
+  // Per-building no-show release override. null = inherit the org default.
+  noShowReleaseEnabled: z.boolean().nullable().optional(),
 })
 
 export type CreateBuildingInput = z.infer<typeof createBuildingSchema>

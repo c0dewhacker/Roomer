@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { parseISO, isToday } from 'date-fns'
-import { Calendar, MapPin, Clock, Trash2, Pencil, CalendarPlus, X, Armchair, Repeat } from 'lucide-react'
+import { Calendar, MapPin, Clock, Trash2, Pencil, CalendarPlus, X, Armchair, Repeat, Check } from 'lucide-react'
 import { useMyBookings, useCancelBooking, useUpdateBooking } from '@/hooks/useBookings'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -32,7 +32,7 @@ import {
 } from '@/components/ui/dialog'
 import { formatDateRange, formatDate } from '@/lib/utils'
 import { DateTimeLocalInput } from '@/components/ui/date-time-input'
-import { assetsApi, recurringBookingsApi, type MyAssignment, type AvailabilityWindow } from '@/lib/api'
+import { assetsApi, recurringBookingsApi, bookingsApi, type MyAssignment, type AvailabilityWindow } from '@/lib/api'
 import type { Booking, RecurringBookingRule } from '@/types'
 
 type Tab = 'upcoming' | 'past' | 'all'
@@ -358,11 +358,19 @@ function MyAssignedDesks() {
 function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boolean }) {
   const navigate = useNavigate()
   const cancel = useCancelBooking()
+  const qc = useQueryClient()
   const bookingAsset = booking.asset ?? booking.desk
   const floorId = bookingAsset?.floor?.id ?? bookingAsset?.zone?.floor?.id
   const todayBooking = isToday(parseISO(booking.startsAt))
   const [editOpen, setEditOpen] = useState(false)
   const canModify = showCancel && booking.status === 'CONFIRMED'
+  const canCheckIn = todayBooking && booking.status === 'CONFIRMED' && !booking.checkedInAt
+
+  const checkIn = useMutation({
+    mutationFn: () => bookingsApi.checkIn(booking.id),
+    onSuccess: () => { toast.success('Checked in'); qc.invalidateQueries({ queryKey: ['bookings'] }) },
+    onError: (e: Error) => toast.error(e.message || 'Check-in failed'),
+  })
 
   return (
     <>
@@ -381,6 +389,22 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
                 <Badge variant={statusVariant[booking.status] ?? 'secondary'} className="shrink-0 text-xs">
                   {booking.status}
                 </Badge>
+                {booking.checkedInAt && (
+                  <Badge variant="outline" className="shrink-0 text-xs border-green-500 text-green-600">
+                    <Check className="h-3 w-3 mr-0.5" /> Checked in
+                  </Badge>
+                )}
+                {canCheckIn && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 px-2 text-xs gap-1"
+                    onClick={(e) => { e.stopPropagation(); checkIn.mutate() }}
+                    disabled={checkIn.isPending}
+                  >
+                    <Check className="h-3 w-3" /> I'm here
+                  </Button>
+                )}
               </div>
               <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
                 <MapPin className="h-3 w-3 shrink-0" />

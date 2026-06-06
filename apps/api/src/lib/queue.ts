@@ -118,6 +118,22 @@ async function processSendNotification(
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }
+  } else if (type === NotificationType.BOOKING_NO_SHOW && bookingId) {
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { asset: true },
+    })
+    if (booking) {
+      title = `Booking released — ${booking.asset.name}`
+      body = `Your booking for ${booking.asset.name} was released because you didn't check in.`
+      emailPayload = renderBookingCancelled(booking, user, booking.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: booking.asset.name,
+        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
   } else if (type === NotificationType.BOOKING_CANCELLED_BY_ADMIN && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
@@ -349,6 +365,95 @@ async function handleAutoCompleteBookings(): Promise<void> {
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Auto-completed past bookings', count: bookings.length }) + '\n')
 }
 
+// ─── Worker: release-no-shows (cron every 10 min) ────────────────────────────
+
+async function handleReleaseNoShows(): Promise<void> {
+  const org = await prisma.organisation.findFirst({
+    select: { noShowReleaseEnabled: true, checkInGraceMinutes: true },
+  })
+  if (!org) return
+  const orgDefault = org.noShowReleaseEnabled
+
+  const now = new Date()
+  const cutoff = new Date(now.getTime() - org.checkInGraceMinutes * 60 * 1000)
+
+  // Candidates: CONFIRMED, not checked in, grace elapsed since start, slot still
+  // active. Permanently-assigned desks are exempt — the assignee owns the desk
+  // and shouldn't have to check in. Effective enablement resolves per booking:
+  // floor override → building override → org default.
+  const candidates = await prisma.booking.findMany({
+    where: {
+      status: 'CONFIRMED',
+      checkedInAt: null,
+      startsAt: { lte: cutoff },
+      endsAt: { gt: now },
+      asset: { userAssignments: { none: {} } },
+    },
+    select: {
+      id: true, userId: true, assetId: true, startsAt: true, endsAt: true,
+      asset: {
+        select: {
+          floor: { select: { noShowReleaseEnabled: true, building: { select: { noShowReleaseEnabled: true } } } },
+        },
+      },
+    },
+  })
+
+  const noShows = candidates.filter((b) => {
+    const floorOverride = b.asset.floor?.noShowReleaseEnabled
+    const buildingOverride = b.asset.floor?.building?.noShowReleaseEnabled
+    return floorOverride ?? buildingOverride ?? orgDefault
+  })
+  if (noShows.length === 0) return
+
+  await prisma.booking.updateMany({
+    where: { id: { in: noShows.map((b) => b.id) } },
+    data: { status: 'CANCELLED' },
+  })
+
+  await getBoss().insert(
+    'send-notification',
+    noShows.map((b) => ({
+      data: { type: NotificationType.BOOKING_NO_SHOW, userId: b.userId, bookingId: b.id } satisfies NotificationJobData,
+    })),
+  )
+  for (const b of noShows) {
+    dispatchWebhook('booking.no_show', { id: b.id, userId: b.userId, assetId: b.assetId }).catch(() => {})
+  }
+
+  // Free the desk: promote the next queued user for the slot, or fan out floor availability.
+  const claimDeadline = new Date(Date.now() + CLAIM_DEADLINE_MS)
+  for (const b of noShows) {
+    const next = await prisma.queueEntry.findFirst({
+      where: {
+        assetId: b.assetId,
+        status: 'WAITING',
+        wantedStartsAt: { lt: b.endsAt },
+        wantedEndsAt: { gt: b.startsAt },
+      },
+      orderBy: { position: 'asc' },
+    })
+    if (next) {
+      await prisma.queueEntry.update({
+        where: { id: next.id },
+        data: { status: 'PROMOTED', claimDeadline, claimToken: randomUUID() },
+      })
+      await getBoss().insert('send-notification', [{
+        data: { type: NotificationType.QUEUE_PROMOTED, userId: next.userId, queueEntryId: next.id, claimDeadline: claimDeadline.toISOString() } satisfies NotificationJobData,
+      }])
+      dispatchWebhook('queue.promoted', { id: next.id, userId: next.userId, assetId: next.assetId, claimDeadline: claimDeadline.toISOString() }).catch(() => {})
+    } else {
+      const asset = await prisma.asset.findUnique({ where: { id: b.assetId }, select: { floorId: true, primaryZoneId: true } })
+      if (asset?.floorId) {
+        const slotDate = b.startsAt.toISOString().slice(0, 10)
+        await fanOutFloorAvailable(b.assetId, asset.floorId, asset.primaryZoneId, slotDate, b.userId).catch(() => {})
+      }
+    }
+  }
+
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Released no-show bookings', count: noShows.length }) + '\n')
+}
+
 // ─── Worker: expire-claim-deadlines (cron every 5 min) ───────────────────────
 
 async function handleExpireClaimDeadlines(): Promise<void> {
@@ -477,6 +582,7 @@ export async function startQueue(): Promise<void> {
   await b.createQueue('prune-revoked-tokens')
   await b.createQueue('auto-complete-bookings')
   await b.createQueue('send-booking-reminders')
+  await b.createQueue('release-no-shows')
   await b.createQueue('webhook-delivery')
 
   await b.work<NotificationJobData>('send-notification', handleSendNotification)
@@ -499,6 +605,11 @@ export async function startQueue(): Promise<void> {
     await handleAutoCompleteBookings()
   })
   await b.schedule('auto-complete-bookings', '*/30 * * * *', {})
+
+  await b.work('release-no-shows', async () => {
+    await handleReleaseNoShows()
+  })
+  await b.schedule('release-no-shows', '*/10 * * * *', {})
 
   // Prune expired JWT blocklist entries every 30 minutes
   await b.work('prune-revoked-tokens', async () => {
