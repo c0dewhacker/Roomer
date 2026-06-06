@@ -9,6 +9,8 @@ export const createFloorSchema = z.object({
 export const updateFloorSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   level: z.number().int().optional(),
+  // Per-floor no-show release override. null = inherit (floor → building → org).
+  noShowReleaseEnabled: z.boolean().nullable().optional(),
 })
 
 export type CreateFloorInput = z.infer<typeof createFloorSchema>

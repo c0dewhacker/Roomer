@@ -13,6 +13,8 @@ export const WEBHOOK_EVENTS = [
   'booking.modified',
   'booking.cancelled',
   'booking.completed',
+  'booking.checked_in',
+  'booking.no_show',
   'queue.joined',
   'queue.promoted',
   'queue.claimed',

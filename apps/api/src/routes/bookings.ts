@@ -321,6 +321,36 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       .send(ics)
   })
 
+  // POST /bookings/:id/check-in — "I'm here". Marks the booking as occupied so
+  // the no-show release job won't cancel it.
+  fastify.post('/:id/check-in', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const booking = await prisma.booking.findUnique({
+      where: { id },
+      select: { id: true, userId: true, assetId: true, status: true, startsAt: true, endsAt: true, checkedInAt: true },
+    })
+    if (!booking) {
+      return reply.status(404).send({ error: { message: 'Booking not found', code: 'NOT_FOUND' } })
+    }
+    if (booking.userId !== request.user.id && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+    }
+    if (booking.status !== 'CONFIRMED') {
+      return reply.status(409).send({ error: { message: 'Booking is not active', code: 'BOOKING_NOT_ACTIVE' } })
+    }
+    if (booking.endsAt < new Date()) {
+      return reply.status(409).send({ error: { message: 'Booking has already ended', code: 'BOOKING_ENDED' } })
+    }
+    // Idempotent — already checked in.
+    if (booking.checkedInAt) {
+      return reply.status(200).send({ data: { id: booking.id, checkedInAt: booking.checkedInAt } })
+    }
+
+    const updated = await prisma.booking.update({ where: { id }, data: { checkedInAt: new Date() } })
+    dispatchWebhook('booking.checked_in', { id: updated.id, userId: updated.userId, assetId: updated.assetId, checkedInAt: updated.checkedInAt }).catch(() => {})
+    return reply.status(200).send({ data: { id: updated.id, checkedInAt: updated.checkedInAt } })
+  })
+
   // PATCH /bookings/:id — modify booking
   fastify.patch('/:id', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }

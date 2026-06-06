@@ -95,6 +95,7 @@ enum NotificationType {
   BOOKING_CONFIRMED
   BOOKING_CANCELLED
   BOOKING_CANCELLED_BY_ADMIN
+  BOOKING_NO_SHOW
   BOOKING_REMINDER
   QUEUE_JOINED
   QUEUE_PROMOTED
@@ -134,6 +135,11 @@ model Organisation {
   branding                    Json         @default("{}")
   bookingReminderHours        Int          @default(24)
   maxRecurringBookingWeeks    Int          @default(12)
+  /// When true, a CONFIRMED booking that hasn't been checked in within
+  /// checkInGraceMinutes of its start is auto-released (cancelled) and the queue
+  /// is promoted, freeing ghost desks.
+  noShowReleaseEnabled        Boolean      @default(false)
+  checkInGraceMinutes         Int          @default(30)
   createdAt                   DateTime     @default(now())
   updatedAt                   DateTime     @updatedAt
   buildings                   Building[]
@@ -146,6 +152,8 @@ model Building {
   organisationId String
   name           String
   address        String?
+  /// Per-building override for no-show release. null = inherit the org default.
+  noShowReleaseEnabled Boolean?
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
   organisation   Organisation       @relation(fields: [organisationId], references: [id], onDelete: Cascade)
@@ -192,6 +200,8 @@ model Floor {
   buildingId String
   name       String
   level      Int                @default(0)
+  /// Per-floor override for no-show release. null = inherit (floor → building → org).
+  noShowReleaseEnabled Boolean?
   createdAt  DateTime           @default(now())
   updatedAt  DateTime           @updatedAt
   building   Building           @relation(fields: [buildingId], references: [id], onDelete: Cascade)
@@ -556,6 +566,9 @@ model Booking {
   status            BookingStatus        @default(CONFIRMED)
   notes             String?
   reminderSentAt    DateTime?
+  /// When the booker confirmed they are physically present. Null = not checked
+  /// in; the no-show release job cancels un-checked-in bookings past the grace.
+  checkedInAt       DateTime?
   recurringRuleId   String?
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt

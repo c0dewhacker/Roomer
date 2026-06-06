@@ -65,6 +65,8 @@ const orgSchema = z.object({
   maxBookingsPerUser: z.coerce.number().int().min(1).max(100),
   queueClaimWindowHours: z.coerce.number().int().min(1).max(48),
   dateFormat: z.string().min(1),
+  noShowReleaseEnabled: z.boolean(),
+  checkInGraceMinutes: z.coerce.number().int().min(5).max(240),
 })
 type OrgForm = z.infer<typeof orgSchema>
 
@@ -80,6 +82,8 @@ function OrgSettingsCard() {
       maxBookingsPerUser: 5,
       queueClaimWindowHours: 4,
       dateFormat: 'dd/MM/yyyy',
+      noShowReleaseEnabled: false,
+      checkInGraceMinutes: 30,
     },
   })
 
@@ -98,6 +102,8 @@ function OrgSettingsCard() {
         maxBookingsPerUser: orgData.maxBookingsPerUser,
         queueClaimWindowHours: orgData.queueClaimWindowHours ?? 4,
         dateFormat: orgData.dateFormat ?? 'dd/MM/yyyy',
+        noShowReleaseEnabled: orgData.noShowReleaseEnabled ?? false,
+        checkInGraceMinutes: orgData.checkInGraceMinutes ?? 30,
       })
     }
   }, [orgData, reset])
@@ -106,7 +112,7 @@ function OrgSettingsCard() {
     mutationFn: (data: OrgForm) => settingsApi.updateOrg(data),
     onSuccess: (res) => {
       toast.success('Settings saved')
-      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4, dateFormat: res.data.dateFormat ?? 'dd/MM/yyyy' })
+      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4, dateFormat: res.data.dateFormat ?? 'dd/MM/yyyy', noShowReleaseEnabled: res.data.noShowReleaseEnabled ?? false, checkInGraceMinutes: res.data.checkInGraceMinutes ?? 30 })
       qc.invalidateQueries({ queryKey: ['settings', 'organisation'] })
       qc.invalidateQueries({ queryKey: ['settings', 'public'] })
     },
@@ -149,6 +155,29 @@ function OrgSettingsCard() {
             <p className="text-xs text-muted-foreground mt-1">How long an assigned user's queue promotion stays open before passing to the next person.</p>
             {errors.queueClaimWindowHours && (
               <p className="text-xs text-destructive mt-1">{errors.queueClaimWindowHours.message}</p>
+            )}
+          </div>
+        </div>
+        <div className="rounded-md border p-3 space-y-3">
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4"
+              checked={watch('noShowReleaseEnabled')}
+              onChange={(e) => setValue('noShowReleaseEnabled', e.target.checked, { shouldDirty: true })}
+            />
+            <span>
+              <span className="text-sm font-medium">Release no-show bookings</span>
+              <span className="block text-xs text-muted-foreground">
+                Auto-cancel a booking if the user hasn't checked in within the grace period, freeing the desk and promoting the queue. Permanently-assigned desks are exempt. Buildings and floors can override this default.
+              </span>
+            </span>
+          </label>
+          <div className="max-w-[200px]">
+            <Label htmlFor="grace" className="text-xs">Check-in grace (minutes)</Label>
+            <Input id="grace" type="number" min={5} max={240} {...register('checkInGraceMinutes')} className="mt-1.5" disabled={!watch('noShowReleaseEnabled')} />
+            {errors.checkInGraceMinutes && (
+              <p className="text-xs text-destructive mt-1">{errors.checkInGraceMinutes.message}</p>
             )}
           </div>
         </div>
