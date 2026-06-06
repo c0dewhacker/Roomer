@@ -569,6 +569,9 @@ model Booking {
   /// When the booker confirmed they are physically present. Null = not checked
   /// in; the no-show release job cancels un-checked-in bookings past the grace.
   checkedInAt       DateTime?
+  /// True when this booking was CANCELLED by the no-show release job (vs a manual
+  /// cancellation). Lets analytics separate no-show rate from cancellation rate.
+  noShow            Boolean              @default(false)
   recurringRuleId   String?
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt

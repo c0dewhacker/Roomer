@@ -648,7 +648,8 @@ export type AnalyticsParams = { startDate?: string; endDate?: string; buildingId
 
 export type SummaryStats = {
   totalBookings: number; cancelledBookings: number; completedBookings: number
-  cancellationRate: number; uniqueBookers: number; avgDailyBookings: number
+  cancellationRate: number; noShowBookings: number; noShowRate: number
+  uniqueBookers: number; avgDailyBookings: number
   totalDesks: number; bookableDesks: number; assignedDesks: number; disabledDesks: number
   overallUtilisationPct: number; queueDepth: number; workingDays: number
 }
