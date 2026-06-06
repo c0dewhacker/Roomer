@@ -19,7 +19,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   Download, Users,
-  BarChart3, Clock, CheckCircle2, XCircle, Layers, UserCheck,
+  BarChart3, Clock, CheckCircle2, XCircle, Layers, UserCheck, UserX,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -121,14 +121,16 @@ function SummaryCards({ params }: { params: AnalyticsParams }) {
   })
 
   const cancellationColour = !data ? 'default' : data.cancellationRate > 20 ? 'red' : data.cancellationRate > 10 ? 'amber' : 'green'
+  const noShowColour = !data ? 'default' : data.noShowRate > 15 ? 'red' : data.noShowRate > 5 ? 'amber' : 'green'
   const utilisationColour = !data ? 'default' : data.overallUtilisationPct > 70 ? 'green' : data.overallUtilisationPct > 40 ? 'default' : 'amber'
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-7 gap-4">
+    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-8 gap-4">
       <KpiCard label="Confirmed Bookings" value={data?.totalBookings ?? '—'} sub={`over ${data?.workingDays ?? '…'} working days`} icon={CheckCircle2} loading={isLoading} colour="green" />
       <KpiCard label="Avg / Day" value={data?.avgDailyBookings ?? '—'} sub="confirmed bookings" icon={BarChart3} loading={isLoading} />
       <KpiCard label="Unique Bookers" value={data?.uniqueBookers ?? '—'} sub="distinct users" icon={Users} loading={isLoading} />
       <KpiCard label="Cancellation Rate" value={data ? `${data.cancellationRate}%` : '—'} sub={`${data?.cancelledBookings ?? '…'} cancelled`} icon={XCircle} loading={isLoading} colour={cancellationColour} />
+      <KpiCard label="No-show Rate" value={data ? `${data.noShowRate}%` : '—'} sub={`${data?.noShowBookings ?? '…'} released`} icon={UserX} loading={isLoading} colour={noShowColour} />
       <KpiCard label="Desk Utilisation" value={data ? `${data.overallUtilisationPct}%` : '—'} sub={`${data?.bookableDesks ?? '…'} bookable desks`} icon={Layers} loading={isLoading} colour={utilisationColour} />
       <KpiCard label="Assigned Desks" value={data?.assignedDesks ?? '—'} sub={`${data?.disabledDesks ?? '…'} disabled`} icon={UserCheck} loading={isLoading} colour="default" />
       <KpiCard label="Queue Depth" value={data?.queueDepth ?? '—'} sub="currently waiting" icon={Clock} loading={isLoading} colour={data?.queueDepth && data.queueDepth > 10 ? 'amber' : 'default'} />
@@ -569,6 +571,8 @@ function ExportAllButton({ params, days }: { params: AnalyticsParams; days: Pres
       sections.push(['Total Confirmed Bookings', String(summary.totalBookings)])
       sections.push(['Cancelled Bookings', String(summary.cancelledBookings)])
       sections.push(['Cancellation Rate', `${summary.cancellationRate}%`])
+      sections.push(['No-show Bookings', String(summary.noShowBookings)])
+      sections.push(['No-show Rate', `${summary.noShowRate}%`])
       sections.push(['Unique Bookers', String(summary.uniqueBookers)])
       sections.push(['Avg Daily Bookings', String(summary.avgDailyBookings)])
       sections.push(['Total Desks', String(summary.totalDesks)])

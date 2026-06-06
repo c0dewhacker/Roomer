@@ -269,9 +269,10 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
 
       const bookingWhere: Record<string, unknown> = { startsAt: { gte: startDate, lte: endDate }, ...bookingBuildingFilter }
 
-      const [confirmed, cancelled, completed, uniqueBookers, bookableDesks, assignedDesks, disabledDesks, queueDepth] = await Promise.all([
+      const [confirmed, cancelled, noShowCount, completed, uniqueBookers, bookableDesks, assignedDesks, disabledDesks, queueDepth] = await Promise.all([
         prisma.booking.count({ where: { ...bookingWhere, status: 'CONFIRMED' } }),
         prisma.booking.count({ where: { ...bookingWhere, status: 'CANCELLED' } }),
+        prisma.booking.count({ where: { ...bookingWhere, status: 'CANCELLED', noShow: true } }),
         prisma.booking.count({ where: { ...bookingWhere, status: 'COMPLETED' } }),
         prisma.booking.findMany({
           where: { ...bookingWhere, status: { in: ['CONFIRMED', 'COMPLETED'] } },
@@ -287,7 +288,10 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
 
       const totalDesks = bookableDesks + assignedDesks + disabledDesks
       const totalAttempted = confirmed + cancelled + completed
-      const cancellationRate = totalAttempted > 0 ? Math.round((cancelled / totalAttempted) * 100) : 0
+      // "cancelled" includes no-show releases — separate them so each rate is distinct.
+      const manualCancelled = Math.max(0, cancelled - noShowCount)
+      const cancellationRate = totalAttempted > 0 ? Math.round((manualCancelled / totalAttempted) * 100) : 0
+      const noShowRate = totalAttempted > 0 ? Math.round((noShowCount / totalAttempted) * 100) : 0
       // Capacity = all non-disabled desks (OPEN + RESTRICTED + ASSIGNED); disabled are truly out of service
       const activeDesks = bookableDesks + assignedDesks
       const totalCapacity = activeDesks * workingDays
@@ -296,9 +300,11 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(200).send({
         data: {
           totalBookings: confirmed,
-          cancelledBookings: cancelled,
+          cancelledBookings: manualCancelled,
           completedBookings: completed,
           cancellationRate,
+          noShowBookings: noShowCount,
+          noShowRate,
           uniqueBookers: uniqueBookers.length,
           avgDailyBookings: Math.round((confirmed / workingDays) * 10) / 10,
           totalDesks,

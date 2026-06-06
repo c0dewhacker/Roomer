@@ -408,7 +408,7 @@ async function handleReleaseNoShows(): Promise<void> {
 
   await prisma.booking.updateMany({
     where: { id: { in: noShows.map((b) => b.id) } },
-    data: { status: 'CANCELLED' },
+    data: { status: 'CANCELLED', noShow: true },
   })
 
   await getBoss().insert(
