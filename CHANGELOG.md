@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.16](https://github.com/c0dewhacker/Roomer/compare/v0.3.15...v0.3.16) (2026-06-07)
+
+
+### Features
+
+* **analytics:** no-show rate KPI ([#71](https://github.com/c0dewhacker/Roomer/issues/71) / [#84](https://github.com/c0dewhacker/Roomer/issues/84)) ([#172](https://github.com/c0dewhacker/Roomer/issues/172)) ([32436c2](https://github.com/c0dewhacker/Roomer/commit/32436c2131085b371a90551e3dab083219a5a90a))
+* **auth:** OIDC department attribute mapping ([#147](https://github.com/c0dewhacker/Roomer/issues/147)) ([#169](https://github.com/c0dewhacker/Roomer/issues/169)) ([cd8f1c0](https://github.com/c0dewhacker/Roomer/commit/cd8f1c04acf75433be03384c89cf193eea7c260d))
+* **bookings:** check-in / no-show release ([#71](https://github.com/c0dewhacker/Roomer/issues/71)) ([#171](https://github.com/c0dewhacker/Roomer/issues/171)) ([9c39d9f](https://github.com/c0dewhacker/Roomer/commit/9c39d9f740528993bfc8563887e99e0d9f8f3db0))
+* **calendar:** attach iCal invites to booking emails + download link ([#69](https://github.com/c0dewhacker/Roomer/issues/69)) ([#168](https://github.com/c0dewhacker/Roomer/issues/168)) ([00970bc](https://github.com/c0dewhacker/Roomer/commit/00970bc2ce0b2868f622ffa849e270f5a18b463d))
+* colleague finder / "Who's In" with desk wayfinding ([#70](https://github.com/c0dewhacker/Roomer/issues/70)) ([#167](https://github.com/c0dewhacker/Roomer/issues/167)) ([dc3e7e4](https://github.com/c0dewhacker/Roomer/commit/dc3e7e40f928c358394f529c204256052772b68c))
+* **floor:** amenity filtering on the floor plan ([#75](https://github.com/c0dewhacker/Roomer/issues/75)) ([#170](https://github.com/c0dewhacker/Roomer/issues/170)) ([ab8db1e](https://github.com/c0dewhacker/Roomer/commit/ab8db1e5cd639681171e03e07b0333c3bad87c57))
+* **rbac:** clarity overhaul — provenance, symmetric access, inspectors ([#164](https://github.com/c0dewhacker/Roomer/issues/164)) ([4c31a6e](https://github.com/c0dewhacker/Roomer/commit/4c31a6ec6eba139d56dd728b968fdceb59cfdbaa))
+
+
+### Bug Fixes
+
+* **api:** close booking-integrity and auth/webhook security gaps ([#163](https://github.com/c0dewhacker/Roomer/issues/163)) ([c93bf10](https://github.com/c0dewhacker/Roomer/commit/c93bf10141ac25abf0a48bfb9ce250c3177ae2dc))
+
 ## [0.3.15](https://github.com/c0dewhacker/Roomer/compare/v0.3.14...v0.3.15) (2026-05-13)
 
 
