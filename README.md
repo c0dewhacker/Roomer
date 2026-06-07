@@ -29,7 +29,7 @@ Roomer is a self-hosted platform for managing desk and asset reservations across
 | **Floor subscriptions** | Users subscribe to a floor and are notified when matching space frees up |
 | **Analytics** | Utilisation and booking analytics for admins and building managers |
 | **Building leases** | Track building lease terms and costs (admin) |
-| **Departments** | Department hierarchy with user membership, mappable from OIDC/SAML/LDAP/SCIM |
+| **Departments & org chart** | Flat departments mapped from OIDC/SAML/LDAP/SCIM, plus an org hierarchy auto-inferred from each user's manager attribute — shown as a side-by-side people/department org chart |
 | **Bulk CSV import** | Import buildings, floors, zones, and assets in a single pass |
 | **Asset registry** | Track non-bookable inventory (laptops, monitors, etc.) alongside bookable space |
 | **Role-based access** | Super admin, building admin, floor manager, and user roles |

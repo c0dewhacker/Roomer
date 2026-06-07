@@ -20,6 +20,8 @@ export interface SamlConfig {
   allowClockSkewMs?: number
   /** SAML attribute containing department name (default: department) */
   departmentAttribute?: string
+  /** SAML attribute containing the user's manager (email/UPN). Blank = disabled. */
+  managerAttribute?: string
 }
 
 export async function getSamlConfig(): Promise<SamlConfig | null> {
@@ -86,6 +88,17 @@ export function extractDepartmentFromProfile(profile: SamlProfile, attribute?: s
   const val = profile[attr]
   if (typeof val === 'string' && val.trim()) return val.trim()
   const msVal = profile['http://schemas.microsoft.com/identity/claims/department']
+  if (typeof msVal === 'string' && msVal.trim()) return msVal.trim()
+  return null
+}
+
+export function extractManagerFromProfile(profile: SamlProfile, attribute?: string): string | null {
+  if (attribute) {
+    const val = profile[attribute]
+    if (typeof val === 'string' && val.trim()) return val.trim()
+  }
+  // Common AD FS / Entra manager claim URI.
+  const msVal = profile['http://schemas.microsoft.com/ws/2008/06/identity/claims/manager']
   if (typeof msVal === 'string' && msVal.trim()) return msVal.trim()
   return null
 }

@@ -664,13 +664,14 @@ function OidcConfigForm({
   const [label, setLabel] = useState((current.label as string) ?? 'Sign in with SSO')
   const [groupsClaimName, setGroupsClaimName] = useState((current.groupsClaimName as string) ?? 'groups')
   const [departmentClaimName, setDepartmentClaimName] = useState((current.departmentClaimName as string) ?? '')
+  const [managerClaimName, setManagerClaimName] = useState((current.managerClaimName as string) ?? '')
   const [groupMappings, setGroupMappings] = useState<GroupMapping[]>(
     (current.groupMappings as GroupMapping[]) ?? [],
   )
 
   function handleSave() {
     const cfg: Record<string, unknown> = {
-      issuerUrl, clientId, redirectUri, scope, label, groupsClaimName, departmentClaimName, groupMappings,
+      issuerUrl, clientId, redirectUri, scope, label, groupsClaimName, departmentClaimName, managerClaimName, groupMappings,
     }
     if (clientSecret) cfg.clientSecret = clientSecret
     onSave(cfg)
@@ -718,6 +719,11 @@ function OidcConfigForm({
           <Input value={departmentClaimName} onChange={(e) => setDepartmentClaimName(e.target.value)}
             className="mt-1 h-8 text-sm" placeholder="department" />
         </div>
+        <div>
+          <Label className="text-xs">Manager claim name <span className="text-muted-foreground font-normal">(optional)</span></Label>
+          <Input value={managerClaimName} onChange={(e) => setManagerClaimName(e.target.value)}
+            className="mt-1 h-8 text-sm" placeholder="manager (email/UPN)" />
+        </div>
       </div>
       <Separator />
       <GroupMappingsEditor mappings={groupMappings} onChange={setGroupMappings} provider="OIDC" />
@@ -748,6 +754,7 @@ function SamlConfigForm({
   const [label, setLabel] = useState((current.label as string) ?? 'Sign in with SAML SSO')
   const [groupAttribute, setGroupAttribute] = useState((current.groupAttribute as string) ?? 'groups')
   const [departmentAttribute, setDepartmentAttribute] = useState((current.departmentAttribute as string) ?? '')
+  const [managerAttribute, setManagerAttribute] = useState((current.managerAttribute as string) ?? '')
   const [groupMappings, setGroupMappings] = useState<GroupMapping[]>(
     (current.groupMappings as GroupMapping[]) ?? [],
   )
@@ -764,6 +771,7 @@ function SamlConfigForm({
   function handleSave() {
     const cfg: Record<string, unknown> = { entryPoint, issuer, cert, callbackUrl, label, groupAttribute, groupMappings, wantAuthnResponseSigned, wantAssertionsSigned, allowClockSkewMs }
     if (departmentAttribute.trim()) cfg.departmentAttribute = departmentAttribute.trim()
+    if (managerAttribute.trim()) cfg.managerAttribute = managerAttribute.trim()
     onSave(cfg)
   }
 
@@ -800,6 +808,12 @@ function SamlConfigForm({
           <Input value={departmentAttribute} onChange={(e) => setDepartmentAttribute(e.target.value)}
             className="mt-1 h-8 text-sm" placeholder="department" />
           <p className="text-[11px] text-muted-foreground mt-1">Maps to Roomer departments on login. Falls back to the Microsoft identity claim if blank.</p>
+        </div>
+        <div>
+          <Label className="text-xs">Manager attribute name <span className="text-muted-foreground font-normal">(optional)</span></Label>
+          <Input value={managerAttribute} onChange={(e) => setManagerAttribute(e.target.value)}
+            className="mt-1 h-8 text-sm" placeholder="manager (email/UPN)" />
+          <p className="text-[11px] text-muted-foreground mt-1">Builds the org chart. Falls back to the Microsoft manager claim if blank.</p>
         </div>
         <div className="sm:col-span-2">
           <Label className="text-xs">IdP Certificate (PEM, without headers)</Label>
@@ -937,6 +951,9 @@ function LdapConfigForm({
   const [departmentAttribute, setDepartmentAttribute] = useState(
     (current.departmentAttribute as string) ?? '',
   )
+  const [managerAttribute, setManagerAttribute] = useState(
+    (current.managerAttribute as string) ?? '',
+  )
   const [tlsEnabled, setTlsEnabled] = useState((current.tlsEnabled as boolean) ?? false)
   const [tlsRejectUnauthorized, setTlsRejectUnauthorized] = useState(
     (current.tlsRejectUnauthorized as boolean) ?? true,
@@ -982,6 +999,7 @@ function LdapConfigForm({
     if (bindCredentials) cfg.bindCredentials = bindCredentials
     cfg.syncBase = syncBase.trim() || null
     if (departmentAttribute.trim()) cfg.departmentAttribute = departmentAttribute.trim()
+    if (managerAttribute.trim()) cfg.managerAttribute = managerAttribute.trim()
     onSave(cfg)
   }
 
@@ -1077,6 +1095,12 @@ function LdapConfigForm({
           <Input value={departmentAttribute} onChange={(e) => setDepartmentAttribute(e.target.value)}
             className="mt-1 h-8 text-sm" placeholder="department" />
           <p className="text-[11px] text-muted-foreground mt-1">Syncs the user's department on login and during directory sync.</p>
+        </div>
+        <div>
+          <Label className="text-xs">Manager attribute <span className="text-muted-foreground font-normal">(optional)</span></Label>
+          <Input value={managerAttribute} onChange={(e) => setManagerAttribute(e.target.value)}
+            className="mt-1 h-8 text-sm" placeholder="manager" />
+          <p className="text-[11px] text-muted-foreground mt-1">The DN attribute pointing to the user's manager (e.g. <code>manager</code>). Builds the org chart on sync.</p>
         </div>
 
         <Separator className="sm:col-span-2" />

@@ -675,4 +675,80 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(200).send({ data })
     },
   )
+
+  // GET /analytics/manager-rollup?userId= — aggregate bookings/desk-days for a
+  // manager's entire reporting subtree, plus a per-direct-report breakdown.
+  fastify.get(
+    '/manager-rollup',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+      }
+      const result = analyticsQuerySchema.extend({ userId: z.string().min(1) }).safeParse(request.query)
+      if (!result.success) {
+        return reply.status(400).send({ error: { message: 'userId and valid dates are required', code: 'VALIDATION_ERROR' } })
+      }
+      const { startDate: sd, endDate: ed } = defaultDateRange()
+      const startDate = parseDateParam(result.data.startDate, 'T00:00:00.000Z', sd)
+      const endDate = parseDateParam(result.data.endDate, 'T23:59:59.999Z', ed)
+      const userId = result.data.userId
+
+      const root = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, displayName: true, email: true } })
+      if (!root) return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })
+
+      type Totals = { peopleCount: bigint; bookingCount: bigint; deskDays: string | null }
+      const [overall] = await prisma.$queryRaw<Totals[]>`
+        WITH RECURSIVE subtree AS (
+          SELECT id FROM "User" WHERE id = ${userId}
+          UNION ALL
+          SELECT u.id FROM "User" u JOIN subtree s ON u."managerId" = s.id
+        )
+        SELECT
+          COUNT(DISTINCT s.id)::bigint AS "peopleCount",
+          COUNT(DISTINCT b.id)::bigint AS "bookingCount",
+          ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0) AS NUMERIC), 2)::text AS "deskDays"
+        FROM subtree s
+        LEFT JOIN "Booking" b ON b."userId" = s.id
+          AND b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate} AND b.status = 'CONFIRMED'
+      `
+
+      type BranchRow = Totals & { rootId: string; rootName: string }
+      const branches = await prisma.$queryRaw<BranchRow[]>`
+        WITH RECURSIVE branch AS (
+          SELECT id, id AS root FROM "User" WHERE "managerId" = ${userId}
+          UNION ALL
+          SELECT u.id, br.root FROM "User" u JOIN branch br ON u."managerId" = br.id
+        )
+        SELECT
+          br.root AS "rootId",
+          ru."displayName" AS "rootName",
+          COUNT(DISTINCT br.id)::bigint AS "peopleCount",
+          COUNT(DISTINCT b.id)::bigint AS "bookingCount",
+          ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0) AS NUMERIC), 2)::text AS "deskDays"
+        FROM branch br
+        JOIN "User" ru ON ru.id = br.root
+        LEFT JOIN "Booking" b ON b."userId" = br.id
+          AND b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate} AND b.status = 'CONFIRMED'
+        GROUP BY br.root, ru."displayName"
+        ORDER BY "deskDays"::numeric DESC NULLS LAST
+      `
+
+      return reply.status(200).send({
+        data: {
+          manager: { id: root.id, displayName: root.displayName, email: root.email },
+          peopleCount: Number(overall?.peopleCount ?? 0),
+          bookingCount: Number(overall?.bookingCount ?? 0),
+          deskDays: Number(overall?.deskDays ?? 0),
+          directReports: branches.map((b) => ({
+            rootId: b.rootId,
+            rootName: b.rootName,
+            peopleCount: Number(b.peopleCount),
+            bookingCount: Number(b.bookingCount),
+            deskDays: Number(b.deskDays ?? 0),
+          })),
+        },
+      })
+    },
+  )
 }

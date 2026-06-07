@@ -29,6 +29,7 @@ import { subscriptionRoutes } from './routes/subscriptions.js'
 import { recurringBookingRoutes } from './routes/recurring.js'
 import { webhookRoutes } from './routes/webhooks.js'
 import { directoryRoutes } from './routes/directory.js'
+import { orgRoutes } from './routes/org.js'
 import { getBoss } from './lib/queue.js'
 import { prisma } from './lib/prisma.js'
 import { register, httpRequestDuration, setupMetrics } from './lib/metrics.js'
@@ -236,6 +237,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await fastify.register(recurringBookingRoutes, { prefix: '/api/v1/recurring-bookings' })
   await fastify.register(scimRoutes, { prefix: '/scim/v2' })
   await fastify.register(departmentRoutes, { prefix: '/api/v1/departments' })
+  await fastify.register(orgRoutes, { prefix: '/api/v1/org' })
   await fastify.register(webhookRoutes, { prefix: '/api/v1/webhooks' })
   await fastify.register(directoryRoutes, { prefix: '/api/v1/directory' })
 

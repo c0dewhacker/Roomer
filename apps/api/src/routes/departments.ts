@@ -8,13 +8,10 @@ import { z } from 'zod'
 export async function departmentRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Departments'], ...route.schema } })
 
-  // GET /departments — list all departments with member + child counts
+  // GET /departments — list all departments with member counts
   fastify.get('/', { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] }, async (_request, reply) => {
     const departments = await prisma.department.findMany({
-      include: {
-        parent: { select: { id: true, name: true } },
-        _count: { select: { members: true, children: true } },
-      },
+      include: { _count: { select: { members: true } } },
       orderBy: [{ name: 'asc' }],
     })
     return reply.status(200).send({ data: departments })
@@ -32,18 +29,10 @@ export async function departmentRoutes(fastify: FastifyInstance): Promise<void> 
     const org = await prisma.organisation.findFirst({ select: { id: true } })
     if (!org) return reply.status(500).send({ error: { message: 'No organisation found', code: 'NO_ORGANISATION' } })
 
-    if (result.data.parentId) {
-      const parent = await prisma.department.findUnique({ where: { id: result.data.parentId }, select: { id: true } })
-      if (!parent) return reply.status(404).send({ error: { message: 'Parent department not found', code: 'NOT_FOUND' } })
-    }
-
     try {
       const department = await prisma.department.create({
-        data: { organisationId: org.id, name: result.data.name, parentId: result.data.parentId ?? null },
-        include: {
-          parent: { select: { id: true, name: true } },
-          _count: { select: { members: true, children: true } },
-        },
+        data: { organisationId: org.id, name: result.data.name },
+        include: { _count: { select: { members: true } } },
       })
       return reply.status(201).send({ data: department })
     } catch {
@@ -57,21 +46,14 @@ export async function departmentRoutes(fastify: FastifyInstance): Promise<void> 
 
     const department = await prisma.department.findUnique({
       where: { id },
-      include: {
-        parent: { select: { id: true, name: true } },
-        children: {
-          select: { id: true, name: true, _count: { select: { members: true } } },
-          orderBy: { name: 'asc' },
-        },
-        _count: { select: { members: true } },
-      },
+      include: { _count: { select: { members: true } } },
     })
     if (!department) return reply.status(404).send({ error: { message: 'Department not found', code: 'NOT_FOUND' } })
 
     return reply.status(200).send({ data: department })
   })
 
-  // PUT /departments/:id — update name or parent
+  // PUT /departments/:id — rename department
   fastify.put('/:id', { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] }, async (request, reply) => {
     const { id } = request.params as { id: string }
     const result = updateDepartmentSchema.safeParse(request.body)
@@ -81,23 +63,11 @@ export async function departmentRoutes(fastify: FastifyInstance): Promise<void> 
       })
     }
 
-    if (result.data.parentId === id) {
-      return reply.status(400).send({ error: { message: 'Department cannot be its own parent', code: 'INVALID_PARENT' } })
-    }
-
-    if (result.data.parentId) {
-      const parent = await prisma.department.findUnique({ where: { id: result.data.parentId }, select: { id: true } })
-      if (!parent) return reply.status(404).send({ error: { message: 'Parent department not found', code: 'NOT_FOUND' } })
-    }
-
     try {
       const department = await prisma.department.update({
         where: { id },
         data: result.data,
-        include: {
-          parent: { select: { id: true, name: true } },
-          _count: { select: { members: true, children: true } },
-        },
+        include: { _count: { select: { members: true } } },
       })
       return reply.status(200).send({ data: department })
     } catch {

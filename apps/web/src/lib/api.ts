@@ -682,6 +682,20 @@ export const analyticsApi = {
     api.get<{ data: FloorUtilisationPoint[] }>(`/analytics/floor-utilisation${analyticsQs(params)}`),
   departments: (params?: AnalyticsParams) =>
     api.get<{ data: DepartmentAnalyticsPoint[] }>(`/analytics/departments${analyticsQs(params)}`),
+  managerRollup: (userId: string, params?: AnalyticsParams) => {
+    const qs = analyticsQs(params)
+    const sep = qs ? '&' : '?'
+    return api.get<{ data: ManagerRollup }>(`/analytics/manager-rollup${qs}${sep}userId=${encodeURIComponent(userId)}`)
+  },
+}
+
+export type ManagerRollupBranch = { rootId: string; rootName: string; peopleCount: number; bookingCount: number; deskDays: number }
+export type ManagerRollup = {
+  manager: { id: string; displayName: string; email: string }
+  peopleCount: number
+  bookingCount: number
+  deskDays: number
+  directReports: ManagerRollupBranch[]
 }
 
 // --- Notifications ---
@@ -774,14 +788,11 @@ export const webhooksApi = {
     ),
 }
 
-// --- Departments ---
+// --- Departments (flat; hierarchy is inferred from manager links via orgApi) ---
 export interface Department {
   id: string
   name: string
-  parentId: string | null
-  parent?: { id: string; name: string } | null
-  children?: Array<{ id: string; name: string; _count: { members: number } }>
-  _count?: { members: number; children: number }
+  _count?: { members: number }
 }
 
 export interface DepartmentMember {
@@ -792,12 +803,35 @@ export interface DepartmentMember {
   accountStatus: string
 }
 
+// --- Org hierarchy (manager-derived) ---
+export interface OrgPerson {
+  id: string
+  displayName: string
+  email: string
+  departmentId: string | null
+  managerId: string | null
+}
+export interface OrgDepartment {
+  id: string
+  name: string
+  memberCount: number
+  inferredParentId: string | null
+}
+export interface OrgHierarchy {
+  people: OrgPerson[]
+  departments: OrgDepartment[]
+  unresolvedManagers: number
+}
+export const orgApi = {
+  hierarchy: () => api.get<{ data: OrgHierarchy }>('/org/hierarchy'),
+}
+
 export const departmentsApi = {
   list: () => api.get<{ data: Department[] }>('/departments'),
   get: (id: string) => api.get<{ data: Department }>(`/departments/${id}`),
-  create: (body: { name: string; parentId?: string }) =>
+  create: (body: { name: string }) =>
     api.post<{ data: Department }>('/departments', body),
-  update: (id: string, body: { name?: string; parentId?: string | null }) =>
+  update: (id: string, body: { name?: string }) =>
     api.put<{ data: Department }>(`/departments/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/departments/${id}`),
   listMembers: (id: string, search?: string) =>
