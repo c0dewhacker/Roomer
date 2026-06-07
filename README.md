@@ -327,6 +327,8 @@ All API environment variables. Every variable accepts a `ROOMER_` prefix (e.g. `
 | `SMTP_USER` | — | SMTP username (if required) |
 | `SMTP_PASS` | — | SMTP password (if required) |
 | `EMAIL_FROM` | `noreply@roomer.local` | Sender address for system emails |
+
+> Email/SMTP can also be configured in the admin UI (**Settings → Email**). Any of the `SMTP_*` / `EMAIL_FROM` variables above, when set, **override** the UI value at runtime (captured at startup) and appear locked in the form.
 | `APP_URL` | `http://localhost:5173` | Public URL used in email links |
 
 ---
