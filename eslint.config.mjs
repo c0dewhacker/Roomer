@@ -41,8 +41,25 @@ export default tseslint.config(
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
       // react-hooks/set-state-in-effect: pattern is valid in controlled sync effects
       'react-hooks/set-state-in-effect': 'off',
+      // @eslint-react/set-state-in-effect is the same rule under a different plugin —
+      // turn it off too, consistent with the decision above.
+      '@eslint-react/set-state-in-effect': 'off',
       // react-hooks/use-memo: non-inline callbacks are fine when extracted for readability
       'react-hooks/use-memo': 'off',
+      // react-hook-form's watch()/control are React-compatible; this rule is a
+      // known false positive against that library's API.
+      'react-hooks/incompatible-library': 'off',
+    },
+  },
+
+  // Vendored shadcn/ui primitives — keep them as generated upstream (React.forwardRef,
+  // variant consts colocated with the component) rather than forking 30+ files away
+  // from the source they're maintained against.
+  {
+    files: ['apps/web/src/components/ui/**/*.{ts,tsx}'],
+    rules: {
+      '@eslint-react/no-forward-ref': 'off',
+      'react-refresh/only-export-components': 'off',
     },
   },
 )

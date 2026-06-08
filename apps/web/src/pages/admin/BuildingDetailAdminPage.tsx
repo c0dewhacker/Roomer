@@ -122,7 +122,7 @@ function FloorDialog({
   )
 }
 
-function FloorCard({ floor, buildingId }: { floor: Floor; buildingId: string }) {
+function FloorCard({ floor, buildingId }: { floor: Floor & { _count?: { zones: number } }; buildingId: string }) {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const fileRef = useRef<HTMLInputElement>(null)
@@ -175,12 +175,12 @@ function FloorCard({ floor, buildingId }: { floor: Floor; buildingId: string }) 
               <div className="flex items-center gap-2 flex-wrap">
                 <p className="font-medium">{floor.name}</p>
                 <Badge variant="outline" className="text-xs">Level {floor.level}</Badge>
-                {(floor as any).floorPlan && (
+                {floor.floorPlan && (
                   <Badge variant="secondary" className="text-xs">Floor plan ✓</Badge>
                 )}
               </div>
               <p className="text-xs text-muted-foreground mt-0.5">
-                {(floor as any)._count?.zones ?? 0} zones
+                {floor._count?.zones ?? 0} zones
               </p>
             </div>
           </div>
@@ -198,7 +198,7 @@ function FloorCard({ floor, buildingId }: { floor: Floor; buildingId: string }) 
               onChange={(e) => {
                 const file = e.target.files?.[0]
                 if (!file) return
-                if ((floor as any).floorPlan) {
+                if (floor.floorPlan) {
                   setPendingUploadFile(file)
                   setReplaceConfirmOpen(true)
                 } else {

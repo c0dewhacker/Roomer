@@ -1013,8 +1013,8 @@ export default function FloorAdminPage() {
     [updateTransform],
   )
 
-  const buildingId = (floor as any)?.building?.id
-  const buildingName = (floor as any)?.building?.name
+  const buildingId = floor?.building?.id
+  const buildingName = floor?.building?.name
   const zones: ZoneData[] = (floor?.zones ?? []) as ZoneData[]
   const totalDesks = zones.reduce((s, z) => s + (z.assets?.length ?? 0), 0)
 
