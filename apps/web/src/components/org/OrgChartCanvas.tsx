@@ -120,8 +120,9 @@ export function OrgChartCanvas({
           onWheel={handleWheel}
           onDragEnd={(e) => setStagePos({ x: e.target.x(), y: e.target.y() })}
         >
-          <Layer>
-            {/* edges */}
+          {/* Edges live in their own non-listening layer so they never take part
+              in hit-testing — large trees stay responsive while panning/zooming. */}
+          <Layer listening={false}>
             {positioned.map((n) => {
               if (!n.parentId) return null
               const p = posById.get(n.parentId)
@@ -132,10 +133,13 @@ export function OrgChartCanvas({
                   points={[p.x, p.y + NODE_H, p.x, p.y + NODE_H + ROW_H / 2, n.x, p.y + NODE_H + ROW_H / 2, n.x, n.y]}
                   stroke="#cbd5e1"
                   strokeWidth={1.5}
+                  perfectDrawEnabled={false}
+                  listening={false}
                 />
               )
             })}
-            {/* nodes */}
+          </Layer>
+          <Layer>
             {positioned.map((n) => {
               const selected = n.id === highlightId
               return (
@@ -147,15 +151,18 @@ export function OrgChartCanvas({
                     fill="#ffffff"
                     stroke={selected ? accent : '#e2e8f0'}
                     strokeWidth={selected ? 3 : 1}
-                    shadowColor="#0f172a"
-                    shadowOpacity={0.08}
-                    shadowBlur={selected ? 10 : 4}
-                    shadowOffsetY={2}
+                    perfectDrawEnabled={false}
+                    shadowForStrokeEnabled={false}
+                    // Shadows force an off-screen canvas per shape — by far the most
+                    // expensive Konva op. Only the selected node pays that cost.
+                    {...(selected
+                      ? { shadowColor: '#0f172a', shadowOpacity: 0.18, shadowBlur: 10, shadowOffsetY: 2 }
+                      : {})}
                   />
-                  <Rect width={4} height={NODE_H} cornerRadius={[8, 0, 0, 8]} fill={accent} />
-                  <Text x={12} y={8} width={NODE_W - 20} text={n.label} fontSize={13} fontStyle="600" fill="#0f172a" ellipsis wrap="none" />
+                  <Rect width={4} height={NODE_H} cornerRadius={[8, 0, 0, 8]} fill={accent} listening={false} perfectDrawEnabled={false} />
+                  <Text x={12} y={8} width={NODE_W - 20} text={n.label} fontSize={13} fontStyle="600" fill="#0f172a" ellipsis wrap="none" listening={false} perfectDrawEnabled={false} />
                   {n.sublabel && (
-                    <Text x={12} y={26} width={NODE_W - 20} text={n.sublabel} fontSize={11} fill="#64748b" ellipsis wrap="none" />
+                    <Text x={12} y={26} width={NODE_W - 20} text={n.sublabel} fontSize={11} fill="#64748b" ellipsis wrap="none" listening={false} perfectDrawEnabled={false} />
                   )}
                 </Group>
               )

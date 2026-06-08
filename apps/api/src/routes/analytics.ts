@@ -698,10 +698,12 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       if (!root) return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })
 
       type Totals = { peopleCount: bigint; bookingCount: bigint; deskDays: string | null }
+      // UNION (not UNION ALL) so a manager cycle (A→B→A from bad IdP data) can't
+      // recurse infinitely — duplicate ids are dropped, terminating traversal.
       const [overall] = await prisma.$queryRaw<Totals[]>`
         WITH RECURSIVE subtree AS (
           SELECT id FROM "User" WHERE id = ${userId}
-          UNION ALL
+          UNION
           SELECT u.id FROM "User" u JOIN subtree s ON u."managerId" = s.id
         )
         SELECT
@@ -714,10 +716,11 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       `
 
       type BranchRow = Totals & { rootId: string; rootName: string }
+      // UNION (see subtree CTE above) to guarantee termination on cyclic manager data.
       const branches = await prisma.$queryRaw<BranchRow[]>`
         WITH RECURSIVE branch AS (
           SELECT id, id AS root FROM "User" WHERE "managerId" = ${userId}
-          UNION ALL
+          UNION
           SELECT u.id, br.root FROM "User" u JOIN branch br ON u."managerId" = br.id
         )
         SELECT
