@@ -135,6 +135,7 @@ function NavItemLink({
             className={({ isActive }) =>
               cn(
                 'flex items-center justify-center rounded-lg p-2 transition-colors',
+                'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
                 isActive
                   ? 'bg-primary/10 text-primary'
                   : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
@@ -156,6 +157,7 @@ function NavItemLink({
       className={({ isActive }) =>
         cn(
           'group flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
+          'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
           isActive
             ? 'bg-primary/10 text-primary'
             : 'text-muted-foreground hover:bg-accent/70 hover:text-foreground',
