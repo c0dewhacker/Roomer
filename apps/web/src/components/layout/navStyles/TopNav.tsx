@@ -39,7 +39,10 @@ export function TopNav() {
     ?.split(' ').slice(0, 2).map((n) => n[0]).join('').toUpperCase()
 
   const personalSection = sections.find((s) => s.id === 'personal')
-  const secondarySection = sections.find((s) => s.id !== 'personal')
+  const secondarySections = sections.filter((s) => s.id !== 'personal')
+  // Admin is split into several labelled groups; building-admin / floor-manager
+  // have a single section. Use a generic trigger when there's more than one group.
+  const secondaryTriggerLabel = secondarySections.length > 1 ? 'Admin' : secondarySections[0]?.label
 
   return (
     <>
@@ -82,21 +85,31 @@ export function TopNav() {
           {/* Buildings dropdown */}
           <BuildingsDropdown />
 
-          {/* Admin / Manager dropdown */}
-          {secondarySection && (
+          {/* Admin / Manager dropdown — groups rendered as labelled sections */}
+          {secondarySections.length > 0 && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors whitespace-nowrap">
-                  {secondarySection.label}
+                  {secondaryTriggerLabel}
                   <ChevronDown className="h-3 w-3" />
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-48">
-                {secondarySection.items.map((item) => (
-                  <DropdownMenuItem key={item.to} onClick={() => navigate(item.to)}>
-                    <item.icon className="mr-2 h-4 w-4" />
-                    {item.label}
-                  </DropdownMenuItem>
+                {secondarySections.map((section, i) => (
+                  <div key={section.id}>
+                    {i > 0 && <DropdownMenuSeparator />}
+                    {secondarySections.length > 1 && section.label && (
+                      <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">
+                        {section.label}
+                      </DropdownMenuLabel>
+                    )}
+                    {section.items.map((item) => (
+                      <DropdownMenuItem key={item.to} onClick={() => navigate(item.to)}>
+                        <item.icon className="mr-2 h-4 w-4" />
+                        {item.label}
+                      </DropdownMenuItem>
+                    ))}
+                  </div>
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
