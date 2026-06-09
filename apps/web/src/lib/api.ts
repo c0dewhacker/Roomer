@@ -510,9 +510,23 @@ export const brandingApi = {
   getFaviconUrl: () => `${BASE}/settings/branding/favicon/image`,
 }
 
+export type EmailSettings = {
+  host: string
+  port: number | null
+  secure: boolean
+  user: string
+  from: string
+  hasPassword: boolean
+  envOverrides: { host: boolean; port: boolean; secure: boolean; user: boolean; pass: boolean; from: boolean }
+  effective: { host: string; port: number; secure: boolean; user?: string; from: string }
+}
+
 export const settingsApi = {
   testEmail: (to?: string) =>
     api.post<{ data: { ok: true; message: string } }>('/settings/test-email', to ? { to } : {}),
+  getEmail: () => api.get<{ data: EmailSettings }>('/settings/email'),
+  updateEmail: (body: Partial<{ host: string; port: number; secure: boolean; user: string; from: string; password: string }>) =>
+    api.put<{ data: EmailSettings }>('/settings/email', body),
   getAuthConfig: () =>
     api.get<{ data: Record<string, { enabled: boolean; config: Record<string, unknown> }> }>('/settings/auth-config'),
   updateAuthConfig: (

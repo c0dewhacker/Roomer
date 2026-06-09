@@ -12,8 +12,20 @@ import { hashScimToken, generateScimToken } from '../lib/scim-helpers.js'
 import { findAuthConfig, listAuthConfigs, upsertAuthConfig } from '../lib/prisma.js'
 import { idpGroupMatchesAny } from '../lib/group-mapping.js'
 import { saveBrandingImage, resolveStoragePath } from '../lib/storage.js'
-import { DEFAULT_TEMPLATE_STRINGS, interpolateTemplate, stripHtmlToText, formatDate, sendEmail } from '../lib/mailer.js'
+import { DEFAULT_TEMPLATE_STRINGS, interpolateTemplate, stripHtmlToText, formatDate, sendEmail, resetMailer } from '../lib/mailer.js'
+import { encrypt } from '../lib/encryption.js'
+import { ENV_SMTP_OVERRIDES, getStoredEmailConfig, getEffectiveSmtpForDisplay, type StoredEmailConfig } from '../lib/smtp-config.js'
 import { z } from 'zod'
+
+const emailConfigSchema = z.object({
+  host: z.string().max(255).optional(),
+  port: z.coerce.number().int().min(1).max(65535).optional(),
+  secure: z.boolean().optional(),
+  user: z.string().max(255).optional(),
+  from: z.string().max(320).optional(),
+  // Omit/blank = keep existing stored password; a value sets a new one.
+  password: z.string().max(1024).optional(),
+})
 
 const ALLOWED_PROVIDERS = ['OIDC', 'SAML', 'LDAP'] as const
 type ProviderKey = (typeof ALLOWED_PROVIDERS)[number]
@@ -192,12 +204,76 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
+  // GET /settings/email — SMTP settings for the admin UI.
+  // Returns the stored (editable) values, which fields are env-locked, and the
+  // effective (env-wins) values for display.
+  fastify.get(
+    '/email',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (_request, reply) => {
+      const stored = await getStoredEmailConfig()
+      const effective = await getEffectiveSmtpForDisplay()
+      return reply.status(200).send({
+        data: {
+          host: stored.host ?? '',
+          port: stored.port ?? null,
+          secure: stored.secure ?? false,
+          user: stored.user ?? '',
+          from: stored.from ?? '',
+          hasPassword: !!stored.password,
+          envOverrides: ENV_SMTP_OVERRIDES,
+          effective, // { host, port, secure, user, from } — what is actually used
+        },
+      })
+    },
+  )
+
+  // PUT /settings/email — update the stored SMTP settings (env vars still override).
+  fastify.put(
+    '/email',
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    async (request, reply) => {
+      const result = emailConfigSchema.safeParse(request.body)
+      if (!result.success) {
+        return reply.status(400).send({ error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() } })
+      }
+      const org = await prisma.organisation.findFirst()
+      if (!org) return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
+
+      const existing = (org.emailConfig ?? {}) as StoredEmailConfig
+      const { password, ...rest } = result.data
+      const next: StoredEmailConfig = {
+        ...existing,
+        host: rest.host ?? undefined,
+        port: rest.port ?? undefined,
+        secure: rest.secure ?? undefined,
+        user: rest.user ?? undefined,
+        from: rest.from ?? undefined,
+        // Keep the existing encrypted password unless a new non-empty one is provided.
+        password: password ? encrypt(password) : existing.password,
+      }
+
+      await prisma.organisation.update({ where: { id: org.id }, data: { emailConfig: next as Prisma.InputJsonValue } })
+      resetMailer() // re-resolve transporter on next send
+
+      const effective = await getEffectiveSmtpForDisplay()
+      return reply.status(200).send({
+        data: {
+          host: next.host ?? '', port: next.port ?? null, secure: next.secure ?? false,
+          user: next.user ?? '', from: next.from ?? '', hasPassword: !!next.password,
+          envOverrides: ENV_SMTP_OVERRIDES, effective,
+        },
+      })
+    },
+  )
+
   // POST /settings/test-email — send a test email to verify SMTP config
   fastify.post(
     '/test-email',
     { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
     async (request, reply) => {
       const recipient = request.user.email
+      const smtp = await getEffectiveSmtpForDisplay()
 
       try {
         await sendEmail({
@@ -222,14 +298,14 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
     <p><span class="badge">✓ Success</span></p>
     <p>Your SMTP configuration is working correctly. Roomer can send email notifications.</p>
     <p style="color:#71717a; font-size:13px;">
-      Host: ${env.SMTP_HOST}:${env.SMTP_PORT}<br/>
-      From: ${env.EMAIL_FROM}
+      Host: ${smtp.host}:${smtp.port}<br/>
+      From: ${smtp.from}
     </p>
     <div class="footer">Roomer — Desk &amp; Asset Management</div>
   </div>
 </body>
 </html>`,
-          text: `Roomer test email\n\nYour SMTP configuration is working correctly.\n\nHost: ${env.SMTP_HOST}:${env.SMTP_PORT}\nFrom: ${env.EMAIL_FROM}`,
+          text: `Roomer test email\n\nYour SMTP configuration is working correctly.\n\nHost: ${smtp.host}:${smtp.port}\nFrom: ${smtp.from}`,
         })
 
         return reply.status(200).send({

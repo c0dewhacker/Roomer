@@ -132,6 +132,10 @@ model Organisation {
   queueClaimWindowHours       Int          @default(4)
   dateFormat                  String       @default("dd/MM/yyyy")
   emailTemplates              Json         @default("{}")
+  /// SMTP/email settings configurable from the admin UI: { host, port, secure,
+  /// user, from, password(enc:v1:...) }. Matching SMTP_* env vars override these
+  /// at runtime (env wins, captured at startup).
+  emailConfig                 Json         @default("{}")
   branding                    Json         @default("{}")
   bookingReminderHours        Int          @default(24)
   maxRecurringBookingWeeks    Int          @default(12)

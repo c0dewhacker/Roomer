@@ -1,23 +1,30 @@
 import nodemailer from 'nodemailer'
 import type { Transporter } from 'nodemailer'
 import { env } from '../env.js'
+import { getEffectiveSmtp } from './smtp-config.js'
 import type { Booking, User, Asset, QueueEntry } from '@roomer/shared'
 
 let transporter: Transporter | null = null
+let cachedFrom: string | null = null
 
-function getTransporter(): Transporter {
+async function getTransporter(): Promise<{ transporter: Transporter; from: string }> {
   if (!transporter) {
+    const cfg = await getEffectiveSmtp()
     transporter = nodemailer.createTransport({
-      host: env.SMTP_HOST,
-      port: env.SMTP_PORT,
-      secure: env.SMTP_SECURE,
-      auth:
-        env.SMTP_USER && env.SMTP_PASS
-          ? { user: env.SMTP_USER, pass: env.SMTP_PASS }
-          : undefined,
+      host: cfg.host,
+      port: cfg.port,
+      secure: cfg.secure,
+      auth: cfg.user && cfg.pass ? { user: cfg.user, pass: cfg.pass } : undefined,
     })
+    cachedFrom = cfg.from
   }
-  return transporter
+  return { transporter, from: cachedFrom ?? 'noreply@roomer.local' }
+}
+
+/** Drop the cached transporter so the next send re-resolves config (call after a settings change). */
+export function resetMailer(): void {
+  transporter = null
+  cachedFrom = null
 }
 
 interface SendEmailOptions {
@@ -30,9 +37,9 @@ interface SendEmailOptions {
 }
 
 export async function sendEmail(opts: SendEmailOptions): Promise<void> {
-  const t = getTransporter()
+  const { transporter: t, from } = await getTransporter()
   await t.sendMail({
-    from: env.EMAIL_FROM,
+    from,
     to: opts.to,
     subject: opts.subject,
     html: opts.html,
