@@ -13,6 +13,8 @@ export interface OidcConfig {
   groupsClaimName?: string
   /** Userinfo claim name to map to the user's Roomer department. Blank = disabled. */
   departmentClaimName?: string
+  /** Userinfo claim name holding the user's manager (email/UPN). Blank = disabled. */
+  managerClaimName?: string
   groupMappings?: GroupMapping[]
 }
 

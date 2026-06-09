@@ -26,12 +26,15 @@ export interface LdapConfig {
   deactivateMissing?: boolean
   /** LDAP attribute containing the user's department name (e.g. 'department') */
   departmentAttribute?: string
+  /** LDAP attribute containing the user's manager DN (e.g. 'manager') */
+  managerAttribute?: string
 }
 
 export interface LdapSyncResult {
   created: number
   updated: number
   deactivated: number
+  managersResolved?: number
   skipped: number
   errors: Array<{ dn: string; message: string }>
 }
@@ -101,6 +104,7 @@ export async function syncLdapUsers(cfg: LdapConfig): Promise<LdapSyncResult> {
   const nameAttr = cfg.displayNameAttribute ?? 'displayName'
   const groupAttr = cfg.groupAttribute ?? 'memberOf'
   const deptAttr = cfg.departmentAttribute
+  const managerAttr = cfg.managerAttribute
   const syncBase = cfg.syncBase?.trim() || cfg.searchBase
   const syncFilter = cfg.syncFilter?.trim() || '(objectClass=person)'
   const syncScope = cfg.syncScope ?? 'sub'
@@ -118,6 +122,7 @@ export async function syncLdapUsers(cfg: LdapConfig): Promise<LdapSyncResult> {
 
     const attrs = ['dn', emailAttr, nameAttr, groupAttr]
     if (deptAttr) attrs.push(deptAttr)
+    if (managerAttr) attrs.push(managerAttr)
 
     const entries = await searchAsync(client, syncBase, {
       filter: syncFilter,
@@ -137,6 +142,7 @@ export async function syncLdapUsers(cfg: LdapConfig): Promise<LdapSyncResult> {
       const displayName = getAttr(nameAttr)?.values[0]?.trim() || email
       const groups = (getAttr(groupAttr)?.values ?? []).map((g) => g.trim().toLowerCase())
       const departmentName = deptAttr ? getAttr(deptAttr)?.values[0]?.trim() : undefined
+      const managerRef = managerAttr ? (getAttr(managerAttr)?.values[0]?.trim() || null) : undefined
       const dn = entry.dn.toString()
 
       seenEmails.add(email)
@@ -146,12 +152,18 @@ export async function syncLdapUsers(cfg: LdapConfig): Promise<LdapSyncResult> {
         if (existing) {
           await prisma.user.update({
             where: { email },
-            data: { displayName, accountStatus: 'ACTIVE', provider: 'LDAP' },
+            data: {
+              displayName, accountStatus: 'ACTIVE', provider: 'LDAP', externalId: dn,
+              ...(managerAttr ? { managerExternalRef: managerRef } : {}),
+            },
           })
           result.updated++
         } else {
           await prisma.user.create({
-            data: { email, displayName, provider: 'LDAP', externalId: dn },
+            data: {
+              email, displayName, provider: 'LDAP', externalId: dn,
+              ...(managerAttr ? { managerExternalRef: managerRef } : {}),
+            },
           })
           result.created++
         }
@@ -184,6 +196,13 @@ export async function syncLdapUsers(cfg: LdapConfig): Promise<LdapSyncResult> {
     }
   } finally {
     unbind(client)
+  }
+
+  // Resolve manager DNs → managerId now that all users are present.
+  if (managerAttr) {
+    const { reconcileAllManagers } = await import('./manager.js')
+    const { resolved } = await reconcileAllManagers()
+    result.managersResolved = resolved
   }
 
   if (result.created > 0 || result.updated > 0) {

@@ -412,21 +412,19 @@ model AssetAssignment {
   @@index([userId])
 }
 
+/// Departments are a flat, IdP-mapped grouping. Any hierarchy between them is
+/// *inferred* from user manager links (User.managerId), not stored here.
 model Department {
   id             String       @id @default(cuid())
   organisationId String
   name           String
-  parentId       String?
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
   organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
-  parent         Department?  @relation("DepartmentParent", fields: [parentId], references: [id], onDelete: SetNull)
-  children       Department[] @relation("DepartmentParent")
   members        User[]
 
   @@unique([organisationId, name])
   @@index([organisationId])
-  @@index([parentId])
 }
 
 model User {
@@ -442,6 +440,12 @@ model User {
   /// MANUAL (an admin set it), sync leaves it untouched.
   globalRoleSource        RoleSource    @default(MANUAL)
   departmentId            String?
+  /// The user's manager, derived from the IdP (LDAP `manager` DN, or an OIDC/SAML
+  /// manager claim). Drives the inferred org/department hierarchy.
+  managerId               String?
+  /// Raw manager identifier from the IdP (a DN, email, or UPN) before it is
+  /// resolved to a Roomer user — kept so forward references reconcile on later sync/login.
+  managerExternalRef      String?
   notificationPreferences Json          @default("{}")
   /// When false, the user is hidden from the colleague finder / "who's in"
   /// directory (their bookings and assigned desks are not surfaced to others).
@@ -456,6 +460,8 @@ model User {
   updatedAt               DateTime      @updatedAt
 
   department           Department?  @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  manager              User?        @relation("UserManager", fields: [managerId], references: [id], onDelete: SetNull)
+  reports              User[]       @relation("UserManager")
   resourceRoles        UserResourceRole[]
   bookings             Booking[]
   queueEntries         QueueEntry[]
@@ -472,6 +478,7 @@ model User {
   @@index([email])
   @@index([provider, externalId])
   @@index([departmentId])
+  @@index([managerId])
 }
 
 model UserGroup {

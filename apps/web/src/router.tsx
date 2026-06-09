@@ -25,6 +25,7 @@ import { Loader2 } from 'lucide-react'
 // Lazy-load pages that pull in large dependencies (pdfjs-dist, react-konva, recharts)
 // so they are excluded from the initial bundle.
 const FloorPage = lazy(() => import('./pages/FloorPage'))
+const OrgChartPage = lazy(() => import('./pages/admin/OrgChartPage'))
 const FloorAdminPage = lazy(() => import('./pages/admin/FloorAdminPage'))
 const ReportsAdminPage = lazy(() => import('./pages/admin/ReportsAdminPage'))
 
@@ -144,6 +145,7 @@ export function AppRouter() {
             <Route path="/admin/settings" element={<SettingsAdminPage />} />
             <Route path="/admin/groups" element={<GroupsAdminPage />} />
             <Route path="/admin/departments" element={<DepartmentsAdminPage />} />
+            <Route path="/admin/org-chart" element={<Suspense fallback={<PageLoader />}><OrgChartPage /></Suspense>} />
             <Route path="/admin/webhooks" element={<WebhooksAdminPage />} />
           </Route>
 

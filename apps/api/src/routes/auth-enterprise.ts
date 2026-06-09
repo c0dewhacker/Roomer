@@ -3,8 +3,9 @@ import { prisma } from '../lib/prisma.js'
 import { env } from '../env.js'
 import { getOidcClientConfig, getOidcConfig, generateState, generateNonce } from '../lib/oidc.js'
 import { buildAuthorizationUrl, authorizationCodeGrant, fetchUserInfo, skipSubjectCheck } from 'openid-client'
-import { getSamlConfig, buildSaml, extractEmailFromProfile, extractDisplayNameFromProfile, extractGroupsFromProfile, extractDepartmentFromProfile, type SamlProfile } from '../lib/saml.js'
+import { getSamlConfig, buildSaml, extractEmailFromProfile, extractDisplayNameFromProfile, extractGroupsFromProfile, extractDepartmentFromProfile, extractManagerFromProfile, type SamlProfile } from '../lib/saml.js'
 import { applyGroupMappings, recordLastIdpGroups } from '../lib/group-mapping.js'
+import { recordManagerRef, resolveManagerForUser } from '../lib/manager.js'
 import { signAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE } from '../lib/jwt.js'
 import type { User } from '@prisma/client'
 
@@ -196,6 +197,13 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
         }
       }
 
+      // Manager mapping — opt-in via a configured claim (blank = disabled).
+      if (cfg.managerClaimName) {
+        const rawMgr = (userinfo as Record<string, unknown>)[cfg.managerClaimName]
+        await recordManagerRef(user.id, typeof rawMgr === 'string' ? rawMgr : null)
+      }
+      await resolveManagerForUser(user.id)
+
       // Issue JWT cookie — OIDC session state is no longer needed
       issueSsoToken(reply, user)
     } catch (err) {
@@ -271,6 +279,11 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
           await prisma.user.update({ where: { id: user.id }, data: { departmentId: dept.id } })
         }
       }
+
+      // Manager mapping (opt-in via configured attribute; blank = disabled).
+      const mgrRef = extractManagerFromProfile(samlProfile, cfg.managerAttribute)
+      if (cfg.managerAttribute || mgrRef) await recordManagerRef(user.id, mgrRef)
+      await resolveManagerForUser(user.id)
 
       // Issue JWT cookie
       issueSsoToken(reply, user)

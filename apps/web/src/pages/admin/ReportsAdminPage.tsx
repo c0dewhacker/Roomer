@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   analyticsApi,
   buildingsApi,
+  usersApi,
   type AnalyticsParams,
   type StatusBreakdownPoint,
   type PeakDayPoint,
@@ -549,6 +550,89 @@ function DepartmentAnalyticsTable({ params }: { params: AnalyticsParams }) {
   )
 }
 
+// ─── Manager roll-up ──────────────────────────────────────────────────────────
+
+function ManagerRollupCard({ params }: { params: AnalyticsParams }) {
+  const [search, setSearch] = useState('')
+  const [selected, setSelected] = useState<{ id: string; displayName: string } | null>(null)
+
+  const { data: results } = useQuery({
+    queryKey: ['users', 'search', search],
+    queryFn: () => usersApi.list({ q: search, limit: 10 }),
+    select: (r) => r.data,
+    enabled: search.length >= 2 && !selected,
+  })
+
+  const { data: rollup, isLoading } = useQuery({
+    queryKey: ['analytics', 'manager-rollup', selected?.id, params],
+    queryFn: () => analyticsApi.managerRollup(selected!.id, params),
+    select: (r) => r.data,
+    enabled: !!selected,
+  })
+
+  return (
+    <Card className="col-span-2">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">Manager roll-up</CardTitle>
+        <CardDescription className="text-xs">Bookings &amp; desk-days across a manager's entire reporting line</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="relative max-w-sm">
+          <Input
+            placeholder="Search for a manager…"
+            value={selected ? selected.displayName : search}
+            onChange={(e) => { setSelected(null); setSearch(e.target.value) }}
+            className="text-sm"
+          />
+          {!selected && results && results.length > 0 && (
+            <div className="absolute z-10 mt-1 w-full rounded-md border bg-popover divide-y max-h-48 overflow-y-auto shadow-md">
+              {results.map((u) => (
+                <button key={u.id} type="button" className="w-full text-left px-3 py-1.5 hover:bg-muted text-sm" onClick={() => { setSelected({ id: u.id, displayName: u.displayName }); setSearch('') }}>
+                  <p className="font-medium">{u.displayName}</p>
+                  <p className="text-xs text-muted-foreground">{u.email}</p>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {selected && isLoading && <div className="mt-4"><Skeleton className="h-24 w-full" /></div>}
+        {selected && rollup && (
+          <div className="mt-4 space-y-4">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">People (incl. self)</p><p className="text-xl font-semibold tabular-nums">{rollup.peopleCount}</p></div>
+              <div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">Bookings</p><p className="text-xl font-semibold tabular-nums">{rollup.bookingCount}</p></div>
+              <div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">Desk-days</p><p className="text-xl font-semibold tabular-nums">{rollup.deskDays}</p></div>
+            </div>
+            {rollup.directReports.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead><tr className="border-b bg-muted/40">
+                    <th className="text-left px-4 py-2 text-xs font-medium text-muted-foreground">Direct report (sub-org)</th>
+                    <th className="text-right px-4 py-2 text-xs font-medium text-muted-foreground">People</th>
+                    <th className="text-right px-4 py-2 text-xs font-medium text-muted-foreground">Bookings</th>
+                    <th className="text-right px-4 py-2 text-xs font-medium text-muted-foreground">Desk-days</th>
+                  </tr></thead>
+                  <tbody className="divide-y">
+                    {rollup.directReports.map((b) => (
+                      <tr key={b.rootId} className="hover:bg-muted/30">
+                        <td className="px-4 py-2 font-medium">{b.rootName}</td>
+                        <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">{b.peopleCount}</td>
+                        <td className="px-4 py-2 text-right tabular-nums">{b.bookingCount}</td>
+                        <td className="px-4 py-2 text-right tabular-nums font-medium">{b.deskDays}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 // ─── Export All ───────────────────────────────────────────────────────────────
 
 function ExportAllButton({ params, days }: { params: AnalyticsParams; days: Preset }) {
@@ -742,6 +826,7 @@ export default function ReportsAdminPage() {
         <FloorUtilisationChart params={params} />
         <ZoneUtilisationTable params={params} />
         <DepartmentAnalyticsTable params={params} />
+        <ManagerRollupCard params={params} />
       </div>
     </div>
   )

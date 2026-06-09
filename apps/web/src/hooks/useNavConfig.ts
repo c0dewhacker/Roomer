@@ -86,6 +86,7 @@ export function useNavConfig() {
           { to: '/admin/buildings', icon: Building2, label: 'Buildings' },
           { to: '/admin/users', icon: Users, label: 'Users' },
           { to: '/admin/departments', icon: Network, label: 'Departments' },
+          { to: '/admin/org-chart', icon: Network, label: 'Org Chart' },
           { to: '/admin/assets', icon: Package, label: 'Assets' },
           { to: '/admin/leases', icon: FileText, label: 'Leases' },
           { to: '/admin/groups', icon: Shield, label: 'Access Groups' },

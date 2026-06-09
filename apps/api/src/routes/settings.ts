@@ -76,6 +76,7 @@ const oidcConfigSchema = z.object({
   label: z.string().optional(),
   groupsClaimName: z.string().optional(),
   departmentClaimName: z.string().optional(),
+  managerClaimName: z.string().optional(),
   groupMappings: z.array(groupMappingSchema).optional(),
 })
 
@@ -89,6 +90,7 @@ const samlConfigSchema = z.object({
   groupAttribute: z.string().optional(),
   groupMappings: z.array(groupMappingSchema).optional(),
   departmentAttribute: z.string().optional(),
+  managerAttribute: z.string().optional(),
   // Refuse to disable signature verification in production — disabling either flag
   // turns SAML into an unauthenticated identity assertion (signature-stripping attack).
   wantAuthnResponseSigned: z.boolean()
@@ -116,6 +118,7 @@ const ldapConfigSchema = z.object({
   tlsRejectUnauthorized: z.boolean().optional(),
   groupAttribute: z.string().optional(),
   groupMappings: z.array(groupMappingSchema).optional(),
+  managerAttribute: z.string().optional(),
   // Directory sync settings — nullish so the UI can explicitly clear them
   syncBase: z.string().nullish(),
   syncFilter: z.string().nullish(),
