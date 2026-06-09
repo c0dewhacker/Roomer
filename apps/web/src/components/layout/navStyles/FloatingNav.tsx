@@ -123,6 +123,9 @@ const panelSlide: Record<PanelDir, string> = {
   left:  'animate-in slide-in-from-right-2',
 }
 
+// Keyboard-only focus ring — no lingering outline after a mouse click.
+const NAV_FOCUS = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset'
+
 // Compute the fixed anchor point for a panel given the pill's getBoundingClientRect
 function computeAnchor(dir: PanelDir, rect: DOMRect, gap = 8): Pos {
   switch (dir) {
@@ -350,6 +353,7 @@ export function FloatingNav() {
               className={({ isActive }) =>
                 cn(
                   'flex items-center justify-center rounded-xl p-2 transition-all duration-150',
+                  NAV_FOCUS,
                   isActive
                     ? 'bg-primary text-primary-foreground shadow-sm'
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
@@ -389,6 +393,7 @@ export function FloatingNav() {
                 onClick={() => togglePanel('admin')}
                 className={cn(
                   'flex items-center justify-center rounded-xl p-2 transition-all duration-150',
+                  NAV_FOCUS,
                   openPanel === 'admin'
                     ? 'bg-primary text-primary-foreground shadow-sm'
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',

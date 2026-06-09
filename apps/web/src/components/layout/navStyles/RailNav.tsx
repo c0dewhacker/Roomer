@@ -28,6 +28,9 @@ const APP_REPO_URL = import.meta.env.VITE_APP_REPO_URL || ''
 
 type RailSection = 'personal' | 'buildings' | 'admin' | 'manager' | null
 
+// Keyboard-only focus ring — no lingering outline after a mouse click.
+const NAV_FOCUS = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset'
+
 export function RailNav({ onNavigate }: { onNavigate?: () => void }) {
   const { sections, buildingsData } = useNavConfig()
   const { user, logout } = useAuth()
@@ -250,6 +253,7 @@ function RailIcon({
           onClick={onClick}
           className={cn(
             'flex h-9 w-9 items-center justify-center rounded-lg transition-colors',
+            NAV_FOCUS,
             active ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
           )}
         >

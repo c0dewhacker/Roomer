@@ -25,6 +25,9 @@ import { buildingsApi } from '@/lib/api'
 const APP_VERSION = import.meta.env.VITE_APP_VERSION || 'dev'
 const APP_REPO_URL = import.meta.env.VITE_APP_REPO_URL || ''
 
+// Keyboard-only focus ring — no lingering outline after a mouse click.
+const NAV_FOCUS = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset'
+
 export function TopNav() {
   const { sections } = useNavConfig()
   const { user, logout } = useAuth()
@@ -71,6 +74,7 @@ export function TopNav() {
               className={({ isActive }) =>
                 cn(
                   'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium whitespace-nowrap transition-colors',
+                  NAV_FOCUS,
                   isActive
                     ? 'bg-primary text-primary-foreground'
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
@@ -89,7 +93,7 @@ export function TopNav() {
           {secondarySections.length > 0 && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors whitespace-nowrap">
+                <button className={cn('flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors whitespace-nowrap', NAV_FOCUS)}>
                   {secondaryTriggerLabel}
                   <ChevronDown className="h-3 w-3" />
                 </button>
@@ -201,7 +205,7 @@ function BuildingsDropdown() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors whitespace-nowrap">
+        <button className={cn('flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors whitespace-nowrap', NAV_FOCUS)}>
           <Building2 className="h-3.5 w-3.5" />
           Buildings
           <ChevronDown className="h-3 w-3" />
