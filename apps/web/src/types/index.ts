@@ -341,6 +341,8 @@ export interface FloorSubscription {
 export interface UtilisationDataPoint {
   floorId: string
   floorName: string
+  buildingId?: string
+  buildingName?: string
   zoneId: string
   zoneName: string
   totalDesks: number

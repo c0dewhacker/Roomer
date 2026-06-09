@@ -384,7 +384,7 @@ function ZoneUtilisationTable({ params }: { params: AnalyticsParams }) {
           <ExportBtn onClick={() => downloadCsv('zone-utilisation.csv', [
             ['Building', 'Floor', 'Zone', 'Total', 'Bookable', 'Assigned', 'Disabled', 'Bookings', 'Utilisation %'],
             ...(data as UtilisationDataPoint[]).map((d) => [
-              (d as any).buildingName ?? '', d.floorName, d.zoneName,
+              d.buildingName ?? '', d.floorName, d.zoneName,
               String(d.totalDesks), String(d.bookableDesks), String(d.assignedDesks), String(d.disabledDesks),
               String(d.bookingCount), String(d.utilisationPct),
             ]),
