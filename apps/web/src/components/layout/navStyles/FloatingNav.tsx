@@ -123,6 +123,9 @@ const panelSlide: Record<PanelDir, string> = {
   left:  'animate-in slide-in-from-right-2',
 }
 
+// Keyboard-only focus ring — no lingering outline after a mouse click.
+const NAV_FOCUS = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset'
+
 // Compute the fixed anchor point for a panel given the pill's getBoundingClientRect
 function computeAnchor(dir: PanelDir, rect: DOMRect, gap = 8): Pos {
   switch (dir) {
@@ -149,7 +152,10 @@ export function FloatingNav() {
   const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
   const initials = user?.displayName?.split(' ').slice(0, 2).map((n) => n[0]).join('').toUpperCase()
   const personalSection  = sections.find((s) => s.id === 'personal')
-  const secondarySection = sections.find((s) => s.id !== 'personal')
+  const secondarySections = sections.filter((s) => s.id !== 'personal')
+  // All admin groups share one float trigger ('admin'); the panel lists them as
+  // labelled sub-groups. Single-section roles keep their own label.
+  const secondaryLabel = secondarySections.length > 1 ? 'Admin' : secondarySections[0]?.label ?? ''
 
   // ── Utility float ─────────────────────────────────────────────────────────
 
@@ -258,7 +264,7 @@ export function FloatingNav() {
   }, [openPanel])
 
   const gripClass = 'cursor-grab active:cursor-grabbing select-none touch-none text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors'
-  const SecIcon = secondarySection?.items[0]?.icon
+  const SecIcon = secondarySections[0]?.items[0]?.icon
 
   return (
     <>
@@ -347,6 +353,7 @@ export function FloatingNav() {
               className={({ isActive }) =>
                 cn(
                   'flex items-center justify-center rounded-xl p-2 transition-all duration-150',
+                  NAV_FOCUS,
                   isActive
                     ? 'bg-primary text-primary-foreground shadow-sm'
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
@@ -379,21 +386,22 @@ export function FloatingNav() {
           </button>
 
           {/* Secondary section trigger (Admin / Manager) */}
-          {secondarySection && SecIcon && (
+          {secondarySections.length > 0 && SecIcon && (
             <>
               <div style={{ transform: `rotate(${-rotation}deg)` }} className="mx-1 h-8 w-px bg-border/60" />
               <button
-                onClick={() => togglePanel(secondarySection.id as PanelId)}
+                onClick={() => togglePanel('admin')}
                 className={cn(
                   'flex items-center justify-center rounded-xl p-2 transition-all duration-150',
-                  openPanel === secondarySection.id
+                  NAV_FOCUS,
+                  openPanel === 'admin'
                     ? 'bg-primary text-primary-foreground shadow-sm'
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                 )}
               >
                 <div style={{ transform: `rotate(${-rotation}deg)` }} className="flex flex-col items-center gap-0.5">
                   <SecIcon className="h-5 w-5" />
-                  <span className="text-[10px] font-medium leading-none">{secondarySection.label}</span>
+                  <span className="text-[10px] font-medium leading-none">{secondaryLabel}</span>
                 </div>
               </button>
             </>
@@ -416,10 +424,10 @@ export function FloatingNav() {
           {openPanel === 'buildings' && (
             <BuildingsPanel buildingsData={buildingsData} onClose={closePanel} dir={panelState.dir} />
           )}
-          {openPanel === (secondarySection?.id as PanelId) && secondarySection && (
+          {openPanel === 'admin' && secondarySections.length > 0 && (
             <SectionPanel
-              label={secondarySection.label ?? ''}
-              items={secondarySection.items}
+              label={secondaryLabel}
+              sections={secondarySections}
               onClose={closePanel}
               dir={panelState.dir}
             />
@@ -512,16 +520,17 @@ function BuildingsPanel({
 
 function SectionPanel({
   label,
-  items,
+  sections,
   onClose,
   dir,
 }: {
   label: string
-  items: Array<{ to: string; icon: React.ElementType; label: string }>
+  sections: Array<{ id: string; label?: string; items: Array<{ to: string; icon: React.ElementType; label: string }> }>
   onClose: () => void
   dir: PanelDir
 }) {
   const navigate = useNavigate()
+  const grouped = sections.length > 1
   return (
     <div className={cn(
       'w-52 rounded-2xl border border-border/60 bg-background/90 p-2 shadow-2xl backdrop-blur-xl duration-150',
@@ -533,15 +542,24 @@ function SectionPanel({
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
-      {items.map((item) => (
-        <button
-          key={item.to}
-          onClick={() => { navigate(item.to); onClose() }}
-          className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm text-foreground hover:bg-accent transition-colors"
-        >
-          <item.icon className="h-4 w-4 shrink-0 text-muted-foreground" />
-          {item.label}
-        </button>
+      {sections.map((section, i) => (
+        <div key={section.id} className={cn(i > 0 && 'mt-1.5')}>
+          {grouped && section.label && (
+            <p className="px-2 pb-0.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/50">
+              {section.label}
+            </p>
+          )}
+          {section.items.map((item) => (
+            <button
+              key={item.to}
+              onClick={() => { navigate(item.to); onClose() }}
+              className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm text-foreground hover:bg-accent transition-colors"
+            >
+              <item.icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+              {item.label}
+            </button>
+          ))}
+        </div>
       ))}
     </div>
   )

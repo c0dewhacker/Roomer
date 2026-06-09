@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useAuthStore } from '@/stores/auth'
 import { useQuery } from '@tanstack/react-query'
 import { buildingsApi } from '@/lib/api'
-import { Calendar, Clock, Building2, Users, Settings, Package, BarChart3, FileText, Shield, Layers, Network, Webhook, MapPin } from 'lucide-react'
+import { Calendar, Clock, Building2, Users, Settings, Package, BarChart3, FileText, Shield, Layers, Network, Workflow, Webhook, MapPin } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
 export interface NavItem {
@@ -79,22 +79,42 @@ export function useNavConfig() {
     ]
 
     if (isSuperAdmin) {
-      result.push({
-        id: 'admin',
-        label: 'Admin',
-        items: [
-          { to: '/admin/buildings', icon: Building2, label: 'Buildings' },
-          { to: '/admin/users', icon: Users, label: 'Users' },
-          { to: '/admin/departments', icon: Network, label: 'Departments' },
-          { to: '/admin/org-chart', icon: Network, label: 'Org Chart' },
-          { to: '/admin/assets', icon: Package, label: 'Assets' },
-          { to: '/admin/leases', icon: FileText, label: 'Leases' },
-          { to: '/admin/groups', icon: Shield, label: 'Access Groups' },
-          { to: '/admin/reports', icon: BarChart3, label: 'Reports' },
-          { to: '/admin/webhooks', icon: Webhook, label: 'Webhooks' },
-          { to: '/admin/settings', icon: Settings, label: 'Settings' },
-        ],
-      })
+      result.push(
+        {
+          id: 'admin-people',
+          label: 'People',
+          items: [
+            { to: '/admin/users', icon: Users, label: 'Users' },
+            { to: '/admin/departments', icon: Network, label: 'Departments' },
+            { to: '/admin/org-chart', icon: Workflow, label: 'Org Chart' },
+          ],
+        },
+        {
+          id: 'admin-workplace',
+          label: 'Workplace',
+          items: [
+            { to: '/admin/buildings', icon: Building2, label: 'Buildings' },
+            { to: '/admin/assets', icon: Package, label: 'Assets' },
+            { to: '/admin/leases', icon: FileText, label: 'Leases' },
+          ],
+        },
+        {
+          id: 'admin-insights',
+          label: 'Insights',
+          items: [
+            { to: '/admin/reports', icon: BarChart3, label: 'Reports' },
+          ],
+        },
+        {
+          id: 'admin-system',
+          label: 'System',
+          items: [
+            { to: '/admin/groups', icon: Shield, label: 'Access Groups' },
+            { to: '/admin/webhooks', icon: Webhook, label: 'Webhooks' },
+            { to: '/admin/settings', icon: Settings, label: 'Settings' },
+          ],
+        },
+      )
     } else if (isBuildingAdmin) {
       result.push({
         id: 'building-admin',

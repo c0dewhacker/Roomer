@@ -28,6 +28,9 @@ const APP_REPO_URL = import.meta.env.VITE_APP_REPO_URL || ''
 
 type RailSection = 'personal' | 'buildings' | 'admin' | 'manager' | null
 
+// Keyboard-only focus ring — no lingering outline after a mouse click.
+const NAV_FOCUS = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset'
+
 export function RailNav({ onNavigate }: { onNavigate?: () => void }) {
   const { sections, buildingsData } = useNavConfig()
   const { user, logout } = useAuth()
@@ -43,7 +46,11 @@ export function RailNav({ onNavigate }: { onNavigate?: () => void }) {
   const initials = user?.displayName?.split(' ').slice(0, 2).map((n) => n[0]).join('').toUpperCase()
 
   const personalSection = sections.find((s) => s.id === 'personal')
-  const secondarySection = sections.find((s) => s.id !== 'personal')
+  const secondarySections = sections.filter((s) => s.id !== 'personal')
+  // All admin groups share one rail entry ('admin'); the flyout shows them as
+  // labelled sub-groups. Single-section roles keep their own label.
+  const secondaryLabel = secondarySections.length > 1 ? 'Admin' : secondarySections[0]?.label ?? 'More'
+  const secondaryIcon = secondarySections[0]?.items[0]?.icon
 
   useEffect(() => { setActivePanel(null) }, [location.pathname])
 
@@ -96,12 +103,12 @@ export function RailNav({ onNavigate }: { onNavigate?: () => void }) {
           />
 
           {/* Admin / Manager */}
-          {secondarySection && (
+          {secondarySections.length > 0 && secondaryIcon && (
             <RailIcon
-              icon={secondarySection.items[0].icon}
-              label={secondarySection.label ?? 'More'}
-              active={activePanel === (secondarySection.id as RailSection)}
-              onClick={() => toggle(secondarySection.id as RailSection)}
+              icon={secondaryIcon}
+              label={secondaryLabel}
+              active={activePanel === 'admin'}
+              onClick={() => toggle('admin')}
             />
           )}
 
@@ -146,7 +153,7 @@ export function RailNav({ onNavigate }: { onNavigate?: () => void }) {
               <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 {activePanel === 'personal' ? 'My Space' :
                  activePanel === 'buildings' ? 'Buildings' :
-                 secondarySection?.label}
+                 secondaryLabel}
               </span>
               <button onClick={() => setActivePanel(null)} className="rounded p-0.5 text-muted-foreground hover:text-foreground">
                 <X className="h-3.5 w-3.5" />
@@ -175,21 +182,30 @@ export function RailNav({ onNavigate }: { onNavigate?: () => void }) {
                 <BuildingsPanel buildingsData={buildingsData} onNavigate={handleNavigate} />
               )}
 
-              {activePanel === secondarySection?.id && secondarySection?.items.map((item) => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  onClick={handleNavigate}
-                  className={({ isActive }) =>
-                    cn(
-                      'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-                      isActive ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-                    )
-                  }
-                >
-                  <item.icon className="h-4 w-4 shrink-0" />
-                  {item.label}
-                </NavLink>
+              {activePanel === 'admin' && secondarySections.map((section, i) => (
+                <div key={section.id} className={cn(i > 0 && 'pt-2')}>
+                  {secondarySections.length > 1 && section.label && (
+                    <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/50">
+                      {section.label}
+                    </p>
+                  )}
+                  {section.items.map((item) => (
+                    <NavLink
+                      key={item.to}
+                      to={item.to}
+                      onClick={handleNavigate}
+                      className={({ isActive }) =>
+                        cn(
+                          'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                          isActive ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                        )
+                      }
+                    >
+                      <item.icon className="h-4 w-4 shrink-0" />
+                      {item.label}
+                    </NavLink>
+                  ))}
+                </div>
               ))}
             </nav>
           </div>
@@ -237,6 +253,7 @@ function RailIcon({
           onClick={onClick}
           className={cn(
             'flex h-9 w-9 items-center justify-center rounded-lg transition-colors',
+            NAV_FOCUS,
             active ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
           )}
         >
