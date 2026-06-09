@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.17](https://github.com/c0dewhacker/Roomer/compare/v0.3.16...v0.3.17) (2026-06-09)
+
+
+### Features
+
+* manager-derived org hierarchy + side-by-side org chart ([#177](https://github.com/c0dewhacker/Roomer/issues/177)) ([590e959](https://github.com/c0dewhacker/Roomer/commit/590e95950444c9796675893a58677de48beb39ef))
+* **settings:** UI-configurable SMTP, overridden by env vars at startup ([#176](https://github.com/c0dewhacker/Roomer/issues/176)) ([a4c13bd](https://github.com/c0dewhacker/Roomer/commit/a4c13bd553fda38b510b97c21fe2704d10a65531))
+
 ## [0.3.16](https://github.com/c0dewhacker/Roomer/compare/v0.3.15...v0.3.16) (2026-06-07)
 
 
