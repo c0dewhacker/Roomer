@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { format, addHours, startOfDay, addDays } from 'date-fns'
 import { formatDateTime } from '@/lib/utils'
-import { MapPin, Clock, Users, CheckCircle, XCircle, AlertCircle, Shield, UserPlus, UserMinus, ChevronDown, ChevronUp, Pencil, X, Repeat } from 'lucide-react'
+import { MapPin, Clock, Users, CheckCircle, XCircle, AlertCircle, Shield, UserPlus, UserMinus, ChevronDown, ChevronUp, Pencil, X, Repeat, Star } from 'lucide-react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -15,6 +15,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useCreateBooking, useJoinQueue, useLeaveQueue, useClaimDesk, useCancelBooking, useMakeAvailable, useQueueEntries } from '@/hooks/useBookings'
+import { useFavourites } from '@/hooks/useFavourites'
+import { cn } from '@/lib/utils'
 import { formatDateRange } from '@/lib/utils'
 import { getDateFormat } from '@/lib/dateFormat'
 import { useAuthStore } from '@/stores/auth'
@@ -492,6 +494,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   const cancelBooking = useCancelBooking()
   const makeAvailable = useMakeAvailable()
   const { data: queueEntries } = useQueueEntries()
+  const { isFavourite, toggleFavourite, isToggling } = useFavourites()
 
   const { data: allowList } = useQuery({
     queryKey: ['assets', desk?.id, 'allow-list'],
@@ -685,9 +688,21 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                   <span>{desk.zoneName}</span>
                 </SheetDescription>
               </div>
-              <Badge variant={statusVariant[desk.bookingStatus]}>
-                {statusLabel[desk.bookingStatus]}
-              </Badge>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => toggleFavourite(desk.id)}
+                  disabled={isToggling}
+                  title={isFavourite(desk.id) ? 'Remove from favourites' : 'Add to favourites'}
+                  aria-pressed={isFavourite(desk.id)}
+                  className="rounded-md p-1 text-muted-foreground transition-colors hover:text-amber-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <Star className={cn('h-4 w-4', isFavourite(desk.id) && 'fill-amber-400 text-amber-500')} />
+                </button>
+                <Badge variant={statusVariant[desk.bookingStatus]}>
+                  {statusLabel[desk.bookingStatus]}
+                </Badge>
+              </div>
             </div>
           </SheetHeader>
 

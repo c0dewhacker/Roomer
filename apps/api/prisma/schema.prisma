@@ -360,11 +360,25 @@ model Asset {
   bookings              Booking[]
   queueEntries          QueueEntry[]
   recurringBookingRules RecurringBookingRule[]
+  favouritedBy          UserFavouriteAsset[]
 
   @@index([floorId])
   @@index([primaryZoneId])
   @@index([categoryId])
   @@index([isBookable])
+}
+
+/// A user's starred/favourite assets — quick access in the booking flow.
+model UserFavouriteAsset {
+  userId    String
+  assetId   String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  asset     Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@id([userId, assetId])
+  @@index([userId])
+  @@index([assetId])
 }
 
 /// Availability window: a permanently assigned user can offer their asset for
@@ -478,6 +492,7 @@ model User {
   availabilityWindows   AssetAvailabilityWindow[] @relation("AvailabilityWindowOwner")
   floorSubscriptions    FloorSubscription[]
   recurringBookingRules RecurringBookingRule[]
+  favouriteAssets       UserFavouriteAsset[]
 
   @@index([email])
   @@index([provider, externalId])
