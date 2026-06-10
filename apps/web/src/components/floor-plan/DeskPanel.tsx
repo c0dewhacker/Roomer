@@ -16,6 +16,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useCreateBooking, useJoinQueue, useLeaveQueue, useClaimDesk, useCancelBooking, useMakeAvailable, useQueueEntries } from '@/hooks/useBookings'
 import { formatDateRange } from '@/lib/utils'
+import { cn } from '@/lib/utils'
 import { getDateFormat } from '@/lib/dateFormat'
 import { useAuthStore } from '@/stores/auth'
 import { assetsApi, usersApi, settingsApi, recurringBookingsApi } from '@/lib/api'
@@ -432,6 +433,67 @@ function EditAssetDialog({
   )
 }
 
+// ─── Available-Days Editor (assigned desk owner) ──────────────────────────────
+
+const WEEKDAYS = [
+  { value: 1, label: 'Mon' }, { value: 2, label: 'Tue' }, { value: 3, label: 'Wed' },
+  { value: 4, label: 'Thu' }, { value: 5, label: 'Fri' }, { value: 6, label: 'Sat' }, { value: 0, label: 'Sun' },
+]
+
+function AvailableDaysEditor({ deskId }: { deskId: string }) {
+  const qc = useQueryClient()
+  const { data: weekdays } = useQuery({
+    queryKey: ['assets', deskId, 'availability-rules'],
+    queryFn: () => assetsApi.getAvailabilityRules(deskId),
+    select: (r) => r.data.weekdays,
+  })
+  const save = useMutation({
+    mutationFn: (next: number[]) => assetsApi.setAvailabilityRules(deskId, next),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['assets', deskId, 'availability-rules'] })
+      toast.success('Available days updated')
+    },
+    onError: () => toast.error('Failed to update available days'),
+  })
+
+  const current = new Set(weekdays ?? [])
+  const toggle = (d: number) => {
+    const next = new Set(current)
+    if (next.has(d)) next.delete(d)
+    else next.add(d)
+    save.mutate([...next])
+  }
+
+  return (
+    <div className="pt-2 border-t border-blue-200/70">
+      <p className="text-xs font-medium text-blue-800 mb-1.5">Always available to others on</p>
+      <div className="flex flex-wrap gap-1">
+        {WEEKDAYS.map((w) => {
+          const on = current.has(w.value)
+          return (
+            <button
+              key={w.value}
+              type="button"
+              onClick={() => toggle(w.value)}
+              disabled={save.isPending}
+              aria-pressed={on}
+              className={cn(
+                'rounded-md border px-2 py-1 text-xs font-medium transition-colors',
+                on ? 'border-blue-600 bg-blue-600 text-white' : 'border-blue-200 bg-white text-blue-700 hover:bg-blue-100',
+              )}
+            >
+              {w.label}
+            </button>
+          )
+        })}
+      </div>
+      <p className="mt-1.5 text-[11px] text-blue-600/80">
+        On these weekdays anyone can book your desk — no need to release it each time.
+      </p>
+    </div>
+  )
+}
+
 // ─── Main DeskPanel ───────────────────────────────────────────────────────────
 
 export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onClose, onBookingCreated }: DeskPanelProps) {
@@ -773,6 +835,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                 >
                   {makeAvailable.isPending ? 'Processing…' : 'Make available to queue'}
                 </Button>
+                <AvailableDaysEditor deskId={desk.id} />
               </div>
             )}
 

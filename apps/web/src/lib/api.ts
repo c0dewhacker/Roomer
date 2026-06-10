@@ -345,6 +345,11 @@ export const assetsApi = {
     api.post<{ data: AvailabilityWindow }>(`/assets/${id}/availability-windows`, body),
   deleteAvailabilityWindow: (id: string, windowId: string) =>
     api.delete<{ data: { ok: true } }>(`/assets/${id}/availability-windows/${windowId}`),
+  // Recurring weekday availability (assigned desks)
+  getAvailabilityRules: (id: string) =>
+    api.get<{ data: { weekdays: number[] } }>(`/assets/${id}/availability-rules`),
+  setAvailabilityRules: (id: string, weekdays: number[]) =>
+    api.put<{ data: { weekdays: number[] } }>(`/assets/${id}/availability-rules`, { weekdays }),
 }
 
 // --- Bookings ---
