@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { format, addHours, startOfDay, addDays } from 'date-fns'
-import { formatDateTime } from '@/lib/utils'
+import { formatDateTime, formatDateRange } from '@/lib/utils'
 import { MapPin, Clock, Users, CheckCircle, XCircle, AlertCircle, Shield, UserPlus, UserMinus, ChevronDown, ChevronUp, Pencil, X, Repeat } from 'lucide-react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
@@ -15,7 +15,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useCreateBooking, useJoinQueue, useLeaveQueue, useClaimDesk, useCancelBooking, useMakeAvailable, useQueueEntries } from '@/hooks/useBookings'
-import { formatDateRange } from '@/lib/utils'
 import { getDateFormat } from '@/lib/dateFormat'
 import { useAuthStore } from '@/stores/auth'
 import { assetsApi, usersApi, settingsApi, recurringBookingsApi } from '@/lib/api'
@@ -1240,47 +1239,47 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
 
                       {/* Additional zones */}
                       <div>
-                          <div className="flex items-center justify-between mb-2">
-                            <p className="text-sm font-medium flex items-center gap-1.5">
-                              <MapPin className="h-3.5 w-3.5 text-violet-500" />
-                              Additional Zones
-                            </p>
-                            {floorZones.length > 1 && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 text-xs"
-                                onClick={() => setAddZoneOpen(true)}
-                              >
-                                <UserPlus className="mr-1 h-3 w-3" />
-                                Add zone
-                              </Button>
-                            )}
-                          </div>
-                          {!additionalZones || additionalZones.length === 0 ? (
-                            <p className="text-xs text-muted-foreground">No additional zones assigned</p>
-                          ) : (
-                            <div className="space-y-1.5">
-                              {additionalZones.map((z) => (
-                                <div key={z.id} className="flex items-center justify-between rounded-md border px-3 py-2">
-                                  <div className="flex items-center gap-2">
-                                    <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: z.colour }} />
-                                    <p className="text-sm font-medium">{z.name}</p>
-                                  </div>
-                                  <Button
-                                    size="icon"
-                                    variant="ghost"
-                                    className="h-7 w-7 hover:text-destructive"
-                                    title="Remove"
-                                    onClick={() => removeZone.mutate(z.id)}
-                                    disabled={removeZone.isPending}
-                                  >
-                                    <UserMinus className="h-3.5 w-3.5" />
-                                  </Button>
-                                </div>
-                              ))}
-                            </div>
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-sm font-medium flex items-center gap-1.5">
+                            <MapPin className="h-3.5 w-3.5 text-violet-500" />
+                            Additional Zones
+                          </p>
+                          {floorZones.length > 1 && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs"
+                              onClick={() => setAddZoneOpen(true)}
+                            >
+                              <UserPlus className="mr-1 h-3 w-3" />
+                              Add zone
+                            </Button>
                           )}
+                        </div>
+                        {!additionalZones || additionalZones.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">No additional zones assigned</p>
+                        ) : (
+                          <div className="space-y-1.5">
+                            {additionalZones.map((z) => (
+                              <div key={z.id} className="flex items-center justify-between rounded-md border px-3 py-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: z.colour }} />
+                                  <p className="text-sm font-medium">{z.name}</p>
+                                </div>
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-7 w-7 hover:text-destructive"
+                                  title="Remove"
+                                  onClick={() => removeZone.mutate(z.id)}
+                                  disabled={removeZone.isPending}
+                                >
+                                  <UserMinus className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
 
                       {/* Allow-list management (only for RESTRICTED or ASSIGNED desks) */}
