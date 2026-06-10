@@ -582,6 +582,48 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.status(200).send({ data: { ok: true } })
   })
 
+  // GET /assets/:id/availability-rules — recurring weekdays this asset is open to others
+  fastify.get('/:id/availability-rules', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const rules = await prisma.assetAvailabilityRule.findMany({
+      where: { assetId: id },
+      select: { weekday: true },
+      orderBy: { weekday: 'asc' },
+    })
+    return reply.status(200).send({ data: { weekdays: rules.map((r) => r.weekday) } })
+  })
+
+  // PUT /assets/:id/availability-rules — replace the recurring-availability weekday set
+  fastify.put('/:id/availability-rules', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const parsed = z.object({ weekdays: z.array(z.number().int().min(0).max(6)) }).safeParse(request.body)
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { message: 'weekdays must be integers 0–6', code: 'VALIDATION_ERROR' } })
+    }
+    const weekdays = [...new Set(parsed.data.weekdays)]
+
+    // Only the permanently assigned user (or SUPER_ADMIN) may manage rules.
+    const assignment = await prisma.assetUserAssignment.findUnique({
+      where: { assetId_userId: { assetId: id, userId: request.user.id } },
+    })
+    if (!assignment && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      return reply.status(403).send({ error: { message: 'You are not permanently assigned to this asset', code: 'FORBIDDEN' } })
+    }
+
+    const asset = await prisma.asset.findUnique({ where: { id }, select: { id: true } })
+    if (!asset) {
+      return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+    }
+
+    await prisma.$transaction([
+      prisma.assetAvailabilityRule.deleteMany({ where: { assetId: id } }),
+      prisma.assetAvailabilityRule.createMany({
+        data: weekdays.map((weekday) => ({ assetId: id, ownerId: request.user.id, weekday })),
+      }),
+    ])
+    return reply.status(200).send({ data: { weekdays: weekdays.sort((a, b) => a - b) } })
+  })
+
   // POST /:id/make-available — assigned user offers their seat to the queue
   fastify.post('/:id/make-available', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }

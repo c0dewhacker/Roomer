@@ -354,6 +354,7 @@ model Asset {
   allowList       AssetAllowList[]
   userAssignments       AssetUserAssignment[]
   availabilityWindows   AssetAvailabilityWindow[]
+  availabilityRules     AssetAvailabilityRule[]
   /// Temporary assignments (checked-out to a user with a return date).
   assignments     AssetAssignment[]
   /// Bookings made against this asset (only populated when isBookable=true).
@@ -395,6 +396,23 @@ model AssetAvailabilityWindow {
   owner     User     @relation("AvailabilityWindowOwner", fields: [ownerId], references: [id], onDelete: Cascade)
 
   @@index([assetId, startsAt, endsAt])
+  @@index([ownerId])
+}
+
+/// Recurring weekday availability: a permanently assigned user marks the
+/// weekdays their asset is always open to others (e.g. the days they work
+/// from home). Matched at booking time in assertBookable. weekday: 0=Sun..6=Sat.
+model AssetAvailabilityRule {
+  id        String   @id @default(cuid())
+  assetId   String
+  ownerId   String
+  weekday   Int
+  createdAt DateTime @default(now())
+  asset     Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  owner     User     @relation("AvailabilityRuleOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([assetId, weekday])
+  @@index([assetId])
   @@index([ownerId])
 }
 
@@ -490,6 +508,7 @@ model User {
   groupMemberships     UserGroupMember[]
   assetUserAssignments AssetUserAssignment[]
   availabilityWindows   AssetAvailabilityWindow[] @relation("AvailabilityWindowOwner")
+  availabilityRules     AssetAvailabilityRule[]   @relation("AvailabilityRuleOwner")
   floorSubscriptions    FloorSubscription[]
   recurringBookingRules RecurringBookingRule[]
   favouriteAssets       UserFavouriteAsset[]

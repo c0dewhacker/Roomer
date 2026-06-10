@@ -357,6 +357,11 @@ export const assetsApi = {
     api.post<{ data: { ok: true; favourited: boolean } }>(`/assets/${id}/favourite`),
   removeFavourite: (id: string) =>
     api.delete<{ data: { ok: true; favourited: boolean } }>(`/assets/${id}/favourite`),
+  // Recurring weekday availability (assigned desks)
+  getAvailabilityRules: (id: string) =>
+    api.get<{ data: { weekdays: number[] } }>(`/assets/${id}/availability-rules`),
+  setAvailabilityRules: (id: string, weekdays: number[]) =>
+    api.put<{ data: { weekdays: number[] } }>(`/assets/${id}/availability-rules`, { weekdays }),
 }
 
 // --- Bookings ---
