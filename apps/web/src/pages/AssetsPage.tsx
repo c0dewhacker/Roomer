@@ -1,6 +1,8 @@
-import { Package } from 'lucide-react'
+import { Package, Star, MapPin } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { assetsApi } from '@/lib/api'
+import { useFavourites } from '@/hooks/useFavourites'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -51,6 +53,52 @@ function AssetCard({ asset }: { asset: Asset }) {
   )
 }
 
+function FavouritesSection() {
+  const { favourites, isLoading, toggleFavourite, isToggling } = useFavourites()
+
+  if (isLoading || favourites.length === 0) return null
+
+  return (
+    <div className="mb-8">
+      <div className="mb-3 flex items-center gap-2">
+        <Star className="h-4 w-4 fill-amber-400 text-amber-500" />
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">My favourites</h2>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {favourites.map((asset) => (
+          <Card key={asset.id}>
+            <CardContent className="p-4 flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="font-medium truncate">{asset.bookingLabel || asset.name}</p>
+                {(asset.floor?.building?.name || asset.floor?.name) && (
+                  <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground truncate">
+                    <MapPin className="h-3 w-3 shrink-0" />
+                    {[asset.floor?.building?.name, asset.floor?.name].filter(Boolean).join(' › ')}
+                  </p>
+                )}
+                {asset.floor?.id && (
+                  <Link to={`/floors/${asset.floor.id}`} className="mt-2 inline-block text-xs font-medium text-primary hover:underline">
+                    Book on floor plan →
+                  </Link>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => toggleFavourite(asset.id)}
+                disabled={isToggling}
+                title="Remove from favourites"
+                className="rounded-md p-1 text-amber-500 transition-colors hover:text-amber-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Star className="h-4 w-4 fill-amber-400" />
+              </button>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function AssetsPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['assets', 'my'],
@@ -64,6 +112,8 @@ export default function AssetsPage() {
         <h1 className="text-2xl font-bold">My Assets</h1>
         <p className="text-muted-foreground text-sm mt-1">Equipment and items assigned to you</p>
       </div>
+
+      <FavouritesSection />
 
       {isLoading ? (
         <div className="space-y-3">

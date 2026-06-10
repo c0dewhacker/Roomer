@@ -462,6 +462,49 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.status(200).send({ data: assignments })
   })
 
+  // GET /assets/favourites — the current user's favourited bookable assets
+  // (registered before /:id so "favourites" is never captured as an id).
+  fastify.get('/favourites', { preHandler: [requireAuth] }, async (request, reply) => {
+    const favourites = await prisma.userFavouriteAsset.findMany({
+      where: { userId: request.user.id },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        asset: {
+          include: {
+            category: { select: { id: true, name: true } },
+            floor: {
+              select: { id: true, name: true, building: { select: { id: true, name: true } } },
+            },
+            primaryZone: { select: { id: true, name: true } },
+          },
+        },
+      },
+    })
+    return reply.status(200).send({ data: favourites.map((f) => f.asset) })
+  })
+
+  // POST /assets/:id/favourite — star an asset (idempotent)
+  fastify.post('/:id/favourite', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const asset = await prisma.asset.findUnique({ where: { id }, select: { id: true } })
+    if (!asset) {
+      return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+    }
+    await prisma.userFavouriteAsset.upsert({
+      where: { userId_assetId: { userId: request.user.id, assetId: id } },
+      create: { userId: request.user.id, assetId: id },
+      update: {},
+    })
+    return reply.status(200).send({ data: { ok: true, favourited: true } })
+  })
+
+  // DELETE /assets/:id/favourite — unstar an asset (idempotent)
+  fastify.delete('/:id/favourite', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    await prisma.userFavouriteAsset.deleteMany({ where: { userId: request.user.id, assetId: id } })
+    return reply.status(200).send({ data: { ok: true, favourited: false } })
+  })
+
   // POST /assets/:id/availability-windows — create an availability window
   fastify.post('/:id/availability-windows', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }

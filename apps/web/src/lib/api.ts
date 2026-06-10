@@ -231,6 +231,12 @@ export interface MyAssignment {
   }
 }
 
+// A favourited asset enriched with its location (from GET /assets/favourites).
+export type FavouriteAsset = Asset & {
+  floor?: { id: string; name: string; building?: { id: string; name: string } | null } | null
+  primaryZone?: { id: string; name: string } | null
+}
+
 export const assetsApi = {
   list: () => api.get<{ data: Asset[] }>('/assets'),
   listCategories: () => api.get<{ data: AssetCategory[] }>('/assets/categories'),
@@ -345,6 +351,12 @@ export const assetsApi = {
     api.post<{ data: AvailabilityWindow }>(`/assets/${id}/availability-windows`, body),
   deleteAvailabilityWindow: (id: string, windowId: string) =>
     api.delete<{ data: { ok: true } }>(`/assets/${id}/availability-windows/${windowId}`),
+  // Favourites
+  listFavourites: () => api.get<{ data: FavouriteAsset[] }>('/assets/favourites'),
+  addFavourite: (id: string) =>
+    api.post<{ data: { ok: true; favourited: boolean } }>(`/assets/${id}/favourite`),
+  removeFavourite: (id: string) =>
+    api.delete<{ data: { ok: true; favourited: boolean } }>(`/assets/${id}/favourite`),
   // Recurring weekday availability (assigned desks)
   getAvailabilityRules: (id: string) =>
     api.get<{ data: { weekdays: number[] } }>(`/assets/${id}/availability-rules`),
