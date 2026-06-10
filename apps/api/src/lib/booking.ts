@@ -86,6 +86,30 @@ function deny(status: number, code: string, message: string): BookabilityResult 
  * Note: this does NOT check time-slot overlap (use hasConfirmedOverlap for that)
  * because the queue-join path intentionally targets currently-booked slots.
  */
+/**
+ * True when every UTC calendar day the [startsAt, endsAt] booking spans falls on
+ * a weekday the assigned owner has marked as recurringly available. Returns false
+ * when there are no rules. (Single-timezone; per-building tz is tracked in #72.)
+ */
+async function isCoveredByAvailabilityRules(
+  client: Prisma.TransactionClient,
+  assetId: string,
+  startsAt: Date,
+  endsAt: Date,
+): Promise<boolean> {
+  const rules = await client.assetAvailabilityRule.findMany({ where: { assetId }, select: { weekday: true } })
+  if (rules.length === 0) return false
+  const allowed = new Set(rules.map((r) => r.weekday))
+
+  // Walk each calendar day from the start day up to (but not past) the end instant.
+  const cursor = new Date(Date.UTC(startsAt.getUTCFullYear(), startsAt.getUTCMonth(), startsAt.getUTCDate()))
+  while (cursor <= endsAt) {
+    if (!allowed.has(cursor.getUTCDay())) return false
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return true
+}
+
 export async function assertBookable(
   client: Prisma.TransactionClient,
   user: Pick<User, 'id' | 'globalRole'>,
@@ -119,10 +143,13 @@ export async function assertBookable(
   if (asset.bookingStatus === 'ASSIGNED' && !isSuperAdmin) {
     const isAssignedUser = asset.userAssignments.some((ua) => ua.userId === user.id)
     if (!isAssignedUser) {
+      // A non-assigned user may book if the owner has offered the desk for this
+      // exact time via a one-off window, OR every calendar day the booking spans
+      // falls on a weekday the owner has marked as recurringly available.
       const window = await client.assetAvailabilityWindow.findFirst({
         where: { assetId, startsAt: { lte: startsAt }, endsAt: { gte: endsAt } },
       })
-      if (!window) {
+      if (!window && !(await isCoveredByAvailabilityRules(client, assetId, startsAt, endsAt))) {
         return deny(403, 'ASSET_ASSIGNED', 'This asset is permanently assigned to another user')
       }
     }
