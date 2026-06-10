@@ -3,7 +3,7 @@ name: roomer
 description: Self-hosted workspace booking platform
 type: application
 version: 0.1.0
-appVersion: 0.3.17
+appVersion: 0.3.18
 keywords:
   - roomer
   - workspace

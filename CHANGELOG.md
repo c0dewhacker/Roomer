@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.18](https://github.com/c0dewhacker/Roomer/compare/v0.3.17...v0.3.18) (2026-06-10)
+
+
+### Features
+
+* **assets:** favourite assets ([#90](https://github.com/c0dewhacker/Roomer/issues/90)) ([#182](https://github.com/c0dewhacker/Roomer/issues/182)) ([9849b86](https://github.com/c0dewhacker/Roomer/commit/9849b864a843b850d878c0006cc8b5cd8d89d700))
+* **assets:** recurring available days for assigned desks ([#158](https://github.com/c0dewhacker/Roomer/issues/158)) ([#183](https://github.com/c0dewhacker/Roomer/issues/183)) ([a6d1e5b](https://github.com/c0dewhacker/Roomer/commit/a6d1e5b7312052caccb403b2102f3c67c25b8ea7))
+* **web:** group admin nav + keyboard-only focus rings ([#180](https://github.com/c0dewhacker/Roomer/issues/180)) ([6664ba4](https://github.com/c0dewhacker/Roomer/commit/6664ba44abe3a26a0be494904291d6f10dbe1abe))
+
 ## [0.3.17](https://github.com/c0dewhacker/Roomer/compare/v0.3.16...v0.3.17) (2026-06-09)
 
 
