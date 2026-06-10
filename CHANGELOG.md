@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.19](https://github.com/c0dewhacker/Roomer/compare/v0.3.18...v0.3.19) (2026-06-10)
+
+
+### Bug Fixes
+
+* duplicate import cn ([#185](https://github.com/c0dewhacker/Roomer/issues/185)) ([30ac5c2](https://github.com/c0dewhacker/Roomer/commit/30ac5c239a40ac418a2972ff2ba4a2deaf1eb1a0))
+
 ## [0.3.18](https://github.com/c0dewhacker/Roomer/compare/v0.3.17...v0.3.18) (2026-06-10)
 
 
