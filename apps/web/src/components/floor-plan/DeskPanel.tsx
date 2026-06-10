@@ -18,7 +18,6 @@ import { useCreateBooking, useJoinQueue, useLeaveQueue, useClaimDesk, useCancelB
 import { useFavourites } from '@/hooks/useFavourites'
 import { cn } from '@/lib/utils'
 import { formatDateRange } from '@/lib/utils'
-import { cn } from '@/lib/utils'
 import { getDateFormat } from '@/lib/dateFormat'
 import { useAuthStore } from '@/stores/auth'
 import { assetsApi, usersApi, settingsApi, recurringBookingsApi } from '@/lib/api'
