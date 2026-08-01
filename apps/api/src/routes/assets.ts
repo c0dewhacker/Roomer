@@ -6,7 +6,7 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole, getManagedFloorIds, getManagedBuildingIds, isFloorManagerForFloor } from '../middleware/requireRole.js'
 import { enqueueNotification, fanOutFloorAvailable } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
-import { lockAssetForBooking, hasConfirmedOverlap, isOverlapConstraintViolation } from '../lib/booking.js'
+import { lockAssetForBooking, lockAssetForQueue, hasConfirmedOverlap, isOverlapConstraintViolation } from '../lib/booking.js'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { checkGroupAccess } from './groups.js'
@@ -704,25 +704,47 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(200).send({ data: { queued: 1, action: 'auto_confirmed', userId: first.userId } })
     }
 
-    // Multiple waiters — promote first with configurable claim window
+    // Multiple waiters — promote first with configurable claim window. Guarded
+    // by the same per-asset queue lock + re-read used everywhere else a queue
+    // entry gets promoted: without it, two concurrent make-available calls (or
+    // one racing a cancellation/expiry promotion elsewhere) could both read
+    // `first` before either commits and both promote it, producing two
+    // QUEUE_PROMOTED emails with two different claim tokens where only the
+    // last-written one is still valid.
     const org = await prisma.organisation.findFirst({ select: { queueClaimWindowHours: true } })
     const windowHours = org?.queueClaimWindowHours ?? 4
-    const claimDeadline = new Date(Date.now() + windowHours * 3600 * 1000)
-    const claimToken = randomUUID()
 
-    await prisma.queueEntry.update({
-      where: { id: first.id },
-      data: { status: 'PROMOTED', claimDeadline, claimToken },
+    const promoted = await prisma.$transaction(async (tx) => {
+      await lockAssetForQueue(tx, id)
+
+      const current = await tx.queueEntry.findFirst({
+        where: { assetId: id, status: 'WAITING', wantedStartsAt: { gt: new Date() } },
+        orderBy: { position: 'asc' },
+      })
+      if (!current) return null
+
+      const claimDeadline = new Date(Date.now() + windowHours * 3600 * 1000)
+      await tx.queueEntry.update({
+        where: { id: current.id },
+        data: { status: 'PROMOTED', claimDeadline, claimToken: randomUUID() },
+      })
+      return { id: current.id, userId: current.userId, claimDeadline }
     })
+
+    if (!promoted) {
+      return reply.status(409).send({
+        error: { message: 'Queue entry was already claimed or promoted', code: 'ALREADY_PROMOTED' },
+      })
+    }
 
     await enqueueNotification({
       type: NotificationType.QUEUE_PROMOTED,
-      userId: first.userId,
-      queueEntryId: first.id,
-      claimDeadline: claimDeadline.toISOString(),
+      userId: promoted.userId,
+      queueEntryId: promoted.id,
+      claimDeadline: promoted.claimDeadline.toISOString(),
     })
 
-    return reply.status(200).send({ data: { queued: waiting.length, action: 'promoted', userId: first.userId, claimDeadline } })
+    return reply.status(200).send({ data: { queued: waiting.length, action: 'promoted', userId: promoted.userId, claimDeadline: promoted.claimDeadline } })
   })
 
   // DELETE /user-assignments/by-floor/:floorId — clear all permanent assignments on a floor
