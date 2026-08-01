@@ -468,6 +468,11 @@ model User {
   email                   String        @unique
   displayName             String
   passwordHash            String?
+  /// Set whenever passwordHash changes (self-service or admin-initiated). Access
+  /// tokens issued before this timestamp are rejected in requireAuth, so changing
+  /// a password immediately invalidates any other still-live session/stolen token
+  /// instead of leaving it valid until its own expiry (up to MAX_SESSION_SECONDS).
+  passwordChangedAt      DateTime?
   provider                AuthProvider  @default(LOCAL)
   externalId              String?
   accountStatus           AccountStatus @default(ACTIVE)

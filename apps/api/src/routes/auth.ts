@@ -183,6 +183,18 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(401).send({ error: { message: 'Authentication required', code: 'UNAUTHENTICATED' } })
     }
 
+    // Refuse to mint a fresh (post-change) token from a pre-change one — this
+    // endpoint verifies the incoming JWT itself rather than going through
+    // requireAuth, so without this check a token stolen before a password
+    // change could be exchanged here for a new token whose iat is now *after*
+    // passwordChangedAt, sailing straight through requireAuth's own check.
+    if (user.passwordChangedAt && payload.iat < Math.floor(user.passwordChangedAt.getTime() / 1000)) {
+      reply.clearCookie(TOKEN_COOKIE, TOKEN_COOKIE_OPTS)
+      return reply.status(401).send({
+        error: { message: 'Session invalidated by a password change — please log in again', code: 'PASSWORD_CHANGED' },
+      })
+    }
+
     // Blocklist the old token JTI before issuing the new one so concurrent
     // requests using the old token are rejected after this point.
     if (payload.jti) await blockToken(payload.jti, payload.exp)

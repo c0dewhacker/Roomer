@@ -8,6 +8,8 @@ import { requireGlobalRole } from '../middleware/requireRole.js'
 import { enqueueNotification } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { NotificationType } from '@roomer/shared'
+import { signAccessToken, verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE } from '../lib/jwt.js'
+import { blockToken } from '../lib/token-blocklist.js'
 import { z } from 'zod'
 
 const createUserSchema = z.object({
@@ -344,7 +346,34 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     const newHash = await bcryptjs.hash(result.data.newPassword, 12)
-    await prisma.user.update({ where: { id: request.user.id }, data: { passwordHash: newHash } })
+    await prisma.user.update({
+      where: { id: request.user.id },
+      data: { passwordHash: newHash, passwordChangedAt: new Date() },
+    })
+
+    // requireAuth now rejects any token issued before passwordChangedAt, which
+    // would otherwise also log the caller out of the session they just used to
+    // change their own password. Reissue a fresh token here — same pattern as
+    // /auth/refresh — so this session continues seamlessly while every other
+    // still-live token (other devices, or a stolen cookie) is invalidated.
+    const currentToken = request.cookies?.[TOKEN_COOKIE]
+    if (currentToken) {
+      try {
+        const payload = verifyAccessToken(currentToken)
+        if (payload.jti) await blockToken(payload.jti, payload.exp)
+        const newToken = signAccessToken({
+          sub: request.user.id,
+          role: request.user.globalRole,
+          email: request.user.email,
+          displayName: request.user.displayName,
+          sessionStart: payload.sessionStart ?? payload.iat,
+        })
+        reply.setCookie(TOKEN_COOKIE, newToken, { ...TOKEN_COOKIE_OPTS, maxAge: TOKEN_MAX_AGE })
+      } catch {
+        // Current token was already invalid/expired — nothing to reissue.
+      }
+    }
+
     return reply.status(200).send({ data: { ok: true } })
   })
 
@@ -367,7 +396,10 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       const newHash = await bcryptjs.hash(result.data.password, 12)
-      await prisma.user.update({ where: { id }, data: { passwordHash: newHash } })
+      await prisma.user.update({
+        where: { id },
+        data: { passwordHash: newHash, passwordChangedAt: new Date() },
+      })
       return reply.status(200).send({ data: { ok: true } })
     },
   )

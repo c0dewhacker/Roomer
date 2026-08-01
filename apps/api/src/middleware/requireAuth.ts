@@ -78,5 +78,17 @@ export async function requireAuth(request: FastifyRequest, reply: FastifyReply):
     })
   }
 
+  // Reject tokens issued before the password last changed. Without this, a
+  // password reset (self-service or admin-forced, e.g. after suspected
+  // compromise) only stops *new* logins — every already-issued token for this
+  // user, including a stolen one, would otherwise stay valid until its own
+  // expiry (up to MAX_SESSION_SECONDS).
+  if (user.passwordChangedAt && payload.iat < Math.floor(user.passwordChangedAt.getTime() / 1000)) {
+    reply.clearCookie(TOKEN_COOKIE, TOKEN_COOKIE_OPTS)
+    return reply.status(401).send({
+      error: { message: 'Session invalidated by a password change — please log in again', code: 'PASSWORD_CHANGED' },
+    })
+  }
+
   request.user = user
 }
