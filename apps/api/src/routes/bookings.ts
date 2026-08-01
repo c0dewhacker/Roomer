@@ -418,6 +418,32 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     dispatchWebhook('booking.modified', { id: updated.id, userId: updated.userId, assetId: updated.assetId, startsAt: updated.startsAt, endsAt: updated.endsAt }).catch(() => {})
 
+    // A reschedule can free up part of the original slot — shrinking it from
+    // either end, or moving away from it entirely — the same way a full
+    // cancellation frees the whole thing. Without this, someone queued for the
+    // vacated portion would never be promoted even though it's booked by no
+    // one. The freed region is [oldStart,oldEnd) minus [newStart,newEnd),
+    // which is zero, one, or two disjoint sub-ranges.
+    const freedRanges: Array<[Date, Date]> = []
+    if (newStartsAt > booking.startsAt) {
+      freedRanges.push([booking.startsAt, newStartsAt < booking.endsAt ? newStartsAt : booking.endsAt])
+    }
+    if (newEndsAt < booking.endsAt) {
+      freedRanges.push([newEndsAt > booking.startsAt ? newEndsAt : booking.startsAt, booking.endsAt])
+    }
+    for (const [freedStart, freedEnd] of freedRanges) {
+      const nextQueued = await promoteNextQueueEntry(booking.assetId, freedStart, freedEnd)
+      if (nextQueued) {
+        await enqueueNotification({
+          type: NotificationType.QUEUE_PROMOTED,
+          userId: nextQueued.userId,
+          queueEntryId: nextQueued.id,
+          claimDeadline: nextQueued.claimDeadline.toISOString(),
+        })
+        dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+      }
+    }
+
     return reply.status(200).send({ data: updated })
   })
 
