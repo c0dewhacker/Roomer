@@ -1,6 +1,7 @@
 import { discovery, randomState, randomNonce, type Configuration, ClientSecretPost } from 'openid-client'
 import { findAuthConfig } from './prisma.js'
 import type { GroupMapping } from './group-mapping.js'
+import { decryptStringMaybe } from './encryption.js'
 
 export interface OidcConfig {
   issuerUrl: string
@@ -30,6 +31,9 @@ export async function getOidcClientConfig(): Promise<Configuration | null> {
 
   const cfg = row.config as unknown as OidcConfig
   if (!cfg.issuerUrl || !cfg.clientId || !cfg.clientSecret || !cfg.redirectUri) return null
+  // clientSecret is encrypted at rest (enc:v1:…); decryptStringMaybe also
+  // transparently passes through legacy plaintext rows saved before this fix.
+  cfg.clientSecret = decryptStringMaybe(cfg.clientSecret)
 
   const cacheExpired = Date.now() - cachedAt > CACHE_TTL_MS
 

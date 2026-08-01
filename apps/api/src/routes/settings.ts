@@ -468,11 +468,22 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
         //   null   → explicitly clear the field (e.g. unsetting syncBase)
         //   ''     → skip (secrets omit their value rather than send empty)
         //   other  → set the value
+        // bindCredentials (LDAP) and clientSecret (OIDC) are encrypted at rest,
+        // same as the SMTP password and webhook signing secrets — only when a
+        // *new* value is submitted this request. Values merely carried over
+        // from existingConfig are already an enc:v1: envelope (or, for rows
+        // written before this fix, legacy plaintext handled transparently by
+        // decryptStringMaybe at read time) and must not be re-encrypted here.
+        const secretFieldsByProvider: Partial<Record<ProviderKey, string>> = {
+          LDAP: 'bindCredentials',
+          OIDC: 'clientSecret',
+        }
+        const secretField = secretFieldsByProvider[upperProvider]
         for (const [key, val] of Object.entries(body.config)) {
           if (val === null) {
             delete mergedConfig[key]
           } else if (val !== undefined && val !== '') {
-            mergedConfig[key] = val
+            mergedConfig[key] = key === secretField ? encrypt(String(val)) : val
           }
         }
 
