@@ -3,7 +3,8 @@ import { prisma } from '../lib/prisma.js'
 import { GlobalRole, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { z } from 'zod'
-import { enqueueNotification } from '../lib/queue.js'
+import { enqueueNotification, promoteNextQueueEntry } from '../lib/queue.js'
+import { dispatchWebhook } from '../lib/webhook.js'
 import { assertBookable, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
 
 const createRecurringSchema = z.object({
@@ -263,9 +264,20 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
     }
 
     const now = new Date()
+    // Capture the freed occurrences before cancelling — updateMany doesn't
+    // return rows, and each one needs its own assetId/startsAt/endsAt to check
+    // the queue for a waiting user, same as a single direct-booking cancellation
+    // already does. Without this, cancelling a recurring series silently orphans
+    // any queue entries waiting on those slots: the desk is free again but no
+    // one ever gets promoted or notified.
+    const futureBookings = await prisma.booking.findMany({
+      where: { recurringRuleId: id, status: 'CONFIRMED', startsAt: { gt: now } },
+      select: { id: true, assetId: true, startsAt: true, endsAt: true },
+    })
+
     await prisma.$transaction([
       prisma.booking.updateMany({
-        where: { recurringRuleId: id, status: 'CONFIRMED', startsAt: { gt: now } },
+        where: { id: { in: futureBookings.map((b) => b.id) } },
         data: { status: 'CANCELLED' },
       }),
       prisma.recurringBookingRule.update({
@@ -273,6 +285,19 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
         data: { status: 'CANCELLED' },
       }),
     ])
+
+    for (const b of futureBookings) {
+      const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
+      if (nextQueued) {
+        await enqueueNotification({
+          type: NotificationType.QUEUE_PROMOTED,
+          userId: nextQueued.userId,
+          queueEntryId: nextQueued.id,
+          claimDeadline: nextQueued.claimDeadline.toISOString(),
+        })
+        dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+      }
+    }
 
     return reply.status(200).send({ data: { ok: true } })
   })
