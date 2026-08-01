@@ -7,6 +7,7 @@ import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
 import { dispatchWebhook } from './webhook.js'
+import { lockAssetForQueue } from './booking.js'
 
 let boss: PgBoss | null = null
 
@@ -19,6 +20,46 @@ export function getBoss(): PgBoss {
 
 /** How long a promoted queue entry has to be claimed before it expires. */
 export const CLAIM_DEADLINE_MS = 2 * 60 * 60 * 1000 // 2 hours
+
+/**
+ * Atomically promote the highest-position WAITING queue entry overlapping
+ * [periodStart, periodEnd) on an asset. Every caller that frees up a slot
+ * (booking cancellation, no-show release, claim-deadline expiry) must go
+ * through this instead of a bare findFirst+update: without the per-asset
+ * queue lock, two callers racing on the same asset (e.g. two overlapping
+ * expired PROMOTED entries, or a cancellation racing the expiry cron) can
+ * both read the same "next" WAITING entry before either commits, then both
+ * promote it — sending two QUEUE_PROMOTED emails with different claim
+ * tokens where only the last-written token is still valid, and silently
+ * skipping the entry that should have been promoted for the other slot.
+ */
+export async function promoteNextQueueEntry(
+  assetId: string,
+  periodStart: Date,
+  periodEnd: Date,
+): Promise<{ id: string; userId: string; assetId: string; claimDeadline: Date } | null> {
+  return prisma.$transaction(async (tx) => {
+    await lockAssetForQueue(tx, assetId)
+
+    const next = await tx.queueEntry.findFirst({
+      where: {
+        assetId,
+        status: 'WAITING',
+        wantedStartsAt: { lt: periodEnd },
+        wantedEndsAt: { gt: periodStart },
+      },
+      orderBy: { position: 'asc' },
+    })
+    if (!next) return null
+
+    const claimDeadline = new Date(Date.now() + CLAIM_DEADLINE_MS)
+    await tx.queueEntry.update({
+      where: { id: next.id },
+      data: { status: 'PROMOTED', claimDeadline, claimToken: randomUUID() },
+    })
+    return { id: next.id, userId: next.userId, assetId: next.assetId, claimDeadline }
+  })
+}
 
 // ─── Notification job payload ─────────────────────────────────────────────────
 
@@ -422,26 +463,13 @@ async function handleReleaseNoShows(): Promise<void> {
   }
 
   // Free the desk: promote the next queued user for the slot, or fan out floor availability.
-  const claimDeadline = new Date(Date.now() + CLAIM_DEADLINE_MS)
   for (const b of noShows) {
-    const next = await prisma.queueEntry.findFirst({
-      where: {
-        assetId: b.assetId,
-        status: 'WAITING',
-        wantedStartsAt: { lt: b.endsAt },
-        wantedEndsAt: { gt: b.startsAt },
-      },
-      orderBy: { position: 'asc' },
-    })
+    const next = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
     if (next) {
-      await prisma.queueEntry.update({
-        where: { id: next.id },
-        data: { status: 'PROMOTED', claimDeadline, claimToken: randomUUID() },
-      })
       await getBoss().insert('send-notification', [{
-        data: { type: NotificationType.QUEUE_PROMOTED, userId: next.userId, queueEntryId: next.id, claimDeadline: claimDeadline.toISOString() } satisfies NotificationJobData,
+        data: { type: NotificationType.QUEUE_PROMOTED, userId: next.userId, queueEntryId: next.id, claimDeadline: next.claimDeadline.toISOString() } satisfies NotificationJobData,
       }])
-      dispatchWebhook('queue.promoted', { id: next.id, userId: next.userId, assetId: next.assetId, claimDeadline: claimDeadline.toISOString() }).catch(() => {})
+      dispatchWebhook('queue.promoted', { id: next.id, userId: next.userId, assetId: next.assetId, claimDeadline: next.claimDeadline.toISOString() }).catch(() => {})
     } else {
       const asset = await prisma.asset.findUnique({ where: { id: b.assetId }, select: { floorId: true, primaryZoneId: true } })
       if (asset?.floorId) {
@@ -479,34 +507,18 @@ async function handleExpireClaimDeadlines(): Promise<void> {
     dispatchWebhook('queue.expired', { id: entry.id, userId: entry.userId, assetId: entry.assetId }).catch(() => {})
   }
 
-  // Find the next WAITING entry for each expired slot in parallel
-  const claimDeadline = new Date(Date.now() + CLAIM_DEADLINE_MS)
-  const nextEntries = await Promise.all(
-    expiredPromoted.map((entry) =>
-      prisma.queueEntry.findFirst({
-        where: {
-          assetId: entry.assetId,
-          status: 'WAITING',
-          wantedStartsAt: { lt: entry.wantedEndsAt },
-          wantedEndsAt: { gt: entry.wantedStartsAt },
-        },
-        orderBy: { position: 'asc' },
-      }),
-    ),
-  )
-
-  const toPromote = nextEntries.filter((e): e is NonNullable<typeof e> => e !== null)
+  // Promote the next WAITING entry for each expired slot. Each promotion takes
+  // the per-asset queue lock and re-reads under it, so when two expired entries
+  // share an asset (e.g. adjacent sub-ranges expiring in the same sweep) the
+  // second promotion correctly sees the first's WAITING->PROMOTED transition
+  // instead of both racing to promote the same "next" entry.
+  const toPromote = (
+    await Promise.all(
+      expiredPromoted.map((entry) => promoteNextQueueEntry(entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)),
+    )
+  ).filter((e): e is NonNullable<typeof e> => e !== null)
 
   if (toPromote.length > 0) {
-    await Promise.all(
-      toPromote.map((nextEntry) =>
-        prisma.queueEntry.update({
-          where: { id: nextEntry.id },
-          data: { status: 'PROMOTED', claimDeadline, claimToken: randomUUID() },
-        }),
-      ),
-    )
-
     await getBoss().insert(
       'send-notification',
       toPromote.map((nextEntry) => ({
@@ -514,13 +526,13 @@ async function handleExpireClaimDeadlines(): Promise<void> {
           type: NotificationType.QUEUE_PROMOTED,
           userId: nextEntry.userId,
           queueEntryId: nextEntry.id,
-          claimDeadline: claimDeadline.toISOString(),
+          claimDeadline: nextEntry.claimDeadline.toISOString(),
         } satisfies NotificationJobData,
       })),
     )
 
     for (const nextEntry of toPromote) {
-      dispatchWebhook('queue.promoted', { id: nextEntry.id, userId: nextEntry.userId, assetId: nextEntry.assetId, claimDeadline: claimDeadline.toISOString() }).catch(() => {})
+      dispatchWebhook('queue.promoted', { id: nextEntry.id, userId: nextEntry.userId, assetId: nextEntry.assetId, claimDeadline: nextEntry.claimDeadline.toISOString() }).catch(() => {})
     }
   }
 

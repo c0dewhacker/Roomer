@@ -4,10 +4,9 @@ import { prisma } from '../lib/prisma.js'
 import { createBookingSchema, updateBookingSchema, GlobalRole, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { isFloorManagerForFloor, getManagedBuildingIds } from '../middleware/requireRole.js'
-import { enqueueNotification, fanOutFloorAvailable, CLAIM_DEADLINE_MS } from '../lib/queue.js'
+import { enqueueNotification, fanOutFloorAvailable, promoteNextQueueEntry } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { buildBookingIcs } from '../lib/ical.js'
-import { randomUUID } from 'crypto'
 import { checkGroupAccess } from './groups.js'
 import { assertBookable, hasConfirmedOverlap, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
 import { z } from 'zod'
@@ -465,30 +464,17 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     })
 
     // Promote next queue entry for overlapping slot
-    const nextQueued = await prisma.queueEntry.findFirst({
-      where: {
-        assetId: booking.assetId,
-        status: 'WAITING',
-        wantedStartsAt: { lt: booking.endsAt },
-        wantedEndsAt: { gt: booking.startsAt },
-      },
-      orderBy: { position: 'asc' },
-    })
+    const nextQueued = await promoteNextQueueEntry(booking.assetId, booking.startsAt, booking.endsAt)
 
     if (nextQueued) {
-      const claimDeadline = new Date(Date.now() + CLAIM_DEADLINE_MS)
-      const claimToken = randomUUID()
-      await prisma.queueEntry.update({
-        where: { id: nextQueued.id },
-        data: { status: 'PROMOTED', claimDeadline, claimToken },
-      })
-
       await enqueueNotification({
         type: NotificationType.QUEUE_PROMOTED,
         userId: nextQueued.userId,
         queueEntryId: nextQueued.id,
-        claimDeadline: claimDeadline.toISOString(),
+        claimDeadline: nextQueued.claimDeadline.toISOString(),
       })
+
+      dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
     }
 
     // Notify floor subscribers of the newly-freed slot
