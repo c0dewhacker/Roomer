@@ -649,6 +649,11 @@ export async function enqueueNotification(data: NotificationJobData): Promise<vo
 // Finds all subscribers for the floor/zone, applies a 30-min cooldown, and
 // enqueues FLOOR_AVAILABLE notifications.
 
+/** Advisory-lock class serialising the read-cooldown-check + write below, keyed
+ * per floor. Distinct from ASSET_BOOKING_LOCK_CLASS (4242) / ASSET_QUEUE_LOCK_CLASS
+ * (4243) in lib/booking.ts, which are keyed per asset, not per floor. */
+const FLOOR_NOTIFICATION_LOCK_CLASS = 4244
+
 export async function fanOutFloorAvailable(
   assetId: string,
   floorId: string,
@@ -659,34 +664,49 @@ export async function fanOutFloorAvailable(
   const now = new Date()
   const cooldown = new Date(now.getTime() - 30 * 60000)
 
-  const subscriptions = await prisma.floorSubscription.findMany({
-    where: {
-      floorId,
-      ...(excludeUserId ? { userId: { not: excludeUserId } } : {}),
-      OR: [
-        { lastNotifiedAt: null },
-        { lastNotifiedAt: { lt: cooldown } },
-      ],
-      AND: primaryZoneId
-        ? [
-            {
-              OR: [
-                { zones: { none: {} } },
-                { zones: { some: { zoneId: primaryZoneId } } },
-              ],
-            },
-          ]
-        : [{ zones: { none: {} } }],
-    },
-    select: { id: true, userId: true },
+  // Two desks on the same floor can become available within milliseconds of
+  // each other (e.g. the no-show-release sweep processing several bookings on
+  // one floor). Without a lock, two concurrent calls both read the same set of
+  // "not notified in the last 30 min" subscribers before either writes
+  // lastNotifiedAt, and both send a FLOOR_AVAILABLE email — defeating the
+  // cooldown's whole purpose. Locking per floor and re-reading under the lock
+  // makes the second call see the first call's just-written lastNotifiedAt.
+  const subscriptions = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${FLOOR_NOTIFICATION_LOCK_CLASS}, hashtext(${floorId}))`
+
+    const subs = await tx.floorSubscription.findMany({
+      where: {
+        floorId,
+        ...(excludeUserId ? { userId: { not: excludeUserId } } : {}),
+        OR: [
+          { lastNotifiedAt: null },
+          { lastNotifiedAt: { lt: cooldown } },
+        ],
+        AND: primaryZoneId
+          ? [
+              {
+                OR: [
+                  { zones: { none: {} } },
+                  { zones: { some: { zoneId: primaryZoneId } } },
+                ],
+              },
+            ]
+          : [{ zones: { none: {} } }],
+      },
+      select: { id: true, userId: true },
+    })
+
+    if (subs.length > 0) {
+      await tx.floorSubscription.updateMany({
+        where: { id: { in: subs.map((s) => s.id) } },
+        data: { lastNotifiedAt: now },
+      })
+    }
+
+    return subs
   })
 
   if (subscriptions.length === 0) return
-
-  await prisma.floorSubscription.updateMany({
-    where: { id: { in: subscriptions.map((s) => s.id) } },
-    data: { lastNotifiedAt: now },
-  })
 
   await getBoss().insert(
     'send-notification',
