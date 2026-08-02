@@ -28,23 +28,39 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
 
     const { email, password } = result.data
 
-    let user = await prisma.user.findUnique({ where: { email } })
+    // Case-insensitive: email creation is not normalised to lowercase
+    // everywhere (LDAP sync lowercases; an admin manually creating a local
+    // account, or an OIDC/SAML claim, may not), so a findUnique on the exact
+    // string here would reject a correct password just because the user
+    // typed different case than however their account happened to be stored.
+    let user = await prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } })
 
     // ─── LDAP fallback ────────────────────────────────────────────────────────
     if (!user?.passwordHash) {
       const ldapResult = await authenticateWithLdap(email, password)
       if (ldapResult) {
-        user = await prisma.user.upsert({
-          where: { email: ldapResult.email },
-          update: { displayName: ldapResult.displayName, externalId: ldapResult.dn, provider: 'LDAP' },
-          create: {
-            email: ldapResult.email,
-            displayName: ldapResult.displayName,
-            externalId: ldapResult.dn,
-            provider: 'LDAP',
-            passwordHash: null,
-          },
+        // upsert() requires an exact-match unique where, which can't be made
+        // case-insensitive — find first (matching the same relaxed rule as
+        // above), then update or create explicitly, so this doesn't create a
+        // duplicate account for someone who already exists with different
+        // email casing.
+        const existingLdapUser = await prisma.user.findFirst({
+          where: { email: { equals: ldapResult.email, mode: 'insensitive' } },
         })
+        user = existingLdapUser
+          ? await prisma.user.update({
+              where: { id: existingLdapUser.id },
+              data: { displayName: ldapResult.displayName, externalId: ldapResult.dn, provider: 'LDAP' },
+            })
+          : await prisma.user.create({
+              data: {
+                email: ldapResult.email,
+                displayName: ldapResult.displayName,
+                externalId: ldapResult.dn,
+                provider: 'LDAP',
+                passwordHash: null,
+              },
+            })
         await recordLastIdpGroups(user.id, ldapResult.groups)
         const ldapCfg = await getLdapConfig()
         const mappings = ldapCfg?.groupMappings ?? []

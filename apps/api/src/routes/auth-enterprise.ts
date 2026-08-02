@@ -17,20 +17,29 @@ async function findOrCreateSsoUser(
   provider: 'OIDC' | 'SAML',
   externalId?: string,
 ) {
-  const user = await prisma.user.upsert({
-    where: { email },
-    update: {
-      displayName,
-      ...(externalId ? { externalId } : {}),
-    },
-    create: {
-      email,
-      displayName,
-      provider,
-      externalId: externalId ?? null,
-      passwordHash: null,
-    },
-  })
+  // Case-insensitive lookup, same reasoning as the local-login and LDAP paths
+  // in auth.ts: the IdP-provided email claim isn't guaranteed to match the
+  // case of an existing account (e.g. one created by an admin, or synced via
+  // LDAP, which does lowercase). upsert()'s where must be an exact unique
+  // match, so it can't do this directly — find first, then update or create.
+  const existing = await prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } })
+  const user = existing
+    ? await prisma.user.update({
+        where: { id: existing.id },
+        data: {
+          displayName,
+          ...(externalId ? { externalId } : {}),
+        },
+      })
+    : await prisma.user.create({
+        data: {
+          email,
+          displayName,
+          provider,
+          externalId: externalId ?? null,
+          passwordHash: null,
+        },
+      })
   if (user.accountStatus === 'BLOCKED') return null
   return user
 }
