@@ -325,7 +325,12 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
   })
 
   // POST /users/me/password — self-service password change (local auth users only)
-  fastify.post('/me/password', { preHandler: [requireAuth] }, async (request, reply) => {
+  // Rate-limited like /auth/login: this endpoint bcrypt-compares currentPassword,
+  // so without a strict limit it's an online password-guessing oracle available
+  // to anyone holding a valid session token (e.g. a stolen cookie) — worse than
+  // login's exposure, since it needs no username/email guesswork at all. Global
+  // default is 300 req/min; that's 20x looser than /auth/login's brute-force tier.
+  fastify.post('/me/password', { preHandler: [requireAuth], config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } }, async (request, reply) => {
     const result = changePasswordSchema.safeParse(request.body)
     if (!result.success) {
       return reply.status(400).send({
@@ -378,9 +383,14 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
   })
 
   // POST /users/:id/password/reset — admin sets a new password for any user
+  // Rate-limited for a different reason than /me/password: not a guessing
+  // oracle (no secret comparison here), but a compromised admin token would
+  // otherwise be able to mass-reset every user's password at up to the
+  // 300 req/min global default. 30/15min still bounds that blast radius while
+  // leaving headroom for a legitimate admin resetting several accounts by hand.
   fastify.post(
     '/:id/password/reset',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)], config: { rateLimit: { max: 30, timeWindow: '15 minutes' } } },
     async (request, reply) => {
       const { id } = request.params as { id: string }
       const result = adminSetPasswordSchema.safeParse(request.body)
