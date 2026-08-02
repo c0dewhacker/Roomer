@@ -37,10 +37,14 @@ services:
     environment:
       NODE_ENV: production
       ROOMER_DATABASE_URL: postgresql://${POSTGRES_USER:-roomer}:${POSTGRES_PASSWORD:-roomer}@postgres:5432/${POSTGRES_DB:-roomer}
-      # CHANGE IN PRODUCTION — generate with: openssl rand -hex 32
-      ROOMER_SESSION_SECRET: ${ROOMER_SESSION_SECRET:-00000000000000000000000000000000}
-      # CHANGE IN PRODUCTION — generate with: openssl rand -hex 32
-      ROOMER_ENCRYPTION_KEY: ${ROOMER_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      # Required — generate with: openssl rand -hex 32
+      # No insecure fallback here on purpose: the API itself now also refuses
+      # to start with a low-entropy/placeholder value (see apps/api/src/env.ts),
+      # but a value this app never even sees is stronger than one it has to
+      # reject — it fails at `docker compose up`, not after the container starts.
+      ROOMER_SESSION_SECRET: ${ROOMER_SESSION_SECRET:?Set ROOMER_SESSION_SECRET, generated with openssl rand -hex 32}
+      # Required — generate with: openssl rand -hex 32
+      ROOMER_ENCRYPTION_KEY: ${ROOMER_ENCRYPTION_KEY:?Set ROOMER_ENCRYPTION_KEY, generated with openssl rand -hex 32}
       ROOMER_PORT: "3001"
       ROOMER_HOST: "0.0.0.0"
       ROOMER_CORS_ORIGIN: ${APP_ORIGIN:-http://localhost}
