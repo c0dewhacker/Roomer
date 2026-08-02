@@ -418,6 +418,21 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     dispatchWebhook('booking.modified', { id: updated.id, userId: updated.userId, assetId: updated.assetId, startsAt: updated.startsAt, endsAt: updated.endsAt }).catch(() => {})
 
+    // Re-send the booking notification (in-app + email + a fresh .ics REQUEST
+    // attachment, same rendering path as the original confirmation) whenever
+    // the time actually changed. Without this, a reschedule silently drifted
+    // out of sync with whatever calendar app the user added the original
+    // invite to — Roomer showed the new time, their calendar still showed the
+    // old one, with no notice either changed. Skipped for a notes-only edit,
+    // since there's nothing calendar-relevant to re-send.
+    if (newStartsAt.getTime() !== booking.startsAt.getTime() || newEndsAt.getTime() !== booking.endsAt.getTime()) {
+      await enqueueNotification({
+        type: NotificationType.BOOKING_CONFIRMED,
+        userId: updated.userId,
+        bookingId: updated.id,
+      })
+    }
+
     // A reschedule can free up part of the original slot — shrinking it from
     // either end, or moving away from it entirely — the same way a full
     // cancellation frees the whole thing. Without this, someone queued for the
