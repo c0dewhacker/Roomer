@@ -6,7 +6,7 @@ import { createFloorSchema, updateFloorSchema, GlobalRole } from '@roomer/shared
 import { requireAuth } from '../middleware/requireAuth.js'
 import { isFloorManagerForFloor, isBuildingManagerForBuilding, requireGlobalRole } from '../middleware/requireRole.js'
 import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage.js'
-import { canUserAccessBuilding } from './groups.js'
+import { checkGroupAccess } from './groups.js'
 import { z } from 'zod'
 
 export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
@@ -86,9 +86,9 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
-      const hasAccess = await canUserAccessBuilding(request.user.id, floor.building.id)
+      const hasAccess = await checkGroupAccess(request.user.id, floor.building.id, id)
       if (!hasAccess) {
-        return reply.status(403).send({ error: { message: 'You do not have access to this building', code: 'FORBIDDEN' } })
+        return reply.status(403).send({ error: { message: 'You do not have access to this floor', code: 'FORBIDDEN' } })
       }
     }
 
@@ -431,9 +431,9 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
-      const hasAccess = await canUserAccessBuilding(request.user.id, floorPlan.floor.buildingId)
+      const hasAccess = await checkGroupAccess(request.user.id, floorPlan.floor.buildingId, id)
       if (!hasAccess) {
-        return reply.status(403).send({ error: { message: 'You do not have access to this building', code: 'FORBIDDEN' } })
+        return reply.status(403).send({ error: { message: 'You do not have access to this floor', code: 'FORBIDDEN' } })
       }
     }
 
@@ -611,9 +611,9 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
-      const hasAccess = await canUserAccessBuilding(request.user.id, floor.buildingId)
+      const hasAccess = await checkGroupAccess(request.user.id, floor.buildingId, id)
       if (!hasAccess) {
-        return reply.status(403).send({ error: { message: 'You do not have access to this building', code: 'FORBIDDEN' } })
+        return reply.status(403).send({ error: { message: 'You do not have access to this floor', code: 'FORBIDDEN' } })
       }
     }
 
