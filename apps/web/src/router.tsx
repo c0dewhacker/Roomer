@@ -11,7 +11,12 @@ import WhosInPage from './pages/WhosInPage'
 import BuildingsAdminPage from './pages/admin/BuildingsAdminPage'
 import BuildingDetailAdminPage from './pages/admin/BuildingDetailAdminPage'
 import UsersAdminPage from './pages/admin/UsersAdminPage'
-import SettingsAdminPage from './pages/admin/SettingsAdminPage'
+import SettingsLayout from './pages/admin/settings/SettingsLayout'
+import OrganisationSettingsPage from './pages/admin/settings/OrganisationSettingsPage'
+import EmailSettingsPage from './pages/admin/settings/EmailSettingsPage'
+import SsoSettingsPage from './pages/admin/settings/SsoSettingsPage'
+import ProvisioningSettingsPage from './pages/admin/settings/ProvisioningSettingsPage'
+import BrandingSettingsPage from './pages/admin/settings/BrandingSettingsPage'
 import AssetsPage from './pages/AssetsPage'
 import BuildingsPage from './pages/BuildingsPage'
 import BuildingPage from './pages/BuildingPage'
@@ -142,7 +147,14 @@ export function AppRouter() {
           <Route element={<AdminRoute />}>
             <Route path="/admin/buildings" element={<BuildingsAdminPage />} />
             <Route path="/admin/users" element={<UsersAdminPage />} />
-            <Route path="/admin/settings" element={<SettingsAdminPage />} />
+            <Route path="/admin/settings" element={<SettingsLayout />}>
+              <Route index element={<Navigate to="/admin/settings/organisation" replace />} />
+              <Route path="organisation" element={<OrganisationSettingsPage />} />
+              <Route path="email" element={<EmailSettingsPage />} />
+              <Route path="sso" element={<SsoSettingsPage />} />
+              <Route path="provisioning" element={<ProvisioningSettingsPage />} />
+              <Route path="branding" element={<BrandingSettingsPage />} />
+            </Route>
             <Route path="/admin/groups" element={<GroupsAdminPage />} />
             <Route path="/admin/departments" element={<DepartmentsAdminPage />} />
             <Route path="/admin/org-chart" element={<Suspense fallback={<PageLoader />}><OrgChartPage /></Suspense>} />
