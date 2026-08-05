@@ -1,11 +1,6 @@
 import type { FastifyRequest, FastifyReply } from 'fastify'
-import { GlobalRole, ResourceRoleType, ResourceScopeType } from '@roomer/shared'
+import { GlobalRole } from '@roomer/shared'
 import { prisma } from '../lib/prisma.js'
-
-const ROLE_HIERARCHY: Record<ResourceRoleType, number> = {
-  [ResourceRoleType.FLOOR_MANAGER]: 2,
-  [ResourceRoleType.BUILDING_ADMIN]: 3,
-}
 
 /**
  * Numeric hierarchy for GlobalRole values.
@@ -154,93 +149,3 @@ export async function getManagedFloorIds(userId: string): Promise<string[]> {
   return [...new Set(ids)]
 }
 
-/**
- * Middleware: passes for SUPER_ADMIN, or for users who hold BUILDING_ADMIN access
- * on the building identified by `buildingIdParam` in request.params.
- * Use `buildingIdParam = 'buildingId'` when the param isn't named `id`.
- */
-export function requireBuildingAdmin(buildingIdParam = 'id') {
-  return async function (request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    if (!request.user) {
-      return reply.status(401).send({ error: { message: 'Authentication required', code: 'UNAUTHENTICATED' } })
-    }
-    if (request.user.globalRole === GlobalRole.SUPER_ADMIN) return
-
-    const buildingId = (request.params as Record<string, string>)[buildingIdParam]
-    if (!buildingId) {
-      return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
-    }
-    const ok = await isBuildingManagerForBuilding(request.user.id, buildingId)
-    if (!ok) {
-      return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
-    }
-  }
-}
-
-// Middleware for asset endpoints: resolves asset → floorId directly, then checks floor-level role.
-// Also passes for SUPER_ADMIN.
-export function requireFloorRoleForAsset(minimumRole: ResourceRoleType) {
-  return async function (request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    if (!request.user) {
-      return reply.status(401).send({
-        error: { message: 'Authentication required', code: 'UNAUTHENTICATED' },
-      })
-    }
-
-    if (request.user.globalRole === GlobalRole.SUPER_ADMIN) {
-      return
-    }
-
-    const { id } = request.params as { id: string }
-    const asset = await prisma.asset.findUnique({
-      where: { id },
-      select: { floorId: true },
-    })
-
-    if (!asset) {
-      return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
-    }
-
-    if (!asset.floorId) {
-      return reply.status(403).send({
-        error: { message: 'Insufficient permissions', code: 'FORBIDDEN' },
-      })
-    }
-
-    const floorId = asset.floorId
-
-    const directRole = await prisma.userResourceRole.findFirst({
-      where: { userId: request.user.id, scopeType: ResourceScopeType.FLOOR, floorId },
-    })
-
-    const groupRole = directRole ? null : await prisma.groupResourceRole.findFirst({
-      where: {
-        scopeType: ResourceScopeType.FLOOR,
-        floorId,
-        group: { members: { some: { userId: request.user.id } } },
-      },
-    })
-
-    const role = directRole ?? groupRole
-
-    if (!role) {
-      // Check if user is a building admin for this floor's building (inherits floor manager)
-      const isBuildingAdmin = await isFloorManagerForFloor(request.user.id, floorId)
-      if (!isBuildingAdmin) {
-        return reply.status(403).send({
-          error: { message: 'Insufficient permissions', code: 'FORBIDDEN' },
-        })
-      }
-      return
-    }
-
-    const userRoleLevel = ROLE_HIERARCHY[role.role as ResourceRoleType] ?? -1
-    const requiredLevel = ROLE_HIERARCHY[minimumRole] ?? 0
-
-    if (userRoleLevel < requiredLevel) {
-      return reply.status(403).send({
-        error: { message: 'Insufficient permissions', code: 'FORBIDDEN' },
-      })
-    }
-  }
-}
