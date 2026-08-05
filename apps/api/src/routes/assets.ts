@@ -828,10 +828,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       const allEmails = [...new Set(rows.map((r) => r.userEmail))]
       const [assetRows, userRows] = await Promise.all([
         prisma.asset.findMany({ where: { id: { in: allAssetIds } }, select: { id: true, floorId: true } }),
-        prisma.user.findMany({ where: { email: { in: allEmails } }, select: { id: true, email: true } }),
+        // Case-insensitive: email isn't normalised to lowercase on every creation
+        // path (LDAP sync does; an admin manually creating a user, or an
+        // imported CSV, may not match that exact case), so an exact-case match
+        // here would report "User not found" for a real user purely because
+        // the import file's casing differs from how their account is stored.
+        prisma.user.findMany({ where: { email: { in: allEmails, mode: 'insensitive' } }, select: { id: true, email: true } }),
       ])
       const assetFloorMap = new Map(assetRows.map((a) => [a.id, a.floorId]))
-      const userByEmail = new Map(userRows.map((u) => [u.email, u.id]))
+      const userByEmail = new Map(userRows.map((u) => [u.email.toLowerCase(), u.id]))
 
       for (let i = 0; i < rows.length; i++) {
         const { assetId, userEmail, isPrimary } = rows[i]
@@ -844,7 +849,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
               continue
             }
           }
-          const userId = userByEmail.get(userEmail)
+          const userId = userByEmail.get(userEmail.toLowerCase())
           if (!userId) { errors.push({ row: i + 1, assetId, userEmail, error: 'User not found' }); continue }
           if (isPrimary) {
             await prisma.assetUserAssignment.updateMany({
