@@ -66,14 +66,28 @@ export async function zoneRoutes(fastify: FastifyInstance): Promise<void> {
         })
       }
 
+      const existing = await prisma.zone.findUnique({ where: { id }, select: { floorId: true } })
+      if (!existing) {
+        return reply.status(404).send({ error: { message: 'Zone not found', code: 'NOT_FOUND' } })
+      }
+
       if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
-        const existing = await prisma.zone.findUnique({ where: { id }, select: { floorId: true } })
-        if (!existing) {
-          return reply.status(404).send({ error: { message: 'Zone not found', code: 'NOT_FOUND' } })
-        }
         const canManage = await isFloorManagerForFloor(request.user.id, existing.floorId)
         if (!canManage) {
           return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+
+      // A zone group must belong to the same floor as the zone — otherwise a
+      // zone ends up grouped with unrelated zones on a different floor plan,
+      // and (for non-admins) this would let a manager for this zone's floor
+      // reach into a zone group on a floor they don't manage.
+      if (result.data.zoneGroupId) {
+        const group = await prisma.zoneGroup.findUnique({ where: { id: result.data.zoneGroupId } })
+        if (!group || group.floorId !== existing.floorId) {
+          return reply.status(404).send({
+            error: { message: 'Zone group not found on this floor', code: 'NOT_FOUND' },
+          })
         }
       }
 
