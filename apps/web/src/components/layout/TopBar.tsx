@@ -51,7 +51,7 @@ export function TopBar({ onMenuClick, hideBrand }: TopBarProps) {
   return (
     <header className="flex h-14 items-center justify-between border-b bg-background px-4">
       <div className="flex items-center gap-3">
-        <Button variant="ghost" size="icon" className="md:hidden" onClick={onMenuClick}>
+        <Button variant="ghost" size="icon" className="md:hidden" onClick={onMenuClick} aria-label="Open menu">
           <Menu className="h-5 w-5" />
         </Button>
         {!hideBrand && (branding?.logoPath ? (
@@ -82,7 +82,7 @@ export function TopBar({ onMenuClick, hideBrand }: TopBarProps) {
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="relative h-9 w-9 rounded-full p-0">
+            <Button variant="ghost" className="relative h-9 w-9 rounded-full p-0" aria-label="Open user menu">
               <Avatar className="h-9 w-9">
                 <AvatarFallback className="bg-primary text-primary-foreground text-sm">
                   {initials ?? 'U'}

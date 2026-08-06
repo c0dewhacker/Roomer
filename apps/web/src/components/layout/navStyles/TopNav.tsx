@@ -132,7 +132,7 @@ export function TopNav() {
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="relative h-9 w-9 rounded-full p-0">
+              <Button variant="ghost" className="relative h-9 w-9 rounded-full p-0" aria-label="Open user menu">
                 <Avatar className="h-9 w-9">
                   <AvatarFallback className="bg-primary text-primary-foreground text-sm">{initials ?? 'U'}</AvatarFallback>
                 </Avatar>

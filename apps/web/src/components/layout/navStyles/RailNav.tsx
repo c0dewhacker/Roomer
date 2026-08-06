@@ -122,7 +122,7 @@ export function RailNav({ onNavigate }: { onNavigate?: () => void }) {
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="h-8 w-8 rounded-full p-0">
+              <Button variant="ghost" className="h-8 w-8 rounded-full p-0" aria-label="Open user menu">
                 <Avatar className="h-8 w-8">
                   <AvatarFallback className="bg-primary text-primary-foreground text-xs">{initials ?? 'U'}</AvatarFallback>
                 </Avatar>
