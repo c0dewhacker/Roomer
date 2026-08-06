@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { canUserAccessBuilding } from './groups.js'
+import { checkGroupAccess } from './groups.js'
 
 const createSchema = z.object({
   floorId: z.string().min(1),
@@ -45,9 +45,9 @@ export async function subscriptionRoutes(fastify: FastifyInstance): Promise<void
       return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
     }
 
-    const canAccess = await canUserAccessBuilding(request.user.id, floor.buildingId)
+    const canAccess = await checkGroupAccess(request.user.id, floor.buildingId, floorId)
     if (!canAccess) {
-      return reply.status(403).send({ error: { message: 'Your group does not have access to this building', code: 'GROUP_ACCESS_DENIED' } })
+      return reply.status(403).send({ error: { message: 'Your group does not have access to this floor', code: 'GROUP_ACCESS_DENIED' } })
     }
 
     // Validate zone IDs belong to this floor
