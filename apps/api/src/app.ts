@@ -49,6 +49,36 @@ export async function buildApp(): Promise<FastifyInstance> {
     bodyLimit: 1_048_576,
   })
 
+  // ─── Global error handler ──────────────────────────────────────────────────
+  // Registered before any route plugin so every encapsulated child context
+  // (each route file is registered via fastify.register(), which creates a
+  // new encapsulation boundary) resolves to this handler rather than
+  // Fastify's own default, which echoes the raw error message — including
+  // internal details like DB engine errors — straight back to the client.
+  fastify.setErrorHandler((error: FastifyError | Error, _request, reply) => {
+    fastify.log.error(error)
+    const fastifyError = error as FastifyError
+
+    if (fastifyError.validation) {
+      return reply.status(400).send({
+        error: { message: 'Validation error', code: 'VALIDATION_ERROR', details: fastifyError.validation },
+      })
+    }
+
+    if (fastifyError.statusCode) {
+      // Only surface the original message for 4xx client errors.
+      // For 5xx, use a generic message to avoid leaking internal details.
+      const message = fastifyError.statusCode < 500 ? fastifyError.message : 'Internal server error'
+      return reply.status(fastifyError.statusCode).send({
+        error: { message, code: 'REQUEST_ERROR' },
+      })
+    }
+
+    return reply.status(500).send({
+      error: { message: 'Internal server error', code: 'INTERNAL_ERROR' },
+    })
+  })
+
   // ─── Security ──────────────────────────────────────────────────────────────
   await fastify.register(helmet, {
     // CSP is enabled in production. It is disabled in development only to allow
@@ -285,31 +315,6 @@ export async function buildApp(): Promise<FastifyInstance> {
       return reply.status(200).header('Content-Type', register.contentType).send(content)
     })
   }
-
-  // ─── Global error handler ──────────────────────────────────────────────────
-  fastify.setErrorHandler((error: FastifyError | Error, _request, reply) => {
-    fastify.log.error(error)
-    const fastifyError = error as FastifyError
-
-    if (fastifyError.validation) {
-      return reply.status(400).send({
-        error: { message: 'Validation error', code: 'VALIDATION_ERROR', details: fastifyError.validation },
-      })
-    }
-
-    if (fastifyError.statusCode) {
-      // Only surface the original message for 4xx client errors.
-      // For 5xx, use a generic message to avoid leaking internal details.
-      const message = fastifyError.statusCode < 500 ? fastifyError.message : 'Internal server error'
-      return reply.status(fastifyError.statusCode).send({
-        error: { message, code: 'REQUEST_ERROR' },
-      })
-    }
-
-    return reply.status(500).send({
-      error: { message: 'Internal server error', code: 'INTERNAL_ERROR' },
-    })
-  })
 
   // ─── Graceful shutdown hook ────────────────────────────────────────────────
   fastify.addHook('onClose', async () => {

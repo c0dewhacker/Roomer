@@ -228,7 +228,8 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
           })
           assetsCreated++
         }
-      })
+      }, { timeout: 120_000 }) // up to 2000 rows, each doing several sequential lookups/creates — the
+      // 5s Prisma default is not enough headroom (measured ~3.2s for 500 unique rows locally)
 
       return reply.status(200).send({
         data: {
