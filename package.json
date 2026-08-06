@@ -27,6 +27,7 @@
     ],
     "overrides": {
       "@xmldom/xmldom": "^0.9.7",
+      "@fastify/static": "^10.1.2",
       "fast-uri": "^3.1.5",
       "hono": "^4.12.34",
       "find-my-way": "^9.7.0",

@@ -317,6 +317,7 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
 
     const stream = fs.createReadStream(docAbsPath)
     reply.header('Content-Type', doc.mimeType)
+    reply.header('X-Content-Type-Options', 'nosniff')
     reply.header('Content-Disposition', `attachment; filename="${encodeURIComponent(doc.filename)}"`)
     return reply.send(stream)
   })
