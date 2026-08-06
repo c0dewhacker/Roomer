@@ -617,13 +617,47 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   const createRecurring = useMutation({
     mutationFn: () => {
       const { startTime, endTime } = getRecurringTimes()
+
+      // The API has no concept of the booker's timezone — it takes startTime/
+      // endTime/dayOfWeek/firstDate and combines them as UTC wall-clock values
+      // (see buildSlotDatetime on the backend), unlike the regular one-off
+      // booking flow above, which sends real Date-derived instants that the
+      // browser converts to UTC automatically. Sending the raw local "HH:MM"
+      // here as if it were already UTC silently booked the wrong hours — often
+      // by several hours — for any deployment not running in UTC. Build a real
+      // local Date for the chosen start instant and read its UTC wall-clock
+      // components back instead, and re-derive firstDate/dayOfWeek from that
+      // same UTC-adjusted instant in case the conversion rolled onto a
+      // different UTC calendar day (e.g. an early-morning local start in a
+      // UTC+ timezone falls on the previous UTC date).
+      //
+      // Known residual limitation: if the local start/end range straddles the
+      // UTC day boundary (common for business hours in timezones far from UTC,
+      // e.g. Australia/NZ/Pacific), the API will reject it ("startTime must be
+      // before endTime") since it has no way to know endsAt lands on the next
+      // UTC date. Properly fixing that needs the API to accept timezone-aware
+      // instants rather than separate date+time-string fields — that's the
+      // proper scope of the already-tracked multi-timezone support work
+      // (issue #72), not something to paper over here.
+      const [startH, startM] = startTime.split(':').map(Number)
+      const [endH, endM] = endTime.split(':').map(Number)
+      const localStart = new Date(date)
+      localStart.setHours(startH, startM, 0, 0)
+      const localEnd = new Date(date)
+      localEnd.setHours(endH, endM, 0, 0)
+
+      const pad = (n: number) => String(n).padStart(2, '0')
+      const utcStartTime = `${pad(localStart.getUTCHours())}:${pad(localStart.getUTCMinutes())}`
+      const utcEndTime = `${pad(localEnd.getUTCHours())}:${pad(localEnd.getUTCMinutes())}`
+      const utcFirstDate = `${localStart.getUTCFullYear()}-${pad(localStart.getUTCMonth() + 1)}-${pad(localStart.getUTCDate())}`
+
       return recurringBookingsApi.create({
         assetId: desk?.id ?? '',
         frequency: recurringFrequency,
-        ...(recurringFrequency === 'WEEKLY' ? { dayOfWeek: date.getDay() } : {}),
-        startTime,
-        endTime,
-        firstDate: format(date, 'yyyy-MM-dd'),
+        ...(recurringFrequency === 'WEEKLY' ? { dayOfWeek: localStart.getUTCDay() } : {}),
+        startTime: utcStartTime,
+        endTime: utcEndTime,
+        firstDate: utcFirstDate,
         lastDate: recurringLastDate,
       })
     },
