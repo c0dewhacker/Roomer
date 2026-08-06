@@ -1,12 +1,35 @@
 import { timingSafeEqual } from 'crypto'
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { prisma } from '../lib/prisma.js'
+import { GlobalRole } from '@roomer/shared'
 import {
   userToScim, groupToScim, scimError, listResponse, parseScimFilter,
   applyUserPatchOps, applyGroupPatchOps, hashScimToken,
   SCIM_SCHEMAS,
 } from '../lib/scim-helpers.js'
 import { env } from '../env.js'
+
+/**
+ * True when membership of this group confers elevated privilege — either a
+ * SUPER_ADMIN globalRole or a BUILDING_ADMIN/FLOOR_MANAGER GroupResourceRole.
+ *
+ * The SCIM bearer token is a narrower credential than SUPER_ADMIN (meant for
+ * directory-driven sync of ordinary users and access groups), but nothing
+ * upstream of this check restricts which group ids a PATCH can target. Group
+ * membership for privileged groups is read live by isBuildingManagerForBuilding/
+ * isFloorManagerForFloor (see requireRole.ts), so without this guard a leaked
+ * or over-scoped SCIM token could grant building/floor admin — or even
+ * SUPER_ADMIN — by adding an arbitrary user id to a group a real admin
+ * configured as privileged via the human-facing (SUPER_ADMIN-gated) UI.
+ */
+async function isGroupPrivileged(groupId: string): Promise<boolean> {
+  const group = await prisma.userGroup.findUnique({
+    where: { id: groupId },
+    select: { globalRole: true, _count: { select: { groupResourceRoles: true } } },
+  })
+  if (!group) return false
+  return group.globalRole === GlobalRole.SUPER_ADMIN || group._count.groupResourceRoles > 0
+}
 
 const SCIM_CONTENT_TYPE = 'application/scim+json'
 
@@ -379,6 +402,11 @@ function registerGroups(fastify: FastifyInstance): void {
       return reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `Group ${id} not found`))
     }
 
+    if ((patch.addMemberIds.length > 0 || patch.removeMemberIds.length > 0) && await isGroupPrivileged(id)) {
+      return reply.status(403).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(403, 'SCIM cannot modify membership of a group that grants admin or manager privileges'))
+    }
+
     if (patch.displayName) {
       await prisma.userGroup.update({ where: { id }, data: { name: patch.displayName } })
     }
@@ -399,6 +427,10 @@ function registerGroups(fastify: FastifyInstance): void {
   // DELETE /Groups/:id
   fastify.delete('/Groups/:id', { preHandler: [scimAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (await isGroupPrivileged(id)) {
+      return reply.status(403).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(403, 'SCIM cannot delete a group that grants admin or manager privileges'))
+    }
     try {
       await prisma.userGroup.delete({ where: { id } })
       reply.status(204).send()
