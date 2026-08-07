@@ -123,10 +123,19 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       endsAt: buildSlotDatetime(d, endTime),
     }))
 
-    // Centralised bookability gate (bookable / disabled / restricted / assigned / group access)
-    const gate = await assertBookable(prisma, request.user, assetId, slots[0].startsAt, slots[slots.length - 1].endsAt)
-    if (!gate.ok) {
-      return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+    // Centralised bookability gate (bookable / disabled / restricted / assigned / group access),
+    // checked once per occurrence rather than once across the whole first-to-last
+    // span. The ASSIGNED-status branch of assertBookable checks every UTC calendar
+    // day in the given range against the owner's allowed-weekday rules — spanning
+    // the whole series would require every day between occurrences (weekends,
+    // the other six days of each week) to also be marked available, incorrectly
+    // rejecting an ordinary "book my colleague's Monday-available desk every
+    // Monday" series that only ever touches Mondays.
+    for (const slot of slots) {
+      const gate = await assertBookable(prisma, request.user, assetId, slot.startsAt, slot.endsAt)
+      if (!gate.ok) {
+        return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+      }
     }
 
     try {
