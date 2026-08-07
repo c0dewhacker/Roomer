@@ -382,6 +382,18 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     const newStartsAt = result.data.startsAt ? new Date(result.data.startsAt) : booking.startsAt
     const newEndsAt = result.data.endsAt ? new Date(result.data.endsAt) : booking.endsAt
+    const timeChanged = newStartsAt.getTime() !== booking.startsAt.getTime() || newEndsAt.getTime() !== booking.endsAt.getTime()
+
+    // Rescheduling moves the booking onto a new time slot, so it must clear the
+    // same bookability gate a fresh booking would — otherwise a booking made
+    // before the asset became disabled/restricted/reassigned could be rolled
+    // forward indefinitely by rescheduling, since only overlap was re-checked.
+    if (timeChanged) {
+      const gate = await assertBookable(prisma, request.user, booking.assetId, newStartsAt, newEndsAt)
+      if (!gate.ok) {
+        return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+      }
+    }
 
     let updated: Awaited<ReturnType<typeof prisma.booking.update>>
     try {
@@ -425,7 +437,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     // invite to — Roomer showed the new time, their calendar still showed the
     // old one, with no notice either changed. Skipped for a notes-only edit,
     // since there's nothing calendar-relevant to re-send.
-    if (newStartsAt.getTime() !== booking.startsAt.getTime() || newEndsAt.getTime() !== booking.endsAt.getTime()) {
+    if (timeChanged) {
       await enqueueNotification({
         type: NotificationType.BOOKING_CONFIRMED,
         userId: updated.userId,
