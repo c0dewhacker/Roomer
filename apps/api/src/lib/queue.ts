@@ -419,21 +419,29 @@ async function handleReleaseNoShows(): Promise<void> {
   const cutoff = new Date(now.getTime() - org.checkInGraceMinutes * 60 * 1000)
 
   // Candidates: CONFIRMED, not checked in, grace elapsed since start, slot still
-  // active. Permanently-assigned desks are exempt — the assignee owns the desk
-  // and shouldn't have to check in. Effective enablement resolves per booking:
-  // floor override → building override → org default.
+  // active. The booking's own user being a permanent assignee of the asset is
+  // exempt — the assignee owns the desk and shouldn't have to check in. This
+  // must be checked against the *booking's* user, not merely whether the asset
+  // has any assignment at all: an assigned asset can still be booked by someone
+  // else entirely (assertBookable allows a non-assignee to book a slot the
+  // owner opened up via an availability window/weekly rule), and that borrowed
+  // booking should still be subject to no-show release like any other — an
+  // asset-level "has any assignment" check would wrongly exempt it too, leaving
+  // a desk nobody showed up for stuck unavailable to the queue all day.
+  // Effective enablement resolves per booking: floor override → building
+  // override → org default.
   const candidates = await prisma.booking.findMany({
     where: {
       status: 'CONFIRMED',
       checkedInAt: null,
       startsAt: { lte: cutoff },
       endsAt: { gt: now },
-      asset: { userAssignments: { none: {} } },
     },
     select: {
       id: true, userId: true, assetId: true, startsAt: true, endsAt: true,
       asset: {
         select: {
+          userAssignments: { select: { userId: true } },
           floor: { select: { noShowReleaseEnabled: true, building: { select: { noShowReleaseEnabled: true } } } },
         },
       },
@@ -441,6 +449,8 @@ async function handleReleaseNoShows(): Promise<void> {
   })
 
   const noShows = candidates.filter((b) => {
+    const isAssignee = b.asset.userAssignments.some((ua) => ua.userId === b.userId)
+    if (isAssignee) return false
     const floorOverride = b.asset.floor?.noShowReleaseEnabled
     const buildingOverride = b.asset.floor?.building?.noShowReleaseEnabled
     return floorOverride ?? buildingOverride ?? orgDefault
