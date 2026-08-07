@@ -117,7 +117,11 @@ export function RailNav({ onNavigate }: { onNavigate?: () => void }) {
 
           {/* Utilities */}
           <NotificationBell />
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setTheme(isDark ? 'light' : 'dark')}>
+          <Button
+            variant="ghost" size="icon" className="h-8 w-8"
+            title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            onClick={() => setTheme(isDark ? 'light' : 'dark')}
+          >
             {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </Button>
           <DropdownMenu>
@@ -155,7 +159,7 @@ export function RailNav({ onNavigate }: { onNavigate?: () => void }) {
                  activePanel === 'buildings' ? 'Buildings' :
                  secondaryLabel}
               </span>
-              <button onClick={() => setActivePanel(null)} className="rounded p-0.5 text-muted-foreground hover:text-foreground">
+              <button onClick={() => setActivePanel(null)} aria-label="Close panel" className="rounded p-0.5 text-muted-foreground hover:text-foreground">
                 <X className="h-3.5 w-3.5" />
               </button>
             </div>
