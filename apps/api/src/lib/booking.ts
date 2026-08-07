@@ -102,8 +102,12 @@ async function isCoveredByAvailabilityRules(
   const allowed = new Set(rules.map((r) => r.weekday))
 
   // Walk each calendar day from the start day up to (but not past) the end instant.
+  // Strict `<` matches the half-open [startsAt, endsAt) semantics used everywhere
+  // else in this file (see hasConfirmedOverlap) — a booking whose endsAt lands
+  // exactly on a day's UTC midnight boundary uses none of that day's time, so it
+  // must not require that day to be in the owner's allowed-weekday set too.
   const cursor = new Date(Date.UTC(startsAt.getUTCFullYear(), startsAt.getUTCMonth(), startsAt.getUTCDate()))
-  while (cursor <= endsAt) {
+  while (cursor < endsAt) {
     if (!allowed.has(cursor.getUTCDay())) return false
     cursor.setUTCDate(cursor.getUTCDate() + 1)
   }
