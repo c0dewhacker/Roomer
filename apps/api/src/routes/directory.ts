@@ -47,6 +47,42 @@ async function accessibleBuildingIds(user: Pick<User, 'id' | 'globalRole'>): Pro
     .map((b) => b.id)
 }
 
+/**
+ * Floor IDs the user is allowed to see occupancy for — the floor-level
+ * counterpart to accessibleBuildingIds (GroupFloorAccess vs
+ * GroupBuildingAccess). checkGroupAccess treats building and floor
+ * restrictions as independent gates that must BOTH pass; this endpoint
+ * previously only applied the building gate, so a floor restricted via
+ * GroupFloorAccess inside an otherwise-open building leaked who was booked
+ * there and their home-desk assignments to anyone.
+ */
+async function accessibleFloorIds(user: Pick<User, 'id' | 'globalRole'>): Promise<string[] | 'ALL'> {
+  if (user.globalRole === GlobalRole.SUPER_ADMIN) return 'ALL'
+
+  const [floors, restricted, memberships] = await Promise.all([
+    prisma.floor.findMany({ select: { id: true } }),
+    prisma.groupFloorAccess.findMany({ select: { floorId: true, groupId: true } }),
+    prisma.userGroupMember.findMany({ where: { userId: user.id }, select: { groupId: true } }),
+  ])
+
+  const userGroupIds = new Set(memberships.map((m) => m.groupId))
+  const restrictedBy = new Map<string, Set<string>>()
+  for (const r of restricted) {
+    let set = restrictedBy.get(r.floorId)
+    if (!set) { set = new Set(); restrictedBy.set(r.floorId, set) }
+    set.add(r.groupId)
+  }
+
+  return floors
+    .filter((f) => {
+      const groups = restrictedBy.get(f.id)
+      if (!groups || groups.size === 0) return true // open floor
+      for (const g of userGroupIds) if (groups.has(g)) return true
+      return false
+    })
+    .map((f) => f.id)
+}
+
 const assetLocationSelect = {
   id: true,
   name: true,
@@ -92,8 +128,14 @@ export async function directoryRoutes(fastify: FastifyInstance): Promise<void> {
     const dayStart = new Date(`${dateStr}T00:00:00.000Z`)
     const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000)
 
-    const accessible = await accessibleBuildingIds(request.user)
-    if (accessible !== 'ALL' && accessible.length === 0) {
+    const [accessible, accessibleFloors] = await Promise.all([
+      accessibleBuildingIds(request.user),
+      accessibleFloorIds(request.user),
+    ])
+    if (
+      (accessible !== 'ALL' && accessible.length === 0) ||
+      (accessibleFloors !== 'ALL' && accessibleFloors.length === 0)
+    ) {
       return reply.status(200).send({ data: [], meta: { total: 0, date: dateStr } })
     }
 
@@ -101,7 +143,13 @@ export async function directoryRoutes(fastify: FastifyInstance): Promise<void> {
     // beyond what the requester may access.
     const buildingScope = accessible === 'ALL' ? undefined : { buildingId: { in: accessible } }
     const floorWhere: Record<string, unknown> = { ...(buildingScope ?? {}) }
-    if (parsed.data.floorId) floorWhere.id = parsed.data.floorId
+    if (accessibleFloors !== 'ALL') floorWhere.id = { in: accessibleFloors }
+    if (parsed.data.floorId) {
+      if (accessibleFloors !== 'ALL' && !accessibleFloors.includes(parsed.data.floorId)) {
+        return reply.status(403).send({ error: { message: 'Floor not accessible', code: 'FORBIDDEN' } })
+      }
+      floorWhere.id = parsed.data.floorId
+    }
     if (parsed.data.buildingId) {
       if (accessible !== 'ALL' && !accessible.includes(parsed.data.buildingId)) {
         return reply.status(403).send({ error: { message: 'Building not accessible', code: 'FORBIDDEN' } })
