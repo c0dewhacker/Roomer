@@ -671,9 +671,24 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
           let userId: string
 
           if (existing) {
+            // Same guard as PATCH /users/:id — a roster CSV with no global_role
+            // column defaults every row to 'USER' (see userImportRowSchema), so
+            // an "all employees" import that happens to include the org's sole
+            // super admin would otherwise silently demote them and lock the org
+            // out with no path back except direct DB access.
+            let nextGlobalRole: typeof existing.globalRole = row.global_role as typeof existing.globalRole
+            if (existing.globalRole === GlobalRole.SUPER_ADMIN && existing.accountStatus === 'ACTIVE' && nextGlobalRole !== GlobalRole.SUPER_ADMIN) {
+              const otherActiveAdmins = await prisma.user.count({
+                where: { id: { not: existing.id }, globalRole: GlobalRole.SUPER_ADMIN, accountStatus: 'ACTIVE' },
+              })
+              if (otherActiveAdmins === 0) {
+                nextGlobalRole = existing.globalRole
+                errors.push({ row: index + 2, message: `Cannot demote ${row.email} — they are the last active super admin; role left unchanged` })
+              }
+            }
             await prisma.user.update({
               where: { email: row.email },
-              data: { displayName: row.display_name, globalRole: row.global_role as GlobalRole },
+              data: { displayName: row.display_name, globalRole: nextGlobalRole },
             })
             userId = existing.id
             updated++
