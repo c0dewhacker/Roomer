@@ -1244,6 +1244,10 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           data: { isPrimary: false },
         })
       }
+      const wasAlreadyAssigned = await prisma.assetUserAssignment.findUnique({
+        where: { assetId_userId: { assetId: id, userId: result.data.userId } },
+        select: { assetId: true },
+      })
       const assignment = await prisma.assetUserAssignment.upsert({
         where: { assetId_userId: { assetId: id, userId: result.data.userId } },
         update: { isPrimary: result.data.isPrimary },
@@ -1251,6 +1255,11 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         include: { user: { select: { id: true, displayName: true, email: true } } },
       })
       await prisma.asset.update({ where: { id }, data: { bookingStatus: 'ASSIGNED' } })
+      // Only notify on a brand-new assignment — re-saving isPrimary for someone
+      // already assigned to this desk shouldn't re-send "assigned to you".
+      if (!wasAlreadyAssigned) {
+        await enqueueNotification({ type: NotificationType.ASSET_ASSIGNED, userId: result.data.userId, assetId: id })
+      }
       return reply.status(201).send({ data: { ...assignment.user, isPrimary: assignment.isPrimary } })
     },
   )
