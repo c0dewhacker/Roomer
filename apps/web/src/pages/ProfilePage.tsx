@@ -55,6 +55,7 @@ const NOTIFICATION_GROUPS: Array<{ label: string; types: Array<{ key: string; la
       { key: 'BOOKING_CANCELLED', label: 'Booking cancelled' },
       { key: 'BOOKING_CANCELLED_BY_ADMIN', label: 'Booking cancelled by admin' },
       { key: 'BOOKING_REMINDER', label: 'Booking reminder' },
+      { key: 'BOOKING_NO_SHOW', label: 'Booking released (no-show)' },
     ],
   },
   {
