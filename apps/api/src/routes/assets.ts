@@ -1141,6 +1141,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       ])
 
       dispatchWebhook('asset_assignment.created', { assetId: id, userId, assignedById: request.user.id }).catch(() => {})
+      await enqueueNotification({ type: NotificationType.ASSET_ASSIGNED, userId, assetId: id })
       return reply.status(201).send({ data: assignment })
     },
   )

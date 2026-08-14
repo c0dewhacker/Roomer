@@ -2,7 +2,7 @@ import { PgBoss, type Job } from 'pg-boss'
 import { env } from '../env.js'
 import { prisma } from './prisma.js'
 import { buildBookingIcs } from './ical.js'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderWelcome, renderFloorAvailable, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderWelcome, renderFloorAvailable, renderAssetAssigned, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
 import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
@@ -289,6 +289,29 @@ async function processSendNotification(
         assetName: entry.asset.name,
         wantedStartsAt: formatDate(entry.wantedStartsAt), wantedEndsAt: formatDate(entry.wantedEndsAt),
         queueUrl: `${env.APP_URL}/queue`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.ASSET_ASSIGNED && assetId) {
+    const [asset, assignment] = await Promise.all([
+      prisma.asset.findUnique({ where: { id: assetId }, select: { name: true } }),
+      prisma.assetAssignment.findFirst({
+        where: { assetId, userId, returnedAt: null },
+        orderBy: { assignedAt: 'desc' },
+        select: { assignedAt: true, notes: true },
+      }),
+    ])
+    if (asset) {
+      const assignedAt = assignment?.assignedAt ?? new Date()
+      const notes = assignment?.notes ?? null
+      title = `Asset assigned to you — ${asset.name}`
+      body = `${asset.name} has been assigned to you.`
+      emailPayload = renderAssetAssigned({ assignedAt, notes }, user, asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: asset.name,
+        assignedAt: formatDate(assignedAt),
+        notes: notes ?? '',
+        appUrl: env.APP_URL,
       }
     }
   } else if (type === NotificationType.WELCOME) {

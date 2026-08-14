@@ -397,6 +397,32 @@ export function renderQueueExpired(
   return { subject, html, text }
 }
 
+// ─── ASSET_ASSIGNED ───────────────────────────────────────────────────────────
+
+export function renderAssetAssigned(
+  assignment: { assignedAt: Date; notes: string | null },
+  user: Pick<User, 'displayName' | 'email'>,
+  asset: Pick<Asset, 'name'>,
+): { subject: string; html: string; text: string } {
+  const subject = `Asset assigned to you — ${escapeHtml(asset.name)}`
+  const safeNotes = assignment.notes ? escapeHtml(assignment.notes) : ''
+  const html = baseHtml(
+    subject,
+    `<h1>An asset has been assigned to you</h1>
+     <p>Hi ${escapeHtml(user.displayName)}, <strong>${escapeHtml(asset.name)}</strong> has been assigned to you.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
+         <dt>Assigned</dt><dd>${formatDate(assignment.assignedAt)}</dd>
+         ${safeNotes ? `<dt>Notes</dt><dd>${safeNotes}</dd>` : ''}
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/assets" class="btn">View My Assets</a>`,
+  )
+  const text = `Hi ${user.displayName},\n\n${asset.name} has been assigned to you (${formatDate(assignment.assignedAt)}).${assignment.notes ? `\nNotes: ${assignment.notes}` : ''}\n\nView: ${env.APP_URL}/assets`
+  return { subject, html, text }
+}
+
 // ─── WELCOME ──────────────────────────────────────────────────────────────────
 
 export function renderBookingReminder(
