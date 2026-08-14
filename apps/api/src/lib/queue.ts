@@ -513,6 +513,21 @@ async function handleExpireClaimDeadlines(): Promise<void> {
     data: { status: 'EXPIRED' },
   })
 
+  // Tell the user who missed their claim window — every other queue-entry
+  // transition (join, promote, expire-while-waiting) notifies the affected
+  // user; this one previously only fired a webhook, leaving the person who
+  // lost their slot with no email or in-app notice at all.
+  await getBoss().insert(
+    'send-notification',
+    expiredPromoted.map((entry) => ({
+      data: {
+        type: NotificationType.QUEUE_EXPIRED,
+        userId: entry.userId,
+        queueEntryId: entry.id,
+      } satisfies NotificationJobData,
+    })),
+  )
+
   for (const entry of expiredPromoted) {
     dispatchWebhook('queue.expired', { id: entry.id, userId: entry.userId, assetId: entry.assetId }).catch(() => {})
   }
