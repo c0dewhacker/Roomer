@@ -12,7 +12,14 @@ export function CollapsibleCard({
   description: string
   children: React.ReactNode
 }) {
-  const [open, setOpen] = useState(false)
+  // Every current usage is one of the 1–2 cards that make up an entire
+  // settings tab (Organisation, Provisioning, and Branding have exactly one;
+  // Email and SSO have two) — not a long list where collapsing-by-default
+  // reduces clutter. Starting closed meant an admin had to click through
+  // every card just to see their current SMTP host, SSO status, etc., on
+  // every visit. Collapse remains available for whoever wants to tidy up
+  // after reviewing.
+  const [open, setOpen] = useState(true)
 
   return (
     <Card>
