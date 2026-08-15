@@ -33,6 +33,19 @@ async function isGroupPrivileged(groupId: string): Promise<boolean> {
 
 const SCIM_CONTENT_TYPE = 'application/scim+json'
 
+// Bounded, linear-time check (no backtracking). Applied to every write path
+// that can set a user's email (POST/PUT/PATCH) — PUT and PATCH originally
+// only validated this on create, so a SCIM client could set an *existing*
+// user's email to an arbitrary malformed string. Since SSO login resolves
+// the Roomer account by email (see findOrCreateSsoUser in auth-enterprise.ts),
+// an unvalidated email change is also a latent account-identity issue, not
+// just a data-quality one — whoever can authenticate as that address at the
+// IdP inherits whatever this account already has.
+const SCIM_EMAIL_REGEX = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,64}$/
+function isValidScimEmail(email: string): boolean {
+  return email.length <= 254 && SCIM_EMAIL_REGEX.test(email)
+}
+
 async function scimAuth(request: FastifyRequest, reply: FastifyReply): Promise<void> {
   const auth = request.headers.authorization
   if (!auth?.startsWith('Bearer ')) {
@@ -162,9 +175,7 @@ function registerUsers(fastify: FastifyInstance): void {
         .send(scimError(400, 'userName is required'))
     }
 
-    // Validate email format — bounded, linear-time check (no backtracking)
-    const emailRegex = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,64}$/
-    if (email.length > 254 || !emailRegex.test(email)) {
+    if (!isValidScimEmail(email)) {
       return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
         .send(scimError(400, 'userName must be a valid email address'))
     }
@@ -228,6 +239,11 @@ function registerUsers(fastify: FastifyInstance): void {
     const enterpriseExt = body[SCIM_SCHEMAS.ENTERPRISE_USER] as Record<string, unknown> | undefined
     const incomingDeptName = typeof enterpriseExt?.department === 'string' ? enterpriseExt.department.trim() : undefined
 
+    if (email && !isValidScimEmail(email)) {
+      return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(400, 'userName must be a valid email address'))
+    }
+
     let departmentId: string | null | undefined
     if (incomingDeptName) {
       const org = await prisma.organisation.findFirst({ select: { id: true } })
@@ -272,6 +288,11 @@ function registerUsers(fastify: FastifyInstance): void {
       const user = await prisma.user.findUnique({ where: { id }, select: userSelect })
       if (!user) return reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
       return reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
+    }
+
+    if (userPatch.email && !isValidScimEmail(userPatch.email)) {
+      return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(400, 'userName must be a valid email address'))
     }
 
     let departmentId: string | undefined
