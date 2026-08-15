@@ -126,7 +126,14 @@ function registerUsers(fastify: FastifyInstance): void {
     const parsed = parseScimFilter(q.filter)
     let where: Record<string, unknown> = {}
     if (parsed) {
-      if (parsed.attr === 'userName' || parsed.attr === 'email') where = { email: parsed.value }
+      // Case-insensitive, same reasoning as the login/SSO/manager-link lookups
+      // elsewhere in this codebase: email isn't normalised to lowercase on
+      // every creation path, so an IdP sending different casing than however
+      // the account is actually stored (e.g. Entra's directory casing vs. an
+      // admin-created local account) would otherwise miss the existing user —
+      // provisioning idempotency checks like Entra's pre-create existence probe
+      // rely on this filter finding the account it already made.
+      if (parsed.attr === 'userName' || parsed.attr === 'email') where = { email: { equals: parsed.value, mode: 'insensitive' } }
       else if (parsed.attr === 'externalId') where = { externalId: parsed.value }
       else if (parsed.attr === 'displayName') where = { displayName: { contains: parsed.value, mode: 'insensitive' } }
     }
@@ -162,7 +169,10 @@ function registerUsers(fastify: FastifyInstance): void {
         .send(scimError(400, 'userName must be a valid email address'))
     }
 
-    const existing = await prisma.user.findUnique({ where: { email }, select: userSelect })
+    // Case-insensitive — see the GET /Users filter above for why. Without this,
+    // a differently-cased userName for an account that already exists creates
+    // a duplicate rather than hitting the 409 conflict.
+    const existing = await prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } }, select: userSelect })
     if (existing) {
       return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
         .send(scimError(409, `User ${email} already exists`))
