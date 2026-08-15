@@ -109,7 +109,7 @@ async function processSendNotification(
     })
     if (booking) {
       title = `Booking confirmed — ${booking.asset.name}`
-      body = `Your booking for ${booking.asset.name} is confirmed from ${booking.startsAt.toISOString()} to ${booking.endsAt.toISOString()}`
+      body = `Your booking for ${booking.asset.name} is confirmed from ${formatDate(booking.startsAt)} to ${formatDate(booking.endsAt)}`
       emailPayload = renderBookingConfirmed(booking, user, {
         name: booking.asset.name,
         zoneName: booking.asset.primaryZone?.name ?? '',
@@ -245,7 +245,7 @@ async function processSendNotification(
     })
     if (entry && claimDeadline && entry.claimToken) {
       title = `Asset available — ${entry.asset.name}`
-      body = `Claim your booking by ${new Date(claimDeadline).toISOString()}.`
+      body = `Claim your booking by ${formatDate(new Date(claimDeadline))}.`
       emailPayload = renderQueuePromoted(entry, user, entry.asset, new Date(claimDeadline), entry.claimToken)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
