@@ -150,10 +150,27 @@ export async function applyGroupMappings(
       select: { globalRole: true, globalRoleSource: true },
     })
     if (current?.globalRole === GlobalRole.SUPER_ADMIN && current.globalRoleSource === RoleSource.IDP) {
-      await prisma.user.update({
-        where: { id: userId },
-        data: { globalRole: GlobalRole.USER, globalRoleSource: RoleSource.MANUAL },
+      // Same guard as PATCH /users/:id and the bulk user import — but this path
+      // is the most dangerous of the three: it fires silently on an ordinary
+      // SSO login (e.g. after a routine AD group rename or someone briefly
+      // dropped from an "Admins" group), with no admin reviewing the change.
+      // Demoting the org's last active super admin here would lock the org
+      // out of its own admin UI with no way back except direct DB access.
+      const otherActiveAdmins = await prisma.user.count({
+        where: { id: { not: userId }, globalRole: GlobalRole.SUPER_ADMIN, accountStatus: 'ACTIVE' },
       })
+      if (otherActiveAdmins > 0) {
+        await prisma.user.update({
+          where: { id: userId },
+          data: { globalRole: GlobalRole.USER, globalRoleSource: RoleSource.MANUAL },
+        })
+      } else {
+        process.stderr.write(JSON.stringify({
+          level: 'warn',
+          msg: '[group-mapping] Skipped IdP-driven admin demotion — user is the last active super admin',
+          userId,
+        }) + '\n')
+      }
     }
   }
 }
