@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import { subDays, format, parseISO } from 'date-fns'
 import { formatDate } from '@/lib/utils'
+import { downloadCsv } from '@/lib/csv'
 import { useQuery } from '@tanstack/react-query'
 import {
   analyticsApi,
@@ -26,28 +27,6 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, AreaChart, Area,
 } from 'recharts'
-
-// ─── CSV Export ───────────────────────────────────────────────────────────────
-
-// Cell values (display names, emails, department/building/floor/zone names) can
-// contain arbitrary user-controlled text. If a cell starts with =, +, -, @, tab,
-// or CR, Excel/Sheets/LibreOffice may interpret it as a formula when the file is
-// opened — a stored CSV/formula-injection vector (CWE-1236). Prefixing with a
-// leading apostrophe forces spreadsheet apps to treat the cell as literal text.
-function sanitizeCsvCell(value: string): string {
-  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value
-}
-
-function downloadCsv(filename: string, rows: string[][]) {
-  const csv = rows.map((r) => r.map((v) => `"${sanitizeCsvCell(String(v)).replace(/"/g, '""')}"`).join(',')).join('\n')
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
-}
 
 // ─── Date Range ───────────────────────────────────────────────────────────────
 

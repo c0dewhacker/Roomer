@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import { Upload, Download, CheckCircle2, AlertCircle, ChevronRight, X } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { assetsApi } from '@/lib/api'
+import { toCsv } from '@/lib/csv'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -156,11 +157,10 @@ export default function AssignmentImportDialog({
     setDownloadingExport(true)
     try {
       const res = await assetsApi.exportAssignments(buildingId)
-      const header = 'ASSET_ID,USER_EMAIL,IS_PRIMARY'
-      const csvRows = res.data.map(
-        (r) => `${r.assetId},${r.userEmail},${r.isPrimary}`,
-      )
-      const csv = [header, ...csvRows].join('\n')
+      const csv = toCsv([
+        ['ASSET_ID', 'USER_EMAIL', 'IS_PRIMARY'],
+        ...res.data.map((r) => [r.assetId, r.userEmail, String(r.isPrimary)]),
+      ])
       const filename = buildingName
         ? `${buildingName.replace(/[^a-z0-9]/gi, '_')}-assignments.csv`
         : 'assignments.csv'
