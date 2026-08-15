@@ -633,11 +633,20 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       let updated = 0
       const errors: Array<{ row: number; message: string }> = []
 
-      // Validate all rows first
+      // Validate all rows first. A CSV blank cell parses to '' (not absent), but
+      // password/global_role are meant to be optional-with-a-default (see the
+      // CSV column help text and downloadable template, which both show blank
+      // password/global_role cells) — z.optional()/z.default() only apply to
+      // undefined, not ''. Without stripping empty strings here, an ordinary
+      // blank cell rejects the whole row instead of falling back to a random
+      // password / USER role as documented.
       type ValidRow = z.infer<typeof userImportRowSchema>
       const validRows: Array<{ index: number; row: ValidRow }> = []
       for (let i = 0; i < body.data.rows.length; i++) {
-        const result = userImportRowSchema.safeParse(body.data.rows[i])
+        const rawRow = { ...body.data.rows[i] }
+        if (rawRow.password === '') delete rawRow.password
+        if (rawRow.global_role === '') delete rawRow.global_role
+        const result = userImportRowSchema.safeParse(rawRow)
         if (!result.success) {
           errors.push({ row: i + 2, message: result.error.issues.map((e) => e.message).join('; ') })
         } else {
