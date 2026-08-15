@@ -599,6 +599,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
                   },
                   select: { id: true, startsAt: true, endsAt: true, ownerId: true },
                 },
+                availabilityRules: { select: { weekday: true } },
               },
             },
           },
@@ -652,6 +653,12 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         const isOnAllowList = asset.allowList.some((a) => a.userId === currentUserId)
         const isAssignedUser = asset.userAssignments.some((ua) => ua.user.id === currentUserId)
         const hasAvailabilityWindow = (asset.availabilityWindows ?? []).length > 0
+        // Mirrors assertBookable's isCoveredByAvailabilityRules (lib/booking.ts):
+        // a non-assigned user may book an ASSIGNED desk on a weekday its owner
+        // has marked recurringly available, not just via a one-off window. The
+        // floor plan must reflect that or it shows "assigned"/unbookable for a
+        // desk the booking endpoint would actually accept.
+        const hasAvailabilityRule = (asset.availabilityRules ?? []).some((r) => r.weekday === dayStart.getUTCDay())
 
         let bookingStatus: AvailabilityStatus
 
@@ -670,7 +677,8 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         } else if (
           (asset.bookingStatus === 'ASSIGNED' || asset.userAssignments.length > 0) &&
           !isAssignedUser &&
-          !hasAvailabilityWindow
+          !hasAvailabilityWindow &&
+          !hasAvailabilityRule
         ) {
           // Non-assigned user: reflect their queue state for this assigned desk
           if (myQueueEntry?.status === 'PROMOTED') {
