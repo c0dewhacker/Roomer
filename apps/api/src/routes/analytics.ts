@@ -739,7 +739,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         LEFT JOIN "Booking" b ON b."userId" = br.id
           AND b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate} AND b.status = 'CONFIRMED'
         GROUP BY br.root, ru."displayName"
-        ORDER BY "deskDays"::numeric DESC NULLS LAST
+        ORDER BY ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0) AS NUMERIC), 2) DESC NULLS LAST
       `
 
       return reply.status(200).send({
