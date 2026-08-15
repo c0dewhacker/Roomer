@@ -55,7 +55,16 @@ export async function isTokenBlocked(jti: string): Promise<boolean> {
 /**
  * Remove all blocklist entries whose JWT has already expired.
  * Call this periodically (e.g. via a pg-boss cron job) to keep the table small.
+ *
+ * Also sweeps NOT_BLOCKED_CACHE: entries are only otherwise removed lazily
+ * when the same JTI is checked again after its TTL — a token checked once
+ * and never again (session ends, tab closed) would sit in the Map forever,
+ * growing unbounded over a long-running process with continuous traffic.
  */
 export async function pruneExpiredBlocklistEntries(): Promise<void> {
+  const now = Date.now()
+  for (const [jti, expiresAt] of NOT_BLOCKED_CACHE) {
+    if (now > expiresAt) NOT_BLOCKED_CACHE.delete(jti)
+  }
   await prisma.revokedToken.deleteMany({ where: { expiresAt: { lt: new Date() } } })
 }
