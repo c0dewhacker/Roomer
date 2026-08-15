@@ -661,7 +661,12 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           AND b."startsAt" <= ${endDate}
           AND b.status = 'CONFIRMED'
         GROUP BY d.id, d.name
-        ORDER BY "deskDays"::numeric DESC NULLS LAST
+        ORDER BY ROUND(
+          CAST(
+            COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0)
+            AS NUMERIC
+          ), 2
+        ) DESC NULLS LAST
       `
 
       const data = rows.map((r) => ({
