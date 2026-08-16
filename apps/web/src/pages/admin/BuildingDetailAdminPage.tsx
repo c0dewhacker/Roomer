@@ -139,7 +139,7 @@ function FloorCard({ floor, buildingId }: { floor: Floor & { _count?: { zones: n
       qc.invalidateQueries({ queryKey: ['floors', floor.id] })
       qc.invalidateQueries({ queryKey: ['assets'] })
     },
-    onError: () => toast.error('Failed to clear assignments'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const upload = useMutation({
@@ -162,7 +162,7 @@ function FloorCard({ floor, buildingId }: { floor: Floor & { _count?: { zones: n
       toast.success('Floor deleted')
       qc.invalidateQueries({ queryKey: ['buildings', buildingId] })
     },
-    onError: () => toast.error('Failed to delete floor'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return (
@@ -345,7 +345,7 @@ function BuildingManagersPanel({ buildingId }: { buildingId: string }) {
       setSearch('')
       setSelectedUserId('')
     },
-    onError: () => toast.error('Failed to assign building manager'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const removeUser = useMutation({
@@ -354,7 +354,7 @@ function BuildingManagersPanel({ buildingId }: { buildingId: string }) {
       toast.success('Building manager removed')
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'managers'] })
     },
-    onError: () => toast.error('Failed to remove building manager'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const existingUserIds = new Set((managers ?? []).map((m) => m.id))
@@ -382,7 +382,7 @@ function BuildingManagersPanel({ buildingId }: { buildingId: string }) {
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'group-managers'] })
       setSelectedGroupId('')
     },
-    onError: () => toast.error('Failed to assign group'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const removeGroup = useMutation({
@@ -391,7 +391,7 @@ function BuildingManagersPanel({ buildingId }: { buildingId: string }) {
       toast.success('Group manager removed')
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'group-managers'] })
     },
-    onError: () => toast.error('Failed to remove group manager'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const existingGroupIds = new Set((groupManagers ?? []).map((g) => g.id))
@@ -581,7 +581,7 @@ function BuildingAccessSection({ buildingId }: { buildingId: string }) {
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'access-groups'] })
       setSelectedGroupId('')
     },
-    onError: () => toast.error('Failed to add group'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const remove = useMutation({
@@ -590,7 +590,7 @@ function BuildingAccessSection({ buildingId }: { buildingId: string }) {
       toast.success('Access group removed')
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'access-groups'] })
     },
-    onError: () => toast.error('Failed to remove group'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const isOpen = !isLoading && (accessGroups?.length ?? 0) === 0
@@ -712,7 +712,7 @@ export default function BuildingDetailAdminPage() {
   const saveNoShow = useMutation({
     mutationFn: (v: boolean | null) => buildingsApi.update(buildingId!, { noShowReleaseEnabled: v }),
     onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['buildings', buildingId] }) },
-    onError: () => toast.error('Failed to save'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return (

@@ -108,7 +108,7 @@ export function LdapConfigForm({
         toast.success(`Sync complete. ${parts.join(' · ')}`)
       }
     },
-    onError: () => toast.error('LDAP sync failed — check connection settings'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   function applyPreset(preset: typeof LDAP_PRESETS[number]) {

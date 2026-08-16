@@ -75,7 +75,7 @@ export function OrgSettingsCard() {
       qc.invalidateQueries({ queryKey: ['settings', 'organisation'] })
       qc.invalidateQueries({ queryKey: ['settings', 'public'] })
     },
-    onError: () => toast.error('Failed to save settings'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return (

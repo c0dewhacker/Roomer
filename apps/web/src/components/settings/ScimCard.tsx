@@ -30,7 +30,7 @@ export function ScimCard() {
   const toggle = useMutation({
     mutationFn: (enabled: boolean) => settingsApi.patchScim({ enabled }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['settings', 'scim'] }),
-    onError: () => toast.error('Failed to update SCIM'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const generate = useMutation({
@@ -40,7 +40,7 @@ export function ScimCard() {
       setShowToken(false)
       qc.invalidateQueries({ queryKey: ['settings', 'scim'] })
     },
-    onError: () => toast.error('Failed to generate token'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const revoke = useMutation({
@@ -50,7 +50,7 @@ export function ScimCard() {
       qc.invalidateQueries({ queryKey: ['settings', 'scim'] })
       toast.success('SCIM token revoked')
     },
-    onError: () => toast.error('Failed to revoke token'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   function copyEndpoint() {

@@ -65,7 +65,7 @@ function AddAllowListDialog({
       setSearch('')
       setSelectedUserId('')
     },
-    onError: () => toast.error('Failed to add user'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return (
@@ -150,7 +150,7 @@ function AddAssignmentDialog({
       setSelectedUserId('')
       setMakePrimary(false)
     },
-    onError: () => toast.error('Failed to assign user'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return (
@@ -335,7 +335,7 @@ function EditAssetDialog({
       qc.invalidateQueries({ queryKey: ['floors'] })
       onClose()
     },
-    onError: () => toast.error('Failed to update asset'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const addAmenity = () => {
@@ -454,7 +454,7 @@ function AvailableDaysEditor({ deskId }: { deskId: string }) {
       qc.invalidateQueries({ queryKey: ['assets', deskId, 'availability-rules'] })
       toast.success('Available days updated')
     },
-    onError: () => toast.error('Failed to update available days'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const current = new Set(weekdays ?? [])
@@ -570,7 +570,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
       toast.success('User removed from allow list')
       qc.invalidateQueries({ queryKey: ['assets', desk?.id, 'allow-list'] })
     },
-    onError: () => toast.error('Failed to remove user'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const removeAssignment = useMutation({
@@ -579,7 +579,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
       toast.success('User removed from desk')
       qc.invalidateQueries({ queryKey: ['floors'] })
     },
-    onError: () => toast.error('Failed to remove user'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const setPrimaryAssignment = useMutation({
@@ -588,7 +588,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
       toast.success('Primary user updated')
       qc.invalidateQueries({ queryKey: ['floors'] })
     },
-    onError: () => toast.error('Failed to update primary user'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const { data: additionalZones } = useQuery({
@@ -604,7 +604,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
       toast.success('Zone removed')
       qc.invalidateQueries({ queryKey: ['assets', desk?.id, 'zones'] })
     },
-    onError: () => toast.error('Failed to remove zone'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const getRecurringTimes = (): { startTime: string; endTime: string } => {

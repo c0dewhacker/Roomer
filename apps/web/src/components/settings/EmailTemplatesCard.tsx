@@ -160,7 +160,7 @@ function TemplateEditor({ type }: { type: string }) {
       setHtml(null)
       qc.invalidateQueries({ queryKey: ['email-template', type] })
     },
-    onError: () => toast.error('Failed to save template'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const reset = useMutation({
@@ -171,13 +171,13 @@ function TemplateEditor({ type }: { type: string }) {
       setHtml(null)
       qc.setQueryData(['email-template', type], { data: res.data })
     },
-    onError: () => toast.error('Failed to reset template'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const sendTest = useMutation({
     mutationFn: () => emailTemplatesApi.sendTest(type, { subject: currentSubject, html: currentHtml }),
     onSuccess: (res) => toast.success(`Test email sent to ${res.data.sentTo}`),
-    onError: () => toast.error('Failed to send test email — check your SMTP settings'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   if (isLoading) {

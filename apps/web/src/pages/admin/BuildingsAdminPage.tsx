@@ -57,13 +57,13 @@ function BuildingDialog({
   const create = useMutation({
     mutationFn: (d: BuildingForm) => buildingsApi.create(d),
     onSuccess: () => { toast.success('Building created'); qc.invalidateQueries({ queryKey: ['buildings'] }); onClose(); reset() },
-    onError: () => toast.error('Failed to create building'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const update = useMutation({
     mutationFn: (d: BuildingForm) => buildingsApi.update(existing!.id, d),
     onSuccess: () => { toast.success('Building updated'); qc.invalidateQueries({ queryKey: ['buildings'] }); onClose() },
-    onError: () => toast.error('Failed to update building'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const onSubmit = (d: BuildingForm) => existing ? update.mutate(d) : create.mutate(d)
@@ -113,7 +113,7 @@ export default function BuildingsAdminPage() {
   const deleteBuilding = useMutation({
     mutationFn: (id: string) => buildingsApi.delete(id),
     onSuccess: () => { toast.success('Building deleted'); qc.invalidateQueries({ queryKey: ['buildings'] }) },
-    onError: () => toast.error('Failed to delete building'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return (

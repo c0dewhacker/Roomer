@@ -180,13 +180,13 @@ function UserRow({ user, onRefresh }: { user: User; onRefresh: () => void }) {
   const updateStatus = useMutation({
     mutationFn: (accountStatus: string) => usersApi.update(user.id, { accountStatus } as any),
     onSuccess: () => { toast.success('User updated'); onRefresh() },
-    onError: () => toast.error('Failed to update user'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const updateRole = useMutation({
     mutationFn: (globalRole: string) => usersApi.update(user.id, { globalRole } as any),
     onSuccess: () => { toast.success('Role updated'); onRefresh() },
-    onError: () => toast.error('Failed to update role'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const initials = user.displayName

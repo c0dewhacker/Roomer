@@ -66,7 +66,7 @@ export function BrandingCard() {
       toast.success('Branding saved')
       qc.invalidateQueries({ queryKey: ['branding'] })
     },
-    onError: () => toast.error('Failed to save branding'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const uploadLogo = useMutation({
@@ -75,7 +75,7 @@ export function BrandingCard() {
       toast.success('Logo uploaded')
       qc.invalidateQueries({ queryKey: ['branding'] })
     },
-    onError: () => toast.error('Failed to upload logo'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const uploadFavicon = useMutation({
@@ -84,7 +84,7 @@ export function BrandingCard() {
       toast.success('Favicon uploaded')
       qc.invalidateQueries({ queryKey: ['branding'] })
     },
-    onError: () => toast.error('Failed to upload favicon'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const radiusOptions: { value: Branding['borderRadius']; label: string; preview: string }[] = [

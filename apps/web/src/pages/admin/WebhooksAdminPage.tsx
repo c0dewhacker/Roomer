@@ -116,7 +116,7 @@ function EndpointDialog({
         onClose()
       }
     },
-    onError: () => toast.error(isEdit ? 'Failed to update endpoint' : 'Failed to create endpoint'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const grouped = allEvents.reduce<Record<string, string[]>>((acc, e) => {
@@ -303,20 +303,20 @@ export default function WebhooksAdminPage() {
       qc.invalidateQueries({ queryKey: ['webhooks'] })
       setDeleting(null)
     },
-    onError: () => toast.error('Failed to delete endpoint'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const ping = useMutation({
     mutationFn: (id: string) => webhooksApi.ping(id),
     onSuccess: () => toast.success('Ping sent'),
-    onError: () => toast.error('Ping failed'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const toggleEnabled = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       webhooksApi.update(id, { enabled }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['webhooks'] }),
-    onError: () => toast.error('Failed to update endpoint'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return (

@@ -154,13 +154,13 @@ function AssetDialog({
   const create = useMutation({
     mutationFn: (d: AssetForm) => assetsApi.create({ ...d, amenities }),
     onSuccess: () => { toast.success('Asset created'); qc.invalidateQueries({ queryKey: ['assets'] }); onClose(); reset() },
-    onError: () => toast.error('Failed to create asset'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const update = useMutation({
     mutationFn: (d: AssetForm) => assetsApi.update(existing!.id, { ...d, amenities }),
     onSuccess: () => { toast.success('Asset updated'); qc.invalidateQueries({ queryKey: ['assets'] }); onClose() },
-    onError: () => toast.error('Failed to update asset'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const onSubmit = (d: AssetForm) => existing ? update.mutate(d) : create.mutate(d)
@@ -333,7 +333,7 @@ function AssignDialog({ open, onClose, assetId }: { open: boolean; onClose: () =
       setUserSearch('')
       setIsPrimary(false)
     },
-    onError: () => toast.error('Failed to assign user'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return (
@@ -460,7 +460,7 @@ function CategoryDialog({ open, onClose, existing }: { open: boolean; onClose: (
       return res
     },
     onSuccess: () => { toast.success('Category created'); qc.invalidateQueries({ queryKey: ['asset-categories'] }); onClose(); reset() },
-    onError: () => toast.error('Failed to create category'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const update = useMutation({
@@ -470,7 +470,7 @@ function CategoryDialog({ open, onClose, existing }: { open: boolean; onClose: (
       return res
     },
     onSuccess: () => { toast.success('Category updated'); qc.invalidateQueries({ queryKey: ['asset-categories'] }); onClose() },
-    onError: () => toast.error('Failed to update category'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const isPending = create.isPending || update.isPending || uploadIcon.isPending
@@ -602,7 +602,7 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
   const deleteAsset = useMutation({
     mutationFn: (id: string) => assetsApi.delete(id),
     onSuccess: () => { toast.success('Asset deleted'); qc.invalidateQueries({ queryKey: ['assets'] }) },
-    onError: () => toast.error('Failed to delete asset'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const removeUser = useMutation({
@@ -613,7 +613,7 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
       qc.invalidateQueries({ queryKey: ['assets'] })
       qc.invalidateQueries({ queryKey: ['floors'] })
     },
-    onError: () => toast.error('Failed to remove user'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const filtered = (assets ?? []).filter((a) =>
@@ -824,7 +824,7 @@ function CategoriesTab() {
   const deleteCategory = useMutation({
     mutationFn: (id: string) => assetsApi.deleteCategory(id),
     onSuccess: () => { toast.success('Category deleted'); qc.invalidateQueries({ queryKey: ['asset-categories'] }) },
-    onError: () => toast.error('Failed to delete category'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return (
