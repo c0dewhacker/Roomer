@@ -1013,11 +1013,25 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(404).send({ error: { message: 'Category not found', code: 'NOT_FOUND' } })
       }
 
+      if (result.data.floorId) {
+        const floor = await prisma.floor.findUnique({ where: { id: result.data.floorId }, select: { id: true } })
+        if (!floor) return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+      }
+      if (result.data.primaryZoneId) {
+        const zone = await prisma.zone.findUnique({ where: { id: result.data.primaryZoneId }, select: { id: true } })
+        if (!zone) return reply.status(404).send({ error: { message: 'Zone not found', code: 'NOT_FOUND' } })
+      }
+
       try {
         const { primaryZoneId, floorId, purchaseDate: purchaseDateStr, warrantyExpiry: warrantyExpiryStr, ...rest } = result.data
         const asset = await prisma.asset.create({
           data: {
             ...rest,
+            // amenities has no DB default — the Zod schema documents it as
+            // optional, so a caller that omits it (any direct API/integration
+            // use, unlike the admin UI which always sends []) must not hit a
+            // NOT NULL constraint violation.
+            amenities: rest.amenities ?? [],
             purchaseDate: purchaseDateStr ? new Date(purchaseDateStr) : undefined,
             warrantyExpiry: warrantyExpiryStr ? new Date(warrantyExpiryStr) : undefined,
             ...(primaryZoneId ? { primaryZoneId } : {}),
@@ -1027,10 +1041,19 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         })
         dispatchWebhook('asset.created', { id: asset.id, name: asset.name, categoryId: asset.categoryId }).catch(() => {})
         return reply.status(201).send({ data: asset })
-      } catch {
-        return reply.status(409).send({
-          error: { message: 'Asset tag already in use', code: 'ALREADY_EXISTS' },
-        })
+      } catch (err) {
+        // assetTag is the only unique constraint on Asset, so P2002 always
+        // means that conflict — but anything else (bad floorId/primaryZoneId
+        // FK, unexpected DB error) was previously mislabelled with the same
+        // "already in use" message, making it impossible to diagnose from
+        // the API response.
+        if ((err as { code?: string }).code === 'P2002') {
+          return reply.status(409).send({
+            error: { message: 'Asset tag already in use', code: 'ALREADY_EXISTS' },
+          })
+        }
+        fastify.log.error(err, 'Failed to create asset')
+        return reply.status(500).send({ error: { message: 'Internal server error', code: 'INTERNAL_ERROR' } })
       }
     },
   )
