@@ -185,8 +185,13 @@ export default function ProfilePage() {
 
   if (!user) return null
 
+  // A double space, or a leading/trailing space, in displayName produces an
+  // empty-string part when split on a literal ' ' — n[0] on that is
+  // undefined, and Array.join('') renders it as the literal text
+  // "undefined". Trim and split on any run of whitespace instead.
   const initials = user.displayName
-    .split(' ')
+    .trim()
+    .split(/\s+/)
     .map((n) => n[0])
     .join('')
     .toUpperCase()

@@ -41,8 +41,12 @@ export function TopBar({ onMenuClick, hideBrand }: TopBarProps) {
     theme === 'dark' ||
     (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
 
+  // A double space, or a leading/trailing space, in displayName produces an
+  // empty-string part when split on a literal ' ' — n[0] on that is
+  // undefined, and Array.join('') renders it as the literal text "undefined".
   const initials = user?.displayName
-    ?.split(' ')
+    ?.trim()
+    .split(/\s+/)
     .slice(0, 2)
     .map((n) => n[0])
     .join('')
