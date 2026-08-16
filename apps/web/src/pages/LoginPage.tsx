@@ -101,6 +101,21 @@ export default function LoginPage() {
     staleTime: 60_000,
   })
 
+  // The configured default provider is only meaningful if that provider is
+  // actually enabled — an admin can set "default = OIDC" and later disable
+  // OIDC (e.g. during an SSO migration or cert rotation) without also
+  // resetting the default. Treating a disabled default as if it were unset
+  // is what keeps every branch below (redirect, loading gate, credential-form
+  // fallback) falling back to a working sign-in option instead of either
+  // spinning forever waiting for a redirect that will never fire, or
+  // rendering an empty card with no way to sign in at all.
+  const rawDefault = providers?.defaultProvider ?? null
+  const defaultProvider: LoginProvider | null =
+    (rawDefault === 'oidc' && !providers?.oidc.enabled) ||
+    (rawDefault === 'saml' && !providers?.saml.enabled)
+      ? null
+      : rawDefault
+
   // Auto-redirect when selector is hidden and default is an SSO provider
   useEffect(() => {
     if (!providers) return
@@ -108,16 +123,15 @@ export default function LoginPage() {
     if (urlError) return           // error state — must show login page
     if (providers.showProviderSelector) return  // selector shown — no redirect needed
 
-    const dp = providers.defaultProvider
-    if (dp === 'oidc' && providers.oidc.enabled) {
+    if (defaultProvider === 'oidc') {
       window.location.replace('/api/v1/auth/oidc/authorize')
-    } else if (dp === 'saml' && providers.saml.enabled) {
+    } else if (defaultProvider === 'saml') {
       window.location.replace('/api/v1/auth/saml/authorize')
     }
-  }, [providers, urlProvider, urlError])
+  }, [providers, urlProvider, urlError, defaultProvider])
 
   if (isLoading || (!urlProvider && !urlError && providers && !providers.showProviderSelector &&
-    (providers.defaultProvider === 'oidc' || providers.defaultProvider === 'saml'))) {
+    (defaultProvider === 'oidc' || defaultProvider === 'saml'))) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-muted/30">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -131,19 +145,17 @@ export default function LoginPage() {
   // Which credential form to show
   const showCredentialForm = !activeProvider
     ? (!providers?.showProviderSelector
-        ? (providers?.defaultProvider === 'ldap' || providers?.defaultProvider === 'local' || !providers?.defaultProvider)
+        ? (defaultProvider === 'ldap' || defaultProvider === 'local' || !defaultProvider)
         : (providers?.ldap.enabled || (!providers?.oidc.enabled && !providers?.saml.enabled)))
     : (activeProvider === 'local' || activeProvider === 'ldap')
 
   // Which SSO buttons to show
   const showOidc = !activeProvider
-    ? (providers?.oidc.enabled && (providers?.showProviderSelector || providers?.defaultProvider === 'oidc'))
+    ? (providers?.oidc.enabled && (providers?.showProviderSelector || defaultProvider === 'oidc'))
     : false
   const showSaml = !activeProvider
-    ? (providers?.saml.enabled && (providers?.showProviderSelector || providers?.defaultProvider === 'saml'))
+    ? (providers?.saml.enabled && (providers?.showProviderSelector || defaultProvider === 'saml'))
     : false
-
-  const defaultProvider = providers?.defaultProvider ?? null
   const ldapEnabled = providers?.ldap.enabled ?? false
 
   // Card title & description
