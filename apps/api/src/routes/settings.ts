@@ -487,8 +487,13 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
           }
         }
 
-        // Validate merged result against the full schema to catch cross-field invariant violations
-        const mergedParsed = (schema as z.ZodObject<z.ZodRawShape>).partial().safeParse(mergedConfig)
+        // Validate merged result against the full (non-partial) schema. Using
+        // .partial() here (as before) meant a request that only sets a few
+        // fields — e.g. a first-ever OIDC config with issuerUrl but no
+        // clientId/redirectUri — passed both checks and got persisted
+        // (optionally enabled) as an unusable half-configured provider,
+        // failing only much later and cryptically at actual login time.
+        const mergedParsed = schema.safeParse(mergedConfig)
         if (!mergedParsed.success) {
           return reply.status(400).send({
             error: { message: 'Merged config is invalid', code: 'VALIDATION_ERROR', details: mergedParsed.error.flatten() },
