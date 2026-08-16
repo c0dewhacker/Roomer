@@ -150,8 +150,8 @@ function FloorCard({ floor, buildingId }: { floor: Floor & { _count?: { zones: n
       qc.invalidateQueries({ queryKey: ['floors', floor.id] })
       if (fileRef.current) fileRef.current.value = ''
     },
-    onError: () => {
-      toast.error('Failed to upload floor plan')
+    onError: (err: Error) => {
+      toast.error(err.message)
       if (fileRef.current) fileRef.current.value = ''
     },
   })

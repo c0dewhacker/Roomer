@@ -119,8 +119,8 @@ export function useClaimDesk() {
       qc.invalidateQueries({ queryKey: ['bookings'] })
       qc.invalidateQueries({ queryKey: ['floors'] })
     },
-    onError: () => {
-      toast.error('Failed to claim desk')
+    onError: (err: Error) => {
+      toast.error(apiErrMsg(err, 'Failed to claim desk'))
     },
   })
 }
@@ -142,8 +142,8 @@ export function useMakeAvailable() {
       qc.invalidateQueries({ queryKey: ['queue'] })
       qc.invalidateQueries({ queryKey: ['floors'] })
     },
-    onError: () => {
-      toast.error('Failed to make desk available')
+    onError: (err: Error) => {
+      toast.error(apiErrMsg(err, 'Failed to make desk available'))
     },
   })
 }

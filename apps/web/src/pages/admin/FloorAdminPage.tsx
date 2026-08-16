@@ -983,8 +983,8 @@ export default function FloorAdminPage() {
       qc.invalidateQueries({ queryKey: ['floors', floorId] })
       if (fileRef.current) fileRef.current.value = ''
     },
-    onError: () => {
-      toast.error('Upload failed')
+    onError: (err: Error) => {
+      toast.error(err.message)
       if (fileRef.current) fileRef.current.value = ''
     },
   })

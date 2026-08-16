@@ -37,8 +37,8 @@ export function useUpdateAssetPositions() {
       toast.success('Layout saved')
       qc.invalidateQueries({ queryKey: ['floors', floorId] })
     },
-    onError: () => {
-      toast.error('Failed to save layout')
+    onError: (err: Error) => {
+      toast.error(err.message)
     },
   })
 }

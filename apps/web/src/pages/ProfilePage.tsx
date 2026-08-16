@@ -133,7 +133,7 @@ export default function ProfilePage() {
       setEditing(false)
       qc.invalidateQueries({ queryKey: ['auth', 'me'] })
     },
-    onError: () => toast.error('Failed to update profile'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const updateVisibility = useMutation({
@@ -143,7 +143,7 @@ export default function ProfilePage() {
       toast.success('Privacy preference saved')
       qc.invalidateQueries({ queryKey: ['auth', 'me'] })
     },
-    onError: () => toast.error('Failed to save preference'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const changePassword = useMutation({
@@ -172,7 +172,7 @@ export default function ProfilePage() {
       qc.invalidateQueries({ queryKey: ['notification-preferences'] })
       setLocalPrefs(null)
     },
-    onError: () => toast.error('Failed to save preferences'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const handleToggle = (key: string, channel: 'email' | 'inApp', value: boolean) => {
