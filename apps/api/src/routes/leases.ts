@@ -17,7 +17,10 @@ const createLeaseSchema = z.object({
   rentAmount: z.number().positive().optional(),
   currency: z.string().length(3).default('AUD'),
   notes: z.string().optional(),
-})
+}).refine(
+  (data) => !data.endDate || new Date(data.startDate) < new Date(data.endDate),
+  { message: 'startDate must be before endDate', path: ['startDate'] },
+)
 
 const updateLeaseSchema = z.object({
   name: z.string().min(1).max(255).optional(),
@@ -27,7 +30,14 @@ const updateLeaseSchema = z.object({
   rentAmount: z.number().positive().optional(),
   currency: z.string().length(3).optional(),
   notes: z.string().optional(),
-})
+}).refine(
+  // Only catches both-in-one-request; PUT /leases/:id also re-checks the
+  // merged effective dates below since either field can be omitted here to
+  // mean "keep the existing value" — the same partial-update gap already
+  // fixed for bookings (db8fd79).
+  (data) => !data.startDate || !data.endDate || new Date(data.startDate) < new Date(data.endDate),
+  { message: 'startDate must be before endDate', path: ['startDate'] },
+)
 
 export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Leases'], ...route.schema } })
@@ -149,7 +159,7 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    const existing = await prisma.buildingLease.findUnique({ where: { id }, select: { buildingId: true } })
+    const existing = await prisma.buildingLease.findUnique({ where: { id }, select: { buildingId: true, startDate: true, endDate: true } })
     if (!existing) {
       return reply.status(404).send({ error: { message: 'Lease not found', code: 'NOT_FOUND' } })
     }
@@ -159,6 +169,16 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
       if (!ok) {
         return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
+    }
+
+    // updateLeaseSchema's refine only catches both dates arriving in the same
+    // request — either can be omitted here to mean "keep the existing value",
+    // so re-check against the merged effective dates (same gap already fixed
+    // for bookings in db8fd79).
+    const effectiveStartDate = result.data.startDate ? new Date(result.data.startDate) : existing.startDate
+    const effectiveEndDate = result.data.endDate !== undefined ? new Date(result.data.endDate) : existing.endDate
+    if (effectiveEndDate && effectiveStartDate >= effectiveEndDate) {
+      return reply.status(400).send({ error: { message: 'startDate must be before endDate', code: 'VALIDATION_ERROR' } })
     }
 
     try {
