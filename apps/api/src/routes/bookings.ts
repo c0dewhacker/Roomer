@@ -382,6 +382,20 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     const newStartsAt = result.data.startsAt ? new Date(result.data.startsAt) : booking.startsAt
     const newEndsAt = result.data.endsAt ? new Date(result.data.endsAt) : booking.endsAt
+
+    // updateBookingSchema's refine only fires when both startsAt and endsAt are
+    // present in the same request — but either can be omitted here to mean
+    // "keep the existing value". A request that moves only startsAt to a time
+    // at or after the *existing* endsAt (or vice versa) slips past that schema
+    // check entirely. Uncaught, it reaches the booking_no_overlap exclusion
+    // constraint's tsrange(startsAt, endsAt) expression, which Postgres itself
+    // rejects for an inverted range — but with a raw data-exception error the
+    // catch block below doesn't recognise, surfacing as an unhandled 500
+    // instead of a normal validation error.
+    if (newStartsAt >= newEndsAt) {
+      return reply.status(400).send({ error: { message: 'startsAt must be before endsAt', code: 'VALIDATION_ERROR' } })
+    }
+
     const timeChanged = newStartsAt.getTime() !== booking.startsAt.getTime() || newEndsAt.getTime() !== booking.endsAt.getTime()
 
     // Rescheduling moves the booking onto a new time slot, so it must clear the
