@@ -76,6 +76,47 @@ function deny(status: number, code: string, message: string): BookabilityResult 
 }
 
 /**
+ * True when `startsAt` falls within the org's configured maxAdvanceBookingDays
+ * window (or the org has no such cap). Applied to the moment a new booking
+ * commitment is created — a direct booking, a reschedule, or the *start* of a
+ * recurring series — not to every individual queue-claim, since a claimed slot
+ * is bounded by a booking that already passed this check, and not to every
+ * occurrence within an already-approved recurring series, which is governed by
+ * its own maxRecurringBookingWeeks span instead.
+ */
+export function isWithinAdvanceBookingWindow(startsAt: Date, maxAdvanceBookingDays: number | null | undefined): boolean {
+  if (!maxAdvanceBookingDays) return true
+  const maxDate = new Date()
+  maxDate.setUTCDate(maxDate.getUTCDate() + maxAdvanceBookingDays)
+  return startsAt <= maxDate
+}
+
+/**
+ * Rejects a new ad-hoc booking once the user already holds
+ * maxBookingsPerUser confirmed, not-yet-ended bookings. Checked at the moment
+ * a single Booking row is about to be created (direct booking, queue claim) —
+ * deliberately NOT applied to recurring series creation, which would make the
+ * default 12-week/5-booking combination reject nearly every series outright;
+ * recurring commitments are governed by maxRecurringBookingWeeks instead.
+ */
+export async function assertUnderBookingQuota(
+  client: Prisma.TransactionClient,
+  userId: string,
+  isSuperAdmin: boolean,
+): Promise<BookabilityResult> {
+  if (isSuperAdmin) return { ok: true }
+  const org = await client.organisation.findFirst({ select: { maxBookingsPerUser: true } })
+  if (!org?.maxBookingsPerUser) return { ok: true }
+  const activeCount = await client.booking.count({
+    where: { userId, status: 'CONFIRMED', endsAt: { gt: new Date() } },
+  })
+  if (activeCount >= org.maxBookingsPerUser) {
+    return deny(409, 'MAX_BOOKINGS_EXCEEDED', `You already have ${org.maxBookingsPerUser} active bookings, the maximum allowed`)
+  }
+  return { ok: true }
+}
+
+/**
  * Central authorization gate for booking an asset. Every booking-creating path
  * (direct, queue join, queue claim, recurring) must funnel through this so the
  * bookable / disabled / restricted-allow-list / assigned / group-access rules

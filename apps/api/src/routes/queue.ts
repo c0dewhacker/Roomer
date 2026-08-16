@@ -1,11 +1,12 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
-import { createQueueEntrySchema, NotificationType } from '@roomer/shared'
+import { createQueueEntrySchema, GlobalRole, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { enqueueNotification } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import {
   assertBookable,
+  assertUnderBookingQuota,
   hasConfirmedOverlap,
   lockAssetForBooking,
   lockAssetForQueue,
@@ -205,6 +206,11 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
     }
 
+    const quota = await assertUnderBookingQuota(prisma, entry.userId, entry.user.globalRole === GlobalRole.SUPER_ADMIN)
+    if (!quota.ok) {
+      return reply.status(quota.status).send({ error: { message: quota.message, code: quota.code } })
+    }
+
     let result: Awaited<ReturnType<typeof prisma.booking.create>> | null
     try {
       result = await prisma.$transaction(async (tx) => {
@@ -283,6 +289,11 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
     const gate = await assertBookable(prisma, request.user, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)
     if (!gate.ok) {
       return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+    }
+
+    const quota = await assertUnderBookingQuota(prisma, request.user.id, request.user.globalRole === GlobalRole.SUPER_ADMIN)
+    if (!quota.ok) {
+      return reply.status(quota.status).send({ error: { message: quota.message, code: quota.code } })
     }
 
     // Serialize on the asset ID, then check availability and create booking atomically

@@ -5,7 +5,7 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { z } from 'zod'
 import { enqueueNotification, promoteNextQueueEntry } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
-import { assertBookable, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
+import { assertBookable, isWithinAdvanceBookingWindow, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
 
 const createRecurringSchema = z.object({
   assetId: z.string().min(1),
@@ -110,6 +110,15 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
     if (spanWeeks > maxWeeks) {
       return reply.status(400).send({
         error: { message: `Recurring booking span cannot exceed ${maxWeeks} weeks`, code: 'MAX_RECURRENCE_EXCEEDED' },
+      })
+    }
+
+    // Advance-booking cap applies to when the series may *start* — not to every
+    // occurrence within it, which would make a normal multi-week series (already
+    // bounded by maxRecurringBookingWeeks above) impossible under most org configs.
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN && !isWithinAdvanceBookingWindow(firstDateObj, org?.maxAdvanceBookingDays)) {
+      return reply.status(400).send({
+        error: { message: `Recurring bookings cannot start more than ${org?.maxAdvanceBookingDays} days in advance`, code: 'MAX_ADVANCE_EXCEEDED' },
       })
     }
 

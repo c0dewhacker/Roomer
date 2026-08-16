@@ -8,7 +8,7 @@ import { enqueueNotification, fanOutFloorAvailable, promoteNextQueueEntry } from
 import { dispatchWebhook } from '../lib/webhook.js'
 import { buildBookingIcs } from '../lib/ical.js'
 import { checkGroupAccess } from './groups.js'
-import { assertBookable, hasConfirmedOverlap, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
+import { assertBookable, assertUnderBookingQuota, hasConfirmedOverlap, isWithinAdvanceBookingWindow, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
 import { z } from 'zod'
 
 class BookingConflictError extends Error {
@@ -198,6 +198,22 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     const gate = await assertBookable(prisma, request.user, assetId, startsAt, endsAt)
     if (!gate.ok) {
       return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+    }
+
+    const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+
+    if (!isSuperAdmin) {
+      const org = await prisma.organisation.findFirst({ select: { maxAdvanceBookingDays: true } })
+      if (!isWithinAdvanceBookingWindow(startsAt, org?.maxAdvanceBookingDays)) {
+        return reply.status(400).send({
+          error: { message: `Bookings cannot be made more than ${org?.maxAdvanceBookingDays} days in advance`, code: 'MAX_ADVANCE_EXCEEDED' },
+        })
+      }
+    }
+
+    const quota = await assertUnderBookingQuota(prisma, request.user.id, isSuperAdmin)
+    if (!quota.ok) {
+      return reply.status(quota.status).send({ error: { message: quota.message, code: quota.code } })
     }
 
     let booking: Awaited<ReturnType<typeof prisma.booking.create>>
@@ -406,6 +422,14 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       const gate = await assertBookable(prisma, request.user, booking.assetId, newStartsAt, newEndsAt)
       if (!gate.ok) {
         return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+      }
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const org = await prisma.organisation.findFirst({ select: { maxAdvanceBookingDays: true } })
+        if (!isWithinAdvanceBookingWindow(newStartsAt, org?.maxAdvanceBookingDays)) {
+          return reply.status(400).send({
+            error: { message: `Bookings cannot be made more than ${org?.maxAdvanceBookingDays} days in advance`, code: 'MAX_ADVANCE_EXCEEDED' },
+          })
+        }
       }
     }
 
