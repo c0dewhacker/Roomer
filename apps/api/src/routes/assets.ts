@@ -782,10 +782,20 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       }
       const { count } = await prisma.assetUserAssignment.deleteMany({ where: { assetId: { in: assetIds } } })
       if (count > 0) {
-        await prisma.asset.updateMany({
+        // Restore each desk's pre-assignment bookingStatus (e.g. RESTRICTED)
+        // rather than blanket-opening every desk on the floor.
+        const assetsToRestore = await prisma.asset.findMany({
           where: { id: { in: assetIds }, bookingStatus: 'ASSIGNED' },
-          data: { bookingStatus: 'OPEN' },
+          select: { id: true, priorBookingStatus: true },
         })
+        await prisma.$transaction(
+          assetsToRestore.map((a) =>
+            prisma.asset.update({
+              where: { id: a.id },
+              data: { bookingStatus: a.priorBookingStatus ?? 'OPEN', priorBookingStatus: null },
+            }),
+          ),
+        )
       }
       return reply.status(200).send({ data: { cleared: count } })
     },
@@ -827,7 +837,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       const allAssetIds = [...new Set(rows.map((r) => r.assetId))]
       const allEmails = [...new Set(rows.map((r) => r.userEmail))]
       const [assetRows, userRows] = await Promise.all([
-        prisma.asset.findMany({ where: { id: { in: allAssetIds } }, select: { id: true, floorId: true } }),
+        prisma.asset.findMany({ where: { id: { in: allAssetIds } }, select: { id: true, floorId: true, bookingStatus: true } }),
         // Case-insensitive: email isn't normalised to lowercase on every creation
         // path (LDAP sync does; an admin manually creating a user, or an
         // imported CSV, may not match that exact case), so an exact-case match
@@ -836,6 +846,11 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         prisma.user.findMany({ where: { email: { in: allEmails, mode: 'insensitive' } }, select: { id: true, email: true } }),
       ])
       const assetFloorMap = new Map(assetRows.map((a) => [a.id, a.floorId]))
+      // Tracks each asset's booking status as we go so the first row that
+      // assigns a given asset within this batch captures its pre-assignment
+      // status (e.g. RESTRICTED) without later rows for the same asset
+      // clobbering it with 'ASSIGNED'.
+      const assetStatusMap = new Map(assetRows.map((a) => [a.id, a.bookingStatus]))
       const userByEmail = new Map(userRows.map((u) => [u.email.toLowerCase(), u.id]))
 
       for (let i = 0; i < rows.length; i++) {
@@ -862,7 +877,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
             update: { isPrimary },
             create: { assetId, userId, isPrimary },
           })
-          await prisma.asset.update({ where: { id: assetId }, data: { bookingStatus: 'ASSIGNED' } })
+          const priorStatus = assetStatusMap.get(assetId)
+          await prisma.asset.update({
+            where: { id: assetId },
+            data: {
+              bookingStatus: 'ASSIGNED',
+              ...(priorStatus !== 'ASSIGNED' ? { priorBookingStatus: priorStatus } : {}),
+            },
+          })
+          assetStatusMap.set(assetId, 'ASSIGNED')
           assigned++
         } catch {
           errors.push({ row: i + 1, assetId, userEmail, error: 'Unexpected error' })
@@ -1050,6 +1073,10 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
             ...rest,
             purchaseDate: purchaseDateStr !== undefined ? (purchaseDateStr ? new Date(purchaseDateStr) : null) : undefined,
             warrantyExpiry: warrantyExpiryStr !== undefined ? (warrantyExpiryStr ? new Date(warrantyExpiryStr) : null) : undefined,
+            // A manual admin override away from ASSIGNED invalidates any
+            // remembered pre-assignment status — otherwise it could resurface
+            // later if the desk is re-assigned and then unassigned again.
+            ...(result.data.bookingStatus !== undefined && result.data.bookingStatus !== 'ASSIGNED' ? { priorBookingStatus: null } : {}),
           },
           include: { category: true },
         })
@@ -1254,7 +1281,16 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         create: { assetId: id, userId: result.data.userId, isPrimary: result.data.isPrimary },
         include: { user: { select: { id: true, displayName: true, email: true } } },
       })
-      await prisma.asset.update({ where: { id }, data: { bookingStatus: 'ASSIGNED' } })
+      await prisma.asset.update({
+        where: { id },
+        data: {
+          bookingStatus: 'ASSIGNED',
+          // Remember what it was gating on (e.g. RESTRICTED) so removing the
+          // last permanent assignment can restore it instead of opening the
+          // desk up to everyone. Only capture on the first transition in.
+          ...(asset.bookingStatus !== 'ASSIGNED' ? { priorBookingStatus: asset.bookingStatus } : {}),
+        },
+      })
       // Only notify on a brand-new assignment — re-saving isPrimary for someone
       // already assigned to this desk shouldn't re-send "assigned to you".
       if (!wasAlreadyAssigned) {
@@ -1283,7 +1319,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         })
         const remaining = await prisma.assetUserAssignment.count({ where: { assetId: id } })
         if (remaining === 0) {
-          await prisma.asset.update({ where: { id }, data: { bookingStatus: 'OPEN' } })
+          // Restore whatever bookingStatus the desk had before it became
+          // permanently assigned (e.g. RESTRICTED), instead of always
+          // opening it up to everyone. Guard on the current value still
+          // being ASSIGNED in case an admin already changed it manually.
+          const current = await prisma.asset.findUnique({ where: { id }, select: { bookingStatus: true, priorBookingStatus: true } })
+          if (current?.bookingStatus === 'ASSIGNED') {
+            await prisma.asset.update({
+              where: { id },
+              data: { bookingStatus: current.priorBookingStatus ?? 'OPEN', priorBookingStatus: null },
+            })
+          }
         }
         return reply.status(200).send({ data: { ok: true } })
       } catch {

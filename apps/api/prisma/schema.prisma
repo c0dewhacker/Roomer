@@ -326,6 +326,10 @@ model Asset {
   amenities     String[]
   /// Booking eligibility. Null when not bookable.
   bookingStatus BookableStatus?
+  /// bookingStatus as it was immediately before a permanent user-assignment
+  /// forced it to ASSIGNED (e.g. RESTRICTED). Restored when the last
+  /// permanent assignment is removed, instead of defaulting to OPEN.
+  priorBookingStatus BookableStatus?
 
   // ── Map placement ──────────────────────────────────────────────────────────
   /// Primary zone this asset belongs to (null = not placed on any floor plan).
