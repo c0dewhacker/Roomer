@@ -87,7 +87,7 @@ function LeaseDialog({
       onClose()
       reset()
     },
-    onError: () => toast.error('Failed to create lease'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const update = useMutation({
@@ -106,7 +106,7 @@ function LeaseDialog({
       qc.invalidateQueries({ queryKey: ['leases'] })
       onClose()
     },
-    onError: () => toast.error('Failed to update lease'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const onSubmit = (d: LeaseForm) => existing ? update.mutate(d) : create.mutate(d)
@@ -214,19 +214,19 @@ function LeaseCard({ lease }: { lease: Lease }) {
   const deleteLease = useMutation({
     mutationFn: () => leasesApi.delete(lease.id),
     onSuccess: () => { toast.success('Lease deleted'); qc.invalidateQueries({ queryKey: ['leases'] }) },
-    onError: () => toast.error('Failed to delete lease'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const uploadDoc = useMutation({
     mutationFn: (file: File) => leasesApi.uploadDocument(lease.id, file),
     onSuccess: () => { toast.success('Document uploaded'); qc.invalidateQueries({ queryKey: ['leases'] }) },
-    onError: () => toast.error('Failed to upload document'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const deleteDoc = useMutation({
     mutationFn: (docId: string) => leasesApi.deleteDocument(lease.id, docId),
     onSuccess: () => { toast.success('Document deleted'); qc.invalidateQueries({ queryKey: ['leases'] }) },
-    onError: () => toast.error('Failed to delete document'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   // eslint-disable-next-line react-hooks/purity -- Date.now() inside useMemo with empty deps is stable at mount; React Compiler-safe
