@@ -10,7 +10,11 @@ import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 
 function initialsOf(name: string) {
-  return name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2)
+  // split(' ') on a name with a double space, or a leading/trailing space,
+  // produces an empty-string part — n[0] on that is undefined, and
+  // .join('') renders the literal text "undefined" in the avatar. Splitting
+  // on the trimmed name by any run of whitespace avoids empty parts entirely.
+  return name.trim().split(/\s+/).map((n) => n[0]).join('').toUpperCase().slice(0, 2)
 }
 
 function locationLabel(l: WhereaboutsLocation) {
