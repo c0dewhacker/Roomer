@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { Search, MapPin, Home, Calendar, Users } from 'lucide-react'
 import { directoryApi, type WhereaboutsLocation, type WhereaboutsPerson } from '@/lib/api'
+import { toISODateString } from '@/lib/utils'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -68,7 +69,12 @@ function PersonCard({ person, date }: { person: WhereaboutsPerson; date: string 
 }
 
 export default function WhosInPage() {
-  const today = new Date().toISOString().slice(0, 10)
+  // toISOString() reports the UTC date, not the viewer's local date — for
+  // positive-offset timezones that's still "yesterday" in the early morning,
+  // and for negative-offset timezones it's already "tomorrow" in the
+  // evening, defaulting this page to a day with no bookings yet. Use the
+  // same local-date convention the floor plan's "today" already relies on.
+  const today = toISODateString(new Date())
   const [date, setDate] = useState(today)
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
