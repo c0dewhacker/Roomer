@@ -71,7 +71,10 @@ const NOTIFICATION_GROUPS: Array<{ label: string; types: Array<{ key: string; la
     label: 'Assets',
     types: [
       { key: 'ASSET_ASSIGNED', label: 'Asset assigned to you' },
-      { key: 'ASSET_DUE_RETURN', label: 'Asset due for return' },
+      // ASSET_DUE_RETURN is deliberately not offered here — the feature it
+      // depends on (a due date on an equipment assignment) doesn't exist
+      // anywhere in the product (see issue #200), so this toggle controlled
+      // a notification that could never fire. Restore it once #200 lands.
     ],
   },
   {
