@@ -46,7 +46,7 @@ interface FloorPlanCanvasProps {
   onDeskClick?: (asset: AssetWithStatus) => void
   onLayoutSave?: (
     positions: Array<{ id: string; x: number; y: number; width: number; height: number; rotation: number }>,
-  ) => void
+  ) => Promise<unknown>
   /** Called when the user adjusts the floor plan display scale in edit mode. */
   onDisplayScaleChange?: (scale: number) => void
   /** Asset to emphasise (deep-linked from the colleague finder). */
@@ -318,7 +318,15 @@ export function FloorPlanCanvas({
         rotation: a.rotation ?? 0,
       }
     })
+    // Only clear on success — a save that fails (network error, permission
+    // change mid-edit) must leave the pending drags in place so the "unsaved
+    // changes" button stays up and the user can retry, rather than silently
+    // discarding edits. Leaving this uncleared on success, though, is exactly
+    // what let a stale tab's old localPositions re-overwrite a newer save
+    // made elsewhere the next time anything in this tab called handleSave.
     onLayoutSave(positions)
+      .then(() => setLocalPositions({}))
+      .catch(() => {})
   }
 
   const hasUnsavedChanges = Object.keys(localPositions).length > 0

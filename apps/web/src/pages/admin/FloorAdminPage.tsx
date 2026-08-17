@@ -997,9 +997,8 @@ export default function FloorAdminPage() {
   })
 
   const handleLayoutSave = useCallback(
-    (positions: Array<{ id: string; x: number; y: number; width: number; height: number; rotation: number }>) => {
-      updatePositions.mutate(positions)
-    },
+    (positions: Array<{ id: string; x: number; y: number; width: number; height: number; rotation: number }>) =>
+      updatePositions.mutateAsync(positions),
     [updatePositions],
   )
 
