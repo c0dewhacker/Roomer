@@ -637,8 +637,12 @@ function ExportAllButton({ params, days }: { params: AnalyticsParams; days: Pres
     const rangeStr = days === 'custom' ? `${params.startDate}_${params.endDate}` : `last-${days}d`
     const sections: string[][] = []
 
+    // `##` rather than `===` — sanitizeCsvCell (formula-injection guard) prefixes
+    // any cell starting with '=' with an apostrophe. Spreadsheet apps hide that
+    // apostrophe by convention, but a plain-text or programmatic reader of the
+    // exported file would see the literal "'=== SUMMARY ===" instead.
     if (summary) {
-      sections.push(['=== SUMMARY ===', ''])
+      sections.push(['## SUMMARY ##', ''])
       sections.push(['Metric', 'Value'])
       sections.push(['Total Confirmed Bookings', String(summary.totalBookings)])
       sections.push(['Cancelled Bookings', String(summary.cancelledBookings)])
@@ -658,49 +662,49 @@ function ExportAllButton({ params, days }: { params: AnalyticsParams; days: Pres
     }
 
     if (bookings && bookings.length > 0) {
-      sections.push(['=== BOOKING ACTIVITY ===', ''])
+      sections.push(['## BOOKING ACTIVITY ##', ''])
       sections.push(['Date', 'Bookings'])
       bookings.forEach((d) => sections.push([d.date, String(d.count)]))
       sections.push(['', ''])
     }
 
     if (status && status.length > 0) {
-      sections.push(['=== BOOKING STATUS ===', ''])
+      sections.push(['## BOOKING STATUS ##', ''])
       sections.push(['Status', 'Count'])
       status.forEach((d) => sections.push([d.label, String(d.count)]))
       sections.push(['', ''])
     }
 
     if (peakDays) {
-      sections.push(['=== PEAK DAYS ===', ''])
+      sections.push(['## PEAK DAYS ##', ''])
       sections.push(['Day', 'Bookings'])
       peakDays.forEach((d) => sections.push([d.dayName, String(d.count)]))
       sections.push(['', ''])
     }
 
     if (floorUtil && floorUtil.length > 0) {
-      sections.push(['=== FLOOR UTILISATION ===', ''])
+      sections.push(['## FLOOR UTILISATION ##', ''])
       sections.push(['Building', 'Floor', 'Desks', 'Bookings', 'Utilisation %'])
       floorUtil.forEach((d) => sections.push([d.buildingName, d.floorName, String(d.totalDesks), String(d.bookingCount), String(d.utilisationPct)]))
       sections.push(['', ''])
     }
 
     if (utilisation && utilisation.length > 0) {
-      sections.push(['=== ZONE BREAKDOWN ===', ''])
+      sections.push(['## ZONE BREAKDOWN ##', ''])
       sections.push(['Floor', 'Zone', 'Total', 'Bookable', 'Assigned', 'Disabled', 'Bookings', 'Utilisation %'])
       utilisation.forEach((d) => sections.push([d.floorName, d.zoneName, String(d.totalDesks), String(d.bookableDesks), String(d.assignedDesks), String(d.disabledDesks), String(d.bookingCount), String(d.utilisationPct)]))
       sections.push(['', ''])
     }
 
     if (topUsers && topUsers.length > 0) {
-      sections.push(['=== TOP BOOKERS ===', ''])
+      sections.push(['## TOP BOOKERS ##', ''])
       sections.push(['Name', 'Email', 'Bookings'])
       topUsers.forEach((d) => sections.push([d.displayName, d.email, String(d.bookingCount)]))
       sections.push(['', ''])
     }
 
     if (deptData && deptData.length > 0) {
-      sections.push(['=== DEPARTMENT ACTIVITY ===', ''])
+      sections.push(['## DEPARTMENT ACTIVITY ##', ''])
       sections.push(['Department', 'Members', 'Bookings', 'Desk-Days'])
       deptData.forEach((d) => sections.push([d.departmentName, String(d.memberCount), String(d.bookingCount), String(d.deskDays)]))
     }
