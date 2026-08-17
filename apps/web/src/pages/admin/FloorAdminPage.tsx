@@ -548,7 +548,7 @@ function BulkImportDialog({
           {!importResult && (
             <Button
               onClick={() => importMutation.mutate()}
-              disabled={rows.length === 0 || parseErrors.length > 0 || importMutation.isPending}
+              disabled={rows.length === 0 || importMutation.isPending}
             >
               {importMutation.isPending ? `Importing…` : `Import ${rows.length} asset${rows.length !== 1 ? 's' : ''}`}
             </Button>
