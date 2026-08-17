@@ -123,7 +123,7 @@ export function AccessStateBadge({ restricted, groupCount }: { restricted: boole
 export function AccessSummaryDialog({
   kind, id, name, open, onOpenChange,
 }: { kind: 'building' | 'floor'; id: string; name: string; open: boolean; onOpenChange: (v: boolean) => void }) {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ['access-summary', kind, id],
     queryFn: () => (kind === 'building' ? buildingsApi.accessSummary(id) : floorsApi.accessSummary(id)).then((r) => r.data),
     enabled: open,
@@ -137,6 +137,7 @@ export function AccessSummaryDialog({
           <DialogDescription>Who can access and who can manage this {kind}.</DialogDescription>
         </DialogHeader>
         {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+        {isError && <p className="text-sm text-destructive">Could not load access summary.</p>}
         {data && (
           <div className="space-y-3">
             <Row label="Access">
