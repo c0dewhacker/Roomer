@@ -357,17 +357,13 @@ async function processSendNotification(
       }
     }
   } else if (type === NotificationType.ASSET_ASSIGNED && assetId) {
-    const [asset, assignment] = await Promise.all([
-      prisma.asset.findUnique({ where: { id: assetId }, select: { name: true } }),
-      prisma.assetAssignment.findFirst({
-        where: { assetId, userId, returnedAt: null },
-        orderBy: { assignedAt: 'desc' },
-        select: { assignedAt: true, notes: true },
-      }),
-    ])
+    const asset = await prisma.asset.findUnique({ where: { id: assetId }, select: { name: true } })
     if (asset) {
-      const assignedAt = assignment?.assignedAt ?? new Date()
-      const notes = assignment?.notes ?? null
+      // Permanent assignment (AssetUserAssignment, the only live assignment
+      // mechanism — see #201) has no assignedAt/notes fields of its own, so
+      // there's nothing more specific to show than "just now".
+      const assignedAt = new Date()
+      const notes = null
       title = `Asset assigned to you — ${asset.name}`
       body = `${asset.name} has been assigned to you.`
       emailPayload = renderAssetAssigned({ assignedAt, notes }, user, asset)

@@ -67,11 +67,6 @@ const updateAssetSchema = z.object({
   rotation: z.number().min(-360).max(360).nullable().optional(),
 })
 
-const assignSchema = z.object({
-  userId: z.string().min(1),
-  notes: z.string().optional(),
-})
-
 const addToAllowListSchema = z.object({
   userId: z.string().min(1, 'Invalid user ID'),
 })
@@ -258,8 +253,8 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     // and sees every asset in the org, or every asset on their managed floors,
     // captioned "Equipment and items assigned to you".
     if (mine === 'true') {
-      const assignments = await prisma.assetAssignment.findMany({
-        where: { userId: request.user.id, returnedAt: null },
+      const assignments = await prisma.assetUserAssignment.findMany({
+        where: { userId: request.user.id },
         include: { asset: { include: { category: true } } },
       })
       return reply.status(200).send({ data: assignments.map((a) => a.asset) })
@@ -293,12 +288,6 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       const assets = await prisma.asset.findMany({
         include: {
           category: true,
-          assignments: {
-            where: { returnedAt: null },
-            include: {
-              user: { select: { id: true, displayName: true, email: true } },
-            },
-          },
           userAssignments: {
             include: { user: { select: { id: true, displayName: true, email: true } } },
           },
@@ -318,10 +307,6 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         where: { floorId: { in: managedFloorIds } },
         include: {
           category: true,
-          assignments: {
-            where: { returnedAt: null },
-            include: { user: { select: { id: true, displayName: true, email: true } } },
-          },
           userAssignments: {
             include: { user: { select: { id: true, displayName: true, email: true } } },
           },
@@ -335,8 +320,8 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     // Regular user: return only personally assigned assets
-    const assignments = await prisma.assetAssignment.findMany({
-      where: { userId: request.user.id, returnedAt: null },
+    const assignments = await prisma.assetUserAssignment.findMany({
+      where: { userId: request.user.id },
       include: {
         asset: {
           include: { category: true },
@@ -995,12 +980,6 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       where: { id },
       include: {
         category: true,
-        assignments: {
-          include: {
-            user: { select: { id: true, displayName: true, email: true } },
-          },
-          orderBy: { assignedAt: 'desc' },
-        },
         userAssignments: {
           include: { user: { select: { id: true, displayName: true, email: true } } },
         },
@@ -1016,9 +995,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
     const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
     if (!isAdmin) {
-      const hasPersonalAccess = asset.assignments.some(
-        (a) => a.userId === request.user.id && a.returnedAt === null,
-      )
+      const hasPersonalAccess = asset.userAssignments.some((a) => a.userId === request.user.id)
       const hasFloorAccess = !!asset.floorId && await isFloorManagerForFloor(request.user.id, asset.floorId)
       if (!hasPersonalAccess && !hasFloorAccess) {
         return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
@@ -1186,98 +1163,6 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // POST /:id/assign — assign asset to user
-  fastify.post(
-    '/:id/assign',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
-    async (request, reply) => {
-      const { id } = request.params as { id: string }
-
-      const result = assignSchema.safeParse(request.body)
-      if (!result.success) {
-        return reply.status(400).send({
-          error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
-        })
-      }
-
-      const asset = await prisma.asset.findUnique({ where: { id } })
-      if (!asset) {
-        return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
-      }
-
-      if (asset.status === 'ASSIGNED') {
-        return reply.status(409).send({
-          error: { message: 'Asset is already assigned', code: 'CONFLICT' },
-        })
-      }
-
-      const { userId, notes } = result.data
-      const user = await prisma.user.findUnique({ where: { id: userId } })
-      if (!user) {
-        return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })
-      }
-
-      const [assignment] = await prisma.$transaction([
-        prisma.assetAssignment.create({
-          data: {
-            assetId: id,
-            userId,
-            assignedById: request.user.id,
-            notes: notes ?? null,
-          },
-          include: {
-            user: { select: { id: true, displayName: true, email: true } },
-          },
-        }),
-        prisma.asset.update({ where: { id }, data: { status: 'ASSIGNED' } }),
-      ])
-
-      dispatchWebhook('asset_assignment.created', { assetId: id, userId, assignedById: request.user.id }).catch(() => {})
-      await enqueueNotification({ type: NotificationType.ASSET_ASSIGNED, userId, assetId: id })
-      return reply.status(201).send({ data: assignment })
-    },
-  )
-
-  // POST /:id/unassign — return/unassign asset
-  fastify.post(
-    '/:id/unassign',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
-    async (request, reply) => {
-      const { id } = request.params as { id: string }
-
-      const asset = await prisma.asset.findUnique({ where: { id } })
-      if (!asset) {
-        return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
-      }
-
-      const activeAssignment = await prisma.assetAssignment.findFirst({
-        where: { assetId: id, returnedAt: null },
-      })
-
-      if (!activeAssignment) {
-        // Status is stuck as ASSIGNED with no active record — reset it
-        if (asset.status === 'ASSIGNED') {
-          await prisma.asset.update({ where: { id }, data: { status: 'AVAILABLE' } })
-          return reply.status(200).send({ data: { ok: true } })
-        }
-        return reply.status(409).send({
-          error: { message: 'Asset is not currently assigned', code: 'CONFLICT' },
-        })
-      }
-
-      const [assignment] = await prisma.$transaction([
-        prisma.assetAssignment.update({
-          where: { id: activeAssignment.id },
-          data: { returnedAt: new Date() },
-        }),
-        prisma.asset.update({ where: { id }, data: { status: 'AVAILABLE' } }),
-      ])
-
-      dispatchWebhook('asset_assignment.returned', { assetId: id, userId: activeAssignment.userId, returnedAt: assignment.returnedAt }).catch(() => {})
-      return reply.status(200).send({ data: assignment })
-    },
-  )
-
   // GET /:id/user-assignments — list permanent user assignments
   fastify.get(
     '/:id/user-assignments',
@@ -1433,35 +1318,6 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         }),
       ])
       return reply.status(200).send({ data: { ok: true } })
-    },
-  )
-
-  // GET /:id/history — assignment history
-  fastify.get(
-    '/:id/history',
-    { preHandler: [requireAuth] },
-    async (request, reply) => {
-      const { id } = request.params as { id: string }
-
-      const asset = await prisma.asset.findUnique({ where: { id } })
-      if (!asset) {
-        return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
-      }
-      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
-        if (!asset.floorId) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
-        const canManage = await isFloorManagerForFloor(request.user.id, asset.floorId)
-        if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
-      }
-
-      const history = await prisma.assetAssignment.findMany({
-        where: { assetId: id },
-        include: {
-          user: { select: { id: true, displayName: true, email: true } },
-        },
-        orderBy: { assignedAt: 'desc' },
-      })
-
-      return reply.status(200).send({ data: history })
     },
   )
 

@@ -24,8 +24,6 @@ export const WEBHOOK_EVENTS = [
   'asset.created',
   'asset.updated',
   'asset.status_changed',
-  'asset_assignment.created',
-  'asset_assignment.returned',
   'user.created',
   'user.updated',
   'user.suspended',
@@ -178,18 +176,6 @@ async function enrichPayload(event: WebhookEvent, data: unknown): Promise<unknow
       select: { name: true, ...assetInclude },
     }).catch(() => null)
     return { ...d, ...(asset && { asset }) }
-  }
-
-  if (event === 'asset_assignment.created' || event === 'asset_assignment.returned') {
-    const [asset, user] = await Promise.all([
-      prisma.asset.findUnique({ where: { id: d.assetId as string }, select: { name: true, ...assetInclude } }).catch(() => null),
-      prisma.user.findUnique({ where: { id: d.userId as string }, select: { id: true, email: true, displayName: true } }).catch(() => null),
-    ])
-    return {
-      ...d,
-      ...(asset && { asset: { id: d.assetId, ...asset } }),
-      ...(user && { user }),
-    }
   }
 
   if (event === 'user.created' || event === 'user.updated' || event === 'user.suspended') {

@@ -9,7 +9,6 @@ import type {
   Notification,
   Asset,
   AssetCategory,
-  AssetAssignment,
   AssetZone,
   UtilisationDataPoint,
   BookingDataPoint,
@@ -270,10 +269,6 @@ export const assetsApi = {
     rotation?: number | null
   }) => api.patch<{ data: Asset }>(`/assets/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/assets/${id}`),
-  assign: (id: string, body: { userId: string; notes?: string }) =>
-    api.post<{ data: AssetAssignment }>(`/assets/${id}/assign`, body),
-  unassign: (id: string) => api.post<{ data: AssetAssignment }>(`/assets/${id}/unassign`, {}),
-  history: (id: string) => api.get<{ data: AssetAssignment[] }>(`/assets/${id}/history`),
   // Floor plan position updates
   updatePositions: (updates: PositionUpdate[]) =>
     api.patch<{ data: { ok: true } }>('/assets/positions', { assets: updates }),
