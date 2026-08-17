@@ -319,7 +319,7 @@ export function LdapConfigForm({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button size="sm" className="h-7 text-xs" disabled={saving || !url || !searchBase} onClick={handleSave}>
+          <Button size="sm" className="h-7 text-xs" disabled={saving || !url || !bindDN || !searchBase} onClick={handleSave}>
             {saving ? 'Saving…' : 'Save LDAP config'}
           </Button>
           <Button
@@ -327,7 +327,7 @@ export function LdapConfigForm({
             size="sm"
             variant="outline"
             className="h-7 text-xs gap-1.5"
-            disabled={syncMutation.isPending || !url || !searchBase}
+            disabled={syncMutation.isPending || !url || !bindDN || !searchBase}
             onClick={() => syncMutation.mutate()}
           >
             <RefreshCw className={`h-3 w-3 ${syncMutation.isPending ? 'animate-spin' : ''}`} />

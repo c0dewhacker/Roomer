@@ -501,6 +501,30 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
+      // Enabling a provider must never succeed unless a complete, schema-valid
+      // config backs it — including via a bare {enabled:true} toggle with no
+      // config in this same request (the "Enable" switch sends exactly that).
+      // When body.config was provided above, mergedConfig is already
+      // guaranteed valid by the full-schema check at line ~496; this only
+      // does real work for the toggle-only path, which previously bypassed
+      // that check entirely and could flip on a provider with an empty or
+      // partial config — for OIDC/SAML, that hides the local login form
+      // (see LoginPage's showCredentialForm) with no way back in except a
+      // small "sign in with a local account" link.
+      if (body.enabled === true && !body.config) {
+        const existing = await findAuthConfig(upperProvider)
+        const enableCheck = schema.safeParse(existing?.config ?? {})
+        if (!enableCheck.success) {
+          return reply.status(400).send({
+            error: {
+              message: 'Cannot enable: provider configuration is incomplete',
+              code: 'INCOMPLETE_CONFIG',
+              details: enableCheck.error.flatten(),
+            },
+          })
+        }
+      }
+
       const row = await upsertAuthConfig(upperProvider, {
         enabled: body.enabled,
         config: body.config ? mergedConfig : undefined,
