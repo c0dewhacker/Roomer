@@ -238,7 +238,7 @@ export type FavouriteAsset = Asset & {
 }
 
 export const assetsApi = {
-  list: () => api.get<{ data: Asset[] }>('/assets'),
+  list: (params?: { mine?: boolean }) => api.get<{ data: Asset[] }>(`/assets${params?.mine ? '?mine=true' : ''}`),
   listCategories: () => api.get<{ data: AssetCategory[] }>('/assets/categories'),
   get: (id: string) => api.get<{ data: Asset }>(`/assets/${id}`),
   create: (body: Partial<Asset> & {

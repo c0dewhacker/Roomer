@@ -245,6 +245,22 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
   // GET / — list assets
   fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { mine } = request.query as { mine?: string }
+
+    // "My Assets" (personal nav) always means "assigned to me", regardless of
+    // the caller's role — without this, a SUPER_ADMIN or floor manager hitting
+    // their own personal page falls into the admin/floor-manager branches below
+    // (built for the org-wide Assets admin page, which calls this same route)
+    // and sees every asset in the org, or every asset on their managed floors,
+    // captioned "Equipment and items assigned to you".
+    if (mine === 'true') {
+      const assignments = await prisma.assetAssignment.findMany({
+        where: { userId: request.user.id, returnedAt: null },
+        include: { asset: { include: { category: true } } },
+      })
+      return reply.status(200).send({ data: assignments.map((a) => a.asset) })
+    }
+
     const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
 
     if (isAdmin) {

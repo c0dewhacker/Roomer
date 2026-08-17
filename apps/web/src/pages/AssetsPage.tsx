@@ -102,7 +102,12 @@ function FavouritesSection() {
 export default function AssetsPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['assets', 'my'],
-    queryFn: () => assetsApi.list(),
+    // Always "mine" regardless of the caller's role — without this, a
+    // SUPER_ADMIN or floor manager viewing their own personal "My Assets"
+    // page would fall into assets.ts's admin/floor-manager branches (meant
+    // for the org-wide Assets admin page, which calls the same endpoint) and
+    // see every asset in the org, or every asset on their managed floors.
+    queryFn: () => assetsApi.list({ mine: true }),
     select: (r) => r.data,
   })
 
