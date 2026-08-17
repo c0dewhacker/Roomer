@@ -8,7 +8,7 @@ import { enqueueNotification, fanOutFloorAvailable, promoteNextQueueEntry } from
 import { dispatchWebhook } from '../lib/webhook.js'
 import { buildBookingIcs } from '../lib/ical.js'
 import { checkGroupAccess } from './groups.js'
-import { assertBookable, assertUnderBookingQuota, hasConfirmedOverlap, isWithinAdvanceBookingWindow, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
+import { assertBookable, assertUnderBookingQuota, hasConfirmedOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
 import { z } from 'zod'
 
 class BookingConflictError extends Error {
@@ -193,6 +193,10 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     const { assetId, notes } = result.data
     const startsAt = new Date(result.data.startsAt)
     const endsAt = new Date(result.data.endsAt)
+
+    if (!isNotAlreadyElapsed(endsAt)) {
+      return reply.status(400).send({ error: { message: 'This time slot has already passed', code: 'ALREADY_ELAPSED' } })
+    }
 
     // Centralised bookability gate (bookable / disabled / restricted / assigned / group access)
     const gate = await assertBookable(prisma, request.user, assetId, startsAt, endsAt)
@@ -419,6 +423,9 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     // before the asset became disabled/restricted/reassigned could be rolled
     // forward indefinitely by rescheduling, since only overlap was re-checked.
     if (timeChanged) {
+      if (!isNotAlreadyElapsed(newEndsAt)) {
+        return reply.status(400).send({ error: { message: 'This time slot has already passed', code: 'ALREADY_ELAPSED' } })
+      }
       const gate = await assertBookable(prisma, request.user, booking.assetId, newStartsAt, newEndsAt)
       if (!gate.ok) {
         return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })

@@ -700,6 +700,10 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
       toast.error('Start time must be before end time')
       return
     }
+    if (end <= new Date()) {
+      toast.error('This time slot has already passed')
+      return
+    }
     try {
       await createBooking.mutateAsync({
         assetId: desk.id,

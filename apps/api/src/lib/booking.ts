@@ -92,6 +92,18 @@ export function isWithinAdvanceBookingWindow(startsAt: Date, maxAdvanceBookingDa
 }
 
 /**
+ * Rejects a booking whose end has already elapsed — checked on `endsAt`
+ * rather than `startsAt` so the everyday "book today, full day" flow (whose
+ * default start is today's midnight, already in the past by the time the
+ * request lands) keeps working; only a slot that's entirely over by the time
+ * it would be created is nonsensical. Recurring series creation has its own
+ * equivalent firstDate-in-the-future check in recurring.ts.
+ */
+export function isNotAlreadyElapsed(endsAt: Date): boolean {
+  return endsAt > new Date()
+}
+
+/**
  * Rejects a new ad-hoc booking once the user already holds
  * maxBookingsPerUser confirmed, not-yet-ended bookings. Checked at the moment
  * a single Booking row is about to be created (direct booking, queue claim) —
