@@ -2,7 +2,7 @@ import { PgBoss, type Job } from 'pg-boss'
 import { env } from '../env.js'
 import { prisma } from './prisma.js'
 import { buildBookingIcs } from './ical.js'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderWelcome, renderFloorAvailable, renderAssetAssigned, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
 import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
@@ -247,6 +247,24 @@ async function processSendNotification(
       title = `Asset available — ${entry.asset.name}`
       body = `Claim your booking by ${formatDate(new Date(claimDeadline))}.`
       emailPayload = renderQueuePromoted(entry, user, entry.asset, new Date(claimDeadline), entry.claimToken)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: entry.asset.name,
+        wantedStartsAt: formatDate(entry.wantedStartsAt), wantedEndsAt: formatDate(entry.wantedEndsAt),
+        claimDeadline: formatDate(new Date(claimDeadline)),
+        claimUrl: `${env.APP_URL}/queue/claim?token=${encodeURIComponent(entry.claimToken)}`,
+        appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.QUEUE_CLAIM_EXPIRING && queueEntryId) {
+    const entry = await prisma.queueEntry.findUnique({
+      where: { id: queueEntryId },
+      include: { asset: true },
+    })
+    if (entry && claimDeadline && entry.claimToken) {
+      title = `Claim window closing soon — ${entry.asset.name}`
+      body = `Claim your booking for ${entry.asset.name} by ${formatDate(new Date(claimDeadline))}.`
+      emailPayload = renderQueueClaimExpiring(entry, user, entry.asset, new Date(claimDeadline), entry.claimToken)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: entry.asset.name,
@@ -629,6 +647,50 @@ async function handleSendBookingReminders(): Promise<void> {
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Enqueued booking reminders', count: bookings.length }) + '\n')
 }
 
+// ─── Worker: warn-claim-expiring (cron every 5 min) ──────────────────────────
+
+/** How far ahead of the claim deadline to send the "closing soon" warning. */
+const CLAIM_WARNING_WINDOW_MS = 30 * 60 * 1000 // 30 minutes
+
+async function handleWarnClaimExpiring(): Promise<void> {
+  const now = new Date()
+  const windowEnd = new Date(now.getTime() + CLAIM_WARNING_WINDOW_MS)
+
+  // Find PROMOTED entries whose claim deadline falls within the warning window
+  // and haven't been warned yet. We claim them immediately (set
+  // claimExpiryWarnedAt) before enqueuing to prevent double-sends across
+  // overlapping cron invocations — same pattern as handleSendBookingReminders.
+  const entries = await prisma.queueEntry.findMany({
+    where: {
+      status: 'PROMOTED',
+      claimDeadline: { gt: now, lte: windowEnd },
+      claimExpiryWarnedAt: null,
+    },
+    select: { id: true, userId: true, claimDeadline: true },
+  })
+
+  if (entries.length === 0) return
+
+  await prisma.queueEntry.updateMany({
+    where: { id: { in: entries.map((e) => e.id) }, claimExpiryWarnedAt: null },
+    data: { claimExpiryWarnedAt: now },
+  })
+
+  await getBoss().insert(
+    'send-notification',
+    entries.map((entry) => ({
+      data: {
+        type: NotificationType.QUEUE_CLAIM_EXPIRING,
+        userId: entry.userId,
+        queueEntryId: entry.id,
+        claimDeadline: entry.claimDeadline!.toISOString(),
+      } satisfies NotificationJobData,
+    })),
+  )
+
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Warned expiring claims', count: entries.length }) + '\n')
+}
+
 // ─── Start queue ──────────────────────────────────────────────────────────────
 
 export async function startQueue(): Promise<void> {
@@ -643,6 +705,7 @@ export async function startQueue(): Promise<void> {
   await b.createQueue('auto-complete-bookings')
   await b.createQueue('send-booking-reminders')
   await b.createQueue('release-no-shows')
+  await b.createQueue('warn-claim-expiring')
   await b.createQueue('webhook-delivery')
 
   await b.work<NotificationJobData>('send-notification', handleSendNotification)
@@ -681,6 +744,11 @@ export async function startQueue(): Promise<void> {
     await handleSendBookingReminders()
   })
   await b.schedule('send-booking-reminders', '*/15 * * * *', {})
+
+  await b.work('warn-claim-expiring', async () => {
+    await handleWarnClaimExpiring()
+  })
+  await b.schedule('warn-claim-expiring', '*/5 * * * *', {})
 
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] pg-boss started and workers registered' }) + '\n')
 }

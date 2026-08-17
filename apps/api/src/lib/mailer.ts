@@ -211,6 +211,20 @@ export const DEFAULT_TEMPLATE_STRINGS: Record<string, { subject: string; html: s
      <a href="{{queueUrl}}" class="btn">View My Queue</a>`),
   },
 
+  QUEUE_CLAIM_EXPIRING: {
+    subject: 'Claim window closing soon — {{assetName}}',
+    html: baseHtml('Claim window closing soon — {{assetName}}', `<h1>Your claim window is closing soon</h1>
+     <p>Hi {{userName}}, you still have <strong>{{assetName}}</strong> reserved for you, but your claim window is about to expire.</p>
+     <div class="detail">
+       <dl>
+         <dt>Period</dt><dd>{{wantedStartsAt}} → {{wantedEndsAt}}</dd>
+         <dt>Claim by</dt><dd><strong>{{claimDeadline}}</strong></dd>
+       </dl>
+     </div>
+     <p>Claim it now before it's offered to the next person in the queue.</p>
+     <a href="{{claimUrl}}" class="btn">Claim Now</a>`),
+  },
+
   FLOOR_AVAILABLE: {
     subject: 'Desk available — {{floorName}}',
     html: baseHtml('Desk available — {{floorName}}', `<h1>A desk just became available</h1>
@@ -340,6 +354,34 @@ export function renderQueuePromoted(
      <a href="${claimUrl}" class="btn">Claim Now</a>`,
   )
   const text = `Hi ${user.displayName},\n\n${asset.name} is now available!\nPeriod: ${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}\nClaim by: ${formatDate(claimDeadline)}\n\nClaim your booking: ${claimUrl}`
+  return { subject, html, text }
+}
+
+// ─── QUEUE_CLAIM_EXPIRING ─────────────────────────────────────────────────────
+
+export function renderQueueClaimExpiring(
+  queueEntry: Pick<QueueEntry, 'id' | 'wantedStartsAt' | 'wantedEndsAt'>,
+  user: Pick<User, 'displayName' | 'email'>,
+  asset: Pick<Asset, 'name'>,
+  claimDeadline: Date,
+  claimToken: string,
+): { subject: string; html: string; text: string } {
+  const claimUrl = `${env.APP_URL}/queue/claim?token=${encodeURIComponent(claimToken)}`
+  const subject = `Claim window closing soon — ${escapeHtml(asset.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Your claim window is closing soon</h1>
+     <p>Hi ${escapeHtml(user.displayName)}, you still have <strong>${escapeHtml(asset.name)}</strong> reserved for you, but your claim window is about to expire.</p>
+     <div class="detail">
+       <dl>
+         <dt>Period</dt><dd>${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}</dd>
+         <dt>Claim by</dt><dd><strong>${formatDate(claimDeadline)}</strong></dd>
+       </dl>
+     </div>
+     <p>Claim it now before it's offered to the next person in the queue.</p>
+     <a href="${claimUrl}" class="btn">Claim Now</a>`,
+  )
+  const text = `Hi ${user.displayName},\n\nYour claim window for ${asset.name} is closing soon.\nPeriod: ${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}\nClaim by: ${formatDate(claimDeadline)}\n\nClaim your booking: ${claimUrl}`
   return { subject, html, text }
 }
 

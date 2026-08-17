@@ -706,7 +706,7 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
 
   const ALLOWED_TEMPLATE_TYPES = [
     'BOOKING_CONFIRMED', 'BOOKING_CANCELLED', 'BOOKING_CANCELLED_BY_ADMIN',
-    'QUEUE_JOINED', 'QUEUE_PROMOTED', 'QUEUE_EXPIRED',
+    'QUEUE_JOINED', 'QUEUE_PROMOTED', 'QUEUE_EXPIRED', 'QUEUE_CLAIM_EXPIRING',
     'FLOOR_AVAILABLE', 'WELCOME',
   ] as const
   type TemplateType = (typeof ALLOWED_TEMPLATE_TYPES)[number]
