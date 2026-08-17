@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Badge } from '@/components/ui/badge'
+import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 
 export function NotificationBell() {
@@ -20,7 +21,7 @@ export function NotificationBell() {
     select: (res) => res.data.count,
   })
 
-  const { data: notificationsData } = useQuery({
+  const { data: notificationsData, isLoading: notificationsLoading } = useQuery({
     queryKey: ['notifications'],
     queryFn: () => notificationsApi.list({ limit: 30 }),
     enabled: open,
@@ -81,7 +82,11 @@ export function NotificationBell() {
           </SheetHeader>
 
           <ScrollArea className="h-[calc(100vh-65px)]">
-            {!notificationsData || notificationsData.length === 0 ? (
+            {notificationsLoading ? (
+              <div className="space-y-0.5 p-4">
+                {[1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-14 w-full" />)}
+              </div>
+            ) : !notificationsData || notificationsData.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
                 <Bell className="mb-3 h-10 w-10 opacity-30" />
                 <p className="text-sm">No notifications yet</p>
