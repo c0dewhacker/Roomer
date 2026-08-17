@@ -130,14 +130,14 @@ function AddAssetToFloorDialog({
   const [selectedZoneId, setSelectedZoneId] = useState(defaultZoneId ?? zones[0]?.id ?? '')
 
   const { data: allAssets } = useQuery({
-    queryKey: ['assets'],
-    queryFn: () => assetsApi.list(),
+    queryKey: ['assets', 'unplaced'],
+    queryFn: () => assetsApi.list({ unplaced: true }),
     select: (r) => r.data,
     enabled: open,
   })
 
   // Unplaced bookable assets not yet on any floor
-  const unplacedAssets = (allAssets ?? []).filter((a) => a.isBookable && !a.floorId)
+  const unplacedAssets = (allAssets ?? []).filter((a) => a.isBookable)
   const filteredAssets = search.trim()
     ? unplacedAssets.filter((a) => a.name.toLowerCase().includes(search.toLowerCase()))
     : unplacedAssets

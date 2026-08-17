@@ -245,7 +245,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
   // GET / — list assets
   fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
-    const { mine } = request.query as { mine?: string }
+    const { mine, unplaced } = request.query as { mine?: string; unplaced?: string }
 
     // "My Assets" (personal nav) always means "assigned to me", regardless of
     // the caller's role — without this, a SUPER_ADMIN or floor manager hitting
@@ -262,6 +262,28 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+
+    // "Add asset to floor plan" needs the pool of assets with no floor yet.
+    // The floor-manager branch below scopes by floorId IN (managed floors) —
+    // which can never match floorId IS NULL, so a floor/building manager
+    // (anyone reaching this dialog who isn't SUPER_ADMIN) would always see
+    // zero unplaced assets, even when some genuinely exist, because an
+    // unplaced asset has no floor to scope it by. Since it belongs to no
+    // floor yet, there's no narrower boundary to apply than "any manager".
+    if (unplaced === 'true') {
+      if (!isAdmin) {
+        const managedFloorIds = await getManagedFloorIds(request.user.id)
+        if (managedFloorIds.length === 0) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+      const assets = await prisma.asset.findMany({
+        where: { floorId: null },
+        include: { category: true },
+        orderBy: { name: 'asc' },
+      })
+      return reply.status(200).send({ data: assets })
+    }
 
     if (isAdmin) {
       const assets = await prisma.asset.findMany({
