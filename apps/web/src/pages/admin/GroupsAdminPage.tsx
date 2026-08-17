@@ -44,6 +44,7 @@ function CreateGroupDialog({ open, onClose }: { open: boolean; onClose: () => vo
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [globalRole, setGlobalRole] = useState<'USER' | 'SUPER_ADMIN'>('USER')
+  const [confirmSuperAdmin, setConfirmSuperAdmin] = useState(false)
 
   const create = useMutation({
     mutationFn: () => groupsApi.create({ name, description: description || undefined, globalRole }),
@@ -59,6 +60,7 @@ function CreateGroupDialog({ open, onClose }: { open: boolean; onClose: () => vo
   })
 
   return (
+    <>
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
@@ -107,8 +109,8 @@ function CreateGroupDialog({ open, onClose }: { open: boolean; onClose: () => vo
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button
             onClick={() => {
-              if (globalRole === 'SUPER_ADMIN' && !window.confirm('This group grants Super Admin to every member (and anyone the IdP maps in). Continue?')) return
-              create.mutate()
+              if (globalRole === 'SUPER_ADMIN') setConfirmSuperAdmin(true)
+              else create.mutate()
             }}
             disabled={!name.trim() || create.isPending}
           >
@@ -117,6 +119,25 @@ function CreateGroupDialog({ open, onClose }: { open: boolean; onClose: () => vo
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    <AlertDialog open={confirmSuperAdmin} onOpenChange={setConfirmSuperAdmin}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Grant Super Admin to this group?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Every member of <strong>{name || 'this group'}</strong> — and anyone your identity provider maps into it —
+            will get full org-wide admin access.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => { setConfirmSuperAdmin(false); create.mutate() }}>
+            Grant Super Admin
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   )
 }
 
@@ -130,6 +151,7 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
   const [selectedFloorBuildingId, setSelectedFloorBuildingId] = useState('')
   const [selectedFloorId, setSelectedFloorId] = useState('')
   const [editRole, setEditRole] = useState<'USER' | 'SUPER_ADMIN' | null>(null)
+  const [confirmRoleChange, setConfirmRoleChange] = useState(false)
 
   const { data: detail } = useQuery({
     queryKey: ['groups', group?.id],
@@ -229,6 +251,7 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
   const floorBuildingFloors = floorBuildingDetail?.floors ?? []
 
   return (
+    <>
     <Sheet open={!!group} onOpenChange={(o) => !o && onClose()}>
       <SheetContent side="right" className="w-full max-w-lg overflow-y-auto">
         {group && (
@@ -277,7 +300,7 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
                       size="sm"
                       className="h-8"
                       onClick={() => {
-                        if (editRole === 'SUPER_ADMIN' && !window.confirm('This grants Super Admin to every member of this group (and anyone the IdP maps in). Continue?')) return
+                        if (editRole === 'SUPER_ADMIN') { setConfirmRoleChange(true); return }
                         updateRole.mutate(editRole)
                       }}
                       disabled={updateRole.isPending}
@@ -495,6 +518,30 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
         )}
       </SheetContent>
     </Sheet>
+
+    <AlertDialog open={confirmRoleChange} onOpenChange={setConfirmRoleChange}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Grant Super Admin to this group?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This grants Super Admin to every member of <strong>{group?.name ?? 'this group'}</strong> — and anyone
+            your identity provider maps into it.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => {
+              setConfirmRoleChange(false)
+              if (editRole) updateRole.mutate(editRole)
+            }}
+          >
+            Grant Super Admin
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   )
 }
 
