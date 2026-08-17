@@ -1,6 +1,8 @@
 # ─── Stage 1: base ────────────────────────────────────────────────────────────
 FROM node:26-alpine AS base
-RUN corepack enable && corepack prepare pnpm@10.30.1 --activate
+# corepack is no longer bundled with Node from this image onward — install
+# pnpm directly via npm (still bundled) instead of enabling/activating it.
+RUN npm install -g pnpm@10.30.1
 WORKDIR /repo
 
 # ─── Stage 2: install ─────────────────────────────────────────────────────────
