@@ -38,9 +38,15 @@ const bannerSchema = z.object({
 })
 
 const brandingSchema = z.object({
-  appName: z.string().max(100).optional(),
-  sidebarTitle: z.string().max(100).optional(),
-  sidebarSubtitle: z.string().max(100).optional(),
+  // Nullable, not just optional: the admin form sends null (not omits the
+  // field) when clearing a text field back to its default — omitting it
+  // entirely, as a plain .optional() would require, gets dropped by
+  // JSON.stringify before the request even leaves the browser, so a
+  // "cleared" field silently kept whatever value was already saved (same
+  // gap already fixed for lease endDate).
+  appName: z.string().max(100).nullable().optional(),
+  sidebarTitle: z.string().max(100).nullable().optional(),
+  sidebarSubtitle: z.string().max(100).nullable().optional(),
   primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().nullable(),
   primaryColorDark: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().nullable(),
   borderRadius: z.enum(['sharp', 'medium', 'large']).optional().nullable(),

@@ -52,9 +52,13 @@ export function BrandingCard() {
   const save = useMutation({
     mutationFn: () =>
       brandingApi.update({
-        appName: appName || undefined,
-        sidebarTitle: sidebarTitle || undefined,
-        sidebarSubtitle: sidebarSubtitle || undefined,
+        // null (not undefined) when cleared — undefined gets dropped by
+        // JSON.stringify before the request leaves the browser, so clearing
+        // the field back to default would otherwise silently keep whatever
+        // was already saved.
+        appName: appName || null,
+        sidebarTitle: sidebarTitle || null,
+        sidebarSubtitle: sidebarSubtitle || null,
         primaryColor,
         primaryColorDark,
         borderRadius,

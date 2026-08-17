@@ -494,9 +494,9 @@ export interface BrandingBanner {
 }
 
 export interface Branding {
-  appName?: string
-  sidebarTitle?: string
-  sidebarSubtitle?: string
+  appName?: string | null
+  sidebarTitle?: string | null
+  sidebarSubtitle?: string | null
   primaryColor?: string
   primaryColorDark?: string
   logoPath?: string
