@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Plus, Trash2, Send, Eye, CheckCircle2, XCircle, Pencil, Copy, Check } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { webhooksApi, type WebhookEndpoint, type WebhookDelivery } from '@/lib/api'
+import { webhooksApi, ApiError, type WebhookEndpoint, type WebhookDelivery } from '@/lib/api'
 import { toast } from 'sonner'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -22,6 +22,10 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
+
+function apiErrMsg(err: Error): string {
+  return err instanceof ApiError ? (err.fieldErrors ?? err.message) : err.message
+}
 
 // ─── Toggle (matches ProfilePage notification preference style) ───────────────
 
@@ -116,7 +120,7 @@ function EndpointDialog({
         onClose()
       }
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err: Error) => toast.error(apiErrMsg(err)),
   })
 
   const grouped = allEvents.reduce<Record<string, string[]>>((acc, e) => {
@@ -309,7 +313,7 @@ export default function WebhooksAdminPage() {
       qc.invalidateQueries({ queryKey: ['webhooks'] })
       setDeleting(null)
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err: Error) => toast.error(apiErrMsg(err)),
   })
 
   const ping = useMutation({
@@ -321,14 +325,14 @@ export default function WebhooksAdminPage() {
       // 30s query staleTime silently showed the list from before the ping.
       qc.invalidateQueries({ queryKey: ['webhook-deliveries', id] })
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err: Error) => toast.error(apiErrMsg(err)),
   })
 
   const toggleEnabled = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       webhooksApi.update(id, { enabled }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['webhooks'] }),
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err: Error) => toast.error(apiErrMsg(err)),
   })
 
   return (

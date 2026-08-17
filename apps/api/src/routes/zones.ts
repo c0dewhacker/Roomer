@@ -139,6 +139,23 @@ export async function zoneRoutes(fastify: FastifyInstance): Promise<void> {
         })
       }
 
+      // Deleting a zone must not silently widen an existing subscription from
+      // "notify me about this zone" to "notify me about the whole floor" —
+      // FloorSubscriptionZone cascades away on zone delete, and an empty
+      // zones relation on a FloorSubscription means "match all zones" (see
+      // handleFloorSubscriptions in queue.ts), so a subscription whose only
+      // zone was this one would otherwise start firing floor-wide with no
+      // signal to the subscriber. Delete those subscriptions outright instead;
+      // subscriptions that also reference other zones are unaffected — the
+      // cascade just narrows their scope, which is correct.
+      const soleZoneSubs = await prisma.floorSubscription.findMany({
+        where: { zones: { every: { zoneId: id }, some: {} } },
+        select: { id: true },
+      })
+      if (soleZoneSubs.length > 0) {
+        await prisma.floorSubscription.deleteMany({ where: { id: { in: soleZoneSubs.map((s) => s.id) } } })
+      }
+
       try {
         await prisma.zone.delete({ where: { id } })
         return reply.status(200).send({ data: { ok: true } })
