@@ -151,13 +151,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         try {
           const categoryId = categoryMap.get(row.categoryName)!
 
-          // Resolve zone: match by name on this floor, fall back to first zone
+          // Resolve zone: match by name on this floor. A zoneName that doesn't
+          // match anything on this floor (typo, wrong floor's zone name, etc.)
+          // must fail the row rather than silently dropping the asset into
+          // whichever zone happens to be first — that would place it somewhere
+          // the admin never chose with no indication anything went wrong.
           let primaryZoneId: string | undefined
           if (row.zoneName) {
             const zone = floor.zones.find((z) => z.name.toLowerCase() === row.zoneName!.toLowerCase())
-            if (zone) primaryZoneId = zone.id
-          }
-          if (!primaryZoneId && floor.zones.length > 0) {
+            if (!zone) throw new Error(`Zone "${row.zoneName}" not found on this floor`)
+            primaryZoneId = zone.id
+          } else if (floor.zones.length > 0) {
             primaryZoneId = floor.zones[0].id
           }
 
