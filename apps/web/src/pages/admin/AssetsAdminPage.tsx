@@ -186,7 +186,20 @@ function AssetDialog({
           </div>
           <div>
             <Label>Category *</Label>
-            <Select value={watch('categoryId')} onValueChange={(v) => setValue('categoryId', v)}>
+            <Select
+              value={watch('categoryId')}
+              onValueChange={(v) => {
+                setValue('categoryId', v)
+                // "Bookable by default" on the category only means anything at
+                // the moment a new asset picks that category — apply it here;
+                // editing an existing asset's category shouldn't silently
+                // override an isBookable value someone already set explicitly.
+                if (!existing) {
+                  const cat = categories.find((c) => c.id === v)
+                  setValue('isBookable', cat?.defaultIsBookable ?? false)
+                }
+              }}
+            >
               <SelectTrigger className="mt-1.5">
                 <SelectValue placeholder="Select category" />
               </SelectTrigger>
