@@ -1,6 +1,8 @@
 # ─── Stage 1: base ────────────────────────────────────────────────────────────
-FROM node:24-alpine AS base
-RUN corepack enable && corepack prepare pnpm@10.30.1 --activate
+FROM node:26-alpine AS base
+# corepack is no longer bundled with Node from this image onward — install
+# pnpm directly via npm (still bundled) instead of enabling/activating it.
+RUN npm install -g pnpm@10.30.1
 WORKDIR /repo
 
 # ─── Stage 2: install ─────────────────────────────────────────────────────────
@@ -37,7 +39,7 @@ RUN pnpm --filter @roomer/web build
 
 # ─── Stage 4: runner ──────────────────────────────────────────────────────────
 # Use nginx to serve the static bundle and proxy /api to the API service.
-FROM nginx:1.27-alpine AS runner
+FROM nginx:1.31-alpine AS runner
 
 # Install envsubst (part of gettext) to substitute ${API_URL} in the nginx config
 RUN apk add --no-cache gettext

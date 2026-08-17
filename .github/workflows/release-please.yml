@@ -26,7 +26,7 @@ jobs:
       tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || steps.release.outputs.tag_name }}
       version: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || steps.release.outputs.version }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         id: release
         if: github.event_name == 'push'
         with:
@@ -44,7 +44,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.sha }}
 
@@ -92,7 +92,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.sha }}
 
