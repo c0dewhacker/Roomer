@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
 import { createBuildingSchema, updateBuildingSchema, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { requireGlobalRole } from '../middleware/requireRole.js'
+import { requireGlobalRole, getManagedBuildingIds } from '../middleware/requireRole.js'
 import { canUserAccessBuilding } from './groups.js'
 import { cancelFutureBookingsForFloors } from '../lib/queue.js'
 import { deleteFile } from '../lib/storage.js'
@@ -90,16 +90,19 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     // For regular users: return open buildings, group-accessible buildings,
-    // and any buildings where this user is a building admin.
+    // and any buildings where this user is a building admin. Building-admin
+    // status must come from getManagedBuildingIds (direct UserResourceRole OR
+    // GroupResourceRole) — a plain UserResourceRole-only query here missed
+    // anyone who's only a building admin via a group, so they could never
+    // select their own building on pages that source options from this list
+    // (e.g. creating a lease), even though the backend would authorize the
+    // request once made.
     const [userGroupIds, adminBuildingIds] = await Promise.all([
       prisma.userGroupMember.findMany({
         where: { userId: request.user.id },
         select: { groupId: true },
       }).then((rows) => rows.map((m) => m.groupId)),
-      prisma.userResourceRole.findMany({
-        where: { userId: request.user.id, scopeType: 'BUILDING', role: 'BUILDING_ADMIN' },
-        select: { buildingId: true },
-      }).then((rows) => rows.flatMap((r) => r.buildingId ? [r.buildingId] : [])),
+      getManagedBuildingIds(request.user.id),
     ])
 
     const buildings = await prisma.building.findMany({
