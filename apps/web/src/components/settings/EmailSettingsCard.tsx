@@ -3,9 +3,10 @@ import { toast } from 'sonner'
 import { Send } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { settingsApi } from '@/lib/api'
+import { settingsApi, ApiError } from '@/lib/api'
 import { CollapsibleCard } from './CollapsibleCard'
 
 export function EmailSettingsCard() {
@@ -37,6 +38,24 @@ export function EmailSettingsCard() {
   const ov = data?.envOverrides
   const eff = data?.effective
 
+  // Same drift as leases/branding: an out-of-range port only ever surfaces
+  // as the backend's generic "Validation failed" unless we mirror its
+  // min/max here (1-65535, matching emailConfigSchema in settings.ts) and
+  // catch it before the round trip.
+  const portNum = port === '' ? null : Number(port)
+  const portError = portNum !== null && (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535)
+    ? 'Port must be a whole number between 1 and 65535'
+    : null
+
+  const isDirty = !!data && (
+    host !== (data.host ?? '') ||
+    port !== (data.port != null ? String(data.port) : '') ||
+    secure !== data.secure ||
+    user !== (data.user ?? '') ||
+    from !== (data.from ?? '') ||
+    password !== ''
+  )
+
   const save = useMutation({
     mutationFn: () => settingsApi.updateEmail({
       host: host || undefined,
@@ -47,7 +66,10 @@ export function EmailSettingsCard() {
       ...(password ? { password } : {}),
     }),
     onSuccess: () => { toast.success('Email settings saved'); setPassword(''); qc.invalidateQueries({ queryKey: ['settings', 'email'] }) },
-    onError: (err: Error) => toast.error(err.message || 'Failed to save'),
+    onError: (err: Error) => {
+      const details = err instanceof ApiError ? (err.fieldErrors ?? err.message) : err.message
+      toast.error(details || 'Failed to save')
+    },
   })
 
   const testEmail = useMutation({
@@ -74,8 +96,18 @@ export function EmailSettingsCard() {
           </div>
           <div>
             <Label className="text-xs">Port</Label>
-            <Input type="number" value={ov?.port ? String(eff?.port ?? '') : port} onChange={(e) => setPort(e.target.value)} disabled={ov?.port} className="mt-1 h-8 text-sm" placeholder="587" />
+            <Input
+              type="number"
+              min={1}
+              max={65535}
+              value={ov?.port ? String(eff?.port ?? '') : port}
+              onChange={(e) => setPort(e.target.value)}
+              disabled={ov?.port}
+              className="mt-1 h-8 text-sm"
+              placeholder="587"
+            />
             {ov?.port && <p className="text-[11px] text-muted-foreground mt-1">Set by environment</p>}
+            {!ov?.port && portError && <p className="text-[11px] text-destructive mt-1">{portError}</p>}
           </div>
           <div>
             <Label className="text-xs">Username</Label>
@@ -100,13 +132,14 @@ export function EmailSettingsCard() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button type="button" size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
+          <Button type="button" size="sm" disabled={save.isPending || !isDirty || !!portError} onClick={() => save.mutate()}>
             {save.isPending ? 'Saving…' : 'Save email settings'}
           </Button>
           <Button type="button" variant="outline" size="sm" disabled={testEmail.isPending} onClick={() => testEmail.mutate()}>
             <Send className="mr-2 h-3.5 w-3.5" />
             {testEmail.isPending ? 'Sending…' : 'Send test email'}
           </Button>
+          {isDirty && !portError && <Badge variant="outline" className="text-amber-600 border-amber-300">Unsaved changes</Badge>}
         </div>
       </div>
     </CollapsibleCard>
