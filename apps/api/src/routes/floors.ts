@@ -331,12 +331,28 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       // SetNull and there's no longer any way to find which bookings were on it.
       await cancelFutureBookingsForFloors([id])
 
+      // Also fetch before the delete — FloorPlan cascades away with the floor,
+      // but its files on disk don't clean themselves up (same fix as the
+      // existing "replace floor plan" upload path above).
+      const floorPlan = await prisma.floorPlan.findUnique({ where: { floorId: id } })
+
       try {
         await prisma.floor.delete({ where: { id } })
-        return reply.status(200).send({ data: { ok: true } })
       } catch {
         return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
       }
+
+      if (floorPlan) {
+        await deleteFile(floorPlan.originalPath)
+        if (floorPlan.renderedPath !== floorPlan.originalPath) {
+          await deleteFile(floorPlan.renderedPath)
+        }
+        if (floorPlan.thumbnailPath) {
+          await deleteFile(floorPlan.thumbnailPath)
+        }
+      }
+
+      return reply.status(200).send({ data: { ok: true } })
     },
   )
 

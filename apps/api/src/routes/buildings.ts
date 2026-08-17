@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole } from '../middleware/requireRole.js'
 import { canUserAccessBuilding } from './groups.js'
 import { cancelFutureBookingsForFloors } from '../lib/queue.js'
+import { deleteFile } from '../lib/storage.js'
 
 /**
  * Filter a building's floors down to the ones `userId` may access, matching
@@ -463,14 +464,31 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       const floors = await prisma.floor.findMany({ where: { buildingId: id }, select: { id: true } })
       await cancelFutureBookingsForFloors(floors.map((f) => f.id))
 
+      // Also fetch before the delete — each floor's FloorPlan cascades away
+      // with it, but the files on disk don't clean themselves up.
+      const floorPlans = await prisma.floorPlan.findMany({
+        where: { floorId: { in: floors.map((f) => f.id) } },
+      })
+
       try {
         await prisma.building.delete({ where: { id } })
-        return reply.status(200).send({ data: { ok: true } })
       } catch {
         return reply.status(404).send({
           error: { message: 'Building not found', code: 'NOT_FOUND' },
         })
       }
+
+      for (const plan of floorPlans) {
+        await deleteFile(plan.originalPath)
+        if (plan.renderedPath !== plan.originalPath) {
+          await deleteFile(plan.renderedPath)
+        }
+        if (plan.thumbnailPath) {
+          await deleteFile(plan.thumbnailPath)
+        }
+      }
+
+      return reply.status(200).send({ data: { ok: true } })
     },
   )
 }
