@@ -167,10 +167,13 @@ const roleLabels: Record<string, string> = {
   USER: 'User',
 }
 
+// Matches AccountStatus (schema.prisma): ACTIVE | BLOCKED — the UI still
+// says "Suspend"/"Suspended" since that's the backend's own user-facing
+// wording for a BLOCKED account (see the login error message), it's just
+// not a distinct enum value from BLOCKED.
 const statusConfig: Record<string, { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {
   ACTIVE: { label: 'Active', variant: 'secondary' },
-  SUSPENDED: { label: 'Suspended', variant: 'destructive' },
-  PENDING: { label: 'Pending', variant: 'outline' },
+  BLOCKED: { label: 'Suspended', variant: 'destructive' },
 }
 
 function UserRow({ user, onRefresh }: { user: User; onRefresh: () => void }) {
@@ -305,7 +308,7 @@ function UserRow({ user, onRefresh }: { user: User; onRefresh: () => void }) {
                         <AlertDialogFooter>
                           <AlertDialogCancel>Cancel</AlertDialogCancel>
                           <AlertDialogAction
-                            onClick={() => updateStatus.mutate('SUSPENDED')}
+                            onClick={() => updateStatus.mutate('BLOCKED')}
                             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                           >
                             Suspend

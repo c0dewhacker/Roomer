@@ -453,6 +453,20 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       const { id } = request.params as { id: string }
       const existing = await prisma.assetCategory.findUnique({ where: { id }, select: { iconUrl: true } })
       if (!existing) return reply.status(404).send({ error: { message: 'Category not found', code: 'NOT_FOUND' } })
+
+      // Asset.categoryId is a required FK with no onDelete action, so Postgres
+      // rejects the delete outright once any asset references this category —
+      // check first so that's a clear message instead of a raw 500.
+      const assetCount = await prisma.asset.count({ where: { categoryId: id } })
+      if (assetCount > 0) {
+        return reply.status(409).send({
+          error: {
+            message: `Cannot delete: ${assetCount} asset${assetCount === 1 ? '' : 's'} still use this category. Reassign or delete ${assetCount === 1 ? 'it' : 'them'} first.`,
+            code: 'CATEGORY_IN_USE',
+          },
+        })
+      }
+
       if (existing.iconUrl) await deleteFile(existing.iconUrl).catch(() => {})
       await prisma.assetCategory.delete({ where: { id } })
       return reply.status(200).send({ data: { ok: true } })

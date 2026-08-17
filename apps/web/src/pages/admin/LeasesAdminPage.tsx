@@ -1,8 +1,8 @@
-import { useState, useRef, useMemo } from 'react'
+import { useState, useRef } from 'react'
 import { useForm, type Resolver } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { isPast } from 'date-fns'
+import { differenceInCalendarDays } from 'date-fns'
 import { formatDate } from '@/lib/utils'
 import {
   FileText, Plus, Trash2, Upload, Download, ChevronDown, ChevronUp, Building2, AlertCircle,
@@ -28,6 +28,19 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import type { Lease, Building } from '@/types'
+
+// endDate is stored as UTC midnight of the calendar day an admin picked in a
+// plain <input type=date> (new Date("YYYY-MM-DD").toISOString()). Comparing
+// that instant directly against "now" (via isPast / getTime() subtraction,
+// as this used to) flips a lease to "Expired" from the start of its own end
+// date in any positive-UTC-offset timezone — up to ~14 hours before the day
+// is actually over locally. Re-anchor the UTC-encoded date components as
+// local midnight so this compares calendar days, not raw instants.
+function daysUntilLeaseExpiry(endDate: string): number {
+  const utc = new Date(endDate)
+  const localMidnight = new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate())
+  return differenceInCalendarDays(localMidnight, new Date())
+}
 
 // ─── Lease Form ───────────────────────────────────────────────────────────────
 
@@ -229,12 +242,9 @@ function LeaseCard({ lease }: { lease: Lease }) {
     onError: (err: Error) => toast.error(err.message),
   })
 
-  // eslint-disable-next-line react-hooks/purity -- Date.now() inside useMemo with empty deps is stable at mount; React Compiler-safe
-  const now = useMemo(() => Date.now(), [])
-  const isExpired = lease.endDate ? isPast(new Date(lease.endDate)) : false
-  const isExpiringSoon = lease.endDate && !isExpired
-    ? (new Date(lease.endDate).getTime() - now) < 90 * 24 * 60 * 60 * 1000
-    : false
+  const daysLeft = lease.endDate ? daysUntilLeaseExpiry(lease.endDate) : null
+  const isExpired = daysLeft !== null && daysLeft < 0
+  const isExpiringSoon = daysLeft !== null && daysLeft >= 0 && daysLeft <= 90
 
   const formatCurrency = (amount: number, currency: string) =>
     new Intl.NumberFormat('en-GB', { style: 'currency', currency }).format(amount)
@@ -444,12 +454,10 @@ export default function LeasesAdminPage() {
     select: (r) => r.data,
   })
 
-  // eslint-disable-next-line react-hooks/purity -- Date.now() inside useMemo with empty deps is stable at mount; React Compiler-safe
-  const listNow = useMemo(() => Date.now(), [])
   const expiringSoon = (leases ?? []).filter((l) => {
     if (!l.endDate) return false
-    const daysLeft = (new Date(l.endDate).getTime() - listNow) / (1000 * 60 * 60 * 24)
-    return daysLeft > 0 && daysLeft <= 90
+    const daysLeft = daysUntilLeaseExpiry(l.endDate)
+    return daysLeft >= 0 && daysLeft <= 90
   })
 
   return (

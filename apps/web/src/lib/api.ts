@@ -756,7 +756,7 @@ export const notificationsApi = {
     const qs = new URLSearchParams()
     if (params?.page) qs.set('page', String(params.page))
     if (params?.limit) qs.set('limit', String(params.limit))
-    return api.get<{ data: Notification[]; meta: { total: number } }>(
+    return api.get<{ data: Notification[]; meta: { total: number; page: number; limit: number; totalPages: number } }>(
       `/notifications${qs.toString() ? `?${qs}` : ''}`,
     )
   },

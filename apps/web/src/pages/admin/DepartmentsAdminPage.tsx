@@ -32,6 +32,11 @@ function CreateDepartmentDialog({ open, onClose }: { open: boolean; onClose: () 
     onSuccess: () => {
       toast.success('Department created')
       qc.invalidateQueries({ queryKey: ['departments'] })
+      // Org Chart infers its department tree (names, member counts, inferred
+      // parents) from this same data via a separate query key — without this
+      // it keeps showing stale department names/counts for up to the 30s
+      // staleTime, or indefinitely if the chart isn't remounted in that window.
+      qc.invalidateQueries({ queryKey: ['org', 'hierarchy'] })
       onClose()
       setName('')
     },
@@ -88,6 +93,7 @@ function DepartmentDetailSheet({ department, onClose }: { department: Department
     onSuccess: () => {
       toast.success('Department updated')
       qc.invalidateQueries({ queryKey: ['departments'] })
+      qc.invalidateQueries({ queryKey: ['org', 'hierarchy'] })
       setEditName(null)
     },
     onError: (err: Error) => toast.error(err.message),
@@ -99,6 +105,7 @@ function DepartmentDetailSheet({ department, onClose }: { department: Department
       toast.success('Member added')
       qc.invalidateQueries({ queryKey: ['departments', department?.id, 'members'] })
       qc.invalidateQueries({ queryKey: ['departments'] })
+      qc.invalidateQueries({ queryKey: ['org', 'hierarchy'] })
       setMemberSearch('')
       setSelectedMemberId('')
     },
@@ -111,6 +118,7 @@ function DepartmentDetailSheet({ department, onClose }: { department: Department
       toast.success('Member removed')
       qc.invalidateQueries({ queryKey: ['departments', department?.id, 'members'] })
       qc.invalidateQueries({ queryKey: ['departments'] })
+      qc.invalidateQueries({ queryKey: ['org', 'hierarchy'] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -235,6 +243,7 @@ export default function DepartmentsAdminPage() {
     onSuccess: () => {
       toast.success('Department deleted')
       qc.invalidateQueries({ queryKey: ['departments'] })
+      qc.invalidateQueries({ queryKey: ['org', 'hierarchy'] })
     },
     onError: (err: Error) => toast.error(err.message),
   })

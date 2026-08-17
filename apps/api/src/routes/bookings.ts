@@ -357,8 +357,17 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (booking.status !== 'CONFIRMED') {
       return reply.status(409).send({ error: { message: 'Booking is not active', code: 'BOOKING_NOT_ACTIVE' } })
     }
-    if (booking.endsAt < new Date()) {
+    const now = new Date()
+    if (booking.endsAt < now) {
       return reply.status(409).send({ error: { message: 'Booking has already ended', code: 'BOOKING_ENDED' } })
+    }
+    // "I'm here" only makes sense once the slot has actually started — without
+    // this, checking in days ahead of time permanently exempts the booking
+    // from no-show release (handleReleaseNoShows excludes any checkedInAt !=
+    // null), letting a desk sit reserved-but-empty all day with no way for the
+    // queue to ever reclaim it.
+    if (booking.startsAt > now) {
+      return reply.status(409).send({ error: { message: 'This booking has not started yet', code: 'BOOKING_NOT_STARTED' } })
     }
     // Idempotent — already checked in.
     if (booking.checkedInAt) {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -53,6 +53,15 @@ function BuildingDialog({
     resolver: zodResolver(buildingSchema),
     defaultValues: { name: existing?.name ?? '', address: existing?.address ?? '' },
   })
+
+  // defaultValues only applies on this component's first mount — this dialog
+  // is a single persistent instance reused for every "Add"/"Edit" click, so
+  // without resyncing here, opening Edit on building B after previously
+  // editing building A pre-filled the form with A's stale name/address (or
+  // blanks, the very first time), risking overwriting B with A's values.
+  useEffect(() => {
+    if (open) reset({ name: existing?.name ?? '', address: existing?.address ?? '' })
+  }, [open, existing, reset])
 
   const create = useMutation({
     mutationFn: (d: BuildingForm) => buildingsApi.create(d),
@@ -173,7 +182,9 @@ export default function BuildingsAdminPage() {
                       <AlertDialogHeader>
                         <AlertDialogTitle>Delete building?</AlertDialogTitle>
                         <AlertDialogDescription>
-                          This will permanently delete <strong>{b.name}</strong> and all its floors and desks.
+                          This will permanently delete <strong>{b.name}</strong> and all its floors and zones.
+                          Assets on those floors won't be deleted — they'll become unplaced, and any future
+                          bookings on them will be cancelled.
                         </AlertDialogDescription>
                       </AlertDialogHeader>
                       <AlertDialogFooter>

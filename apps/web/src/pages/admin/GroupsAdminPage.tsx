@@ -377,15 +377,37 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
                           <p className="text-sm font-medium">{m.user?.displayName}</p>
                           <p className="text-xs text-muted-foreground">{m.user?.email}</p>
                         </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 hover:text-destructive"
-                          onClick={() => removeMember.mutate(m.userId)}
-                          disabled={removeMember.isPending}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 hover:text-destructive"
+                              disabled={removeMember.isPending}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Remove member?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                Remove <strong>{m.user?.displayName}</strong> from <strong>{group?.name}</strong>?
+                                They will immediately lose any access or role this group grants — including Super
+                                Admin, if this group grants it.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Keep member</AlertDialogCancel>
+                              <AlertDialogAction
+                                onClick={() => removeMember.mutate(m.userId)}
+                                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                              >
+                                Remove
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
                       </div>
                     ))}
                   </div>
@@ -433,15 +455,46 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
                     {buildingAccess.map((a) => (
                       <div key={a.buildingId} className="flex items-center justify-between rounded-md border px-3 py-2">
                         <p className="text-sm font-medium">{a.building?.name ?? a.buildingId}</p>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 hover:text-destructive"
-                          onClick={() => removeBuildingAccess.mutate(a.buildingId)}
-                          disabled={removeBuildingAccess.isPending}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 hover:text-destructive"
+                              disabled={removeBuildingAccess.isPending}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Remove building restriction?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                {buildingAccess.length === 1 ? (
+                                  <>
+                                    This is the last building restriction on <strong>{group?.name}</strong>. Removing
+                                    it will grant members access to <strong>every</strong> building, not just this
+                                    one.
+                                  </>
+                                ) : (
+                                  <>
+                                    Members of <strong>{group?.name}</strong> will no longer have access to{' '}
+                                    <strong>{a.building?.name ?? a.buildingId}</strong> through this group.
+                                  </>
+                                )}
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Keep restriction</AlertDialogCancel>
+                              <AlertDialogAction
+                                onClick={() => removeBuildingAccess.mutate(a.buildingId)}
+                                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                              >
+                                Remove
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
                       </div>
                     ))}
                   </div>
@@ -499,15 +552,36 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
                     {floorAccess.map((a) => (
                       <div key={a.floorId} className="flex items-center justify-between rounded-md border px-3 py-2">
                         <p className="text-sm font-medium">{a.floor?.name ?? a.floorId}</p>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 hover:text-destructive"
-                          onClick={() => removeFloorAccess.mutate(a.floorId)}
-                          disabled={removeFloorAccess.isPending}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 hover:text-destructive"
+                              disabled={removeFloorAccess.isPending}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Remove floor restriction?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                Members of <strong>{group?.name}</strong> will no longer have access to{' '}
+                                <strong>{a.floor?.name ?? a.floorId}</strong> through this group.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Keep restriction</AlertDialogCancel>
+                              <AlertDialogAction
+                                onClick={() => removeFloorAccess.mutate(a.floorId)}
+                                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                              >
+                                Remove
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
                       </div>
                     ))}
                   </div>

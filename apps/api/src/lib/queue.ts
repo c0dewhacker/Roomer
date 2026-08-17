@@ -566,23 +566,37 @@ async function handleReleaseNoShows(): Promise<void> {
   })
   if (noShows.length === 0) return
 
+  // Re-check the candidates' current state right before mutating — the
+  // findMany above and this update aren't transactional, so a check-in (or a
+  // reschedule/cancel) landing in the gap would otherwise still get counted:
+  // not just wrongly cancelling a booking someone did show up for, but also
+  // wrongly notifying/promoting the queue for a slot that's still
+  // legitimately occupied by whoever just checked in.
+  const stillNoShow = await prisma.booking.findMany({
+    where: { id: { in: noShows.map((b) => b.id) }, status: 'CONFIRMED', checkedInAt: null },
+    select: { id: true },
+  })
+  const stillNoShowIds = new Set(stillNoShow.map((b) => b.id))
+  const toRelease = noShows.filter((b) => stillNoShowIds.has(b.id))
+  if (toRelease.length === 0) return
+
   await prisma.booking.updateMany({
-    where: { id: { in: noShows.map((b) => b.id) } },
+    where: { id: { in: toRelease.map((b) => b.id) } },
     data: { status: 'CANCELLED', noShow: true },
   })
 
   await getBoss().insert(
     'send-notification',
-    noShows.map((b) => ({
+    toRelease.map((b) => ({
       data: { type: NotificationType.BOOKING_NO_SHOW, userId: b.userId, bookingId: b.id } satisfies NotificationJobData,
     })),
   )
-  for (const b of noShows) {
+  for (const b of toRelease) {
     dispatchWebhook('booking.no_show', { id: b.id, userId: b.userId, assetId: b.assetId }).catch(() => {})
   }
 
   // Free the desk: promote the next queued user for the slot, or fan out floor availability.
-  for (const b of noShows) {
+  for (const b of toRelease) {
     const next = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
     if (next) {
       await getBoss().insert('send-notification', [{
@@ -598,7 +612,7 @@ async function handleReleaseNoShows(): Promise<void> {
     }
   }
 
-  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Released no-show bookings', count: noShows.length }) + '\n')
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Released no-show bookings', count: toRelease.length }) + '\n')
 }
 
 // ─── Worker: expire-claim-deadlines (cron every 5 min) ───────────────────────

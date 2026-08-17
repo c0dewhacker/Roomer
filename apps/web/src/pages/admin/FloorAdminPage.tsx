@@ -701,7 +701,7 @@ function ZoneSection({
 
 // ─── Floor Managers Panel ─────────────────────────────────────────────────────
 
-function FloorManagersPanel({ floorId }: { floorId: string }) {
+function FloorManagersPanel({ floorId, floorName }: { floorId: string; floorName?: string }) {
   const qc = useQueryClient()
   const [tab, setTab] = useState<'users' | 'groups'>('users')
 
@@ -834,14 +834,35 @@ function FloorManagersPanel({ floorId }: { floorId: string }) {
                         <p className="text-sm font-medium">{m.displayName}</p>
                         <p className="text-xs text-muted-foreground">{m.email}</p>
                       </div>
-                      <Button
-                        size="icon" variant="ghost" className="h-8 w-8 hover:text-destructive"
-                        title="Remove manager"
-                        onClick={() => removeUser.mutate({ userId: m.id, roleId: m.roleId })}
-                        disabled={removeUser.isPending}
-                      >
-                        <UserMinus className="h-4 w-4" />
-                      </Button>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            size="icon" variant="ghost" className="h-8 w-8 hover:text-destructive"
+                            title="Remove manager"
+                            disabled={removeUser.isPending}
+                          >
+                            <UserMinus className="h-4 w-4" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Remove floor manager?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              <strong>{m.displayName}</strong> will lose floor-manager access to{' '}
+                              <strong>{floorName ?? 'this floor'}</strong>.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Keep manager</AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => removeUser.mutate({ userId: m.id, roleId: m.roleId })}
+                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            >
+                              Remove
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
                     </div>
                   ))}
                 </div>
@@ -904,14 +925,35 @@ function FloorManagersPanel({ floorId }: { floorId: string }) {
                         <p className="text-sm font-medium">{g.name}</p>
                         <p className="text-xs text-muted-foreground">{g.memberCount} member{g.memberCount !== 1 ? 's' : ''}</p>
                       </div>
-                      <Button
-                        size="icon" variant="ghost" className="h-8 w-8 hover:text-destructive"
-                        title="Remove group manager"
-                        onClick={() => removeGroup.mutate(g.id)}
-                        disabled={removeGroup.isPending}
-                      >
-                        <UserMinus className="h-4 w-4" />
-                      </Button>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            size="icon" variant="ghost" className="h-8 w-8 hover:text-destructive"
+                            title="Remove group manager"
+                            disabled={removeGroup.isPending}
+                          >
+                            <UserMinus className="h-4 w-4" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Remove group manager?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              Every member of <strong>{g.name}</strong> ({g.memberCount} member{g.memberCount !== 1 ? 's' : ''})
+                              will lose floor-manager access to <strong>{floorName ?? 'this floor'}</strong>.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Keep manager</AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => removeGroup.mutate(g.id)}
+                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            >
+                              Remove
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
                     </div>
                   ))}
                 </div>
@@ -1098,7 +1140,7 @@ export default function FloorAdminPage() {
             <div className="p-4 max-w-sm">
               <NoShowOverrideControl scope="floor" value={floor?.noShowReleaseEnabled} onChange={(v) => saveNoShow.mutate(v)} disabled={saveNoShow.isPending} />
             </div>
-            <FloorManagersPanel floorId={floorId!} />
+            <FloorManagersPanel floorId={floorId!} floorName={floor?.name} />
           </div>
         ) : view === 'layout' ? (
           floorId && (

@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { format, addDays } from 'date-fns'
 import { ChevronLeft, ChevronRight, CalendarDays, Info, Users, Bell, BellRing, SlidersHorizontal } from 'lucide-react'
@@ -51,16 +51,6 @@ export default function FloorPage() {
     () => (selectedDeskId && desks ? desks.find((d) => d.id === selectedDeskId) ?? null : null),
     [selectedDeskId, desks],
   )
-
-  // When deep-linked from the colleague finder, open the highlighted desk's panel
-  // once its data is available (one-shot, so the user can close it afterwards).
-  const [highlightApplied, setHighlightApplied] = useState(false)
-  useEffect(() => {
-    if (!highlightApplied && highlightAssetId && desks?.some((d) => d.id === highlightAssetId)) {
-      //setSelectedDeskId(highlightAssetId)
-      setHighlightApplied(true)
-    }
-  }, [highlightApplied, highlightAssetId, desks])
 
   const whoIsIn = useMemo(() => {
     if (!desks) return []

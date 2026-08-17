@@ -493,6 +493,11 @@ function RecurringRuleCard({ rule }: { rule: RecurringBookingRule }) {
     onSuccess: () => {
       toast.success('Recurring series cancelled')
       qc.invalidateQueries({ queryKey: ['recurring-bookings'] })
+      // The backend cancels every future occurrence's underlying Booking row
+      // too, not just the rule — without this, the already-fetched
+      // ['bookings'] cache keeps showing those rows as CONFIRMED with live
+      // Edit/Cancel buttons until an unrelated refetch happens to occur.
+      qc.invalidateQueries({ queryKey: ['bookings'] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
