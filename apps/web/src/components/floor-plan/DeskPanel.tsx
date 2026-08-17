@@ -12,6 +12,17 @@ import { DateTimeLocalInput } from '@/components/ui/date-time-input'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useCreateBooking, useJoinQueue, useLeaveQueue, useClaimDesk, useCancelBooking, useMakeAvailable, useQueueEntries } from '@/hooks/useBookings'
@@ -1041,15 +1052,36 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                     <p className="text-xs text-blue-600 mt-1">{desk.currentBooking.notes}</p>
                   )}
                 </div>
-                <Button
-                  variant="destructive"
-                  onClick={() => cancelBooking.mutate(desk.currentBooking!.id)}
-                  disabled={cancelBooking.isPending}
-                  className="w-full"
-                >
-                  <XCircle className="mr-2 h-4 w-4" />
-                  {cancelBooking.isPending ? 'Cancelling…' : 'Cancel Booking'}
-                </Button>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="destructive"
+                      disabled={cancelBooking.isPending}
+                      className="w-full"
+                    >
+                      <XCircle className="mr-2 h-4 w-4" />
+                      {cancelBooking.isPending ? 'Cancelling…' : 'Cancel Booking'}
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Cancel booking?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Cancel your booking for <strong>{desk.name}</strong>? This action cannot
+                        be undone. Anyone in the queue will be notified.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep booking</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => cancelBooking.mutate(desk.currentBooking!.id)}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      >
+                        Cancel booking
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
               </div>
             )}
 
@@ -1069,16 +1101,37 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                 </div>
 
                 {canManageDesk && desk.currentBooking && (
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => cancelBooking.mutate(desk.currentBooking!.id)}
-                    disabled={cancelBooking.isPending}
-                    className="w-full"
-                  >
-                    <XCircle className="mr-2 h-4 w-4" />
-                    {cancelBooking.isPending ? 'Cancelling…' : 'Cancel this booking'}
-                  </Button>
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        disabled={cancelBooking.isPending}
+                        className="w-full"
+                      >
+                        <XCircle className="mr-2 h-4 w-4" />
+                        {cancelBooking.isPending ? 'Cancelling…' : 'Cancel this booking'}
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Cancel this booking?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Cancel {desk.currentBooking.bookerName ? <><strong>{desk.currentBooking.bookerName}</strong>'s</> : 'this'} booking for <strong>{desk.name}</strong>?
+                          This action cannot be undone. Anyone in the queue will be notified.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Keep booking</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={() => cancelBooking.mutate(desk.currentBooking!.id)}
+                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        >
+                          Cancel booking
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
                 )}
 
                 <div>
@@ -1135,14 +1188,35 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                     Queue expires: {formatDateTime(myQueueEntry.expiresAt)}
                   </p>
                 </div>
-                <Button
-                  variant="outline"
-                  onClick={() => leaveQueue.mutate(myQueueEntry.id)}
-                  disabled={leaveQueue.isPending}
-                  className="w-full"
-                >
-                  {leaveQueue.isPending ? 'Leaving…' : 'Leave Queue'}
-                </Button>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="outline"
+                      disabled={leaveQueue.isPending}
+                      className="w-full"
+                    >
+                      {leaveQueue.isPending ? 'Leaving…' : 'Leave Queue'}
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Leave queue?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        You will lose your position #{myQueueEntry.position} in the queue for{' '}
+                        <strong>{desk.name}</strong>.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep position</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => leaveQueue.mutate(myQueueEntry.id)}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      >
+                        Leave queue
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
               </div>
             )}
 
