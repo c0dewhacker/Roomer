@@ -61,6 +61,53 @@ export async function promoteNextQueueEntry(
   })
 }
 
+/**
+ * Cancel every future CONFIRMED booking on the given floors and promote the
+ * next queued entry for each freed slot — same cancel+promote+notify shape as
+ * a recurring-series cancellation (see recurring.ts DELETE /:id).
+ *
+ * Used before deleting a floor (directly, or via a building delete cascading
+ * its floors) so a booking never sits CONFIRMED for a desk on a floor that no
+ * longer exists. Must be called — and its bookings read — BEFORE the actual
+ * floor/building delete: once the floor is gone, Asset.floorId is SetNull and
+ * there is no longer any way to find which bookings belonged to it.
+ *
+ * Deliberately doesn't touch the assets themselves (still just orphaned, per
+ * existing behaviour) — only the clearly-wrong part, a CONFIRMED booking with
+ * nowhere to be, is fixed here. What should happen to the orphaned assets is
+ * a separate, larger product decision (see issues #205 / #206).
+ */
+export async function cancelFutureBookingsForFloors(floorIds: string[]): Promise<void> {
+  if (floorIds.length === 0) return
+  const now = new Date()
+
+  const bookings = await prisma.booking.findMany({
+    where: { status: 'CONFIRMED', startsAt: { gt: now }, asset: { floorId: { in: floorIds } } },
+    select: { id: true, assetId: true, startsAt: true, endsAt: true },
+  })
+  if (bookings.length === 0) return
+
+  await prisma.booking.updateMany({
+    where: { id: { in: bookings.map((b) => b.id) } },
+    data: { status: 'CANCELLED' },
+  })
+
+  for (const b of bookings) {
+    const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
+    if (nextQueued) {
+      await enqueueNotification({
+        type: NotificationType.QUEUE_PROMOTED,
+        userId: nextQueued.userId,
+        queueEntryId: nextQueued.id,
+        claimDeadline: nextQueued.claimDeadline.toISOString(),
+      })
+      dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+    }
+  }
+
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Cancelled bookings on deleted floor(s)', floorIds, count: bookings.length }) + '\n')
+}
+
 // ─── Notification job payload ─────────────────────────────────────────────────
 
 export interface NotificationJobData {

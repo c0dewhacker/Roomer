@@ -4,6 +4,7 @@ import { createBuildingSchema, updateBuildingSchema, GlobalRole } from '@roomer/
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole } from '../middleware/requireRole.js'
 import { canUserAccessBuilding } from './groups.js'
+import { cancelFutureBookingsForFloors } from '../lib/queue.js'
 
 /**
  * Filter a building's floors down to the ones `userId` may access, matching
@@ -455,6 +456,12 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
     { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      // Must run before the delete: once the building (and its floors, which
+      // cascade-delete with it) is gone, Asset.floorId is SetNull and there's
+      // no longer any way to find which bookings were on those floors.
+      const floors = await prisma.floor.findMany({ where: { buildingId: id }, select: { id: true } })
+      await cancelFutureBookingsForFloors(floors.map((f) => f.id))
 
       try {
         await prisma.building.delete({ where: { id } })

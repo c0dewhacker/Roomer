@@ -7,6 +7,7 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { isFloorManagerForFloor, isBuildingManagerForBuilding, requireGlobalRole } from '../middleware/requireRole.js'
 import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage.js'
 import { checkGroupAccess } from './groups.js'
+import { cancelFutureBookingsForFloors } from '../lib/queue.js'
 import { z } from 'zod'
 
 export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
@@ -325,6 +326,10 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
         }
       }
+
+      // Must run before the delete: once the floor is gone, Asset.floorId is
+      // SetNull and there's no longer any way to find which bookings were on it.
+      await cancelFutureBookingsForFloors([id])
 
       try {
         await prisma.floor.delete({ where: { id } })
