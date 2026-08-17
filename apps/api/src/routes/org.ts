@@ -22,8 +22,10 @@ export async function orgRoutes(fastify: FastifyInstance): Promise<void> {
 
     const deptOf = new Map<string, string | null>()
     const memberCount = new Map<string, number>()
+    const activeUserIds = new Set<string>()
     for (const u of users) {
       deptOf.set(u.id, u.departmentId)
+      activeUserIds.add(u.id)
       if (u.departmentId) memberCount.set(u.departmentId, (memberCount.get(u.departmentId) ?? 0) + 1)
     }
 
@@ -61,7 +63,12 @@ export async function orgRoutes(fastify: FastifyInstance): Promise<void> {
           memberCount: memberCount.get(d.id) ?? 0,
           inferredParentId: inferredParent.get(d.id) ?? null,
         })),
-        unresolvedManagers: users.filter((u) => u.managerId === null).length,
+        // Not just a null managerId — a manager who's been blocked/deactivated
+        // is excluded from `users` above but their reports' managerId still
+        // points at them, so those reports become top-level nodes in the
+        // chart exactly the same as an unset manager (see OrgChartCanvas's
+        // byId.has(n.parentId) check) and must count the same way here.
+        unresolvedManagers: users.filter((u) => !u.managerId || !activeUserIds.has(u.managerId)).length,
       },
     })
   })
