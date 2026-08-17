@@ -4,6 +4,36 @@ import { createBuildingSchema, updateBuildingSchema, GlobalRole } from '@roomer/
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole } from '../middleware/requireRole.js'
 import { canUserAccessBuilding } from './groups.js'
+import { cancelFutureBookingsForFloors } from '../lib/queue.js'
+import { deleteFile } from '../lib/storage.js'
+
+/**
+ * Filter a building's floors down to the ones `userId` may access, matching
+ * canUserAccessFloor's "restricted only if a GroupFloorAccess rule exists"
+ * semantics but batched into 2 queries regardless of floor count (rather
+ * than one canUserAccessFloor call per floor).
+ */
+async function filterAccessibleFloors<T extends { id: string }>(userId: string, floors: T[]): Promise<T[]> {
+  if (floors.length === 0) return floors
+  const floorIds = floors.map((f) => f.id)
+  const [restricted, memberships] = await Promise.all([
+    prisma.groupFloorAccess.findMany({ where: { floorId: { in: floorIds } }, select: { floorId: true, groupId: true } }),
+    prisma.userGroupMember.findMany({ where: { userId }, select: { groupId: true } }),
+  ])
+  const userGroupIds = new Set(memberships.map((m) => m.groupId))
+  const restrictedBy = new Map<string, Set<string>>()
+  for (const r of restricted) {
+    let set = restrictedBy.get(r.floorId)
+    if (!set) { set = new Set(); restrictedBy.set(r.floorId, set) }
+    set.add(r.groupId)
+  }
+  return floors.filter((f) => {
+    const groups = restrictedBy.get(f.id)
+    if (!groups || groups.size === 0) return true // open floor
+    for (const g of userGroupIds) if (groups.has(g)) return true
+    return false
+  })
+}
 import { z } from 'zod'
 export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Buildings'], ...route.schema } })
@@ -155,6 +185,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(404).send({
         error: { message: 'Building not found', code: 'NOT_FOUND' },
       })
+    }
+
+    // Individual floors can carry their own GroupFloorAccess restriction even
+    // when the building itself is open — don't leak the existence/name of a
+    // floor-restricted floor to a user who only cleared the building check.
+    if (!isAdmin) {
+      building.floors = await filterAccessibleFloors(request.user.id, building.floors)
+      building._count.floors = building.floors.length
     }
 
     return reply.status(200).send({ data: building })
@@ -420,14 +458,37 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { id } = request.params as { id: string }
 
+      // Must run before the delete: once the building (and its floors, which
+      // cascade-delete with it) is gone, Asset.floorId is SetNull and there's
+      // no longer any way to find which bookings were on those floors.
+      const floors = await prisma.floor.findMany({ where: { buildingId: id }, select: { id: true } })
+      await cancelFutureBookingsForFloors(floors.map((f) => f.id))
+
+      // Also fetch before the delete — each floor's FloorPlan cascades away
+      // with it, but the files on disk don't clean themselves up.
+      const floorPlans = await prisma.floorPlan.findMany({
+        where: { floorId: { in: floors.map((f) => f.id) } },
+      })
+
       try {
         await prisma.building.delete({ where: { id } })
-        return reply.status(200).send({ data: { ok: true } })
       } catch {
         return reply.status(404).send({
           error: { message: 'Building not found', code: 'NOT_FOUND' },
         })
       }
+
+      for (const plan of floorPlans) {
+        await deleteFile(plan.originalPath)
+        if (plan.renderedPath !== plan.originalPath) {
+          await deleteFile(plan.renderedPath)
+        }
+        if (plan.thumbnailPath) {
+          await deleteFile(plan.thumbnailPath)
+        }
+      }
+
+      return reply.status(200).send({ data: { ok: true } })
     },
   )
 }

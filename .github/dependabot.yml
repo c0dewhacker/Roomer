@@ -13,3 +13,36 @@ updates:
       dependencies:
         patterns:
           - "*"
+
+  # Base images (node:24-alpine, nginx:1.27-alpine) were previously untracked —
+  # Dependabot only scanned package.json/pnpm-lock.yaml, so a disclosed CVE in
+  # either base image would never surface as an alert or update PR.
+  - package-ecosystem: "docker"
+    directory: "/apps/api"
+    schedule:
+      interval: "weekly"
+    groups:
+      docker-images:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/apps/web"
+    schedule:
+      interval: "weekly"
+    groups:
+      docker-images:
+        patterns:
+          - "*"
+
+  # CI Actions (actions/checkout, docker/build-push-action, etc.) were also
+  # untracked — a disclosed vulnerability in a pinned Action version would
+  # never surface either.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

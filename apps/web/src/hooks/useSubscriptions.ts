@@ -18,7 +18,7 @@ export function useSubscribeToFloor() {
       toast.success('Subscribed to floor notifications')
       qc.invalidateQueries({ queryKey: ['subscriptions'] })
     },
-    onError: () => toast.error('Failed to subscribe'),
+    onError: (err: Error) => toast.error(err.message),
   })
 }
 
@@ -31,7 +31,7 @@ export function useUpdateFloorSubscription() {
       toast.success('Subscription updated')
       qc.invalidateQueries({ queryKey: ['subscriptions'] })
     },
-    onError: () => toast.error('Failed to update subscription'),
+    onError: (err: Error) => toast.error(err.message),
   })
 }
 
@@ -43,6 +43,6 @@ export function useUnsubscribeFromFloor() {
       toast.success('Unsubscribed from floor notifications')
       qc.invalidateQueries({ queryKey: ['subscriptions'] })
     },
-    onError: () => toast.error('Failed to unsubscribe'),
+    onError: (err: Error) => toast.error(err.message),
   })
 }

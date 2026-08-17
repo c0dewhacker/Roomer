@@ -38,9 +38,15 @@ const bannerSchema = z.object({
 })
 
 const brandingSchema = z.object({
-  appName: z.string().max(100).optional(),
-  sidebarTitle: z.string().max(100).optional(),
-  sidebarSubtitle: z.string().max(100).optional(),
+  // Nullable, not just optional: the admin form sends null (not omits the
+  // field) when clearing a text field back to its default — omitting it
+  // entirely, as a plain .optional() would require, gets dropped by
+  // JSON.stringify before the request even leaves the browser, so a
+  // "cleared" field silently kept whatever value was already saved (same
+  // gap already fixed for lease endDate).
+  appName: z.string().max(100).nullable().optional(),
+  sidebarTitle: z.string().max(100).nullable().optional(),
+  sidebarSubtitle: z.string().max(100).nullable().optional(),
   primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().nullable(),
   primaryColorDark: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().nullable(),
   borderRadius: z.enum(['sharp', 'medium', 'large']).optional().nullable(),
@@ -468,19 +474,59 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
         //   null   → explicitly clear the field (e.g. unsetting syncBase)
         //   ''     → skip (secrets omit their value rather than send empty)
         //   other  → set the value
+        // bindCredentials (LDAP) and clientSecret (OIDC) are encrypted at rest,
+        // same as the SMTP password and webhook signing secrets — only when a
+        // *new* value is submitted this request. Values merely carried over
+        // from existingConfig are already an enc:v1: envelope (or, for rows
+        // written before this fix, legacy plaintext handled transparently by
+        // decryptStringMaybe at read time) and must not be re-encrypted here.
+        const secretFieldsByProvider: Partial<Record<ProviderKey, string>> = {
+          LDAP: 'bindCredentials',
+          OIDC: 'clientSecret',
+        }
+        const secretField = secretFieldsByProvider[upperProvider]
         for (const [key, val] of Object.entries(body.config)) {
           if (val === null) {
             delete mergedConfig[key]
           } else if (val !== undefined && val !== '') {
-            mergedConfig[key] = val
+            mergedConfig[key] = key === secretField ? encrypt(String(val)) : val
           }
         }
 
-        // Validate merged result against the full schema to catch cross-field invariant violations
-        const mergedParsed = (schema as z.ZodObject<z.ZodRawShape>).partial().safeParse(mergedConfig)
+        // Validate merged result against the full (non-partial) schema. Using
+        // .partial() here (as before) meant a request that only sets a few
+        // fields — e.g. a first-ever OIDC config with issuerUrl but no
+        // clientId/redirectUri — passed both checks and got persisted
+        // (optionally enabled) as an unusable half-configured provider,
+        // failing only much later and cryptically at actual login time.
+        const mergedParsed = schema.safeParse(mergedConfig)
         if (!mergedParsed.success) {
           return reply.status(400).send({
             error: { message: 'Merged config is invalid', code: 'VALIDATION_ERROR', details: mergedParsed.error.flatten() },
+          })
+        }
+      }
+
+      // Enabling a provider must never succeed unless a complete, schema-valid
+      // config backs it — including via a bare {enabled:true} toggle with no
+      // config in this same request (the "Enable" switch sends exactly that).
+      // When body.config was provided above, mergedConfig is already
+      // guaranteed valid by the full-schema check at line ~496; this only
+      // does real work for the toggle-only path, which previously bypassed
+      // that check entirely and could flip on a provider with an empty or
+      // partial config — for OIDC/SAML, that hides the local login form
+      // (see LoginPage's showCredentialForm) with no way back in except a
+      // small "sign in with a local account" link.
+      if (body.enabled === true && !body.config) {
+        const existing = await findAuthConfig(upperProvider)
+        const enableCheck = schema.safeParse(existing?.config ?? {})
+        if (!enableCheck.success) {
+          return reply.status(400).send({
+            error: {
+              message: 'Cannot enable: provider configuration is incomplete',
+              code: 'INCOMPLETE_CONFIG',
+              details: enableCheck.error.flatten(),
+            },
           })
         }
       }
@@ -690,7 +736,7 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
 
   const ALLOWED_TEMPLATE_TYPES = [
     'BOOKING_CONFIRMED', 'BOOKING_CANCELLED', 'BOOKING_CANCELLED_BY_ADMIN',
-    'QUEUE_JOINED', 'QUEUE_PROMOTED', 'QUEUE_EXPIRED',
+    'QUEUE_JOINED', 'QUEUE_PROMOTED', 'QUEUE_EXPIRED', 'QUEUE_CLAIM_EXPIRING',
     'FLOOR_AVAILABLE', 'WELCOME',
   ] as const
   type TemplateType = (typeof ALLOWED_TEMPLATE_TYPES)[number]

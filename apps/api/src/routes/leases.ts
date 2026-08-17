@@ -18,11 +18,28 @@ const createLeaseSchema = z.object({
   currency: z.string().length(3).default('AUD'),
   notes: z.string().optional(),
 })
+// Date-ordering is checked explicitly in the route handlers below (POST and
+// PUT), not via a schema .refine() — a refine's failure surfaces to the
+// client as the generic "Validation failed" wrapper (the specific message
+// lives in details.fieldErrors, which the frontend's error toast doesn't
+// read), whereas an explicit handler-level check can return a clear,
+// specific top-level message. PUT also needs this as a plain function
+// anyway, since it must validate the *merged* effective dates rather than
+// just the raw request body — either field can be omitted to mean "keep
+// the existing value" (the same partial-update gap already fixed for
+// bookings in db8fd79).
+function datesAreOrdered(startDate: Date, endDate: Date | null): boolean {
+  return !endDate || startDate < endDate
+}
 
 const updateLeaseSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   startDate: z.string().datetime().optional(),
-  endDate: z.string().datetime().optional(),
+  // Nullable (not just optional): the frontend sends `endDate: null` to clear
+  // an existing end date and make the lease open-ended, distinct from
+  // omitting the field to mean "leave it unchanged" (see the handler's
+  // `!== undefined` merge logic below).
+  endDate: z.string().datetime().nullable().optional(),
   landlord: z.string().max(255).optional(),
   rentAmount: z.number().positive().optional(),
   currency: z.string().length(3).optional(),
@@ -79,6 +96,11 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(400).send({
         error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
       })
+    }
+
+    const parsedEndDate = result.data.endDate ? new Date(result.data.endDate) : null
+    if (!datesAreOrdered(new Date(result.data.startDate), parsedEndDate)) {
+      return reply.status(400).send({ error: { message: 'startDate must be before endDate', code: 'VALIDATION_ERROR' } })
     }
 
     if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
@@ -149,7 +171,7 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    const existing = await prisma.buildingLease.findUnique({ where: { id }, select: { buildingId: true } })
+    const existing = await prisma.buildingLease.findUnique({ where: { id }, select: { buildingId: true, startDate: true, endDate: true } })
     if (!existing) {
       return reply.status(404).send({ error: { message: 'Lease not found', code: 'NOT_FOUND' } })
     }
@@ -159,6 +181,17 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
       if (!ok) {
         return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
+    }
+
+    // Either field can be omitted here to mean "keep the existing value", so
+    // validate the merged effective dates rather than just the raw request
+    // body (same partial-update gap already fixed for bookings in db8fd79).
+    const effectiveStartDate = result.data.startDate ? new Date(result.data.startDate) : existing.startDate
+    const effectiveEndDate = result.data.endDate !== undefined
+      ? (result.data.endDate ? new Date(result.data.endDate) : null)
+      : existing.endDate
+    if (!datesAreOrdered(effectiveStartDate, effectiveEndDate)) {
+      return reply.status(400).send({ error: { message: 'startDate must be before endDate', code: 'VALIDATION_ERROR' } })
     }
 
     try {
@@ -317,6 +350,7 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
 
     const stream = fs.createReadStream(docAbsPath)
     reply.header('Content-Type', doc.mimeType)
+    reply.header('X-Content-Type-Options', 'nosniff')
     reply.header('Content-Disposition', `attachment; filename="${encodeURIComponent(doc.filename)}"`)
     return reply.send(stream)
   })

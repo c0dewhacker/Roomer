@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import { randomUUID } from 'crypto'
 import dnsPromises from 'dns/promises'
 import net from 'net'
+import { Agent } from 'undici'
 import { prisma } from './prisma.js'
 import { getBoss } from './queue.js'
 import { env } from '../env.js'
@@ -23,8 +24,6 @@ export const WEBHOOK_EVENTS = [
   'asset.created',
   'asset.updated',
   'asset.status_changed',
-  'asset_assignment.created',
-  'asset_assignment.returned',
   'user.created',
   'user.updated',
   'user.suspended',
@@ -85,13 +84,17 @@ function ipIsBlocked(ip: string): boolean {
   return false
 }
 
+interface ValidatedWebhookHost {
+  address: string
+  family: 4 | 6
+}
+
 /**
- * Reject webhook targets that resolve to internal/reserved addresses (SSRF guard).
- * Resolution happens at delivery time (not just on save) to also catch DNS
- * rebinding. Set ROOMER_WEBHOOK_ALLOW_PRIVATE=true to permit private ranges for
- * internal integrations (loopback and link-local remain blocked regardless).
+ * Resolve `rawUrl`'s host and reject internal/reserved addresses (SSRF guard).
+ * Returns the validated address (needed by callers that want to pin the
+ * subsequent connection to it — see `deliverOne`).
  */
-export async function assertPublicWebhookUrl(rawUrl: string): Promise<void> {
+async function resolveValidatedHost(rawUrl: string): Promise<ValidatedWebhookHost> {
   let url: URL
   try {
     url = new URL(rawUrl)
@@ -104,9 +107,10 @@ export async function assertPublicWebhookUrl(rawUrl: string): Promise<void> {
   const host = url.hostname
   if (host === 'localhost') throw new Error('Webhook URL host is not allowed')
 
-  if (net.isIP(host)) {
+  const literalFamily = net.isIP(host)
+  if (literalFamily) {
     if (ipIsBlocked(host)) throw new Error('Webhook URL resolves to a disallowed address')
-    return
+    return { address: host, family: literalFamily as 4 | 6 }
   }
 
   const records = await dnsPromises.lookup(host, { all: true })
@@ -114,6 +118,17 @@ export async function assertPublicWebhookUrl(rawUrl: string): Promise<void> {
   for (const { address } of records) {
     if (ipIsBlocked(address)) throw new Error('Webhook URL resolves to a disallowed address')
   }
+  return { address: records[0].address, family: records[0].family as 4 | 6 }
+}
+
+/**
+ * Reject webhook targets that resolve to internal/reserved addresses (SSRF guard).
+ * Resolution happens at delivery time (not just on save) to also catch DNS
+ * rebinding. Set ROOMER_WEBHOOK_ALLOW_PRIVATE=true to permit private ranges for
+ * internal integrations (loopback and link-local remain blocked regardless).
+ */
+export async function assertPublicWebhookUrl(rawUrl: string): Promise<void> {
+  await resolveValidatedHost(rawUrl)
 }
 
 const assetInclude = {
@@ -161,18 +176,6 @@ async function enrichPayload(event: WebhookEvent, data: unknown): Promise<unknow
       select: { name: true, ...assetInclude },
     }).catch(() => null)
     return { ...d, ...(asset && { asset }) }
-  }
-
-  if (event === 'asset_assignment.created' || event === 'asset_assignment.returned') {
-    const [asset, user] = await Promise.all([
-      prisma.asset.findUnique({ where: { id: d.assetId as string }, select: { name: true, ...assetInclude } }).catch(() => null),
-      prisma.user.findUnique({ where: { id: d.userId as string }, select: { id: true, email: true, displayName: true } }).catch(() => null),
-    ])
-    return {
-      ...d,
-      ...(asset && { asset: { id: d.assetId, ...asset } }),
-      ...(user && { user }),
-    }
   }
 
   if (event === 'user.created' || event === 'user.updated' || event === 'user.suspended') {
@@ -271,24 +274,44 @@ async function deliverOne({ endpointId, deliveryId, url, event, payload }: Webho
     const secret = decryptStringMaybe(ep.secret)
 
     // SSRF guard — resolve and reject internal/reserved targets (also catches rebinding).
-    await assertPublicWebhookUrl(url)
+    const validated = await resolveValidatedHost(url)
+
+    // Pin the actual connection to the address we just validated. Without this,
+    // fetch() would re-resolve the hostname itself, leaving a window for a
+    // malicious DNS server to answer the check above with a public IP and the
+    // real connection with a private one (fast DNS rebinding). The Host header
+    // and TLS SNI/cert validation still use the original hostname from `url` —
+    // only the low-level socket target is pinned.
+    const pinnedAgent = new Agent({
+      connect: {
+        lookup: (_hostname, options, callback) => {
+          if (options.all) callback(null, [{ address: validated.address, family: validated.family }])
+          else callback(null, validated.address, validated.family)
+        },
+      },
+    })
 
     const signature = sign(secret, payload)
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Roomer-Event': event,
-        'X-Roomer-Delivery': deliveryId,
-        'X-Roomer-Signature': signature,
-      },
-      body: payload,
-      redirect: 'error', // do not follow redirects — prevents redirect-based SSRF
-      signal: AbortSignal.timeout(10_000),
-    })
-    statusCode = res.status
-    success = res.ok
-    if (!res.ok) error = `HTTP ${res.status}`
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Roomer-Event': event,
+          'X-Roomer-Delivery': deliveryId,
+          'X-Roomer-Signature': signature,
+        },
+        body: payload,
+        redirect: 'error', // do not follow redirects — prevents redirect-based SSRF
+        signal: AbortSignal.timeout(10_000),
+        dispatcher: pinnedAgent,
+      } as RequestInit & { dispatcher: Agent })
+      statusCode = res.status
+      success = res.ok
+      if (!res.ok) error = `HTTP ${res.status}`
+    } finally {
+      await pinnedAgent.close()
+    }
   } catch (err) {
     error = err instanceof Error ? err.message : 'Unknown error'
   }

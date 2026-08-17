@@ -1,6 +1,8 @@
 import { useState, useMemo } from 'react'
+import { useNavConfig } from '@/hooks/useNavConfig'
 import { subDays, format, parseISO } from 'date-fns'
 import { formatDate } from '@/lib/utils'
+import { downloadCsv } from '@/lib/csv'
 import { useQuery } from '@tanstack/react-query'
 import {
   analyticsApi,
@@ -26,19 +28,6 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, AreaChart, Area,
 } from 'recharts'
-
-// ─── CSV Export ───────────────────────────────────────────────────────────────
-
-function downloadCsv(filename: string, rows: string[][]) {
-  const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n')
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
-}
 
 // ─── Date Range ───────────────────────────────────────────────────────────────
 
@@ -649,8 +638,12 @@ function ExportAllButton({ params, days }: { params: AnalyticsParams; days: Pres
     const rangeStr = days === 'custom' ? `${params.startDate}_${params.endDate}` : `last-${days}d`
     const sections: string[][] = []
 
+    // `##` rather than `===` — sanitizeCsvCell (formula-injection guard) prefixes
+    // any cell starting with '=' with an apostrophe. Spreadsheet apps hide that
+    // apostrophe by convention, but a plain-text or programmatic reader of the
+    // exported file would see the literal "'=== SUMMARY ===" instead.
     if (summary) {
-      sections.push(['=== SUMMARY ===', ''])
+      sections.push(['## SUMMARY ##', ''])
       sections.push(['Metric', 'Value'])
       sections.push(['Total Confirmed Bookings', String(summary.totalBookings)])
       sections.push(['Cancelled Bookings', String(summary.cancelledBookings)])
@@ -670,49 +663,49 @@ function ExportAllButton({ params, days }: { params: AnalyticsParams; days: Pres
     }
 
     if (bookings && bookings.length > 0) {
-      sections.push(['=== BOOKING ACTIVITY ===', ''])
+      sections.push(['## BOOKING ACTIVITY ##', ''])
       sections.push(['Date', 'Bookings'])
       bookings.forEach((d) => sections.push([d.date, String(d.count)]))
       sections.push(['', ''])
     }
 
     if (status && status.length > 0) {
-      sections.push(['=== BOOKING STATUS ===', ''])
+      sections.push(['## BOOKING STATUS ##', ''])
       sections.push(['Status', 'Count'])
       status.forEach((d) => sections.push([d.label, String(d.count)]))
       sections.push(['', ''])
     }
 
     if (peakDays) {
-      sections.push(['=== PEAK DAYS ===', ''])
+      sections.push(['## PEAK DAYS ##', ''])
       sections.push(['Day', 'Bookings'])
       peakDays.forEach((d) => sections.push([d.dayName, String(d.count)]))
       sections.push(['', ''])
     }
 
     if (floorUtil && floorUtil.length > 0) {
-      sections.push(['=== FLOOR UTILISATION ===', ''])
+      sections.push(['## FLOOR UTILISATION ##', ''])
       sections.push(['Building', 'Floor', 'Desks', 'Bookings', 'Utilisation %'])
       floorUtil.forEach((d) => sections.push([d.buildingName, d.floorName, String(d.totalDesks), String(d.bookingCount), String(d.utilisationPct)]))
       sections.push(['', ''])
     }
 
     if (utilisation && utilisation.length > 0) {
-      sections.push(['=== ZONE BREAKDOWN ===', ''])
+      sections.push(['## ZONE BREAKDOWN ##', ''])
       sections.push(['Floor', 'Zone', 'Total', 'Bookable', 'Assigned', 'Disabled', 'Bookings', 'Utilisation %'])
       utilisation.forEach((d) => sections.push([d.floorName, d.zoneName, String(d.totalDesks), String(d.bookableDesks), String(d.assignedDesks), String(d.disabledDesks), String(d.bookingCount), String(d.utilisationPct)]))
       sections.push(['', ''])
     }
 
     if (topUsers && topUsers.length > 0) {
-      sections.push(['=== TOP BOOKERS ===', ''])
+      sections.push(['## TOP BOOKERS ##', ''])
       sections.push(['Name', 'Email', 'Bookings'])
       topUsers.forEach((d) => sections.push([d.displayName, d.email, String(d.bookingCount)]))
       sections.push(['', ''])
     }
 
     if (deptData && deptData.length > 0) {
-      sections.push(['=== DEPARTMENT ACTIVITY ===', ''])
+      sections.push(['## DEPARTMENT ACTIVITY ##', ''])
       sections.push(['Department', 'Members', 'Bookings', 'Desk-Days'])
       deptData.forEach((d) => sections.push([d.departmentName, String(d.memberCount), String(d.bookingCount), String(d.deskDays)]))
     }
@@ -738,11 +731,23 @@ export default function ReportsAdminPage() {
 
   const { startDate, endDate } = useDateRange(preset, customFrom, customTo)
 
-  const { data: buildings } = useQuery({
+  const { isSuperAdmin, managedBuildings } = useNavConfig()
+
+  // GET /buildings intentionally returns a broader set for non-admins than
+  // this page can actually report on — it includes "open" (unrestricted)
+  // buildings anyone can book at, not just ones this user administers. The
+  // analytics endpoints, by contrast, only ever authorize non-super-admins
+  // against getManagedBuildingIds. Offering the broader list here let a
+  // building admin pick a building they don't manage and get a silent
+  // "no data" 403 with no explanation. managedBuildings (from useNavConfig)
+  // already matches the backend's actual authorization set.
+  const { data: allBuildings } = useQuery({
     queryKey: ['buildings'],
     queryFn: () => buildingsApi.list(),
     select: (r) => r.data,
+    enabled: isSuperAdmin,
   })
+  const buildings = isSuperAdmin ? allBuildings : managedBuildings
 
   const params: AnalyticsParams = {
     startDate,

@@ -180,17 +180,21 @@ function UserRow({ user, onRefresh }: { user: User; onRefresh: () => void }) {
   const updateStatus = useMutation({
     mutationFn: (accountStatus: string) => usersApi.update(user.id, { accountStatus } as any),
     onSuccess: () => { toast.success('User updated'); onRefresh() },
-    onError: () => toast.error('Failed to update user'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const updateRole = useMutation({
     mutationFn: (globalRole: string) => usersApi.update(user.id, { globalRole } as any),
     onSuccess: () => { toast.success('Role updated'); onRefresh() },
-    onError: () => toast.error('Failed to update role'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
+  // A double space, or a leading/trailing space, in displayName produces an
+  // empty-string part when split on a literal ' ' — n[0] on that is
+  // undefined, and Array.join('') renders it as the literal text "undefined".
   const initials = user.displayName
-    .split(' ')
+    .trim()
+    .split(/\s+/)
     .map((n) => n[0])
     .join('')
     .toUpperCase()
@@ -245,14 +249,28 @@ function UserRow({ user, onRefresh }: { user: User; onRefresh: () => void }) {
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   {user.globalRole !== 'SUPER_ADMIN' ? (
-                    <DropdownMenuItem onClick={() => {
-                      if (window.confirm(`Make ${user.displayName} a Super Administrator? This grants full, org-wide access to every building, user and setting.`)) {
-                        updateRole.mutate('SUPER_ADMIN')
-                      }
-                    }}>
-                      <Shield className="mr-2 h-3.5 w-3.5" />
-                      Make Administrator
-                    </DropdownMenuItem>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+                          <Shield className="mr-2 h-3.5 w-3.5" />
+                          Make Administrator
+                        </DropdownMenuItem>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Make {user.displayName} a Super Administrator?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This grants full, org-wide access to every building, user and setting.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction onClick={() => updateRole.mutate('SUPER_ADMIN')}>
+                            Make Administrator
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
                   ) : (
                     <DropdownMenuItem onClick={() => updateRole.mutate('USER')}>
                       <Shield className="mr-2 h-3.5 w-3.5" />

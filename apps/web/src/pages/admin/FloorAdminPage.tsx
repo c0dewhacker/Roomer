@@ -67,12 +67,12 @@ function ZoneDialog({
   const create = useMutation({
     mutationFn: (d: ZoneForm) => zonesApi.create({ floorId, ...d }),
     onSuccess: () => { toast.success('Zone created'); qc.invalidateQueries({ queryKey: ['floors', floorId] }); onClose() },
-    onError: () => toast.error('Failed to create zone'),
+    onError: (err: Error) => toast.error(err.message),
   })
   const update = useMutation({
     mutationFn: (d: ZoneForm) => zonesApi.update(existing!.id, d),
     onSuccess: () => { toast.success('Zone updated'); qc.invalidateQueries({ queryKey: ['floors', floorId] }); onClose() },
-    onError: () => toast.error('Failed to update zone'),
+    onError: (err: Error) => toast.error(err.message),
   })
   const isPending = create.isPending || update.isPending
 
@@ -130,14 +130,14 @@ function AddAssetToFloorDialog({
   const [selectedZoneId, setSelectedZoneId] = useState(defaultZoneId ?? zones[0]?.id ?? '')
 
   const { data: allAssets } = useQuery({
-    queryKey: ['assets'],
-    queryFn: () => assetsApi.list(),
+    queryKey: ['assets', 'unplaced'],
+    queryFn: () => assetsApi.list({ unplaced: true }),
     select: (r) => r.data,
     enabled: open,
   })
 
   // Unplaced bookable assets not yet on any floor
-  const unplacedAssets = (allAssets ?? []).filter((a) => a.isBookable && !a.floorId)
+  const unplacedAssets = (allAssets ?? []).filter((a) => a.isBookable)
   const filteredAssets = search.trim()
     ? unplacedAssets.filter((a) => a.name.toLowerCase().includes(search.toLowerCase()))
     : unplacedAssets
@@ -152,7 +152,7 @@ function AddAssetToFloorDialog({
       qc.invalidateQueries({ queryKey: ['assets'] })
       onClose()
     },
-    onError: () => toast.error('Failed to add asset to floor plan'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   // Reset selections when dialog opens
@@ -281,7 +281,7 @@ function EditAssetDialog({
       qc.invalidateQueries({ queryKey: ['floors', floorId] })
       onClose()
     },
-    onError: () => toast.error('Failed to update asset'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return (
@@ -391,7 +391,7 @@ function BulkImportDialog({
       qc.invalidateQueries({ queryKey: ['floors', floorId] })
       qc.invalidateQueries({ queryKey: ['assets'] })
     },
-    onError: () => toast.error('Import failed — check your CSV and try again'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const handleFile = (file: File) => {
@@ -548,7 +548,7 @@ function BulkImportDialog({
           {!importResult && (
             <Button
               onClick={() => importMutation.mutate()}
-              disabled={rows.length === 0 || parseErrors.length > 0 || importMutation.isPending}
+              disabled={rows.length === 0 || importMutation.isPending}
             >
               {importMutation.isPending ? `Importing…` : `Import ${rows.length} asset${rows.length !== 1 ? 's' : ''}`}
             </Button>
@@ -573,12 +573,12 @@ function ZoneSection({
   const deleteZone = useMutation({
     mutationFn: () => zonesApi.delete(zone.id),
     onSuccess: () => { toast.success('Zone deleted'); qc.invalidateQueries({ queryKey: ['floors', floorId] }) },
-    onError: () => toast.error('Failed to delete zone'),
+    onError: (err: Error) => toast.error(err.message),
   })
   const removeFromFloor = useMutation({
     mutationFn: (id: string) => assetsApi.update(id, { floorId: null, primaryZoneId: null, x: null, y: null } as Parameters<typeof assetsApi.update>[1]),
     onSuccess: () => { toast.success('Asset removed from floor plan'); qc.invalidateQueries({ queryKey: ['floors', floorId] }); qc.invalidateQueries({ queryKey: ['assets'] }) },
-    onError: () => toast.error('Failed to remove asset from floor plan'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return (
@@ -735,7 +735,7 @@ function FloorManagersPanel({ floorId }: { floorId: string }) {
       setSearch('')
       setSelectedUserId('')
     },
-    onError: () => toast.error('Failed to assign floor manager'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const removeUser = useMutation({
@@ -745,7 +745,7 @@ function FloorManagersPanel({ floorId }: { floorId: string }) {
       toast.success('Floor manager removed')
       qc.invalidateQueries({ queryKey: ['floors', floorId, 'managers'] })
     },
-    onError: () => toast.error('Failed to remove floor manager'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const existingUserIds = useMemo(() => new Set((managers ?? []).map((m) => m.id)), [managers])
@@ -773,7 +773,7 @@ function FloorManagersPanel({ floorId }: { floorId: string }) {
       qc.invalidateQueries({ queryKey: ['floors', floorId, 'group-managers'] })
       setSelectedGroupId('')
     },
-    onError: () => toast.error('Failed to assign group'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const removeGroup = useMutation({
@@ -782,7 +782,7 @@ function FloorManagersPanel({ floorId }: { floorId: string }) {
       toast.success('Group manager removed')
       qc.invalidateQueries({ queryKey: ['floors', floorId, 'group-managers'] })
     },
-    onError: () => toast.error('Failed to remove group manager'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const existingGroupIds = useMemo(() => new Set((groupManagers ?? []).map((g) => g.id)), [groupManagers])
@@ -973,7 +973,7 @@ export default function FloorAdminPage() {
   const saveNoShow = useMutation({
     mutationFn: (v: boolean | null) => floorsApi.update(floorId!, { noShowReleaseEnabled: v }),
     onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['floors', floorId] }) },
-    onError: () => toast.error('Failed to save'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const upload = useMutation({
@@ -983,8 +983,8 @@ export default function FloorAdminPage() {
       qc.invalidateQueries({ queryKey: ['floors', floorId] })
       if (fileRef.current) fileRef.current.value = ''
     },
-    onError: () => {
-      toast.error('Upload failed')
+    onError: (err: Error) => {
+      toast.error(err.message)
       if (fileRef.current) fileRef.current.value = ''
     },
   })
@@ -993,19 +993,18 @@ export default function FloorAdminPage() {
     mutationFn: (positions: Array<{ id: string; x: number; y: number; width: number; height: number; rotation: number }>) =>
       assetsApi.updatePositions(positions),
     onSuccess: () => { toast.success('Layout saved'); qc.invalidateQueries({ queryKey: ['floors', floorId] }) },
-    onError: () => toast.error('Failed to save layout'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const handleLayoutSave = useCallback(
-    (positions: Array<{ id: string; x: number; y: number; width: number; height: number; rotation: number }>) => {
-      updatePositions.mutate(positions)
-    },
+    (positions: Array<{ id: string; x: number; y: number; width: number; height: number; rotation: number }>) =>
+      updatePositions.mutateAsync(positions),
     [updatePositions],
   )
 
   const updateTransform = useMutation({
     mutationFn: (displayScale: number) => floorsApi.updateFloorPlanTransform(floorId!, displayScale),
-    onError: () => toast.error('Failed to save image scale'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const handleDisplayScaleChange = useCallback(

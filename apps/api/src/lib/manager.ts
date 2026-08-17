@@ -81,10 +81,15 @@ export async function resolveManagerForUser(userId: string): Promise<void> {
   }
 
   // Forward references: reports whose stored ref points at this user's DN/email.
+  // Case-insensitive to match the "resolve my manager" lookup above — without
+  // this, a managerExternalRef that differs only in case from the manager's
+  // actual externalId/email (common with LDAP DNs and email addresses, both
+  // conventionally case-insensitive) would silently never link, even though
+  // reconcileAllManagers' bulk path already normalises case for exactly this.
   const refs = [u.externalId, u.email].filter((x): x is string => !!x)
   if (refs.length) {
     await prisma.user.updateMany({
-      where: { id: { not: u.id }, managerId: null, managerExternalRef: { in: refs } },
+      where: { id: { not: u.id }, managerId: null, managerExternalRef: { in: refs, mode: 'insensitive' } },
       data: { managerId: u.id },
     })
   }

@@ -9,14 +9,32 @@ function r(name: string): string | undefined {
 
 const isProd = r('NODE_ENV') === 'production'
 
+// docker-compose.yml ships a *format-valid* fallback for both secrets below
+// (all-zeros, sized to exactly satisfy the length/hex checks) so `docker
+// compose up` doesn't hard-fail before an operator has read the docs — but
+// that means length/format validation alone lets a deployment silently boot
+// with a secret that's public knowledge (it's checked into this repo). A
+// known SESSION_SECRET forges any JWT — including SUPER_ADMIN. A known
+// ROOMER_ENCRYPTION_KEY decrypts every "encrypted at rest" credential (LDAP
+// bind password, OIDC client secret, SMTP password, webhook signing
+// secrets). Reject any value with no character variation — every placeholder
+// anyone would plausibly leave in place (all-zeros, all-`a`, etc.) is exactly
+// that shape; a real `openssl rand -hex 32` output never is.
+function isLowEntropyPlaceholder(value: string): boolean {
+  return new Set(value.toLowerCase()).size <= 1
+}
+
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1, 'DATABASE_URL (or ROOMER_DATABASE_URL) is required'),
   // Minimum 32 characters. Generate with: openssl rand -hex 32
-  SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters. Generate with: openssl rand -hex 32'),
+  SESSION_SECRET: z.string()
+    .min(32, 'SESSION_SECRET must be at least 32 characters. Generate with: openssl rand -hex 32')
+    .refine((v) => !isLowEntropyPlaceholder(v), 'SESSION_SECRET is a placeholder value (no character variation) — generate a real secret with: openssl rand -hex 32'),
   // 32-byte hex key for AES-256-GCM encryption of sensitive DB fields (AuthConfig secrets).
   // Generate with: openssl rand -hex 32
   ROOMER_ENCRYPTION_KEY: z.string()
-    .regex(/^[0-9a-f]{64}$/, 'ROOMER_ENCRYPTION_KEY must be exactly 64 lowercase hex characters (32 bytes). Generate with: openssl rand -hex 32'),
+    .regex(/^[0-9a-f]{64}$/, 'ROOMER_ENCRYPTION_KEY must be exactly 64 lowercase hex characters (32 bytes). Generate with: openssl rand -hex 32')
+    .refine((v) => !isLowEntropyPlaceholder(v), 'ROOMER_ENCRYPTION_KEY is a placeholder value (no character variation) — generate a real key with: openssl rand -hex 32'),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(3001),
   HOST: z.string().default('0.0.0.0'),

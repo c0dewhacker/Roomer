@@ -2,11 +2,12 @@ import { PgBoss, type Job } from 'pg-boss'
 import { env } from '../env.js'
 import { prisma } from './prisma.js'
 import { buildBookingIcs } from './ical.js'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderWelcome, renderFloorAvailable, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
 import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
 import { dispatchWebhook } from './webhook.js'
+import { lockAssetForQueue } from './booking.js'
 
 let boss: PgBoss | null = null
 
@@ -19,6 +20,118 @@ export function getBoss(): PgBoss {
 
 /** How long a promoted queue entry has to be claimed before it expires. */
 export const CLAIM_DEADLINE_MS = 2 * 60 * 60 * 1000 // 2 hours
+
+/**
+ * Atomically promote the highest-position WAITING queue entry overlapping
+ * [periodStart, periodEnd) on an asset. Every caller that frees up a slot
+ * (booking cancellation, no-show release, claim-deadline expiry) must go
+ * through this instead of a bare findFirst+update: without the per-asset
+ * queue lock, two callers racing on the same asset (e.g. two overlapping
+ * expired PROMOTED entries, or a cancellation racing the expiry cron) can
+ * both read the same "next" WAITING entry before either commits, then both
+ * promote it — sending two QUEUE_PROMOTED emails with different claim
+ * tokens where only the last-written token is still valid, and silently
+ * skipping the entry that should have been promoted for the other slot.
+ */
+export async function promoteNextQueueEntry(
+  assetId: string,
+  periodStart: Date,
+  periodEnd: Date,
+): Promise<{ id: string; userId: string; assetId: string; claimDeadline: Date } | null> {
+  return prisma.$transaction(async (tx) => {
+    await lockAssetForQueue(tx, assetId)
+
+    const next = await tx.queueEntry.findFirst({
+      where: {
+        assetId,
+        status: 'WAITING',
+        wantedStartsAt: { lt: periodEnd },
+        wantedEndsAt: { gt: periodStart },
+      },
+      orderBy: { position: 'asc' },
+    })
+    if (!next) return null
+
+    const claimDeadline = new Date(Date.now() + CLAIM_DEADLINE_MS)
+    await tx.queueEntry.update({
+      where: { id: next.id },
+      data: { status: 'PROMOTED', claimDeadline, claimToken: randomUUID() },
+    })
+    return { id: next.id, userId: next.userId, assetId: next.assetId, claimDeadline }
+  })
+}
+
+/**
+ * Cancel every given CONFIRMED-future booking and promote the next queued
+ * entry for each freed slot — same cancel+promote+notify shape as a
+ * recurring-series cancellation (see recurring.ts DELETE /:id). Shared core
+ * for cancelFutureBookingsForFloors and cancelFutureBookingsForAssets.
+ */
+async function cancelBookingsAndPromoteQueues(
+  bookings: Array<{ id: string; assetId: string; startsAt: Date; endsAt: Date }>,
+  logMsg: string,
+): Promise<void> {
+  if (bookings.length === 0) return
+
+  await prisma.booking.updateMany({
+    where: { id: { in: bookings.map((b) => b.id) } },
+    data: { status: 'CANCELLED' },
+  })
+
+  for (const b of bookings) {
+    const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
+    if (nextQueued) {
+      await enqueueNotification({
+        type: NotificationType.QUEUE_PROMOTED,
+        userId: nextQueued.userId,
+        queueEntryId: nextQueued.id,
+        claimDeadline: nextQueued.claimDeadline.toISOString(),
+      })
+      dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+    }
+  }
+
+  process.stdout.write(JSON.stringify({ level: 'info', msg: logMsg, count: bookings.length }) + '\n')
+}
+
+/**
+ * Cancel every future CONFIRMED booking on the given floors (see
+ * cancelBookingsAndPromoteQueues).
+ *
+ * Used before deleting a floor (directly, or via a building delete cascading
+ * its floors) so a booking never sits CONFIRMED for a desk on a floor that no
+ * longer exists. Must be called — and its bookings read — BEFORE the actual
+ * floor/building delete: once the floor is gone, Asset.floorId is SetNull and
+ * there is no longer any way to find which bookings belonged to it.
+ */
+export async function cancelFutureBookingsForFloors(floorIds: string[]): Promise<void> {
+  if (floorIds.length === 0) return
+  const now = new Date()
+  const bookings = await prisma.booking.findMany({
+    where: { status: 'CONFIRMED', startsAt: { gt: now }, asset: { floorId: { in: floorIds } } },
+    select: { id: true, assetId: true, startsAt: true, endsAt: true },
+  })
+  await cancelBookingsAndPromoteQueues(bookings, '[queue] Cancelled bookings on deleted floor(s)')
+}
+
+/**
+ * Cancel every future CONFIRMED booking on the given assets (see
+ * cancelBookingsAndPromoteQueues).
+ *
+ * Used before removing assets from a floor plan in bulk (e.g. deleting a zone
+ * unplaces every asset still in it — see zones.ts DELETE /:id) so a booking
+ * never sits CONFIRMED for a desk that just became unreachable from any floor
+ * plan. Must be called before the unplacing update.
+ */
+export async function cancelFutureBookingsForAssets(assetIds: string[]): Promise<void> {
+  if (assetIds.length === 0) return
+  const now = new Date()
+  const bookings = await prisma.booking.findMany({
+    where: { status: 'CONFIRMED', startsAt: { gt: now }, assetId: { in: assetIds } },
+    select: { id: true, assetId: true, startsAt: true, endsAt: true },
+  })
+  await cancelBookingsAndPromoteQueues(bookings, '[queue] Cancelled bookings on unplaced asset(s)')
+}
 
 // ─── Notification job payload ─────────────────────────────────────────────────
 
@@ -68,7 +181,7 @@ async function processSendNotification(
     })
     if (booking) {
       title = `Booking confirmed — ${booking.asset.name}`
-      body = `Your booking for ${booking.asset.name} is confirmed from ${booking.startsAt.toISOString()} to ${booking.endsAt.toISOString()}`
+      body = `Your booking for ${booking.asset.name} is confirmed from ${formatDate(booking.startsAt)} to ${formatDate(booking.endsAt)}`
       emailPayload = renderBookingConfirmed(booking, user, {
         name: booking.asset.name,
         zoneName: booking.asset.primaryZone?.name ?? '',
@@ -204,8 +317,26 @@ async function processSendNotification(
     })
     if (entry && claimDeadline && entry.claimToken) {
       title = `Asset available — ${entry.asset.name}`
-      body = `Claim your booking by ${new Date(claimDeadline).toISOString()}.`
+      body = `Claim your booking by ${formatDate(new Date(claimDeadline))}.`
       emailPayload = renderQueuePromoted(entry, user, entry.asset, new Date(claimDeadline), entry.claimToken)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: entry.asset.name,
+        wantedStartsAt: formatDate(entry.wantedStartsAt), wantedEndsAt: formatDate(entry.wantedEndsAt),
+        claimDeadline: formatDate(new Date(claimDeadline)),
+        claimUrl: `${env.APP_URL}/queue/claim?token=${encodeURIComponent(entry.claimToken)}`,
+        appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.QUEUE_CLAIM_EXPIRING && queueEntryId) {
+    const entry = await prisma.queueEntry.findUnique({
+      where: { id: queueEntryId },
+      include: { asset: true },
+    })
+    if (entry && claimDeadline && entry.claimToken) {
+      title = `Claim window closing soon — ${entry.asset.name}`
+      body = `Claim your booking for ${entry.asset.name} by ${formatDate(new Date(claimDeadline))}.`
+      emailPayload = renderQueueClaimExpiring(entry, user, entry.asset, new Date(claimDeadline), entry.claimToken)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: entry.asset.name,
@@ -248,6 +379,25 @@ async function processSendNotification(
         assetName: entry.asset.name,
         wantedStartsAt: formatDate(entry.wantedStartsAt), wantedEndsAt: formatDate(entry.wantedEndsAt),
         queueUrl: `${env.APP_URL}/queue`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.ASSET_ASSIGNED && assetId) {
+    const asset = await prisma.asset.findUnique({ where: { id: assetId }, select: { name: true } })
+    if (asset) {
+      // Permanent assignment (AssetUserAssignment, the only live assignment
+      // mechanism — see #201) has no assignedAt/notes fields of its own, so
+      // there's nothing more specific to show than "just now".
+      const assignedAt = new Date()
+      const notes = null
+      title = `Asset assigned to you — ${asset.name}`
+      body = `${asset.name} has been assigned to you.`
+      emailPayload = renderAssetAssigned({ assignedAt, notes }, user, asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: asset.name,
+        assignedAt: formatDate(assignedAt),
+        notes: notes ?? '',
+        appUrl: env.APP_URL,
       }
     }
   } else if (type === NotificationType.WELCOME) {
@@ -378,21 +528,29 @@ async function handleReleaseNoShows(): Promise<void> {
   const cutoff = new Date(now.getTime() - org.checkInGraceMinutes * 60 * 1000)
 
   // Candidates: CONFIRMED, not checked in, grace elapsed since start, slot still
-  // active. Permanently-assigned desks are exempt — the assignee owns the desk
-  // and shouldn't have to check in. Effective enablement resolves per booking:
-  // floor override → building override → org default.
+  // active. The booking's own user being a permanent assignee of the asset is
+  // exempt — the assignee owns the desk and shouldn't have to check in. This
+  // must be checked against the *booking's* user, not merely whether the asset
+  // has any assignment at all: an assigned asset can still be booked by someone
+  // else entirely (assertBookable allows a non-assignee to book a slot the
+  // owner opened up via an availability window/weekly rule), and that borrowed
+  // booking should still be subject to no-show release like any other — an
+  // asset-level "has any assignment" check would wrongly exempt it too, leaving
+  // a desk nobody showed up for stuck unavailable to the queue all day.
+  // Effective enablement resolves per booking: floor override → building
+  // override → org default.
   const candidates = await prisma.booking.findMany({
     where: {
       status: 'CONFIRMED',
       checkedInAt: null,
       startsAt: { lte: cutoff },
       endsAt: { gt: now },
-      asset: { userAssignments: { none: {} } },
     },
     select: {
       id: true, userId: true, assetId: true, startsAt: true, endsAt: true,
       asset: {
         select: {
+          userAssignments: { select: { userId: true } },
           floor: { select: { noShowReleaseEnabled: true, building: { select: { noShowReleaseEnabled: true } } } },
         },
       },
@@ -400,6 +558,8 @@ async function handleReleaseNoShows(): Promise<void> {
   })
 
   const noShows = candidates.filter((b) => {
+    const isAssignee = b.asset.userAssignments.some((ua) => ua.userId === b.userId)
+    if (isAssignee) return false
     const floorOverride = b.asset.floor?.noShowReleaseEnabled
     const buildingOverride = b.asset.floor?.building?.noShowReleaseEnabled
     return floorOverride ?? buildingOverride ?? orgDefault
@@ -422,26 +582,13 @@ async function handleReleaseNoShows(): Promise<void> {
   }
 
   // Free the desk: promote the next queued user for the slot, or fan out floor availability.
-  const claimDeadline = new Date(Date.now() + CLAIM_DEADLINE_MS)
   for (const b of noShows) {
-    const next = await prisma.queueEntry.findFirst({
-      where: {
-        assetId: b.assetId,
-        status: 'WAITING',
-        wantedStartsAt: { lt: b.endsAt },
-        wantedEndsAt: { gt: b.startsAt },
-      },
-      orderBy: { position: 'asc' },
-    })
+    const next = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
     if (next) {
-      await prisma.queueEntry.update({
-        where: { id: next.id },
-        data: { status: 'PROMOTED', claimDeadline, claimToken: randomUUID() },
-      })
       await getBoss().insert('send-notification', [{
-        data: { type: NotificationType.QUEUE_PROMOTED, userId: next.userId, queueEntryId: next.id, claimDeadline: claimDeadline.toISOString() } satisfies NotificationJobData,
+        data: { type: NotificationType.QUEUE_PROMOTED, userId: next.userId, queueEntryId: next.id, claimDeadline: next.claimDeadline.toISOString() } satisfies NotificationJobData,
       }])
-      dispatchWebhook('queue.promoted', { id: next.id, userId: next.userId, assetId: next.assetId, claimDeadline: claimDeadline.toISOString() }).catch(() => {})
+      dispatchWebhook('queue.promoted', { id: next.id, userId: next.userId, assetId: next.assetId, claimDeadline: next.claimDeadline.toISOString() }).catch(() => {})
     } else {
       const asset = await prisma.asset.findUnique({ where: { id: b.assetId }, select: { floorId: true, primaryZoneId: true } })
       if (asset?.floorId) {
@@ -475,38 +622,37 @@ async function handleExpireClaimDeadlines(): Promise<void> {
     data: { status: 'EXPIRED' },
   })
 
+  // Tell the user who missed their claim window — every other queue-entry
+  // transition (join, promote, expire-while-waiting) notifies the affected
+  // user; this one previously only fired a webhook, leaving the person who
+  // lost their slot with no email or in-app notice at all.
+  await getBoss().insert(
+    'send-notification',
+    expiredPromoted.map((entry) => ({
+      data: {
+        type: NotificationType.QUEUE_EXPIRED,
+        userId: entry.userId,
+        queueEntryId: entry.id,
+      } satisfies NotificationJobData,
+    })),
+  )
+
   for (const entry of expiredPromoted) {
     dispatchWebhook('queue.expired', { id: entry.id, userId: entry.userId, assetId: entry.assetId }).catch(() => {})
   }
 
-  // Find the next WAITING entry for each expired slot in parallel
-  const claimDeadline = new Date(Date.now() + CLAIM_DEADLINE_MS)
-  const nextEntries = await Promise.all(
-    expiredPromoted.map((entry) =>
-      prisma.queueEntry.findFirst({
-        where: {
-          assetId: entry.assetId,
-          status: 'WAITING',
-          wantedStartsAt: { lt: entry.wantedEndsAt },
-          wantedEndsAt: { gt: entry.wantedStartsAt },
-        },
-        orderBy: { position: 'asc' },
-      }),
-    ),
-  )
-
-  const toPromote = nextEntries.filter((e): e is NonNullable<typeof e> => e !== null)
+  // Promote the next WAITING entry for each expired slot. Each promotion takes
+  // the per-asset queue lock and re-reads under it, so when two expired entries
+  // share an asset (e.g. adjacent sub-ranges expiring in the same sweep) the
+  // second promotion correctly sees the first's WAITING->PROMOTED transition
+  // instead of both racing to promote the same "next" entry.
+  const toPromote = (
+    await Promise.all(
+      expiredPromoted.map((entry) => promoteNextQueueEntry(entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)),
+    )
+  ).filter((e): e is NonNullable<typeof e> => e !== null)
 
   if (toPromote.length > 0) {
-    await Promise.all(
-      toPromote.map((nextEntry) =>
-        prisma.queueEntry.update({
-          where: { id: nextEntry.id },
-          data: { status: 'PROMOTED', claimDeadline, claimToken: randomUUID() },
-        }),
-      ),
-    )
-
     await getBoss().insert(
       'send-notification',
       toPromote.map((nextEntry) => ({
@@ -514,13 +660,13 @@ async function handleExpireClaimDeadlines(): Promise<void> {
           type: NotificationType.QUEUE_PROMOTED,
           userId: nextEntry.userId,
           queueEntryId: nextEntry.id,
-          claimDeadline: claimDeadline.toISOString(),
+          claimDeadline: nextEntry.claimDeadline.toISOString(),
         } satisfies NotificationJobData,
       })),
     )
 
     for (const nextEntry of toPromote) {
-      dispatchWebhook('queue.promoted', { id: nextEntry.id, userId: nextEntry.userId, assetId: nextEntry.assetId, claimDeadline: claimDeadline.toISOString() }).catch(() => {})
+      dispatchWebhook('queue.promoted', { id: nextEntry.id, userId: nextEntry.userId, assetId: nextEntry.assetId, claimDeadline: nextEntry.claimDeadline.toISOString() }).catch(() => {})
     }
   }
 
@@ -569,6 +715,50 @@ async function handleSendBookingReminders(): Promise<void> {
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Enqueued booking reminders', count: bookings.length }) + '\n')
 }
 
+// ─── Worker: warn-claim-expiring (cron every 5 min) ──────────────────────────
+
+/** How far ahead of the claim deadline to send the "closing soon" warning. */
+const CLAIM_WARNING_WINDOW_MS = 30 * 60 * 1000 // 30 minutes
+
+async function handleWarnClaimExpiring(): Promise<void> {
+  const now = new Date()
+  const windowEnd = new Date(now.getTime() + CLAIM_WARNING_WINDOW_MS)
+
+  // Find PROMOTED entries whose claim deadline falls within the warning window
+  // and haven't been warned yet. We claim them immediately (set
+  // claimExpiryWarnedAt) before enqueuing to prevent double-sends across
+  // overlapping cron invocations — same pattern as handleSendBookingReminders.
+  const entries = await prisma.queueEntry.findMany({
+    where: {
+      status: 'PROMOTED',
+      claimDeadline: { gt: now, lte: windowEnd },
+      claimExpiryWarnedAt: null,
+    },
+    select: { id: true, userId: true, claimDeadline: true },
+  })
+
+  if (entries.length === 0) return
+
+  await prisma.queueEntry.updateMany({
+    where: { id: { in: entries.map((e) => e.id) }, claimExpiryWarnedAt: null },
+    data: { claimExpiryWarnedAt: now },
+  })
+
+  await getBoss().insert(
+    'send-notification',
+    entries.map((entry) => ({
+      data: {
+        type: NotificationType.QUEUE_CLAIM_EXPIRING,
+        userId: entry.userId,
+        queueEntryId: entry.id,
+        claimDeadline: entry.claimDeadline!.toISOString(),
+      } satisfies NotificationJobData,
+    })),
+  )
+
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Warned expiring claims', count: entries.length }) + '\n')
+}
+
 // ─── Start queue ──────────────────────────────────────────────────────────────
 
 export async function startQueue(): Promise<void> {
@@ -583,6 +773,7 @@ export async function startQueue(): Promise<void> {
   await b.createQueue('auto-complete-bookings')
   await b.createQueue('send-booking-reminders')
   await b.createQueue('release-no-shows')
+  await b.createQueue('warn-claim-expiring')
   await b.createQueue('webhook-delivery')
 
   await b.work<NotificationJobData>('send-notification', handleSendNotification)
@@ -622,6 +813,11 @@ export async function startQueue(): Promise<void> {
   })
   await b.schedule('send-booking-reminders', '*/15 * * * *', {})
 
+  await b.work('warn-claim-expiring', async () => {
+    await handleWarnClaimExpiring()
+  })
+  await b.schedule('warn-claim-expiring', '*/5 * * * *', {})
+
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] pg-boss started and workers registered' }) + '\n')
 }
 
@@ -637,6 +833,11 @@ export async function enqueueNotification(data: NotificationJobData): Promise<vo
 // Finds all subscribers for the floor/zone, applies a 30-min cooldown, and
 // enqueues FLOOR_AVAILABLE notifications.
 
+/** Advisory-lock class serialising the read-cooldown-check + write below, keyed
+ * per floor. Distinct from ASSET_BOOKING_LOCK_CLASS (4242) / ASSET_QUEUE_LOCK_CLASS
+ * (4243) in lib/booking.ts, which are keyed per asset, not per floor. */
+const FLOOR_NOTIFICATION_LOCK_CLASS = 4244
+
 export async function fanOutFloorAvailable(
   assetId: string,
   floorId: string,
@@ -647,34 +848,49 @@ export async function fanOutFloorAvailable(
   const now = new Date()
   const cooldown = new Date(now.getTime() - 30 * 60000)
 
-  const subscriptions = await prisma.floorSubscription.findMany({
-    where: {
-      floorId,
-      ...(excludeUserId ? { userId: { not: excludeUserId } } : {}),
-      OR: [
-        { lastNotifiedAt: null },
-        { lastNotifiedAt: { lt: cooldown } },
-      ],
-      AND: primaryZoneId
-        ? [
-            {
-              OR: [
-                { zones: { none: {} } },
-                { zones: { some: { zoneId: primaryZoneId } } },
-              ],
-            },
-          ]
-        : [{ zones: { none: {} } }],
-    },
-    select: { id: true, userId: true },
+  // Two desks on the same floor can become available within milliseconds of
+  // each other (e.g. the no-show-release sweep processing several bookings on
+  // one floor). Without a lock, two concurrent calls both read the same set of
+  // "not notified in the last 30 min" subscribers before either writes
+  // lastNotifiedAt, and both send a FLOOR_AVAILABLE email — defeating the
+  // cooldown's whole purpose. Locking per floor and re-reading under the lock
+  // makes the second call see the first call's just-written lastNotifiedAt.
+  const subscriptions = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${FLOOR_NOTIFICATION_LOCK_CLASS}, hashtext(${floorId}))`
+
+    const subs = await tx.floorSubscription.findMany({
+      where: {
+        floorId,
+        ...(excludeUserId ? { userId: { not: excludeUserId } } : {}),
+        OR: [
+          { lastNotifiedAt: null },
+          { lastNotifiedAt: { lt: cooldown } },
+        ],
+        AND: primaryZoneId
+          ? [
+              {
+                OR: [
+                  { zones: { none: {} } },
+                  { zones: { some: { zoneId: primaryZoneId } } },
+                ],
+              },
+            ]
+          : [{ zones: { none: {} } }],
+      },
+      select: { id: true, userId: true },
+    })
+
+    if (subs.length > 0) {
+      await tx.floorSubscription.updateMany({
+        where: { id: { in: subs.map((s) => s.id) } },
+        data: { lastNotifiedAt: now },
+      })
+    }
+
+    return subs
   })
 
   if (subscriptions.length === 0) return
-
-  await prisma.floorSubscription.updateMany({
-    where: { id: { in: subscriptions.map((s) => s.id) } },
-    data: { lastNotifiedAt: now },
-  })
 
   await getBoss().insert(
     'send-notification',

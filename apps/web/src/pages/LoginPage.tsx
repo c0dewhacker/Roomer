@@ -4,7 +4,8 @@ import { z } from 'zod'
 import { Building2, Loader2, ArrowLeft, LogIn } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '@/hooks/useAuth'
-import { authProvidersApi, type LoginProvider } from '@/lib/api'
+import { authProvidersApi, brandingApi, type LoginProvider } from '@/lib/api'
+import { useBranding } from '@/hooks/useBranding'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -77,6 +78,7 @@ function CredentialForm({ ldapEnabled }: { ldapEnabled: boolean }) {
 }
 
 export default function LoginPage() {
+  const branding = useBranding()
   const urlProvider = useMemo(parseLoginProviderParam, [])
 
   // Show error passed back from SSO callback redirects.
@@ -101,6 +103,21 @@ export default function LoginPage() {
     staleTime: 60_000,
   })
 
+  // The configured default provider is only meaningful if that provider is
+  // actually enabled — an admin can set "default = OIDC" and later disable
+  // OIDC (e.g. during an SSO migration or cert rotation) without also
+  // resetting the default. Treating a disabled default as if it were unset
+  // is what keeps every branch below (redirect, loading gate, credential-form
+  // fallback) falling back to a working sign-in option instead of either
+  // spinning forever waiting for a redirect that will never fire, or
+  // rendering an empty card with no way to sign in at all.
+  const rawDefault = providers?.defaultProvider ?? null
+  const defaultProvider: LoginProvider | null =
+    (rawDefault === 'oidc' && !providers?.oidc.enabled) ||
+    (rawDefault === 'saml' && !providers?.saml.enabled)
+      ? null
+      : rawDefault
+
   // Auto-redirect when selector is hidden and default is an SSO provider
   useEffect(() => {
     if (!providers) return
@@ -108,16 +125,15 @@ export default function LoginPage() {
     if (urlError) return           // error state — must show login page
     if (providers.showProviderSelector) return  // selector shown — no redirect needed
 
-    const dp = providers.defaultProvider
-    if (dp === 'oidc' && providers.oidc.enabled) {
+    if (defaultProvider === 'oidc') {
       window.location.replace('/api/v1/auth/oidc/authorize')
-    } else if (dp === 'saml' && providers.saml.enabled) {
+    } else if (defaultProvider === 'saml') {
       window.location.replace('/api/v1/auth/saml/authorize')
     }
-  }, [providers, urlProvider, urlError])
+  }, [providers, urlProvider, urlError, defaultProvider])
 
   if (isLoading || (!urlProvider && !urlError && providers && !providers.showProviderSelector &&
-    (providers.defaultProvider === 'oidc' || providers.defaultProvider === 'saml'))) {
+    (defaultProvider === 'oidc' || defaultProvider === 'saml'))) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-muted/30">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -131,19 +147,17 @@ export default function LoginPage() {
   // Which credential form to show
   const showCredentialForm = !activeProvider
     ? (!providers?.showProviderSelector
-        ? (providers?.defaultProvider === 'ldap' || providers?.defaultProvider === 'local' || !providers?.defaultProvider)
+        ? (defaultProvider === 'ldap' || defaultProvider === 'local' || !defaultProvider)
         : (providers?.ldap.enabled || (!providers?.oidc.enabled && !providers?.saml.enabled)))
     : (activeProvider === 'local' || activeProvider === 'ldap')
 
   // Which SSO buttons to show
   const showOidc = !activeProvider
-    ? (providers?.oidc.enabled && (providers?.showProviderSelector || providers?.defaultProvider === 'oidc'))
+    ? (providers?.oidc.enabled && (providers?.showProviderSelector || defaultProvider === 'oidc'))
     : false
   const showSaml = !activeProvider
-    ? (providers?.saml.enabled && (providers?.showProviderSelector || providers?.defaultProvider === 'saml'))
+    ? (providers?.saml.enabled && (providers?.showProviderSelector || defaultProvider === 'saml'))
     : false
-
-  const defaultProvider = providers?.defaultProvider ?? null
   const ldapEnabled = providers?.ldap.enabled ?? false
 
   // Card title & description
@@ -166,11 +180,19 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-muted/30 px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center text-center">
-          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-primary">
-            <Building2 className="h-7 w-7 text-primary-foreground" />
-          </div>
-          <h1 className="text-2xl font-bold">Roomer</h1>
-          <p className="text-sm text-muted-foreground">Desk Booking Platform</p>
+          {branding?.logoPath ? (
+            <img
+              src={`${brandingApi.getLogoUrl()}?t=${branding.logoPath}`}
+              alt={branding.sidebarTitle ?? branding.appName ?? 'Logo'}
+              className="mb-3 h-12 max-w-[200px] object-contain"
+            />
+          ) : (
+            <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-primary">
+              <Building2 className="h-7 w-7 text-primary-foreground" />
+            </div>
+          )}
+          <h1 className="text-2xl font-bold">{branding?.sidebarTitle ?? branding?.appName ?? 'Roomer'}</h1>
+          <p className="text-sm text-muted-foreground">{branding?.sidebarSubtitle ?? 'Desk Booking Platform'}</p>
         </div>
 
         <Card>

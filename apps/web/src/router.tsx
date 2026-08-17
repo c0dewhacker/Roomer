@@ -11,7 +11,12 @@ import WhosInPage from './pages/WhosInPage'
 import BuildingsAdminPage from './pages/admin/BuildingsAdminPage'
 import BuildingDetailAdminPage from './pages/admin/BuildingDetailAdminPage'
 import UsersAdminPage from './pages/admin/UsersAdminPage'
-import SettingsAdminPage from './pages/admin/SettingsAdminPage'
+import SettingsLayout from './pages/admin/settings/SettingsLayout'
+import OrganisationSettingsPage from './pages/admin/settings/OrganisationSettingsPage'
+import EmailSettingsPage from './pages/admin/settings/EmailSettingsPage'
+import SsoSettingsPage from './pages/admin/settings/SsoSettingsPage'
+import ProvisioningSettingsPage from './pages/admin/settings/ProvisioningSettingsPage'
+import BrandingSettingsPage from './pages/admin/settings/BrandingSettingsPage'
 import AssetsPage from './pages/AssetsPage'
 import BuildingsPage from './pages/BuildingsPage'
 import BuildingPage from './pages/BuildingPage'
@@ -106,6 +111,39 @@ function BuildingManagerOrAdminRoute() {
   return <Outlet />
 }
 
+// Admits SUPER_ADMIN or any user with at least one BUILDING_ADMIN resource
+// role (direct or via group) — deliberately NOT floor managers. Unlike
+// buildings/floors/assets (which have real floor-scoped backend support via
+// isFloorManagerForFloor/getManagedFloorIds), leases and analytics are only
+// ever authorized against getManagedBuildingIds/isBuildingManagerForBuilding
+// on the backend — a floor-manager-only user let in here would always get a
+// 403 on every request, rendering as a permanently blank/broken page with no
+// explanation, despite the nav having implied they could use it.
+function BuildingAdminOnlyRoute() {
+  const { isLoading, user } = useAuth()
+
+  if (isLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    )
+  }
+
+  const isSuperAdmin = user?.globalRole === 'SUPER_ADMIN'
+  const isBuildingAdmin =
+    (user?.resourceRoles ?? []).some((r) => r.role === 'BUILDING_ADMIN') ||
+    (user?.groupMemberships ?? []).some((m) =>
+      (m.group.groupResourceRoles ?? []).some((r) => r.role === 'BUILDING_ADMIN'),
+    )
+
+  if (!isSuperAdmin && !isBuildingAdmin) {
+    return <Navigate to="/bookings" replace />
+  }
+
+  return <Outlet />
+}
+
 function RootRedirect() {
   const { isLoading, isAuthenticated } = useAuth()
 
@@ -142,18 +180,29 @@ export function AppRouter() {
           <Route element={<AdminRoute />}>
             <Route path="/admin/buildings" element={<BuildingsAdminPage />} />
             <Route path="/admin/users" element={<UsersAdminPage />} />
-            <Route path="/admin/settings" element={<SettingsAdminPage />} />
+            <Route path="/admin/settings" element={<SettingsLayout />}>
+              <Route index element={<Navigate to="/admin/settings/organisation" replace />} />
+              <Route path="organisation" element={<OrganisationSettingsPage />} />
+              <Route path="email" element={<EmailSettingsPage />} />
+              <Route path="sso" element={<SsoSettingsPage />} />
+              <Route path="provisioning" element={<ProvisioningSettingsPage />} />
+              <Route path="branding" element={<BrandingSettingsPage />} />
+            </Route>
             <Route path="/admin/groups" element={<GroupsAdminPage />} />
             <Route path="/admin/departments" element={<DepartmentsAdminPage />} />
             <Route path="/admin/org-chart" element={<Suspense fallback={<PageLoader />}><OrgChartPage /></Suspense>} />
             <Route path="/admin/webhooks" element={<WebhooksAdminPage />} />
           </Route>
 
-          {/* SUPER_ADMIN, BUILDING_ADMIN, or FLOOR_MANAGER routes */}
+          {/* SUPER_ADMIN, BUILDING_ADMIN, or FLOOR_MANAGER routes — backend has real floor-scoped support */}
           <Route element={<BuildingManagerOrAdminRoute />}>
             <Route path="/admin/buildings/:buildingId" element={<BuildingDetailAdminPage />} />
             <Route path="/admin/floors/:floorId" element={<Suspense fallback={<PageLoader />}><FloorAdminPage /></Suspense>} />
             <Route path="/admin/assets" element={<AssetsAdminPage />} />
+          </Route>
+
+          {/* SUPER_ADMIN or BUILDING_ADMIN only — no floor-scoped backend support exists for these */}
+          <Route element={<BuildingAdminOnlyRoute />}>
             <Route path="/admin/leases" element={<LeasesAdminPage />} />
             <Route path="/admin/reports" element={<Suspense fallback={<PageLoader />}><ReportsAdminPage /></Suspense>} />
           </Route>

@@ -27,8 +27,16 @@
     ],
     "overrides": {
       "@xmldom/xmldom": "^0.9.7",
-      "fast-uri": "^3.1.2",
-      "hono": "^4.12.18"
+      "@fastify/static": "^10.1.2",
+      "fast-uri": "^3.1.5",
+      "hono": "^4.12.34",
+      "find-my-way": "^9.7.0",
+      "brace-expansion": "^5.0.7",
+      "valibot": "^1.4.2",
+      "esbuild": "^0.28.1",
+      "@babel/core": "^7.29.6",
+      "react-router": "^7.18.0",
+      "postcss": "^8.5.18"
     }
   }
 }

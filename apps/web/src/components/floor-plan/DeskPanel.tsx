@@ -12,6 +12,17 @@ import { DateTimeLocalInput } from '@/components/ui/date-time-input'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useCreateBooking, useJoinQueue, useLeaveQueue, useClaimDesk, useCancelBooking, useMakeAvailable, useQueueEntries } from '@/hooks/useBookings'
@@ -65,7 +76,7 @@ function AddAllowListDialog({
       setSearch('')
       setSelectedUserId('')
     },
-    onError: () => toast.error('Failed to add user'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return (
@@ -150,7 +161,7 @@ function AddAssignmentDialog({
       setSelectedUserId('')
       setMakePrimary(false)
     },
-    onError: () => toast.error('Failed to assign user'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return (
@@ -335,7 +346,7 @@ function EditAssetDialog({
       qc.invalidateQueries({ queryKey: ['floors'] })
       onClose()
     },
-    onError: () => toast.error('Failed to update asset'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const addAmenity = () => {
@@ -454,7 +465,7 @@ function AvailableDaysEditor({ deskId }: { deskId: string }) {
       qc.invalidateQueries({ queryKey: ['assets', deskId, 'availability-rules'] })
       toast.success('Available days updated')
     },
-    onError: () => toast.error('Failed to update available days'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const current = new Set(weekdays ?? [])
@@ -570,7 +581,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
       toast.success('User removed from allow list')
       qc.invalidateQueries({ queryKey: ['assets', desk?.id, 'allow-list'] })
     },
-    onError: () => toast.error('Failed to remove user'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const removeAssignment = useMutation({
@@ -579,7 +590,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
       toast.success('User removed from desk')
       qc.invalidateQueries({ queryKey: ['floors'] })
     },
-    onError: () => toast.error('Failed to remove user'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const setPrimaryAssignment = useMutation({
@@ -588,7 +599,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
       toast.success('Primary user updated')
       qc.invalidateQueries({ queryKey: ['floors'] })
     },
-    onError: () => toast.error('Failed to update primary user'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const { data: additionalZones } = useQuery({
@@ -604,7 +615,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
       toast.success('Zone removed')
       qc.invalidateQueries({ queryKey: ['assets', desk?.id, 'zones'] })
     },
-    onError: () => toast.error('Failed to remove zone'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const getRecurringTimes = (): { startTime: string; endTime: string } => {
@@ -617,13 +628,47 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   const createRecurring = useMutation({
     mutationFn: () => {
       const { startTime, endTime } = getRecurringTimes()
+
+      // The API has no concept of the booker's timezone — it takes startTime/
+      // endTime/dayOfWeek/firstDate and combines them as UTC wall-clock values
+      // (see buildSlotDatetime on the backend), unlike the regular one-off
+      // booking flow above, which sends real Date-derived instants that the
+      // browser converts to UTC automatically. Sending the raw local "HH:MM"
+      // here as if it were already UTC silently booked the wrong hours — often
+      // by several hours — for any deployment not running in UTC. Build a real
+      // local Date for the chosen start instant and read its UTC wall-clock
+      // components back instead, and re-derive firstDate/dayOfWeek from that
+      // same UTC-adjusted instant in case the conversion rolled onto a
+      // different UTC calendar day (e.g. an early-morning local start in a
+      // UTC+ timezone falls on the previous UTC date).
+      //
+      // Known residual limitation: if the local start/end range straddles the
+      // UTC day boundary (common for business hours in timezones far from UTC,
+      // e.g. Australia/NZ/Pacific), the API will reject it ("startTime must be
+      // before endTime") since it has no way to know endsAt lands on the next
+      // UTC date. Properly fixing that needs the API to accept timezone-aware
+      // instants rather than separate date+time-string fields — that's the
+      // proper scope of the already-tracked multi-timezone support work
+      // (issue #72), not something to paper over here.
+      const [startH, startM] = startTime.split(':').map(Number)
+      const [endH, endM] = endTime.split(':').map(Number)
+      const localStart = new Date(date)
+      localStart.setHours(startH, startM, 0, 0)
+      const localEnd = new Date(date)
+      localEnd.setHours(endH, endM, 0, 0)
+
+      const pad = (n: number) => String(n).padStart(2, '0')
+      const utcStartTime = `${pad(localStart.getUTCHours())}:${pad(localStart.getUTCMinutes())}`
+      const utcEndTime = `${pad(localEnd.getUTCHours())}:${pad(localEnd.getUTCMinutes())}`
+      const utcFirstDate = `${localStart.getUTCFullYear()}-${pad(localStart.getUTCMonth() + 1)}-${pad(localStart.getUTCDate())}`
+
       return recurringBookingsApi.create({
         assetId: desk?.id ?? '',
         frequency: recurringFrequency,
-        ...(recurringFrequency === 'WEEKLY' ? { dayOfWeek: date.getDay() } : {}),
-        startTime,
-        endTime,
-        firstDate: format(date, 'yyyy-MM-dd'),
+        ...(recurringFrequency === 'WEEKLY' ? { dayOfWeek: localStart.getUTCDay() } : {}),
+        startTime: utcStartTime,
+        endTime: utcEndTime,
+        firstDate: utcFirstDate,
         lastDate: recurringLastDate,
       })
     },
@@ -664,6 +709,10 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
     const { start, end } = getBookingTimes()
     if (start >= end) {
       toast.error('Start time must be before end time')
+      return
+    }
+    if (end <= new Date()) {
+      toast.error('This time slot has already passed')
       return
     }
     try {
@@ -1003,15 +1052,36 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                     <p className="text-xs text-blue-600 mt-1">{desk.currentBooking.notes}</p>
                   )}
                 </div>
-                <Button
-                  variant="destructive"
-                  onClick={() => cancelBooking.mutate(desk.currentBooking!.id)}
-                  disabled={cancelBooking.isPending}
-                  className="w-full"
-                >
-                  <XCircle className="mr-2 h-4 w-4" />
-                  {cancelBooking.isPending ? 'Cancelling…' : 'Cancel Booking'}
-                </Button>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="destructive"
+                      disabled={cancelBooking.isPending}
+                      className="w-full"
+                    >
+                      <XCircle className="mr-2 h-4 w-4" />
+                      {cancelBooking.isPending ? 'Cancelling…' : 'Cancel Booking'}
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Cancel booking?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Cancel your booking for <strong>{desk.name}</strong>? This action cannot
+                        be undone. Anyone in the queue will be notified.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep booking</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => cancelBooking.mutate(desk.currentBooking!.id)}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      >
+                        Cancel booking
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
               </div>
             )}
 
@@ -1031,16 +1101,37 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                 </div>
 
                 {canManageDesk && desk.currentBooking && (
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => cancelBooking.mutate(desk.currentBooking!.id)}
-                    disabled={cancelBooking.isPending}
-                    className="w-full"
-                  >
-                    <XCircle className="mr-2 h-4 w-4" />
-                    {cancelBooking.isPending ? 'Cancelling…' : 'Cancel this booking'}
-                  </Button>
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        disabled={cancelBooking.isPending}
+                        className="w-full"
+                      >
+                        <XCircle className="mr-2 h-4 w-4" />
+                        {cancelBooking.isPending ? 'Cancelling…' : 'Cancel this booking'}
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Cancel this booking?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Cancel {desk.currentBooking.bookerName ? <><strong>{desk.currentBooking.bookerName}</strong>'s</> : 'this'} booking for <strong>{desk.name}</strong>?
+                          This action cannot be undone. Anyone in the queue will be notified.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Keep booking</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={() => cancelBooking.mutate(desk.currentBooking!.id)}
+                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        >
+                          Cancel booking
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
                 )}
 
                 <div>
@@ -1097,14 +1188,35 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                     Queue expires: {formatDateTime(myQueueEntry.expiresAt)}
                   </p>
                 </div>
-                <Button
-                  variant="outline"
-                  onClick={() => leaveQueue.mutate(myQueueEntry.id)}
-                  disabled={leaveQueue.isPending}
-                  className="w-full"
-                >
-                  {leaveQueue.isPending ? 'Leaving…' : 'Leave Queue'}
-                </Button>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="outline"
+                      disabled={leaveQueue.isPending}
+                      className="w-full"
+                    >
+                      {leaveQueue.isPending ? 'Leaving…' : 'Leave Queue'}
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Leave queue?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        You will lose your position #{myQueueEntry.position} in the queue for{' '}
+                        <strong>{desk.name}</strong>.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep position</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => leaveQueue.mutate(myQueueEntry.id)}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      >
+                        Leave queue
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
               </div>
             )}
 

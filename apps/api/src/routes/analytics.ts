@@ -24,12 +24,17 @@ function parseDateParam(value: string | undefined, suffix: 'T00:00:00.000Z' | 'T
 }
 
 function countWorkingDays(start: Date, end: Date): number {
+  // start/end are always parsed with an explicit UTC 'Z' suffix — use the UTC
+  // variants throughout so both the weekday check and the day-by-day walk
+  // stay aligned with those boundaries regardless of the server's local
+  // timezone (a local-time walk can skip or double-count a day, and
+  // getDay() can misclassify the weekday, whenever local time differs from UTC).
   let days = 0
   const cursor = new Date(start)
   while (cursor <= end) {
-    const d = cursor.getDay()
+    const d = cursor.getUTCDay()
     if (d !== 0 && d !== 6) days++
-    cursor.setDate(cursor.getDate() + 1)
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
   }
   return days || 1
 }
@@ -446,14 +451,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       const startDate = result.data.startDate ? new Date(result.data.startDate + 'T00:00:00.000Z') : defaults.startDate
       const endDate = result.data.endDate ? new Date(result.data.endDate + 'T23:59:59.999Z') : defaults.endDate
 
-      let workingDays = 0
-      const cursor = new Date(startDate)
-      while (cursor <= endDate) {
-        const day = cursor.getDay()
-        if (day !== 0 && day !== 6) workingDays++
-        cursor.setDate(cursor.getDate() + 1)
-      }
-      if (workingDays === 0) workingDays = 1
+      const workingDays = countWorkingDays(startDate, endDate)
 
       const floorWhere: Record<string, unknown> = {}
       if (result.data.buildingId) {
@@ -661,7 +659,12 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           AND b."startsAt" <= ${endDate}
           AND b.status = 'CONFIRMED'
         GROUP BY d.id, d.name
-        ORDER BY "deskDays"::numeric DESC NULLS LAST
+        ORDER BY ROUND(
+          CAST(
+            COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0)
+            AS NUMERIC
+          ), 2
+        ) DESC NULLS LAST
       `
 
       const data = rows.map((r) => ({
@@ -734,7 +737,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         LEFT JOIN "Booking" b ON b."userId" = br.id
           AND b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate} AND b.status = 'CONFIRMED'
         GROUP BY br.root, ru."displayName"
-        ORDER BY "deskDays"::numeric DESC NULLS LAST
+        ORDER BY ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0) AS NUMERIC), 2) DESC NULLS LAST
       `
 
       return reply.status(200).send({

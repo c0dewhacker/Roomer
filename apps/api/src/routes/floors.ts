@@ -6,7 +6,8 @@ import { createFloorSchema, updateFloorSchema, GlobalRole } from '@roomer/shared
 import { requireAuth } from '../middleware/requireAuth.js'
 import { isFloorManagerForFloor, isBuildingManagerForBuilding, requireGlobalRole } from '../middleware/requireRole.js'
 import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage.js'
-import { canUserAccessBuilding } from './groups.js'
+import { checkGroupAccess } from './groups.js'
+import { cancelFutureBookingsForFloors } from '../lib/queue.js'
 import { z } from 'zod'
 
 export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
@@ -86,9 +87,9 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
-      const hasAccess = await canUserAccessBuilding(request.user.id, floor.building.id)
+      const hasAccess = await checkGroupAccess(request.user.id, floor.building.id, id)
       if (!hasAccess) {
-        return reply.status(403).send({ error: { message: 'You do not have access to this building', code: 'FORBIDDEN' } })
+        return reply.status(403).send({ error: { message: 'You do not have access to this floor', code: 'FORBIDDEN' } })
       }
     }
 
@@ -326,12 +327,32 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
+      // Must run before the delete: once the floor is gone, Asset.floorId is
+      // SetNull and there's no longer any way to find which bookings were on it.
+      await cancelFutureBookingsForFloors([id])
+
+      // Also fetch before the delete — FloorPlan cascades away with the floor,
+      // but its files on disk don't clean themselves up (same fix as the
+      // existing "replace floor plan" upload path above).
+      const floorPlan = await prisma.floorPlan.findUnique({ where: { floorId: id } })
+
       try {
         await prisma.floor.delete({ where: { id } })
-        return reply.status(200).send({ data: { ok: true } })
       } catch {
         return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
       }
+
+      if (floorPlan) {
+        await deleteFile(floorPlan.originalPath)
+        if (floorPlan.renderedPath !== floorPlan.originalPath) {
+          await deleteFile(floorPlan.renderedPath)
+        }
+        if (floorPlan.thumbnailPath) {
+          await deleteFile(floorPlan.thumbnailPath)
+        }
+      }
+
+      return reply.status(200).send({ data: { ok: true } })
     },
   )
 
@@ -431,9 +452,9 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
-      const hasAccess = await canUserAccessBuilding(request.user.id, floorPlan.floor.buildingId)
+      const hasAccess = await checkGroupAccess(request.user.id, floorPlan.floor.buildingId, id)
       if (!hasAccess) {
-        return reply.status(403).send({ error: { message: 'You do not have access to this building', code: 'FORBIDDEN' } })
+        return reply.status(403).send({ error: { message: 'You do not have access to this floor', code: 'FORBIDDEN' } })
       }
     }
 
@@ -599,6 +620,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
                   },
                   select: { id: true, startsAt: true, endsAt: true, ownerId: true },
                 },
+                availabilityRules: { select: { weekday: true } },
               },
             },
           },
@@ -611,9 +633,9 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
-      const hasAccess = await canUserAccessBuilding(request.user.id, floor.buildingId)
+      const hasAccess = await checkGroupAccess(request.user.id, floor.buildingId, id)
       if (!hasAccess) {
-        return reply.status(403).send({ error: { message: 'You do not have access to this building', code: 'FORBIDDEN' } })
+        return reply.status(403).send({ error: { message: 'You do not have access to this floor', code: 'FORBIDDEN' } })
       }
     }
 
@@ -652,6 +674,12 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         const isOnAllowList = asset.allowList.some((a) => a.userId === currentUserId)
         const isAssignedUser = asset.userAssignments.some((ua) => ua.user.id === currentUserId)
         const hasAvailabilityWindow = (asset.availabilityWindows ?? []).length > 0
+        // Mirrors assertBookable's isCoveredByAvailabilityRules (lib/booking.ts):
+        // a non-assigned user may book an ASSIGNED desk on a weekday its owner
+        // has marked recurringly available, not just via a one-off window. The
+        // floor plan must reflect that or it shows "assigned"/unbookable for a
+        // desk the booking endpoint would actually accept.
+        const hasAvailabilityRule = (asset.availabilityRules ?? []).some((r) => r.weekday === dayStart.getUTCDay())
 
         let bookingStatus: AvailabilityStatus
 
@@ -670,7 +698,8 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         } else if (
           (asset.bookingStatus === 'ASSIGNED' || asset.userAssignments.length > 0) &&
           !isAssignedUser &&
-          !hasAvailabilityWindow
+          !hasAvailabilityWindow &&
+          !hasAvailabilityRule
         ) {
           // Non-assigned user: reflect their queue state for this assigned desk
           if (myQueueEntry?.status === 'PROMOTED') {

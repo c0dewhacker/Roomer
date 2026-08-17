@@ -35,7 +35,7 @@ function CreateDepartmentDialog({ open, onClose }: { open: boolean; onClose: () 
       onClose()
       setName('')
     },
-    onError: () => toast.error('Failed to create department'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return (
@@ -90,7 +90,7 @@ function DepartmentDetailSheet({ department, onClose }: { department: Department
       qc.invalidateQueries({ queryKey: ['departments'] })
       setEditName(null)
     },
-    onError: () => toast.error('Failed to update department'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const addMember = useMutation({
@@ -102,7 +102,7 @@ function DepartmentDetailSheet({ department, onClose }: { department: Department
       setMemberSearch('')
       setSelectedMemberId('')
     },
-    onError: () => toast.error('Failed to add member'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const removeMember = useMutation({
@@ -112,7 +112,7 @@ function DepartmentDetailSheet({ department, onClose }: { department: Department
       qc.invalidateQueries({ queryKey: ['departments', department?.id, 'members'] })
       qc.invalidateQueries({ queryKey: ['departments'] })
     },
-    onError: () => toast.error('Failed to remove member'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return (
@@ -236,7 +236,7 @@ export default function DepartmentsAdminPage() {
       toast.success('Department deleted')
       qc.invalidateQueries({ queryKey: ['departments'] })
     },
-    onError: () => toast.error('Failed to delete department'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return (

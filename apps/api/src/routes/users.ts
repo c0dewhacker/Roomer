@@ -8,6 +8,8 @@ import { requireGlobalRole } from '../middleware/requireRole.js'
 import { enqueueNotification } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { NotificationType } from '@roomer/shared'
+import { signAccessToken, verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE } from '../lib/jwt.js'
+import { blockToken } from '../lib/token-blocklist.js'
 import { z } from 'zod'
 
 const createUserSchema = z.object({
@@ -323,7 +325,12 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
   })
 
   // POST /users/me/password — self-service password change (local auth users only)
-  fastify.post('/me/password', { preHandler: [requireAuth] }, async (request, reply) => {
+  // Rate-limited like /auth/login: this endpoint bcrypt-compares currentPassword,
+  // so without a strict limit it's an online password-guessing oracle available
+  // to anyone holding a valid session token (e.g. a stolen cookie) — worse than
+  // login's exposure, since it needs no username/email guesswork at all. Global
+  // default is 300 req/min; that's 20x looser than /auth/login's brute-force tier.
+  fastify.post('/me/password', { preHandler: [requireAuth], config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } }, async (request, reply) => {
     const result = changePasswordSchema.safeParse(request.body)
     if (!result.success) {
       return reply.status(400).send({
@@ -344,14 +351,46 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     const newHash = await bcryptjs.hash(result.data.newPassword, 12)
-    await prisma.user.update({ where: { id: request.user.id }, data: { passwordHash: newHash } })
+    await prisma.user.update({
+      where: { id: request.user.id },
+      data: { passwordHash: newHash, passwordChangedAt: new Date() },
+    })
+
+    // requireAuth now rejects any token issued before passwordChangedAt, which
+    // would otherwise also log the caller out of the session they just used to
+    // change their own password. Reissue a fresh token here — same pattern as
+    // /auth/refresh — so this session continues seamlessly while every other
+    // still-live token (other devices, or a stolen cookie) is invalidated.
+    const currentToken = request.cookies?.[TOKEN_COOKIE]
+    if (currentToken) {
+      try {
+        const payload = verifyAccessToken(currentToken)
+        if (payload.jti) await blockToken(payload.jti, payload.exp)
+        const newToken = signAccessToken({
+          sub: request.user.id,
+          role: request.user.globalRole,
+          email: request.user.email,
+          displayName: request.user.displayName,
+          sessionStart: payload.sessionStart ?? payload.iat,
+        })
+        reply.setCookie(TOKEN_COOKIE, newToken, { ...TOKEN_COOKIE_OPTS, maxAge: TOKEN_MAX_AGE })
+      } catch {
+        // Current token was already invalid/expired — nothing to reissue.
+      }
+    }
+
     return reply.status(200).send({ data: { ok: true } })
   })
 
   // POST /users/:id/password/reset — admin sets a new password for any user
+  // Rate-limited for a different reason than /me/password: not a guessing
+  // oracle (no secret comparison here), but a compromised admin token would
+  // otherwise be able to mass-reset every user's password at up to the
+  // 300 req/min global default. 30/15min still bounds that blast radius while
+  // leaving headroom for a legitimate admin resetting several accounts by hand.
   fastify.post(
     '/:id/password/reset',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)], config: { rateLimit: { max: 30, timeWindow: '15 minutes' } } },
     async (request, reply) => {
       const { id } = request.params as { id: string }
       const result = adminSetPasswordSchema.safeParse(request.body)
@@ -367,7 +406,10 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       const newHash = await bcryptjs.hash(result.data.password, 12)
-      await prisma.user.update({ where: { id }, data: { passwordHash: newHash } })
+      await prisma.user.update({
+        where: { id },
+        data: { passwordHash: newHash, passwordChangedAt: new Date() },
+      })
       return reply.status(200).send({ data: { ok: true } })
     },
   )
@@ -591,11 +633,20 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       let updated = 0
       const errors: Array<{ row: number; message: string }> = []
 
-      // Validate all rows first
+      // Validate all rows first. A CSV blank cell parses to '' (not absent), but
+      // password/global_role are meant to be optional-with-a-default (see the
+      // CSV column help text and downloadable template, which both show blank
+      // password/global_role cells) — z.optional()/z.default() only apply to
+      // undefined, not ''. Without stripping empty strings here, an ordinary
+      // blank cell rejects the whole row instead of falling back to a random
+      // password / USER role as documented.
       type ValidRow = z.infer<typeof userImportRowSchema>
       const validRows: Array<{ index: number; row: ValidRow }> = []
       for (let i = 0; i < body.data.rows.length; i++) {
-        const result = userImportRowSchema.safeParse(body.data.rows[i])
+        const rawRow = { ...body.data.rows[i] }
+        if (rawRow.password === '') delete rawRow.password
+        if (rawRow.global_role === '') delete rawRow.global_role
+        const result = userImportRowSchema.safeParse(rawRow)
         if (!result.success) {
           errors.push({ row: i + 2, message: result.error.issues.map((e) => e.message).join('; ') })
         } else {
@@ -629,9 +680,24 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
           let userId: string
 
           if (existing) {
+            // Same guard as PATCH /users/:id — a roster CSV with no global_role
+            // column defaults every row to 'USER' (see userImportRowSchema), so
+            // an "all employees" import that happens to include the org's sole
+            // super admin would otherwise silently demote them and lock the org
+            // out with no path back except direct DB access.
+            let nextGlobalRole: typeof existing.globalRole = row.global_role as typeof existing.globalRole
+            if (existing.globalRole === GlobalRole.SUPER_ADMIN && existing.accountStatus === 'ACTIVE' && nextGlobalRole !== GlobalRole.SUPER_ADMIN) {
+              const otherActiveAdmins = await prisma.user.count({
+                where: { id: { not: existing.id }, globalRole: GlobalRole.SUPER_ADMIN, accountStatus: 'ACTIVE' },
+              })
+              if (otherActiveAdmins === 0) {
+                nextGlobalRole = existing.globalRole
+                errors.push({ row: index + 2, message: `Cannot demote ${row.email} — they are the last active super admin; role left unchanged` })
+              }
+            }
             await prisma.user.update({
               where: { email: row.email },
-              data: { displayName: row.display_name, globalRole: row.global_role as GlobalRole },
+              data: { displayName: row.display_name, globalRole: nextGlobalRole },
             })
             userId = existing.id
             updated++

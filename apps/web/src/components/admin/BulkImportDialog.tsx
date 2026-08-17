@@ -239,7 +239,7 @@ export function BulkImportDialog({ open, onClose }: Props) {
         toast.warning(`Import completed with ${res.data.errors.length} error(s)`)
       }
     },
-    onError: () => toast.error('Import failed — please try again'),
+    onError: (err: Error) => toast.error(err.message || 'Import failed — please try again'),
   })
 
   const validRows = rows.filter((_, i) => !parseErrors.some((e) => e.startsWith(`Row ${i + 2}:`)))

@@ -25,7 +25,7 @@ export function useFavourites() {
     mutationFn: ({ id, next }: { id: string; next: boolean }) =>
       next ? assetsApi.addFavourite(id) : assetsApi.removeFavourite(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: FAVOURITES_KEY }),
-    onError: () => toast.error('Failed to update favourite'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   return {

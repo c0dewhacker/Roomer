@@ -41,8 +41,12 @@ export function TopBar({ onMenuClick, hideBrand }: TopBarProps) {
     theme === 'dark' ||
     (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
 
+  // A double space, or a leading/trailing space, in displayName produces an
+  // empty-string part when split on a literal ' ' — n[0] on that is
+  // undefined, and Array.join('') renders it as the literal text "undefined".
   const initials = user?.displayName
-    ?.split(' ')
+    ?.trim()
+    .split(/\s+/)
     .slice(0, 2)
     .map((n) => n[0])
     .join('')
@@ -51,7 +55,7 @@ export function TopBar({ onMenuClick, hideBrand }: TopBarProps) {
   return (
     <header className="flex h-14 items-center justify-between border-b bg-background px-4">
       <div className="flex items-center gap-3">
-        <Button variant="ghost" size="icon" className="md:hidden" onClick={onMenuClick}>
+        <Button variant="ghost" size="icon" className="md:hidden" onClick={onMenuClick} aria-label="Open menu">
           <Menu className="h-5 w-5" />
         </Button>
         {!hideBrand && (branding?.logoPath ? (
@@ -82,7 +86,7 @@ export function TopBar({ onMenuClick, hideBrand }: TopBarProps) {
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="relative h-9 w-9 rounded-full p-0">
+            <Button variant="ghost" className="relative h-9 w-9 rounded-full p-0" aria-label="Open user menu">
               <Avatar className="h-9 w-9">
                 <AvatarFallback className="bg-primary text-primary-foreground text-sm">
                   {initials ?? 'U'}

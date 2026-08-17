@@ -127,7 +127,6 @@ export interface Asset {
   warrantyExpiry?: string
   notes?: string
   createdAt?: string
-  assignments?: AssetAssignment[]
   userAssignments?: Array<{ isPrimary: boolean; user: { id: string; displayName: string; email: string } }>
 }
 
@@ -244,16 +243,6 @@ export interface AssetCategory {
   defaultIcon?: string
   iconUrl?: string
   colour?: string
-}
-
-export interface AssetAssignment {
-  id: string
-  assetId: string
-  asset?: Asset
-  userId?: string
-  user?: User
-  assignedAt: string
-  returnedAt?: string
 }
 
 export interface AssetZone {

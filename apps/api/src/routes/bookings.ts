@@ -4,12 +4,11 @@ import { prisma } from '../lib/prisma.js'
 import { createBookingSchema, updateBookingSchema, GlobalRole, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { isFloorManagerForFloor, getManagedBuildingIds } from '../middleware/requireRole.js'
-import { enqueueNotification, fanOutFloorAvailable, CLAIM_DEADLINE_MS } from '../lib/queue.js'
+import { enqueueNotification, fanOutFloorAvailable, promoteNextQueueEntry } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { buildBookingIcs } from '../lib/ical.js'
-import { randomUUID } from 'crypto'
 import { checkGroupAccess } from './groups.js'
-import { assertBookable, hasConfirmedOverlap, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
+import { assertBookable, assertUnderBookingQuota, hasConfirmedOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
 import { z } from 'zod'
 
 class BookingConflictError extends Error {
@@ -195,10 +194,30 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     const startsAt = new Date(result.data.startsAt)
     const endsAt = new Date(result.data.endsAt)
 
+    if (!isNotAlreadyElapsed(endsAt)) {
+      return reply.status(400).send({ error: { message: 'This time slot has already passed', code: 'ALREADY_ELAPSED' } })
+    }
+
     // Centralised bookability gate (bookable / disabled / restricted / assigned / group access)
     const gate = await assertBookable(prisma, request.user, assetId, startsAt, endsAt)
     if (!gate.ok) {
       return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+    }
+
+    const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+
+    if (!isSuperAdmin) {
+      const org = await prisma.organisation.findFirst({ select: { maxAdvanceBookingDays: true } })
+      if (!isWithinAdvanceBookingWindow(startsAt, org?.maxAdvanceBookingDays)) {
+        return reply.status(400).send({
+          error: { message: `Bookings cannot be made more than ${org?.maxAdvanceBookingDays} days in advance`, code: 'MAX_ADVANCE_EXCEEDED' },
+        })
+      }
+    }
+
+    const quota = await assertUnderBookingQuota(prisma, request.user.id, isSuperAdmin)
+    if (!quota.ok) {
+      return reply.status(quota.status).send({ error: { message: quota.message, code: quota.code } })
     }
 
     let booking: Awaited<ReturnType<typeof prisma.booking.create>>
@@ -384,6 +403,43 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     const newStartsAt = result.data.startsAt ? new Date(result.data.startsAt) : booking.startsAt
     const newEndsAt = result.data.endsAt ? new Date(result.data.endsAt) : booking.endsAt
 
+    // updateBookingSchema's refine only fires when both startsAt and endsAt are
+    // present in the same request — but either can be omitted here to mean
+    // "keep the existing value". A request that moves only startsAt to a time
+    // at or after the *existing* endsAt (or vice versa) slips past that schema
+    // check entirely. Uncaught, it reaches the booking_no_overlap exclusion
+    // constraint's tsrange(startsAt, endsAt) expression, which Postgres itself
+    // rejects for an inverted range — but with a raw data-exception error the
+    // catch block below doesn't recognise, surfacing as an unhandled 500
+    // instead of a normal validation error.
+    if (newStartsAt >= newEndsAt) {
+      return reply.status(400).send({ error: { message: 'startsAt must be before endsAt', code: 'VALIDATION_ERROR' } })
+    }
+
+    const timeChanged = newStartsAt.getTime() !== booking.startsAt.getTime() || newEndsAt.getTime() !== booking.endsAt.getTime()
+
+    // Rescheduling moves the booking onto a new time slot, so it must clear the
+    // same bookability gate a fresh booking would — otherwise a booking made
+    // before the asset became disabled/restricted/reassigned could be rolled
+    // forward indefinitely by rescheduling, since only overlap was re-checked.
+    if (timeChanged) {
+      if (!isNotAlreadyElapsed(newEndsAt)) {
+        return reply.status(400).send({ error: { message: 'This time slot has already passed', code: 'ALREADY_ELAPSED' } })
+      }
+      const gate = await assertBookable(prisma, request.user, booking.assetId, newStartsAt, newEndsAt)
+      if (!gate.ok) {
+        return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+      }
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const org = await prisma.organisation.findFirst({ select: { maxAdvanceBookingDays: true } })
+        if (!isWithinAdvanceBookingWindow(newStartsAt, org?.maxAdvanceBookingDays)) {
+          return reply.status(400).send({
+            error: { message: `Bookings cannot be made more than ${org?.maxAdvanceBookingDays} days in advance`, code: 'MAX_ADVANCE_EXCEEDED' },
+          })
+        }
+      }
+    }
+
     let updated: Awaited<ReturnType<typeof prisma.booking.update>>
     try {
       updated = await prisma.$transaction(async (tx) => {
@@ -418,6 +474,47 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     dispatchWebhook('booking.modified', { id: updated.id, userId: updated.userId, assetId: updated.assetId, startsAt: updated.startsAt, endsAt: updated.endsAt }).catch(() => {})
+
+    // Re-send the booking notification (in-app + email + a fresh .ics REQUEST
+    // attachment, same rendering path as the original confirmation) whenever
+    // the time actually changed. Without this, a reschedule silently drifted
+    // out of sync with whatever calendar app the user added the original
+    // invite to — Roomer showed the new time, their calendar still showed the
+    // old one, with no notice either changed. Skipped for a notes-only edit,
+    // since there's nothing calendar-relevant to re-send.
+    if (timeChanged) {
+      await enqueueNotification({
+        type: NotificationType.BOOKING_CONFIRMED,
+        userId: updated.userId,
+        bookingId: updated.id,
+      })
+    }
+
+    // A reschedule can free up part of the original slot — shrinking it from
+    // either end, or moving away from it entirely — the same way a full
+    // cancellation frees the whole thing. Without this, someone queued for the
+    // vacated portion would never be promoted even though it's booked by no
+    // one. The freed region is [oldStart,oldEnd) minus [newStart,newEnd),
+    // which is zero, one, or two disjoint sub-ranges.
+    const freedRanges: Array<[Date, Date]> = []
+    if (newStartsAt > booking.startsAt) {
+      freedRanges.push([booking.startsAt, newStartsAt < booking.endsAt ? newStartsAt : booking.endsAt])
+    }
+    if (newEndsAt < booking.endsAt) {
+      freedRanges.push([newEndsAt > booking.startsAt ? newEndsAt : booking.startsAt, booking.endsAt])
+    }
+    for (const [freedStart, freedEnd] of freedRanges) {
+      const nextQueued = await promoteNextQueueEntry(booking.assetId, freedStart, freedEnd)
+      if (nextQueued) {
+        await enqueueNotification({
+          type: NotificationType.QUEUE_PROMOTED,
+          userId: nextQueued.userId,
+          queueEntryId: nextQueued.id,
+          claimDeadline: nextQueued.claimDeadline.toISOString(),
+        })
+        dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+      }
+    }
 
     return reply.status(200).send({ data: updated })
   })
@@ -465,30 +562,17 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     })
 
     // Promote next queue entry for overlapping slot
-    const nextQueued = await prisma.queueEntry.findFirst({
-      where: {
-        assetId: booking.assetId,
-        status: 'WAITING',
-        wantedStartsAt: { lt: booking.endsAt },
-        wantedEndsAt: { gt: booking.startsAt },
-      },
-      orderBy: { position: 'asc' },
-    })
+    const nextQueued = await promoteNextQueueEntry(booking.assetId, booking.startsAt, booking.endsAt)
 
     if (nextQueued) {
-      const claimDeadline = new Date(Date.now() + CLAIM_DEADLINE_MS)
-      const claimToken = randomUUID()
-      await prisma.queueEntry.update({
-        where: { id: nextQueued.id },
-        data: { status: 'PROMOTED', claimDeadline, claimToken },
-      })
-
       await enqueueNotification({
         type: NotificationType.QUEUE_PROMOTED,
         userId: nextQueued.userId,
         queueEntryId: nextQueued.id,
-        claimDeadline: claimDeadline.toISOString(),
+        claimDeadline: nextQueued.claimDeadline.toISOString(),
       })
+
+      dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
     }
 
     // Notify floor subscribers of the newly-freed slot

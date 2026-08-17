@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'crypto'
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { prisma } from '../lib/prisma.js'
+import { GlobalRole } from '@roomer/shared'
 import {
   userToScim, groupToScim, scimError, listResponse, parseScimFilter,
   applyUserPatchOps, applyGroupPatchOps, hashScimToken,
@@ -8,7 +9,42 @@ import {
 } from '../lib/scim-helpers.js'
 import { env } from '../env.js'
 
+/**
+ * True when membership of this group confers elevated privilege — either a
+ * SUPER_ADMIN globalRole or a BUILDING_ADMIN/FLOOR_MANAGER GroupResourceRole.
+ *
+ * The SCIM bearer token is a narrower credential than SUPER_ADMIN (meant for
+ * directory-driven sync of ordinary users and access groups), but nothing
+ * upstream of this check restricts which group ids a PATCH can target. Group
+ * membership for privileged groups is read live by isBuildingManagerForBuilding/
+ * isFloorManagerForFloor (see requireRole.ts), so without this guard a leaked
+ * or over-scoped SCIM token could grant building/floor admin — or even
+ * SUPER_ADMIN — by adding an arbitrary user id to a group a real admin
+ * configured as privileged via the human-facing (SUPER_ADMIN-gated) UI.
+ */
+async function isGroupPrivileged(groupId: string): Promise<boolean> {
+  const group = await prisma.userGroup.findUnique({
+    where: { id: groupId },
+    select: { globalRole: true, _count: { select: { groupResourceRoles: true } } },
+  })
+  if (!group) return false
+  return group.globalRole === GlobalRole.SUPER_ADMIN || group._count.groupResourceRoles > 0
+}
+
 const SCIM_CONTENT_TYPE = 'application/scim+json'
+
+// Bounded, linear-time check (no backtracking). Applied to every write path
+// that can set a user's email (POST/PUT/PATCH) — PUT and PATCH originally
+// only validated this on create, so a SCIM client could set an *existing*
+// user's email to an arbitrary malformed string. Since SSO login resolves
+// the Roomer account by email (see findOrCreateSsoUser in auth-enterprise.ts),
+// an unvalidated email change is also a latent account-identity issue, not
+// just a data-quality one — whoever can authenticate as that address at the
+// IdP inherits whatever this account already has.
+const SCIM_EMAIL_REGEX = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,64}$/
+function isValidScimEmail(email: string): boolean {
+  return email.length <= 254 && SCIM_EMAIL_REGEX.test(email)
+}
 
 async function scimAuth(request: FastifyRequest, reply: FastifyReply): Promise<void> {
   const auth = request.headers.authorization
@@ -103,7 +139,14 @@ function registerUsers(fastify: FastifyInstance): void {
     const parsed = parseScimFilter(q.filter)
     let where: Record<string, unknown> = {}
     if (parsed) {
-      if (parsed.attr === 'userName' || parsed.attr === 'email') where = { email: parsed.value }
+      // Case-insensitive, same reasoning as the login/SSO/manager-link lookups
+      // elsewhere in this codebase: email isn't normalised to lowercase on
+      // every creation path, so an IdP sending different casing than however
+      // the account is actually stored (e.g. Entra's directory casing vs. an
+      // admin-created local account) would otherwise miss the existing user —
+      // provisioning idempotency checks like Entra's pre-create existence probe
+      // rely on this filter finding the account it already made.
+      if (parsed.attr === 'userName' || parsed.attr === 'email') where = { email: { equals: parsed.value, mode: 'insensitive' } }
       else if (parsed.attr === 'externalId') where = { externalId: parsed.value }
       else if (parsed.attr === 'displayName') where = { displayName: { contains: parsed.value, mode: 'insensitive' } }
     }
@@ -132,14 +175,15 @@ function registerUsers(fastify: FastifyInstance): void {
         .send(scimError(400, 'userName is required'))
     }
 
-    // Validate email format — bounded, linear-time check (no backtracking)
-    const emailRegex = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,64}$/
-    if (email.length > 254 || !emailRegex.test(email)) {
+    if (!isValidScimEmail(email)) {
       return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
         .send(scimError(400, 'userName must be a valid email address'))
     }
 
-    const existing = await prisma.user.findUnique({ where: { email }, select: userSelect })
+    // Case-insensitive — see the GET /Users filter above for why. Without this,
+    // a differently-cased userName for an account that already exists creates
+    // a duplicate rather than hitting the 409 conflict.
+    const existing = await prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } }, select: userSelect })
     if (existing) {
       return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
         .send(scimError(409, `User ${email} already exists`))
@@ -195,6 +239,11 @@ function registerUsers(fastify: FastifyInstance): void {
     const enterpriseExt = body[SCIM_SCHEMAS.ENTERPRISE_USER] as Record<string, unknown> | undefined
     const incomingDeptName = typeof enterpriseExt?.department === 'string' ? enterpriseExt.department.trim() : undefined
 
+    if (email && !isValidScimEmail(email)) {
+      return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(400, 'userName must be a valid email address'))
+    }
+
     let departmentId: string | null | undefined
     if (incomingDeptName) {
       const org = await prisma.organisation.findFirst({ select: { id: true } })
@@ -239,6 +288,11 @@ function registerUsers(fastify: FastifyInstance): void {
       const user = await prisma.user.findUnique({ where: { id }, select: userSelect })
       if (!user) return reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
       return reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
+    }
+
+    if (userPatch.email && !isValidScimEmail(userPatch.email)) {
+      return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(400, 'userName must be a valid email address'))
     }
 
     let departmentId: string | undefined
@@ -379,6 +433,11 @@ function registerGroups(fastify: FastifyInstance): void {
       return reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `Group ${id} not found`))
     }
 
+    if ((patch.addMemberIds.length > 0 || patch.removeMemberIds.length > 0) && await isGroupPrivileged(id)) {
+      return reply.status(403).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(403, 'SCIM cannot modify membership of a group that grants admin or manager privileges'))
+    }
+
     if (patch.displayName) {
       await prisma.userGroup.update({ where: { id }, data: { name: patch.displayName } })
     }
@@ -399,6 +458,10 @@ function registerGroups(fastify: FastifyInstance): void {
   // DELETE /Groups/:id
   fastify.delete('/Groups/:id', { preHandler: [scimAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (await isGroupPrivileged(id)) {
+      return reply.status(403).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(403, 'SCIM cannot delete a group that grants admin or manager privileges'))
+    }
     try {
       await prisma.userGroup.delete({ where: { id } })
       reply.status(204).send()

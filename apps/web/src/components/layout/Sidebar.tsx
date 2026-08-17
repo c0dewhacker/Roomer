@@ -1,67 +1,28 @@
 import { NavLink } from 'react-router-dom'
-import {
-  Calendar,
-  Clock,
-  Building2,
-  Users,
-  Settings,
-  ChevronDown,
-  ChevronRight,
-  Package,
-  BarChart3,
-  FileText,
-  Shield,
-  Layers,
-  MapPin,
-} from 'lucide-react'
-import { useState, useMemo } from 'react'
+import { Building2, ChevronDown, ChevronRight } from 'lucide-react'
+import { useState } from 'react'
 import { cn } from '@/lib/utils'
-import { useAuthStore } from '@/stores/auth'
 import { useQuery } from '@tanstack/react-query'
 import { buildingsApi } from '@/lib/api'
 import { useBranding } from '@/hooks/useBranding'
+import { useNavConfig, type NavItem } from '@/hooks/useNavConfig'
 
 interface SidebarProps {
   onNavigate?: () => void
 }
 
 export function Sidebar({ onNavigate }: SidebarProps) {
-  const user = useAuthStore((s) => s.user)
-  const isSuperAdmin = user?.globalRole === 'SUPER_ADMIN'
   const branding = useBranding()
-
-  // Compute floors this user manages (direct + via group), for the floor manager nav section
-  const managedFloors = useMemo(() => {
-    if (!user || isSuperAdmin) return []
-    const direct = (user.resourceRoles ?? [])
-      .filter((r) => r.role === 'FLOOR_MANAGER' && r.floorId && r.floor)
-      .map((r) => ({ id: r.floorId!, name: r.floor!.name }))
-    const viaGroup = (user.groupMemberships ?? []).flatMap((m) =>
-      (m.group.groupResourceRoles ?? [])
-        .filter((r) => r.role === 'FLOOR_MANAGER' && r.floorId && r.floor)
-        .map((r) => ({ id: r.floorId!, name: r.floor!.name })),
-    )
-    const byId = new Map<string, { id: string; name: string }>()
-    ;[...direct, ...viaGroup].forEach((f) => byId.set(f.id, f))
-    return [...byId.values()]
-  }, [user, isSuperAdmin])
-
-  const isFloorManager = managedFloors.length > 0
+  const { sections, buildingsData } = useNavConfig()
   const [buildingsOpen, setBuildingsOpen] = useState(false)
 
-  const { data: buildingsData } = useQuery({
-    queryKey: ['buildings'],
-    queryFn: () => buildingsApi.list(),
-    select: (res) => res.data,
-  })
+  const personalSection = sections.find((s) => s.id === 'personal')
+  const secondarySections = sections.filter((s) => s.id !== 'personal')
 
-  const navItem = (
-    to: string,
-    Icon: React.ElementType,
-    label: string,
-  ) => (
+  const navItem = (item: NavItem) => (
     <NavLink
-      to={to}
+      key={item.to}
+      to={item.to}
       onClick={onNavigate}
       className={({ isActive }) =>
         cn(
@@ -72,8 +33,8 @@ export function Sidebar({ onNavigate }: SidebarProps) {
         )
       }
     >
-      <Icon className="h-4 w-4 shrink-0" />
-      {label}
+      <item.icon className="h-4 w-4 shrink-0" />
+      {item.label}
     </NavLink>
   )
 
@@ -85,10 +46,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
       </div>
 
       <nav className="flex flex-col gap-1">
-        {navItem('/bookings', Calendar, 'My Bookings')}
-        {navItem('/queue', Clock, 'My Queue')}
-        {navItem('/assets', Package, 'My Assets')}
-        {navItem('/whos-in', MapPin, "Who's In")}
+        {personalSection?.items.map(navItem)}
 
         {/* Buildings with floor expansion */}
         <div>
@@ -105,7 +63,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
             )}
           </button>
 
-          {buildingsOpen && buildingsData && (
+          {buildingsOpen && (
             <div className="ml-7 mt-1 flex flex-col gap-1">
               {buildingsData.map((building) => (
                 <BuildingFloors
@@ -122,32 +80,17 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           )}
         </div>
 
-        {isSuperAdmin && (
-          <>
+        {secondarySections.map((section) => (
+          <div key={section.id}>
             <div className="my-2 border-t" />
-            <p className="px-3 py-1 text-xs font-semibold uppercase text-muted-foreground">
-              Admin
-            </p>
-            {navItem('/admin/buildings', Building2, 'Buildings')}
-            {navItem('/admin/users', Users, 'Users')}
-            {navItem('/admin/assets', Package, 'Assets')}
-            {navItem('/admin/leases', FileText, 'Leases')}
-            {navItem('/admin/groups', Shield, 'Access Groups')}
-            {navItem('/admin/reports', BarChart3, 'Reports')}
-            {navItem('/admin/settings', Settings, 'Settings')}
-          </>
-        )}
-
-        {!isSuperAdmin && isFloorManager && (
-          <>
-            <div className="my-2 border-t" />
-            <p className="px-3 py-1 text-xs font-semibold uppercase text-muted-foreground">
-              Floor Manager
-            </p>
-            {navItem('/admin/assets', Package, 'Assets')}
-            {managedFloors.map((f) => navItem(`/admin/floors/${f.id}`, Layers, f.name))}
-          </>
-        )}
+            {section.label && (
+              <p className="px-3 py-1 text-xs font-semibold uppercase text-muted-foreground">
+                {section.label}
+              </p>
+            )}
+            {section.items.map(navItem)}
+          </div>
+        ))}
       </nav>
     </div>
   )

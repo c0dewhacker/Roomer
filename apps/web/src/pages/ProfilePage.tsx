@@ -55,6 +55,7 @@ const NOTIFICATION_GROUPS: Array<{ label: string; types: Array<{ key: string; la
       { key: 'BOOKING_CANCELLED', label: 'Booking cancelled' },
       { key: 'BOOKING_CANCELLED_BY_ADMIN', label: 'Booking cancelled by admin' },
       { key: 'BOOKING_REMINDER', label: 'Booking reminder' },
+      { key: 'BOOKING_NO_SHOW', label: 'Booking released (no-show)' },
     ],
   },
   {
@@ -70,7 +71,10 @@ const NOTIFICATION_GROUPS: Array<{ label: string; types: Array<{ key: string; la
     label: 'Assets',
     types: [
       { key: 'ASSET_ASSIGNED', label: 'Asset assigned to you' },
-      { key: 'ASSET_DUE_RETURN', label: 'Asset due for return' },
+      // ASSET_DUE_RETURN is deliberately not offered here — the feature it
+      // depends on (a due date on an equipment assignment) doesn't exist
+      // anywhere in the product (see issue #200), so this toggle controlled
+      // a notification that could never fire. Restore it once #200 lands.
     ],
   },
   {
@@ -132,7 +136,7 @@ export default function ProfilePage() {
       setEditing(false)
       qc.invalidateQueries({ queryKey: ['auth', 'me'] })
     },
-    onError: () => toast.error('Failed to update profile'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const updateVisibility = useMutation({
@@ -142,7 +146,7 @@ export default function ProfilePage() {
       toast.success('Privacy preference saved')
       qc.invalidateQueries({ queryKey: ['auth', 'me'] })
     },
-    onError: () => toast.error('Failed to save preference'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const changePassword = useMutation({
@@ -171,7 +175,7 @@ export default function ProfilePage() {
       qc.invalidateQueries({ queryKey: ['notification-preferences'] })
       setLocalPrefs(null)
     },
-    onError: () => toast.error('Failed to save preferences'),
+    onError: (err: Error) => toast.error(err.message),
   })
 
   const handleToggle = (key: string, channel: 'email' | 'inApp', value: boolean) => {
@@ -184,8 +188,13 @@ export default function ProfilePage() {
 
   if (!user) return null
 
+  // A double space, or a leading/trailing space, in displayName produces an
+  // empty-string part when split on a literal ' ' — n[0] on that is
+  // undefined, and Array.join('') renders it as the literal text
+  // "undefined". Trim and split on any run of whitespace instead.
   const initials = user.displayName
-    .split(' ')
+    .trim()
+    .split(/\s+/)
     .map((n) => n[0])
     .join('')
     .toUpperCase()

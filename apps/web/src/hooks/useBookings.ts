@@ -69,6 +69,12 @@ export function useQueueEntries(includeHistory?: boolean) {
     queryKey: ['queue', { history: includeHistory ?? false }],
     queryFn: () => queueApi.list(includeHistory),
     select: (res) => res.data,
+    // Position numbers shift as other users join/leave/get promoted, and a
+    // PROMOTED entry's claim window can lapse server-side at any moment —
+    // neither is driven by anything this client does, so without polling the
+    // "you are #N" text and "Claim before X" deadline just go stale until an
+    // unrelated mutation happens to invalidate ['queue'].
+    refetchInterval: 30 * 1000,
   })
 }
 
@@ -119,8 +125,8 @@ export function useClaimDesk() {
       qc.invalidateQueries({ queryKey: ['bookings'] })
       qc.invalidateQueries({ queryKey: ['floors'] })
     },
-    onError: () => {
-      toast.error('Failed to claim desk')
+    onError: (err: Error) => {
+      toast.error(apiErrMsg(err, 'Failed to claim desk'))
     },
   })
 }
@@ -142,8 +148,8 @@ export function useMakeAvailable() {
       qc.invalidateQueries({ queryKey: ['queue'] })
       qc.invalidateQueries({ queryKey: ['floors'] })
     },
-    onError: () => {
-      toast.error('Failed to make desk available')
+    onError: (err: Error) => {
+      toast.error(apiErrMsg(err, 'Failed to make desk available'))
     },
   })
 }

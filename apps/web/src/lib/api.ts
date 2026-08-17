@@ -9,7 +9,6 @@ import type {
   Notification,
   Asset,
   AssetCategory,
-  AssetAssignment,
   AssetZone,
   UtilisationDataPoint,
   BookingDataPoint,
@@ -238,7 +237,9 @@ export type FavouriteAsset = Asset & {
 }
 
 export const assetsApi = {
-  list: () => api.get<{ data: Asset[] }>('/assets'),
+  list: (params?: { mine?: boolean; unplaced?: boolean }) => api.get<{ data: Asset[] }>(
+    `/assets${params?.mine ? '?mine=true' : params?.unplaced ? '?unplaced=true' : ''}`,
+  ),
   listCategories: () => api.get<{ data: AssetCategory[] }>('/assets/categories'),
   get: (id: string) => api.get<{ data: Asset }>(`/assets/${id}`),
   create: (body: Partial<Asset> & {
@@ -268,10 +269,6 @@ export const assetsApi = {
     rotation?: number | null
   }) => api.patch<{ data: Asset }>(`/assets/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/assets/${id}`),
-  assign: (id: string, body: { userId: string; notes?: string }) =>
-    api.post<{ data: AssetAssignment }>(`/assets/${id}/assign`, body),
-  unassign: (id: string) => api.post<{ data: AssetAssignment }>(`/assets/${id}/unassign`, {}),
-  history: (id: string) => api.get<{ data: AssetAssignment[] }>(`/assets/${id}/history`),
   // Floor plan position updates
   updatePositions: (updates: PositionUpdate[]) =>
     api.patch<{ data: { ok: true } }>('/assets/positions', { assets: updates }),
@@ -497,9 +494,9 @@ export interface BrandingBanner {
 }
 
 export interface Branding {
-  appName?: string
-  sidebarTitle?: string
-  sidebarSubtitle?: string
+  appName?: string | null
+  sidebarTitle?: string | null
+  sidebarSubtitle?: string | null
   primaryColor?: string
   primaryColorDark?: string
   logoPath?: string

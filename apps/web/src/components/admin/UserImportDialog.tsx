@@ -142,7 +142,7 @@ export function UserImportDialog({ open, onClose }: Props) {
         toast.warning(`Import completed with ${res.data.errors.length} error(s)`)
       }
     },
-    onError: () => toast.error('Import failed — please try again'),
+    onError: (err: Error) => toast.error(err.message || 'Import failed — please try again'),
   })
 
   const rowErrors = new Set(parseErrors.map((e) => { const m = e.match(/^Row (\d+)/); return m ? Number(m[1]) : 0 }))

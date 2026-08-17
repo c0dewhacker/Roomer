@@ -3,8 +3,9 @@ import { prisma } from '../lib/prisma.js'
 import { GlobalRole, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { z } from 'zod'
-import { enqueueNotification } from '../lib/queue.js'
-import { assertBookable, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
+import { enqueueNotification, promoteNextQueueEntry } from '../lib/queue.js'
+import { dispatchWebhook } from '../lib/webhook.js'
+import { assertBookable, isWithinAdvanceBookingWindow, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
 
 const createRecurringSchema = z.object({
   assetId: z.string().min(1),
@@ -112,6 +113,15 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       })
     }
 
+    // Advance-booking cap applies to when the series may *start* — not to every
+    // occurrence within it, which would make a normal multi-week series (already
+    // bounded by maxRecurringBookingWeeks above) impossible under most org configs.
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN && !isWithinAdvanceBookingWindow(firstDateObj, org?.maxAdvanceBookingDays)) {
+      return reply.status(400).send({
+        error: { message: `Recurring bookings cannot start more than ${org?.maxAdvanceBookingDays} days in advance`, code: 'MAX_ADVANCE_EXCEEDED' },
+      })
+    }
+
     const occurrenceDates = getOccurrenceDates(frequency, dayOfWeek, firstDate, lastDate)
     if (occurrenceDates.length === 0) {
       return reply.status(400).send({ error: { message: 'No occurrences found for the given day and date range', code: 'NO_OCCURRENCES' } })
@@ -122,10 +132,19 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       endsAt: buildSlotDatetime(d, endTime),
     }))
 
-    // Centralised bookability gate (bookable / disabled / restricted / assigned / group access)
-    const gate = await assertBookable(prisma, request.user, assetId, slots[0].startsAt, slots[slots.length - 1].endsAt)
-    if (!gate.ok) {
-      return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+    // Centralised bookability gate (bookable / disabled / restricted / assigned / group access),
+    // checked once per occurrence rather than once across the whole first-to-last
+    // span. The ASSIGNED-status branch of assertBookable checks every UTC calendar
+    // day in the given range against the owner's allowed-weekday rules — spanning
+    // the whole series would require every day between occurrences (weekends,
+    // the other six days of each week) to also be marked available, incorrectly
+    // rejecting an ordinary "book my colleague's Monday-available desk every
+    // Monday" series that only ever touches Mondays.
+    for (const slot of slots) {
+      const gate = await assertBookable(prisma, request.user, assetId, slot.startsAt, slot.endsAt)
+      if (!gate.ok) {
+        return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+      }
     }
 
     try {
@@ -263,9 +282,20 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
     }
 
     const now = new Date()
+    // Capture the freed occurrences before cancelling — updateMany doesn't
+    // return rows, and each one needs its own assetId/startsAt/endsAt to check
+    // the queue for a waiting user, same as a single direct-booking cancellation
+    // already does. Without this, cancelling a recurring series silently orphans
+    // any queue entries waiting on those slots: the desk is free again but no
+    // one ever gets promoted or notified.
+    const futureBookings = await prisma.booking.findMany({
+      where: { recurringRuleId: id, status: 'CONFIRMED', startsAt: { gt: now } },
+      select: { id: true, assetId: true, startsAt: true, endsAt: true },
+    })
+
     await prisma.$transaction([
       prisma.booking.updateMany({
-        where: { recurringRuleId: id, status: 'CONFIRMED', startsAt: { gt: now } },
+        where: { id: { in: futureBookings.map((b) => b.id) } },
         data: { status: 'CANCELLED' },
       }),
       prisma.recurringBookingRule.update({
@@ -273,6 +303,19 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
         data: { status: 'CANCELLED' },
       }),
     ])
+
+    for (const b of futureBookings) {
+      const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
+      if (nextQueued) {
+        await enqueueNotification({
+          type: NotificationType.QUEUE_PROMOTED,
+          userId: nextQueued.userId,
+          queueEntryId: nextQueued.id,
+          claimDeadline: nextQueued.claimDeadline.toISOString(),
+        })
+        dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+      }
+    }
 
     return reply.status(200).send({ data: { ok: true } })
   })

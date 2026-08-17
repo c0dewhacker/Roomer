@@ -2,6 +2,7 @@ import ldap from 'ldapjs'
 import { prisma, findAuthConfig } from './prisma.js'
 import type { GroupMapping } from './group-mapping.js'
 import { dispatchWebhook } from './webhook.js'
+import { decryptStringMaybe } from './encryption.js'
 
 export interface LdapConfig {
   url: string
@@ -44,6 +45,9 @@ export async function getLdapConfig(): Promise<LdapConfig | null> {
   if (!row || !row.enabled) return null
   const cfg = row.config as unknown as LdapConfig
   if (!cfg.url || !cfg.searchBase) return null
+  // bindCredentials is encrypted at rest (enc:v1:…); decryptStringMaybe also
+  // transparently passes through legacy plaintext rows saved before this fix.
+  if (cfg.bindCredentials) cfg.bindCredentials = decryptStringMaybe(cfg.bindCredentials)
   return cfg
 }
 

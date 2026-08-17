@@ -292,16 +292,6 @@ export interface Asset {
   updatedAt: Date
 }
 
-export interface AssetAssignment {
-  id: string
-  assetId: string
-  userId: string | null
-  assignedById: string | null
-  assignedAt: Date
-  returnedAt: Date | null
-  notes: string | null
-}
-
 export interface Notification {
   id: string
   userId: string

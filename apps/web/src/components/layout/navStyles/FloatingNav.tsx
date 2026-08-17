@@ -150,7 +150,10 @@ export function FloatingNav() {
   const [aboutOpen, setAboutOpen] = useState(false)
 
   const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
-  const initials = user?.displayName?.split(' ').slice(0, 2).map((n) => n[0]).join('').toUpperCase()
+  // A double space, or a leading/trailing space, in displayName produces an
+  // empty-string part when split on a literal ' ' — n[0] on that is
+  // undefined, and Array.join('') renders it as the literal text "undefined".
+  const initials = user?.displayName?.trim().split(/\s+/).slice(0, 2).map((n) => n[0]).join('').toUpperCase()
   const personalSection  = sections.find((s) => s.id === 'personal')
   const secondarySections = sections.filter((s) => s.id !== 'personal')
   // All admin groups share one float trigger ('admin'); the panel lists them as
@@ -293,12 +296,16 @@ export function FloatingNav() {
           </div>
           <div className="mx-0.5 h-5 w-px bg-border/40" />
           <NotificationBell />
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setTheme(isDark ? 'light' : 'dark')}>
+          <Button
+            variant="ghost" size="icon" className="h-8 w-8"
+            title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            onClick={() => setTheme(isDark ? 'light' : 'dark')}
+          >
             {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="h-8 w-8 rounded-full p-0">
+              <Button variant="ghost" className="h-8 w-8 rounded-full p-0" aria-label="Open user menu">
                 <Avatar className="h-8 w-8">
                   <AvatarFallback className="bg-primary text-primary-foreground text-xs">{initials ?? 'U'}</AvatarFallback>
                 </Avatar>
@@ -486,7 +493,7 @@ function BuildingsPanel({
     )}>
       <div className="flex items-center justify-between px-2 py-1 mb-1">
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Buildings</span>
-        <button onClick={onClose} className="rounded p-0.5 text-muted-foreground hover:text-foreground">
+        <button onClick={onClose} aria-label="Close panel" className="rounded p-0.5 text-muted-foreground hover:text-foreground">
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -538,7 +545,7 @@ function SectionPanel({
     )}>
       <div className="flex items-center justify-between px-2 py-1 mb-1">
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{label}</span>
-        <button onClick={onClose} className="rounded p-0.5 text-muted-foreground hover:text-foreground">
+        <button onClick={onClose} aria-label="Close panel" className="rounded p-0.5 text-muted-foreground hover:text-foreground">
           <X className="h-3.5 w-3.5" />
         </button>
       </div>

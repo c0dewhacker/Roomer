@@ -72,7 +72,16 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
       const errors: Array<{ row: number; message: string }> = []
 
       for (let i = 0; i < body.data.rows.length; i++) {
-        const result = rowSchema.safeParse(body.data.rows[i])
+        // A CSV blank cell parses to '' (not absent). asset_status is meant to
+        // be optional-with-a-default (see the frontend preview's `row.asset_status
+        // ?? 'OPEN'` fallback and the CSV template's own optional-columns intent —
+        // same treatment floor_level already gets via its z.literal('') union
+        // below), but z.enum().default() only falls back to the default on
+        // undefined, not ''. Without stripping it here, a blank asset_status
+        // column rejects the entire row instead of defaulting to OPEN.
+        const rawRow = { ...body.data.rows[i] }
+        if (rawRow.asset_status === '') delete rawRow.asset_status
+        const result = rowSchema.safeParse(rawRow)
         if (!result.success) {
           const msg = result.error.issues.map((e) => e.message).join('; ')
           errors.push({ row: i + 2, message: msg }) // +2 = 1-indexed + header row
@@ -228,7 +237,8 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
           })
           assetsCreated++
         }
-      })
+      }, { timeout: 120_000 }) // up to 2000 rows, each doing several sequential lookups/creates — the
+      // 5s Prisma default is not enough headroom (measured ~3.2s for 500 unique rows locally)
 
       return reply.status(200).send({
         data: {

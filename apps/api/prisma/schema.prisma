@@ -326,6 +326,10 @@ model Asset {
   amenities     String[]
   /// Booking eligibility. Null when not bookable.
   bookingStatus BookableStatus?
+  /// bookingStatus as it was immediately before a permanent user-assignment
+  /// forced it to ASSIGNED (e.g. RESTRICTED). Restored when the last
+  /// permanent assignment is removed, instead of defaulting to OPEN.
+  priorBookingStatus BookableStatus?
 
   // ── Map placement ──────────────────────────────────────────────────────────
   /// Primary zone this asset belongs to (null = not placed on any floor plan).
@@ -355,8 +359,6 @@ model Asset {
   userAssignments       AssetUserAssignment[]
   availabilityWindows   AssetAvailabilityWindow[]
   availabilityRules     AssetAvailabilityRule[]
-  /// Temporary assignments (checked-out to a user with a return date).
-  assignments     AssetAssignment[]
   /// Bookings made against this asset (only populated when isBookable=true).
   bookings              Booking[]
   queueEntries          QueueEntry[]
@@ -431,23 +433,6 @@ model AssetUserAssignment {
   @@index([userId])
 }
 
-/// Temporary assignment — tracks an asset checked out to a specific user
-/// (e.g. a laptop loan). Has an explicit returnedAt to record when it was returned.
-model AssetAssignment {
-  id           String    @id @default(cuid())
-  assetId      String
-  userId       String?
-  assignedById String?
-  assignedAt   DateTime  @default(now())
-  returnedAt   DateTime?
-  notes        String?
-  asset        Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  user         User?     @relation(fields: [userId], references: [id])
-
-  @@index([assetId])
-  @@index([userId])
-}
-
 /// Departments are a flat, IdP-mapped grouping. Any hierarchy between them is
 /// *inferred* from user manager links (User.managerId), not stored here.
 model Department {
@@ -468,6 +453,11 @@ model User {
   email                   String        @unique
   displayName             String
   passwordHash            String?
+  /// Set whenever passwordHash changes (self-service or admin-initiated). Access
+  /// tokens issued before this timestamp are rejected in requireAuth, so changing
+  /// a password immediately invalidates any other still-live session/stolen token
+  /// instead of leaving it valid until its own expiry (up to MAX_SESSION_SECONDS).
+  passwordChangedAt      DateTime?
   provider                AuthProvider  @default(LOCAL)
   externalId              String?
   accountStatus           AccountStatus @default(ACTIVE)
@@ -501,7 +491,6 @@ model User {
   resourceRoles        UserResourceRole[]
   bookings             Booking[]
   queueEntries         QueueEntry[]
-  assetAssignments     AssetAssignment[]
   notifications        Notification[]
   auditLogsAsActor     AuditLog[]           @relation("actor")
   assetAllowList       AssetAllowList[]
@@ -669,6 +658,9 @@ model QueueEntry {
   expiresAt      DateTime
   claimDeadline  DateTime?
   claimToken     String?          @unique
+  /// Set once the claim-expiring-soon warning has been sent, so the cron
+  /// sweep doesn't re-notify every run before the deadline actually passes.
+  claimExpiryWarnedAt DateTime?
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
   user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)

@@ -219,11 +219,19 @@ export function applyGroupPatchOps(
       }
     }
 
-    if (lower === 'remove' && path === 'members') {
-      if (Array.isArray(op.value)) {
+    if (lower === 'remove') {
+      if (path === 'members' && Array.isArray(op.value)) {
         for (const m of op.value as Array<{ value?: string }>) {
           if (m.value) patch.removeMemberIds.push(m.value)
         }
+      } else {
+        // RFC 7644 §3.5.2.2 single-member removal via path filter, e.g.
+        // `members[value eq "<id>"]` — the form Entra sends when its
+        // "SCIM compliant" provisioning flag is enabled, and the form
+        // most other IdPs (Okta, OneLogin, ...) use by default. No
+        // `value` is sent; the target member id is embedded in the path.
+        const m = path.match(/^members\[\s*value\s+eq\s+["']([^"']+)["']\s*\]$/i)
+        if (m) patch.removeMemberIds.push(m[1])
       }
     }
   }
