@@ -8,6 +8,17 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { settingsApi } from '@/lib/api'
 import { CollapsibleCard } from './CollapsibleCard'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 
 export function ScimCard() {
   const qc = useQueryClient()
@@ -158,15 +169,37 @@ export function ScimCard() {
               {scim?.hasToken ? 'Rotate token' : 'Generate token'}
             </Button>
             {scim?.hasToken && !newToken && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 text-xs text-destructive hover:text-destructive"
-                disabled={revoke.isPending}
-                onClick={() => revoke.mutate()}
-              >
-                {revoke.isPending ? 'Revoking…' : 'Revoke token'}
-              </Button>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs text-destructive hover:text-destructive"
+                    disabled={revoke.isPending}
+                  >
+                    {revoke.isPending ? 'Revoking…' : 'Revoke token'}
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Revoke SCIM token?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Any identity provider (Entra ID, Okta, etc.) currently using this token for
+                      user provisioning will immediately stop being able to sync. This cannot be
+                      undone — you'll need to generate a new token and reconfigure your IdP.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Keep token</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={() => revoke.mutate()}
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    >
+                      Revoke token
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             )}
           </div>
         </div>
