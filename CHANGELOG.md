@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.5.0](https://github.com/c0dewhacker/Roomer/compare/v0.4.0...v0.5.0) (2026-08-17)
+
+
+### Bug Fixes
+
+* **api:** check-in had no start-time validation ([6190c02](https://github.com/c0dewhacker/Roomer/commit/6190c0259d36dab40b5035b39d4750e84f04aae8))
+* **api:** deleting a zone silently widened its subscriptions to floor-wide ([1432134](https://github.com/c0dewhacker/Roomer/commit/1432134acc3235588a007a4343068d1dec233481))
+* **api:** deleting an in-use asset category crashed with a raw 500 ([7bd4fa4](https://github.com/c0dewhacker/Roomer/commit/7bd4fa4440ff1c17e7a032d9e7e0f20cb10bf297))
+* **api:** GET /buildings missed group-granted building admins ([56d355b](https://github.com/c0dewhacker/Roomer/commit/56d355ba689c9dd5cc35491a31f68a46a3de765c))
+* **api:** no-show release could cancel a booking someone checked into mid-cron ([a5b5dfb](https://github.com/c0dewhacker/Roomer/commit/a5b5dfb12b27e49d25dcffd577d9127158ff8c87))
+* hold typescript at 6.0.3 — typescript-eslint has no TS7 support yet ([f20227a](https://github.com/c0dewhacker/Roomer/commit/f20227a4824b56b36a8853b1f15d2fe311e00e9a))
+* node:26-alpine dropped corepack — install pnpm via npm instead ([a0d3773](https://github.com/c0dewhacker/Roomer/commit/a0d37734eae689c05775fff7910cbb972408e770))
+* **web:** building edit dialog showed stale data from the previously-edited building ([98804c1](https://github.com/c0dewhacker/Roomer/commit/98804c1d88fd9c14dee38abf0d145fbc8addd93a))
+* **web:** cancelling a recurring series left its occurrences showing as active bookings ([c04fd8d](https://github.com/c0dewhacker/Roomer/commit/c04fd8dd06c9047bffcade384fe9999ccd9a9890))
+* **web:** category's "Bookable by default" setting had no effect ([d879a4e](https://github.com/c0dewhacker/Roomer/commit/d879a4e358cdd05d68c88d5716f6df3bbc4bfee8))
+* **web:** email settings had no dirty-state tracking or client-side port validation ([8f8795a](https://github.com/c0dewhacker/Roomer/commit/8f8795af37ae4d2ce839eb0a0d16632552eab514))
+* **web:** lease expiry badges flipped to "Expired" up to 14 hours early ([248b810](https://github.com/c0dewhacker/Roomer/commit/248b810ceb827731c4d80f6a8e9a3e8459b647d2))
+* **web:** notification bell was inert, hard-capped at 30, and never refreshed ([c7624c0](https://github.com/c0dewhacker/Roomer/commit/c7624c0de12ddf2dfdc92cfc308752cfee640386))
+* **web:** remove dead colleague-finder highlight state in FloorPage ([0a74aa8](https://github.com/c0dewhacker/Roomer/commit/0a74aa8f29991e4a5b9d9e280d35fb28dc141bd3))
+* **web:** removing a building manager or access group had no confirmation ([6da41b8](https://github.com/c0dewhacker/Roomer/commit/6da41b8167a092f151be65b3e589ee07ef8fc1c1))
+* **web:** removing a floor manager had no confirmation ([92b800f](https://github.com/c0dewhacker/Roomer/commit/92b800f6f39c674a2a0a261f7afa1118a1ce05ac))
+* **web:** Suspend user was completely broken — sent an invalid enum value ([b963697](https://github.com/c0dewhacker/Roomer/commit/b96369734348ac9bc156bb342cb49cd6464753a6))
+* **web:** webhook validation errors showed a generic toast instead of ([1432134](https://github.com/c0dewhacker/Roomer/commit/1432134acc3235588a007a4343068d1dec233481))
+* **web:** Who's In defaulted to the wrong day for non-UTC-aligned local dates ([0181bb3](https://github.com/c0dewhacker/Roomer/commit/0181bb371ae7e7718bdd6b6340ff287a1021605f))
+
+
+### Miscellaneous
+
+* release 0.5.0 ([7202c6e](https://github.com/c0dewhacker/Roomer/commit/7202c6ed98e0d05444509027fe504123bb6ef937))
+
 ## [0.4.0](https://github.com/c0dewhacker/Roomer/compare/v0.3.18...v0.4.0) (2026-08-17)
 
 
