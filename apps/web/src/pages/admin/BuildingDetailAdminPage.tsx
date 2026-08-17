@@ -219,7 +219,8 @@ function FloorCard({ floor, buildingId }: { floor: Floor & { _count?: { zones: n
                 <AlertDialogHeader>
                   <AlertDialogTitle>Delete floor?</AlertDialogTitle>
                   <AlertDialogDescription>
-                    This will permanently delete <strong>{floor.name}</strong>, all its zones, assets, and bookings.
+                    This will permanently delete <strong>{floor.name}</strong> and its zones. Assets on this floor
+                    won't be deleted — they'll become unplaced, and any future bookings on them will be cancelled.
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
@@ -316,7 +317,7 @@ function FloorCard({ floor, buildingId }: { floor: Floor & { _count?: { zones: n
 
 // ─── Building managers management ────────────────────────────────────────────
 
-function BuildingManagersPanel({ buildingId }: { buildingId: string }) {
+function BuildingManagersPanel({ buildingId, buildingName }: { buildingId: string; buildingName?: string }) {
   const qc = useQueryClient()
   const [tab, setTab] = useState<'users' | 'groups'>('users')
 
@@ -441,13 +442,35 @@ function BuildingManagersPanel({ buildingId }: { buildingId: string }) {
                       <p className="text-sm font-medium">{m.displayName}</p>
                       <p className="text-xs text-muted-foreground">{m.email}</p>
                     </div>
-                    <Button
-                      size="icon" variant="ghost" className="h-7 w-7 hover:text-destructive"
-                      onClick={() => removeUser.mutate(m.id)}
-                      disabled={removeUser.isPending}
-                    >
-                      <UserMinus className="h-3.5 w-3.5" />
-                    </Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          size="icon" variant="ghost" className="h-7 w-7 hover:text-destructive"
+                          disabled={removeUser.isPending}
+                        >
+                          <UserMinus className="h-3.5 w-3.5" />
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Remove building manager?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            <strong>{m.displayName}</strong> will lose building-admin access to{' '}
+                            <strong>{buildingName ?? 'this building'}</strong> — including floor-manager access it
+                            grants for every floor in this building.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Keep manager</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={() => removeUser.mutate(m.id)}
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          >
+                            Remove
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
                   </div>
                 ))}
               </div>
@@ -507,13 +530,34 @@ function BuildingManagersPanel({ buildingId }: { buildingId: string }) {
                       <p className="text-sm font-medium">{g.name}</p>
                       <p className="text-xs text-muted-foreground">{g.memberCount} member{g.memberCount !== 1 ? 's' : ''}</p>
                     </div>
-                    <Button
-                      size="icon" variant="ghost" className="h-7 w-7 hover:text-destructive"
-                      onClick={() => removeGroup.mutate(g.id)}
-                      disabled={removeGroup.isPending}
-                    >
-                      <UserMinus className="h-3.5 w-3.5" />
-                    </Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          size="icon" variant="ghost" className="h-7 w-7 hover:text-destructive"
+                          disabled={removeGroup.isPending}
+                        >
+                          <UserMinus className="h-3.5 w-3.5" />
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Remove group manager?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            Every member of <strong>{g.name}</strong> ({g.memberCount} member{g.memberCount !== 1 ? 's' : ''})
+                            will lose building-admin access to <strong>{buildingName ?? 'this building'}</strong>.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Keep manager</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={() => removeGroup.mutate(g.id)}
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          >
+                            Remove
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
                   </div>
                 ))}
               </div>
@@ -555,7 +599,7 @@ function BuildingManagersPanel({ buildingId }: { buildingId: string }) {
 
 // ─── Building access management ───────────────────────────────────────────────
 
-function BuildingAccessSection({ buildingId }: { buildingId: string }) {
+function BuildingAccessSection({ buildingId, buildingName }: { buildingId: string; buildingName?: string }) {
   const qc = useQueryClient()
   const [selectedGroupId, setSelectedGroupId] = useState('')
 
@@ -625,15 +669,45 @@ function BuildingAccessSection({ buildingId }: { buildingId: string }) {
                         <p className="text-xs text-muted-foreground truncate">{group.description}</p>
                       )}
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 hover:text-destructive shrink-0"
-                      onClick={() => remove.mutate(group.id)}
-                      disabled={remove.isPending}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 hover:text-destructive shrink-0"
+                          disabled={remove.isPending}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Remove access restriction?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            {(accessGroups?.length ?? 0) === 1 ? (
+                              <>
+                                This is the last group with access to <strong>{buildingName ?? 'this building'}</strong>.
+                                Removing it will open the building to <strong>every</strong> user, not just this group.
+                              </>
+                            ) : (
+                              <>
+                                Members of <strong>{group.name}</strong> will no longer be able to access{' '}
+                                <strong>{buildingName ?? 'this building'}</strong>.
+                              </>
+                            )}
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Keep restriction</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={() => remove.mutate(group.id)}
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          >
+                            Remove
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
                   </div>
                 ))}
               </div>
@@ -751,9 +825,9 @@ export default function BuildingDetailAdminPage() {
         <NoShowOverrideControl scope="building" value={building?.noShowReleaseEnabled} onChange={(v) => saveNoShow.mutate(v)} disabled={saveNoShow.isPending} />
       </div>
 
-      <BuildingManagersPanel buildingId={buildingId!} />
+      <BuildingManagersPanel buildingId={buildingId!} buildingName={building?.name} />
 
-      <BuildingAccessSection buildingId={buildingId!} />
+      <BuildingAccessSection buildingId={buildingId!} buildingName={building?.name} />
 
       <div className="mt-6 mb-3 flex items-center justify-between">
         <h2 className="text-base font-semibold">Floors</h2>
