@@ -249,14 +249,28 @@ function UserRow({ user, onRefresh }: { user: User; onRefresh: () => void }) {
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   {user.globalRole !== 'SUPER_ADMIN' ? (
-                    <DropdownMenuItem onClick={() => {
-                      if (window.confirm(`Make ${user.displayName} a Super Administrator? This grants full, org-wide access to every building, user and setting.`)) {
-                        updateRole.mutate('SUPER_ADMIN')
-                      }
-                    }}>
-                      <Shield className="mr-2 h-3.5 w-3.5" />
-                      Make Administrator
-                    </DropdownMenuItem>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+                          <Shield className="mr-2 h-3.5 w-3.5" />
+                          Make Administrator
+                        </DropdownMenuItem>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Make {user.displayName} a Super Administrator?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This grants full, org-wide access to every building, user and setting.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction onClick={() => updateRole.mutate('SUPER_ADMIN')}>
+                            Make Administrator
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
                   ) : (
                     <DropdownMenuItem onClick={() => updateRole.mutate('USER')}>
                       <Shield className="mr-2 h-3.5 w-3.5" />
