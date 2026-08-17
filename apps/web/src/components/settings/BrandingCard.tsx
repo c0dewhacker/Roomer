@@ -1,16 +1,20 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { brandingApi, type Branding, type BrandingBanner } from '@/lib/api'
 import { CollapsibleCard } from './CollapsibleCard'
 import { ColorPicker } from './ColorPicker'
 import { ImageUpload } from './ImageUpload'
 import { BannerSection } from './BannerSection'
+
+const DEFAULT_HEADER_BANNER: BrandingBanner = { enabled: false, text: '', bgColor: '#f59e0b', textColor: '#ffffff' }
+const DEFAULT_FOOTER_BANNER: BrandingBanner = { enabled: false, text: '', bgColor: '#6366f1', textColor: '#ffffff' }
 
 export function BrandingCard() {
   const qc = useQueryClient()
@@ -29,12 +33,8 @@ export function BrandingCard() {
   const [primaryColorDark, setPrimaryColorDark] = useState('#818cf8')
   const [borderRadius, setBorderRadius] = useState<Branding['borderRadius']>('medium')
   const [navStyle, setNavStyle] = useState<Branding['navStyle']>('sidebar')
-  const [headerBanner, setHeaderBanner] = useState<BrandingBanner>({
-    enabled: false, text: '', bgColor: '#f59e0b', textColor: '#ffffff',
-  })
-  const [footerBanner, setFooterBanner] = useState<BrandingBanner>({
-    enabled: false, text: '', bgColor: '#6366f1', textColor: '#ffffff',
-  })
+  const [headerBanner, setHeaderBanner] = useState<BrandingBanner>(DEFAULT_HEADER_BANNER)
+  const [footerBanner, setFooterBanner] = useState<BrandingBanner>(DEFAULT_FOOTER_BANNER)
 
   useEffect(() => {
     if (!brandingData) return
@@ -45,9 +45,27 @@ export function BrandingCard() {
     setPrimaryColorDark(brandingData.primaryColorDark ?? '#818cf8')
     setBorderRadius(brandingData.borderRadius ?? 'medium')
     setNavStyle(brandingData.navStyle ?? 'sidebar')
-    if (brandingData.headerBanner) setHeaderBanner(brandingData.headerBanner)
-    if (brandingData.footerBanner) setFooterBanner(brandingData.footerBanner)
+    setHeaderBanner(brandingData.headerBanner ?? DEFAULT_HEADER_BANNER)
+    setFooterBanner(brandingData.footerBanner ?? DEFAULT_FOOTER_BANNER)
   }, [brandingData])
+
+  // Compared against the same server-derived defaults the sync effect above
+  // uses, so isDirty is false immediately after a fresh load/save and only
+  // flips once a field actually diverges from what's persisted.
+  const isDirty = useMemo(() => {
+    if (!brandingData) return false
+    return (
+      appName !== (brandingData.appName ?? '') ||
+      sidebarTitle !== (brandingData.sidebarTitle ?? '') ||
+      sidebarSubtitle !== (brandingData.sidebarSubtitle ?? '') ||
+      primaryColor !== (brandingData.primaryColor ?? '#6366f1') ||
+      primaryColorDark !== (brandingData.primaryColorDark ?? '#818cf8') ||
+      borderRadius !== (brandingData.borderRadius ?? 'medium') ||
+      navStyle !== (brandingData.navStyle ?? 'sidebar') ||
+      JSON.stringify(headerBanner) !== JSON.stringify(brandingData.headerBanner ?? DEFAULT_HEADER_BANNER) ||
+      JSON.stringify(footerBanner) !== JSON.stringify(brandingData.footerBanner ?? DEFAULT_FOOTER_BANNER)
+    )
+  }, [brandingData, appName, sidebarTitle, sidebarSubtitle, primaryColor, primaryColorDark, borderRadius, navStyle, headerBanner, footerBanner])
 
   const save = useMutation({
     mutationFn: () =>
@@ -296,9 +314,12 @@ export function BrandingCard() {
           <BannerSection title="Footer banner" value={footerBanner} onChange={setFooterBanner} />
         </div>
 
-        <Button size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
-          {save.isPending ? 'Saving…' : 'Save branding'}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" disabled={save.isPending || !isDirty} onClick={() => save.mutate()}>
+            {save.isPending ? 'Saving…' : 'Save branding'}
+          </Button>
+          {isDirty && <Badge variant="outline" className="text-amber-600 border-amber-300">Unsaved changes</Badge>}
+        </div>
       </div>
     </CollapsibleCard>
   )
