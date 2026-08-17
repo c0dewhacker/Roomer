@@ -225,7 +225,7 @@ function DeliveryLogSheet({ endpoint, onClose }: { endpoint: WebhookEndpoint; on
 
   return (
     <Sheet open onOpenChange={(o) => !o && onClose()}>
-      <SheetContent className="w-full sm:max-w-2xl overflow-y-auto">
+      <SheetContent className="w-full sm:max-w-3xl overflow-y-auto">
         <SheetHeader>
           <SheetTitle className="truncate">Deliveries — {endpoint.url}</SheetTitle>
         </SheetHeader>
@@ -234,6 +234,7 @@ function DeliveryLogSheet({ endpoint, onClose }: { endpoint: WebhookEndpoint; on
             <div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-9 w-full" />)}</div>
           ) : (
             <>
+              <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -242,11 +243,12 @@ function DeliveryLogSheet({ endpoint, onClose }: { endpoint: WebhookEndpoint; on
                     <TableHead>Code</TableHead>
                     <TableHead>Attempt</TableHead>
                     <TableHead>Time</TableHead>
+                    <TableHead>Error</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {data?.data.length === 0 ? (
-                    <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-8">No deliveries yet</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">No deliveries yet</TableCell></TableRow>
                   ) : data?.data.map((d: WebhookDelivery) => (
                     <TableRow key={d.id}>
                       <TableCell>{d.success ? <CheckCircle2 className="h-4 w-4 text-green-500" /> : <XCircle className="h-4 w-4 text-destructive" />}</TableCell>
@@ -254,10 +256,14 @@ function DeliveryLogSheet({ endpoint, onClose }: { endpoint: WebhookEndpoint; on
                       <TableCell>{d.statusCode ?? '—'}</TableCell>
                       <TableCell>{d.attempt}</TableCell>
                       <TableCell className="text-xs text-muted-foreground">{new Date(d.createdAt).toLocaleString()}</TableCell>
+                      <TableCell className="max-w-[16rem] truncate text-xs text-destructive" title={d.error ?? undefined}>
+                        {d.error ?? '—'}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
+              </div>
               {data?.meta && data.meta.totalPages > 1 && (
                 <div className="flex items-center justify-between mt-3 text-sm">
                   <span className="text-muted-foreground">Page {data.meta.page} of {data.meta.totalPages}</span>
@@ -308,7 +314,13 @@ export default function WebhooksAdminPage() {
 
   const ping = useMutation({
     mutationFn: (id: string) => webhooksApi.ping(id),
-    onSuccess: () => toast.success('Ping sent'),
+    onSuccess: (_data, id) => {
+      toast.success('Ping sent')
+      // Prefix match invalidates every page of this endpoint's delivery
+      // history — without this, reopening the delivery sheet within the
+      // 30s query staleTime silently showed the list from before the ping.
+      qc.invalidateQueries({ queryKey: ['webhook-deliveries', id] })
+    },
     onError: (err: Error) => toast.error(err.message),
   })
 
