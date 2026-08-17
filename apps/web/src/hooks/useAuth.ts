@@ -46,8 +46,14 @@ export function useAuth() {
       await qc.invalidateQueries({ queryKey: ['auth', 'me'] })
       navigate('/bookings', { replace: true })
     },
-    onError: () => {
-      toast.error('Invalid email or password')
+    onError: (err: Error) => {
+      // The backend already distinguishes wrong credentials from a suspended
+      // account (403) and a rate limit (429, "try again in N minutes") with
+      // their own specific messages — hardcoding "Invalid email or password"
+      // here regardless of cause hid both, telling a suspended or
+      // rate-limited user their password was wrong when retrying it again
+      // would never help either way.
+      toast.error(err.message || 'Invalid email or password')
     },
   })
 

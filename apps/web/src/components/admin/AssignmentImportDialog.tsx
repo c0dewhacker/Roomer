@@ -116,7 +116,7 @@ export default function AssignmentImportDialog({
       qc.invalidateQueries({ queryKey: ['assets'] })
       qc.invalidateQueries({ queryKey: ['floors'] })
     },
-    onError: () => toast.error('Failed to submit assignments'),
+    onError: (err: Error) => toast.error(err.message || 'Failed to submit assignments'),
   })
 
   function reset() {
