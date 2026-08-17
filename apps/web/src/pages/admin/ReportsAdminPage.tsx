@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react'
+import { useNavConfig } from '@/hooks/useNavConfig'
 import { subDays, format, parseISO } from 'date-fns'
 import { formatDate } from '@/lib/utils'
 import { downloadCsv } from '@/lib/csv'
@@ -730,11 +731,23 @@ export default function ReportsAdminPage() {
 
   const { startDate, endDate } = useDateRange(preset, customFrom, customTo)
 
-  const { data: buildings } = useQuery({
+  const { isSuperAdmin, managedBuildings } = useNavConfig()
+
+  // GET /buildings intentionally returns a broader set for non-admins than
+  // this page can actually report on — it includes "open" (unrestricted)
+  // buildings anyone can book at, not just ones this user administers. The
+  // analytics endpoints, by contrast, only ever authorize non-super-admins
+  // against getManagedBuildingIds. Offering the broader list here let a
+  // building admin pick a building they don't manage and get a silent
+  // "no data" 403 with no explanation. managedBuildings (from useNavConfig)
+  // already matches the backend's actual authorization set.
+  const { data: allBuildings } = useQuery({
     queryKey: ['buildings'],
     queryFn: () => buildingsApi.list(),
     select: (r) => r.data,
+    enabled: isSuperAdmin,
   })
+  const buildings = isSuperAdmin ? allBuildings : managedBuildings
 
   const params: AnalyticsParams = {
     startDate,
