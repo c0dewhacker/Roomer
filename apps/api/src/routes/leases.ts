@@ -35,7 +35,11 @@ function datesAreOrdered(startDate: Date, endDate: Date | null): boolean {
 const updateLeaseSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   startDate: z.string().datetime().optional(),
-  endDate: z.string().datetime().optional(),
+  // Nullable (not just optional): the frontend sends `endDate: null` to clear
+  // an existing end date and make the lease open-ended, distinct from
+  // omitting the field to mean "leave it unchanged" (see the handler's
+  // `!== undefined` merge logic below).
+  endDate: z.string().datetime().nullable().optional(),
   landlord: z.string().max(255).optional(),
   rentAmount: z.number().positive().optional(),
   currency: z.string().length(3).optional(),
@@ -183,7 +187,9 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
     // validate the merged effective dates rather than just the raw request
     // body (same partial-update gap already fixed for bookings in db8fd79).
     const effectiveStartDate = result.data.startDate ? new Date(result.data.startDate) : existing.startDate
-    const effectiveEndDate = result.data.endDate !== undefined ? new Date(result.data.endDate) : existing.endDate
+    const effectiveEndDate = result.data.endDate !== undefined
+      ? (result.data.endDate ? new Date(result.data.endDate) : null)
+      : existing.endDate
     if (!datesAreOrdered(effectiveStartDate, effectiveEndDate)) {
       return reply.status(400).send({ error: { message: 'startDate must be before endDate', code: 'VALIDATION_ERROR' } })
     }
