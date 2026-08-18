@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.2](https://github.com/c0dewhacker/Roomer/compare/v0.5.1...v0.5.2) (2026-08-18)
+
+
+### Bug Fixes
+
+* **api:** Summary, Status Breakdown, and Peak Days reports ignored the Building filter ([e8a1a63](https://github.com/c0dewhacker/Roomer/commit/e8a1a63b47294b71e18250d6b6e666feb77c00fb))
+* asset deletion silently destroyed future bookings; utilisation reports undercounted multi-day bookings ([291ef3b](https://github.com/c0dewhacker/Roomer/commit/291ef3b8267f1376f96aa9e7e6f95375228d2b05))
+* blocking a user left their bookings, desk assignment, and queue entries dangling ([fd575f5](https://github.com/c0dewhacker/Roomer/commit/fd575f5a4f8f97b16e2c0188177e973915f8ef0a))
+* building deletion leaked lease document files and left recurring rules stuck ACTIVE ([931efbf](https://github.com/c0dewhacker/Roomer/commit/931efbfc415734a30d53e22f11e0b1753dde00d2))
+* bulk desk assignment never notified newly-assigned users ([f3753f3](https://github.com/c0dewhacker/Roomer/commit/f3753f33a0fa4bb55882c61e95b4eb2e6cc9f80d))
+* bulk import discarded the entire batch on a single duplicate asset_tag ([a64c4e2](https://github.com/c0dewhacker/Roomer/commit/a64c4e26e6505060ba940277a42136c2bf4355f7))
+* cancelling a recurring booking series sent no notification and no calendar cancellation ([097b63b](https://github.com/c0dewhacker/Roomer/commit/097b63b0676968bba7aa8db6ffbf1f39ea3f0c43))
+* My Bookings upcoming/past split used server-local time instead of UTC ([1819426](https://github.com/c0dewhacker/Roomer/commit/1819426daf92f86da703e2a468c32bd5d5a1cd53))
+* no-show release sent no calendar cancellation for the released booking ([9315340](https://github.com/c0dewhacker/Roomer/commit/931534047f2067fa7aafcbee0131cc2f54ed57e6))
+* recurring booking and lease date ranges displayed one day early for negative-UTC-offset viewers ([7566921](https://github.com/c0dewhacker/Roomer/commit/75669215af7c489747b8e29c88be974f268caf79))
+* Reports page showed misleading empty states to building admins for SUPER_ADMIN-only widgets ([700f3dd](https://github.com/c0dewhacker/Roomer/commit/700f3dd25715969b47daf674f6a9555ed89fef90))
+* rescheduling a booking reused the same ICS SEQUENCE, so some calendar clients ignored the time change ([ec698ce](https://github.com/c0dewhacker/Roomer/commit/ec698cebc67f263cd0befb6afc085e3c4dfc0aad))
+* **web,api:** Who's In couldn't disambiguate a person's multiple same-day bookings ([68ebeeb](https://github.com/c0dewhacker/Roomer/commit/68ebeeba2dda089d9fe9b0ff4c78058b46aaced8))
+
 ## [0.5.1](https://github.com/c0dewhacker/Roomer/compare/v0.5.0...v0.5.1) (2026-08-18)
 
 
