@@ -99,8 +99,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
                   bookings: {
                     where: {
                       status: 'CONFIRMED',
-                      startsAt: { gte: startDate },
-                      endsAt: { lte: endDate },
+                      startsAt: { gte: startDate, lte: endDate },
                     },
                     select: { id: true },
                   },
@@ -509,7 +508,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
                 where: { isBookable: true },
                 include: {
                   bookings: {
-                    where: { status: 'CONFIRMED', startsAt: { gte: startDate }, endsAt: { lte: endDate } },
+                    where: { status: 'CONFIRMED', startsAt: { gte: startDate, lte: endDate } },
                     select: { id: true },
                   },
                 },

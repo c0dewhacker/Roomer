@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma.js'
 import { GlobalRole, BookableStatus, bulkUpdateAssetPositionsSchema, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole, getManagedFloorIds, getManagedBuildingIds, isFloorManagerForFloor } from '../middleware/requireRole.js'
-import { enqueueNotification, fanOutFloorAvailable } from '../lib/queue.js'
+import { enqueueNotification, fanOutFloorAvailable, cancelFutureBookingsForAssets } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { lockAssetForBooking, lockAssetForQueue, hasConfirmedOverlap, isOverlapConstraintViolation } from '../lib/booking.js'
 import { randomUUID } from 'crypto'
@@ -1196,6 +1196,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         const canManage = await isFloorManagerForFloor(request.user.id, existing.floorId)
         if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
+
+      // Must run before the delete: Booking.asset is onDelete:Cascade, so once
+      // the asset is gone every booking on it (including future CONFIRMED ones)
+      // disappears silently with no cancellation email and no queue promotion —
+      // same reasoning cancelFutureBookingsForFloors already documents for
+      // floor/building deletion. This only cancels+notifies; the cascade still
+      // does the actual row deletion once the asset itself is removed below.
+      await cancelFutureBookingsForAssets([id])
 
       try {
         await prisma.asset.delete({ where: { id } })
