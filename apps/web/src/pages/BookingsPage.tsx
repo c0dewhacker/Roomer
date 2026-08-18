@@ -149,7 +149,14 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
   const todayBooking = isToday(parseISO(booking.startsAt))
   const [editOpen, setEditOpen] = useState(false)
   const canModify = showCancel && booking.status === 'CONFIRMED'
-  const canCheckIn = todayBooking && booking.status === 'CONFIRMED' && !booking.checkedInAt
+  // Mirrors the backend's actual check-in window (bookings.ts POST
+  // /:id/check-in: rejects with BOOKING_NOT_STARTED while startsAt > now,
+  // BOOKING_ENDED once endsAt < now) — todayBooking alone enabled the button
+  // for the whole calendar day, so clicking "I'm here" any time before the
+  // booking actually started produced a guaranteed "Check-in failed" toast.
+  const now = new Date()
+  const inCheckInWindow = new Date(booking.startsAt) <= now && now <= new Date(booking.endsAt)
+  const canCheckIn = inCheckInWindow && booking.status === 'CONFIRMED' && !booking.checkedInAt
 
   const checkIn = useMutation({
     mutationFn: () => bookingsApi.checkIn(booking.id),
