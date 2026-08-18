@@ -269,8 +269,23 @@ async function deliverOne({ endpointId, deliveryId, url, event, payload }: Webho
   try {
     // Look up + decrypt the signing secret at delivery time (it is not stored in
     // the job payload). A deleted endpoint means there is nothing to deliver.
-    const ep = await prisma.webhookEndpoint.findUnique({ where: { id: endpointId }, select: { secret: true } })
+    const ep = await prisma.webhookEndpoint.findUnique({ where: { id: endpointId }, select: { secret: true, enabled: true } })
     if (!ep) return
+    // The endpoint may have been disabled after this delivery was queued, or
+    // between retries of a failing one — without this, an admin disabling a
+    // misbehaving or leaked endpoint mid-retry-storm doesn't stop it; pg-boss
+    // keeps retrying (up to 5 attempts over 24h) regardless. Record the skip
+    // in the delivery log for visibility and stop, rather than throwing (which
+    // would just trigger another retry).
+    if (!ep.enabled) {
+      const record = { event, payload: JSON.parse(payload), statusCode: null, success: false, error: 'Endpoint disabled', attempt }
+      await prisma.webhookDelivery.upsert({
+        where: { id: deliveryId },
+        create: { id: deliveryId, endpointId, ...record },
+        update: record,
+      })
+      return
+    }
     const secret = decryptStringMaybe(ep.secret)
 
     // SSRF guard — resolve and reject internal/reserved targets (also catches rebinding).
