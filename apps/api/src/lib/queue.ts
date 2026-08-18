@@ -57,6 +57,23 @@ export async function promoteNextQueueEntry(
       where: { id: next.id },
       data: { status: 'PROMOTED', claimDeadline, claimToken: randomUUID() },
     })
+
+    // Same compaction the leave-queue route already does when an entry
+    // ahead is removed (queue.ts DELETE /:id) — without it, everyone still
+    // WAITING behind a promoted entry keeps their old position number
+    // forever, showing a permanently stale (too-high) "your position" to
+    // the end user even though they just moved up in line.
+    await tx.queueEntry.updateMany({
+      where: {
+        assetId,
+        status: 'WAITING',
+        position: { gt: next.position },
+        wantedStartsAt: { lt: next.wantedEndsAt },
+        wantedEndsAt: { gt: next.wantedStartsAt },
+      },
+      data: { position: { decrement: 1 } },
+    })
+
     return { id: next.id, userId: next.userId, assetId: next.assetId, claimDeadline }
   })
 }
