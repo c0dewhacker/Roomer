@@ -247,7 +247,14 @@ export async function buildApp(): Promise<FastifyInstance> {
     })
     fastify.addHook('onResponse', (request, reply, done) => {
       const timer = (request as unknown as Record<string, unknown>)['_metricsTimer'] as ((labels: Record<string, string>) => void) | undefined
-      timer?.({ method: request.method, route: request.routeOptions?.url ?? request.url, status_code: String(reply.statusCode) })
+      // routeOptions.url is only populated once a request matches a
+      // registered route — falling back to the raw request.url for an
+      // unmatched (404) request put attacker-controlled, unbounded path/query
+      // data straight into a Prometheus label, an unauthenticated cardinality
+      // -explosion vector against the metrics registry (and a data-leak risk
+      // once scraped) reachable by anyone hitting arbitrary nonexistent paths.
+      const route = request.routeOptions?.url ?? 'unmatched'
+      timer?.({ method: request.method, route, status_code: String(reply.statusCode) })
       done()
     })
   }
