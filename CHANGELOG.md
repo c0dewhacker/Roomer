@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.5.1](https://github.com/c0dewhacker/Roomer/compare/v0.5.0...v0.5.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **api:** "Direct role" group mapping could not be saved ([ed8ca90](https://github.com/c0dewhacker/Roomer/commit/ed8ca90ac8d6a2efb8599ab8b29f943107a1fb30))
+* **api:** a user could be assigned as building manager twice ([5b50c27](https://github.com/c0dewhacker/Roomer/commit/5b50c27b7e47a4444528384fb0158fa834c6f179))
+* **api:** admin-cancelled and no-show emails used the generic cancellation copy ([049346d](https://github.com/c0dewhacker/Roomer/commit/049346d18ac48bb7eb22f26f429575814dd3e18b))
+* **api:** asset secondary zones had no floor-scoping check ([942c22a](https://github.com/c0dewhacker/Roomer/commit/942c22af615cb6a69983fe177d5c336a5222387d))
+* **api:** assigning a disabled asset silently made it bookable again ([2342ef2](https://github.com/c0dewhacker/Roomer/commit/2342ef2e66e2712540c735047fc58992c62e6c34))
+* **api:** Department Activity and Manager Roll-up reports ignored the Building filter ([5521109](https://github.com/c0dewhacker/Roomer/commit/55211095589a03fca0cb5a4d6ee26d1e4d71bbd1))
+* **api:** disabling a webhook endpoint didn't stop its in-flight retries ([83ea1af](https://github.com/c0dewhacker/Roomer/commit/83ea1af17dcb6fa4e9559387e256f91d63ea8713))
+* **api:** expire-queue-entries could stomp a just-promoted entry back to EXPIRED ([8f1ae80](https://github.com/c0dewhacker/Roomer/commit/8f1ae809a9a7118fbbe11bf30fd22403e608854e))
+* **api:** failed category icon replacement destroyed the working icon ([93ef813](https://github.com/c0dewhacker/Roomer/commit/93ef813814a9d0cce94f1791db416304d8946ae9))
+* **api:** failed floor plan replacement destroyed the working plan ([2afb6c2](https://github.com/c0dewhacker/Roomer/commit/2afb6c2d79a8ca54a9cb4779a45b10a5e3e3a1cc))
+* **api:** favourited assets stayed visible after losing floor access ([5c601dd](https://github.com/c0dewhacker/Roomer/commit/5c601ddf964c7e1a5911e3d7c06c3885111d363b))
+* **api:** OIDC could be enabled with no client secret, breaking login ([247537a](https://github.com/c0dewhacker/Roomer/commit/247537a4a0bd45c0cba24622163994b2c06fa07f))
+* **api:** renaming a department to a duplicate name returned "not found" ([4c985cc](https://github.com/c0dewhacker/Roomer/commit/4c985cc0b6d65e91807c77f3c756fdc9c8caef0f))
+* remove the fully-dead ASSET_DUE_RETURN notification type ([#200](https://github.com/c0dewhacker/Roomer/issues/200)) ([eff8b4f](https://github.com/c0dewhacker/Roomer/commit/eff8b4fd0eac7bef2a7a66a1f0debdca3854fca4))
+* **web,api:** floor plan assets could be dragged off-canvas with no recovery ([#207](https://github.com/c0dewhacker/Roomer/issues/207)) ([67dc629](https://github.com/c0dewhacker/Roomer/commit/67dc62905263714a3e8c9fac15af270d494e5f4e))
+* **web:** bulk asset-assignment CSV had no client-side row cap or field errors ([a44fa0d](https://github.com/c0dewhacker/Roomer/commit/a44fa0de0699cb0cadde73665d23848951cedeb2))
+* **web:** bulk import preview missed asset_category in validation ([4735f04](https://github.com/c0dewhacker/Roomer/commit/4735f0476fb97b5e853e28e124ba687d698f60f3))
+* **web:** clarify colleague-search opt-out doesn't extend to the floor plan ([cac0423](https://github.com/c0dewhacker/Roomer/commit/cac0423be8dc043ed8b148ffc7e4ca0701dd4477))
+* **web:** department rename left the open sheet showing the old name ([a8c0bc0](https://github.com/c0dewhacker/Roomer/commit/a8c0bc00e725125c26a04be079e6a2bdd8cc8fb5))
+* **web:** floating nav's utility pill overlapped page content ([8273ba3](https://github.com/c0dewhacker/Roomer/commit/8273ba3f0b27438598d4dfa700383de47ba1c5b0))
+* **web:** floor page rendered a blank shell when access was denied ([de2bdd1](https://github.com/c0dewhacker/Roomer/commit/de2bdd18015fb06e89abb7863918ce1559e717d5))
+* **web:** group Super Admin warnings falsely claimed manual members get the role ([4d78708](https://github.com/c0dewhacker/Roomer/commit/4d787082550d0d6481536afb899c5075c62b2066))
+* **web:** LDAP sync per-entry errors were shown only in a toast ([1e455b1](https://github.com/c0dewhacker/Roomer/commit/1e455b17ebda2e48633951ee1e324ebb5687a6cf))
+* **web:** My Assets had no location or action for assigned desks ([#216](https://github.com/c0dewhacker/Roomer/issues/216)) ([b65dbc3](https://github.com/c0dewhacker/Roomer/commit/b65dbc336c774de617f542e668f99f68ebb4f608))
+* **web:** rail nav's flyout panel squeezed page content unreadable on mobile ([df68171](https://github.com/c0dewhacker/Roomer/commit/df68171c2423801cfa39aaa697c710a65eae692a))
+* **web:** recurring booking cards showed raw UTC times, not local ([5af4dec](https://github.com/c0dewhacker/Roomer/commit/5af4dec9313e2f7f820b94707a0223d9a935262c))
+* **web:** sessions silently expired after 8h regardless of activity ([#208](https://github.com/c0dewhacker/Roomer/issues/208)) ([c269e31](https://github.com/c0dewhacker/Roomer/commit/c269e31085978c2b61f58f68fbbd50c5b8efd867))
+* **web:** top nav's Buildings/Admin were completely unreachable on mobile ([f1c7366](https://github.com/c0dewhacker/Roomer/commit/f1c73665f62a40921445c1151fe054a971186169))
+
 ## [0.5.0](https://github.com/c0dewhacker/Roomer/compare/v0.4.0...v0.5.0) (2026-08-17)
 
 
