@@ -68,7 +68,7 @@ export async function promoteNextQueueEntry(
  * for cancelFutureBookingsForFloors and cancelFutureBookingsForAssets.
  */
 async function cancelBookingsAndPromoteQueues(
-  bookings: Array<{ id: string; assetId: string; startsAt: Date; endsAt: Date }>,
+  bookings: Array<{ id: string; assetId: string; startsAt: Date; endsAt: Date; recurringRuleId?: string | null }>,
   logMsg: string,
 ): Promise<void> {
   if (bookings.length === 0) return
@@ -77,6 +77,19 @@ async function cancelBookingsAndPromoteQueues(
     where: { id: { in: bookings.map((b) => b.id) } },
     data: { status: 'CANCELLED' },
   })
+
+  // Same series-cancel-then-status-flip recurring.ts DELETE /:id does — without
+  // this, deleting the floor/building/asset underneath a recurring rule cancels
+  // every future Booking row but leaves the rule itself stuck ACTIVE forever
+  // (nothing else ever transitions its status), so it keeps showing as an
+  // active series pointing at a desk that no longer exists.
+  const ruleIds = [...new Set(bookings.map((b) => b.recurringRuleId).filter((id): id is string => !!id))]
+  if (ruleIds.length > 0) {
+    await prisma.recurringBookingRule.updateMany({
+      where: { id: { in: ruleIds }, status: 'ACTIVE' },
+      data: { status: 'CANCELLED' },
+    })
+  }
 
   for (const b of bookings) {
     const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
@@ -109,7 +122,7 @@ export async function cancelFutureBookingsForFloors(floorIds: string[]): Promise
   const now = new Date()
   const bookings = await prisma.booking.findMany({
     where: { status: 'CONFIRMED', startsAt: { gt: now }, asset: { floorId: { in: floorIds } } },
-    select: { id: true, assetId: true, startsAt: true, endsAt: true },
+    select: { id: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
   })
   await cancelBookingsAndPromoteQueues(bookings, '[queue] Cancelled bookings on deleted floor(s)')
 }
@@ -128,7 +141,7 @@ export async function cancelFutureBookingsForAssets(assetIds: string[]): Promise
   const now = new Date()
   const bookings = await prisma.booking.findMany({
     where: { status: 'CONFIRMED', startsAt: { gt: now }, assetId: { in: assetIds } },
-    select: { id: true, assetId: true, startsAt: true, endsAt: true },
+    select: { id: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
   })
   await cancelBookingsAndPromoteQueues(bookings, '[queue] Cancelled bookings on unplaced asset(s)')
 }

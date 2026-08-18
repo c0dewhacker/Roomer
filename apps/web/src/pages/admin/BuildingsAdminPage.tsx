@@ -182,9 +182,9 @@ export default function BuildingsAdminPage() {
                       <AlertDialogHeader>
                         <AlertDialogTitle>Delete building?</AlertDialogTitle>
                         <AlertDialogDescription>
-                          This will permanently delete <strong>{b.name}</strong> and all its floors and zones.
-                          Assets on those floors won't be deleted — they'll become unplaced, and any future
-                          bookings on them will be cancelled.
+                          This will permanently delete <strong>{b.name}</strong>, all its floors and zones, and
+                          any leases on file for it. Assets on those floors won't be deleted — they'll become
+                          unplaced, and any future bookings on them will be cancelled.
                         </AlertDialogDescription>
                       </AlertDialogHeader>
                       <AlertDialogFooter>
