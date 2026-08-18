@@ -77,10 +77,25 @@ const updateOrgSchema = z.object({
   checkInGraceMinutes: z.number().int().min(5).max(240).optional(),
 })
 
+// The "Direct role" grant option in GroupMappingsEditor sends
+// roomerGroupId/targetGlobalRole as empty strings for whichever field isn't
+// the active mode (see updateGrant in GroupMappingsEditor.tsx), not omitted —
+// z.string().min(1).optional() rejects '' the same as it would reject a
+// missing field, so every "Direct role → Super Admin/Standard user" mapping
+// (a fully-built, advertised UI option) failed to save with a 400. The
+// runtime GroupMapping type (lib/group-mapping.ts) already treats both
+// fields as optional and truthy-checks them, so '' → undefined here matches
+// how they're actually consumed.
+const emptyToUndefined = (v: unknown) => (v === '' ? undefined : v)
+
 const groupMappingSchema = z.object({
   idpGroup: z.string().min(1),
-  roomerGroupId: z.string().min(1),
-})
+  roomerGroupId: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  targetGlobalRole: z.preprocess(emptyToUndefined, z.enum(['SUPER_ADMIN', 'USER']).optional()),
+}).refine(
+  (m) => !!m.roomerGroupId || !!m.targetGlobalRole,
+  { message: 'Each mapping must grant either a Roomer group or a direct role' },
+)
 
 const oidcConfigSchema = z.object({
   issuerUrl: z.string().url(),
