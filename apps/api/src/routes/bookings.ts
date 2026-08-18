@@ -8,7 +8,7 @@ import { enqueueNotification, fanOutFloorAvailable, promoteNextQueueEntry } from
 import { dispatchWebhook } from '../lib/webhook.js'
 import { buildBookingIcs } from '../lib/ical.js'
 import { checkGroupAccess } from './groups.js'
-import { assertBookable, assertUnderBookingQuota, hasConfirmedOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
+import { assertBookable, assertUnderBookingQuota, hasConfirmedOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, lockUserForBookingQuota, isOverlapConstraintViolation } from '../lib/booking.js'
 import { z } from 'zod'
 
 class BookingConflictError extends Error {
@@ -232,6 +232,17 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
         if (await checkZoneGroupOverlap(tx, request.user.id, assetId, startsAt, endsAt)) {
           throw new BookingConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
+        }
+
+        // The quota check above ran before this transaction, against a
+        // different lock domain (per-asset, not per-user) — two concurrent
+        // requests from the same user targeting different assets could both
+        // pass it before either commits. Re-check under a per-user lock so
+        // they serialise against each other too, closing that window.
+        await lockUserForBookingQuota(tx, request.user.id)
+        const quotaRecheck = await assertUnderBookingQuota(tx, request.user.id, isSuperAdmin)
+        if (!quotaRecheck.ok) {
+          throw new BookingConflictError(quotaRecheck.code, quotaRecheck.message)
         }
 
         return tx.booking.create({

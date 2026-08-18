@@ -10,9 +10,17 @@ import {
   hasConfirmedOverlap,
   lockAssetForBooking,
   lockAssetForQueue,
+  lockUserForBookingQuota,
   isOverlapConstraintViolation,
 } from '../lib/booking.js'
 import { z } from 'zod'
+
+class QuotaExceededError extends Error {
+  constructor(public readonly code: string, message: string) {
+    super(message)
+    this.name = 'QuotaExceededError'
+  }
+}
 
 export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Queue'], ...route.schema } })
@@ -240,6 +248,18 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
           return null
         }
 
+        // The quota check above ran before this transaction, against a
+        // different lock domain (per-asset, not per-user) — two concurrent
+        // claims/bookings from the same user on different assets could both
+        // pass it before either commits. Re-check under a per-user lock, now
+        // that the queue entry write above means throwing (not returning
+        // null) is required to roll it back on failure.
+        await lockUserForBookingQuota(tx, entry.userId)
+        const quotaRecheck = await assertUnderBookingQuota(tx, entry.userId, entry.user.globalRole === GlobalRole.SUPER_ADMIN)
+        if (!quotaRecheck.ok) {
+          throw new QuotaExceededError(quotaRecheck.code, quotaRecheck.message)
+        }
+
         return tx.booking.create({
           data: {
             userId: entry.userId,
@@ -252,7 +272,9 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       })
     } catch (err) {
       if (isOverlapConstraintViolation(err)) result = null
-      else throw err
+      else if (err instanceof QuotaExceededError) {
+        return reply.status(409).send({ error: { message: err.message, code: err.code } })
+      } else throw err
     }
 
     if (!result) {
@@ -346,6 +368,18 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
           return null
         }
 
+        // The quota check above ran before this transaction, against a
+        // different lock domain (per-asset, not per-user) — two concurrent
+        // claims/bookings from the same user on different assets could both
+        // pass it before either commits. Re-check under a per-user lock, now
+        // that the queue entry write above means throwing (not returning
+        // null) is required to roll it back on failure.
+        await lockUserForBookingQuota(tx, request.user.id)
+        const quotaRecheck = await assertUnderBookingQuota(tx, request.user.id, request.user.globalRole === GlobalRole.SUPER_ADMIN)
+        if (!quotaRecheck.ok) {
+          throw new QuotaExceededError(quotaRecheck.code, quotaRecheck.message)
+        }
+
         return tx.booking.create({
           data: {
             userId: request.user.id,
@@ -358,7 +392,9 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       })
     } catch (err) {
       if (isOverlapConstraintViolation(err)) booking = null
-      else throw err
+      else if (err instanceof QuotaExceededError) {
+        return reply.status(409).send({ error: { message: err.message, code: err.code } })
+      } else throw err
     }
 
     if (!booking) {

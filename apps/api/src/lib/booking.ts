@@ -23,6 +23,17 @@ export const ASSET_BOOKING_LOCK_CLASS = 4242
  */
 export const ASSET_QUEUE_LOCK_CLASS = 4243
 
+/**
+ * Separate lock class for per-user booking-quota enforcement. ASSET_BOOKING_LOCK_CLASS
+ * only serialises requests for the SAME asset — two concurrent bookings by the
+ * same user on two DIFFERENT assets don't contend on it at all, so both could
+ * pass assertUnderBookingQuota's pre-transaction count before either commits
+ * and exceed maxBookingsPerUser. This lock is keyed on userId instead of
+ * assetId so any two booking-creating transactions for the same user
+ * serialise against each other regardless of which asset each targets.
+ */
+export const USER_BOOKING_QUOTA_LOCK_CLASS = 4244
+
 /** Acquire the per-asset advisory lock that serialises booking creation. */
 export async function lockAssetForBooking(tx: Prisma.TransactionClient, assetId: string): Promise<void> {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ASSET_BOOKING_LOCK_CLASS}, hashtext(${assetId}))`
@@ -31,6 +42,11 @@ export async function lockAssetForBooking(tx: Prisma.TransactionClient, assetId:
 /** Acquire the per-asset advisory lock that serialises queue-position assignment. */
 export async function lockAssetForQueue(tx: Prisma.TransactionClient, assetId: string): Promise<void> {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ASSET_QUEUE_LOCK_CLASS}, hashtext(${assetId}))`
+}
+
+/** Acquire the per-user advisory lock that serialises booking-quota enforcement. */
+export async function lockUserForBookingQuota(tx: Prisma.TransactionClient, userId: string): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${USER_BOOKING_QUOTA_LOCK_CLASS}, hashtext(${userId}))`
 }
 
 /** True when a CONFIRMED booking already overlaps [startsAt, endsAt) for the asset. */
