@@ -39,6 +39,15 @@ export interface BookingIcsInput {
   zoneName?: string | null
   floorName?: string | null
   buildingName?: string | null
+  /**
+   * RFC 5546 SEQUENCE. A REQUEST must pass the booking's current
+   * Booking.icsSequence; a CANCEL must pass a value higher than whatever
+   * REQUEST was last sent (icsSequence + 1) so calendar clients that key off
+   * SEQUENCE rather than DTSTAMP accept it as superseding the invite, and a
+   * re-sent REQUEST after a reschedule is recognised as an update rather
+   * than an already-seen duplicate.
+   */
+  sequence: number
 }
 
 /**
@@ -64,7 +73,7 @@ export function buildBookingIcs(booking: BookingIcsInput, method: IcalMethod = '
     `METHOD:${method}`,
     'BEGIN:VEVENT',
     `UID:${uid}`,
-    `SEQUENCE:${isCancel ? 1 : 0}`,
+    `SEQUENCE:${booking.sequence}`,
     `DTSTAMP:${toIcsUtc(new Date())}`,
     `DTSTART:${toIcsUtc(booking.startsAt)}`,
     `DTEND:${toIcsUtc(booking.endsAt)}`,

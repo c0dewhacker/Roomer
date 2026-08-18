@@ -10,9 +10,17 @@ import {
   hasConfirmedOverlap,
   lockAssetForBooking,
   lockAssetForQueue,
+  lockUserForBookingQuota,
   isOverlapConstraintViolation,
 } from '../lib/booking.js'
 import { z } from 'zod'
+
+class QuotaExceededError extends Error {
+  constructor(public readonly code: string, message: string) {
+    super(message)
+    this.name = 'QuotaExceededError'
+  }
+}
 
 export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Queue'], ...route.schema } })
@@ -212,13 +220,47 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     let result: Awaited<ReturnType<typeof prisma.booking.create>> | null
+    let claimLost = false
     try {
       result = await prisma.$transaction(async (tx) => {
         await lockAssetForBooking(tx, entry.assetId)
 
+        // Overlap check must stay the first possible bail-out: everything
+        // below it writes, and returning null from an interactive transaction
+        // does NOT roll back writes already made in this callback (only a
+        // throw does) — so nothing may be written before this point.
         if (await hasConfirmedOverlap(tx, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)) return null
 
-        const booking = await tx.booking.create({
+        // The pre-transaction PROMOTED/deadline checks above are TOCTOU-prone:
+        // the claim-expiry sweep (a separate cron, its own transaction, a
+        // different advisory lock class since it doesn't create a booking)
+        // can expire this exact entry and promote someone else in the window
+        // between that check and this write. An unconditional update here
+        // would claim it anyway — this row only flips if it's still actually
+        // claimable at the moment we hold the lock, and nothing else has been
+        // written yet if it isn't.
+        const claimed = await tx.queueEntry.updateMany({
+          where: { id: entry.id, status: 'PROMOTED', claimDeadline: { gt: new Date() } },
+          data: { status: 'CLAIMED', claimToken: null },
+        })
+        if (claimed.count === 0) {
+          claimLost = true
+          return null
+        }
+
+        // The quota check above ran before this transaction, against a
+        // different lock domain (per-asset, not per-user) — two concurrent
+        // claims/bookings from the same user on different assets could both
+        // pass it before either commits. Re-check under a per-user lock, now
+        // that the queue entry write above means throwing (not returning
+        // null) is required to roll it back on failure.
+        await lockUserForBookingQuota(tx, entry.userId)
+        const quotaRecheck = await assertUnderBookingQuota(tx, entry.userId, entry.user.globalRole === GlobalRole.SUPER_ADMIN)
+        if (!quotaRecheck.ok) {
+          throw new QuotaExceededError(quotaRecheck.code, quotaRecheck.message)
+        }
+
+        return tx.booking.create({
           data: {
             userId: entry.userId,
             assetId: entry.assetId,
@@ -227,18 +269,18 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
             status: 'CONFIRMED',
           },
         })
-        await tx.queueEntry.update({
-          where: { id: entry.id },
-          data: { status: 'CLAIMED', claimToken: null },
-        })
-        return booking
       })
     } catch (err) {
       if (isOverlapConstraintViolation(err)) result = null
-      else throw err
+      else if (err instanceof QuotaExceededError) {
+        return reply.status(409).send({ error: { message: err.message, code: err.code } })
+      } else throw err
     }
 
     if (!result) {
+      if (claimLost) {
+        return reply.status(409).send({ error: { message: 'Claim deadline has passed', code: 'TOKEN_EXPIRED' } })
+      }
       return reply.status(409).send({
         error: { message: 'Asset is no longer available for this period', code: 'ASSET_CONFLICT' },
       })
@@ -298,13 +340,47 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
 
     // Serialize on the asset ID, then check availability and create booking atomically
     let booking: Awaited<ReturnType<typeof prisma.booking.create>> | null
+    let claimLost = false
     try {
       booking = await prisma.$transaction(async (tx) => {
         await lockAssetForBooking(tx, entry.assetId)
 
+        // Overlap check must stay the first possible bail-out: everything
+        // below it writes, and returning null from an interactive transaction
+        // does NOT roll back writes already made in this callback (only a
+        // throw does) — so nothing may be written before this point.
         if (await hasConfirmedOverlap(tx, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)) return null
 
-        const created = await tx.booking.create({
+        // The pre-transaction PROMOTED/deadline checks above are TOCTOU-prone:
+        // the claim-expiry sweep (a separate cron, its own transaction, a
+        // different advisory lock class since it doesn't create a booking)
+        // can expire this exact entry and promote someone else in the window
+        // between that check and this write. An unconditional update here
+        // would claim it anyway — this row only flips if it's still actually
+        // claimable at the moment we hold the lock, and nothing else has been
+        // written yet if it isn't.
+        const claimed = await tx.queueEntry.updateMany({
+          where: { id, status: 'PROMOTED', claimDeadline: { gt: new Date() } },
+          data: { status: 'CLAIMED', claimToken: null },
+        })
+        if (claimed.count === 0) {
+          claimLost = true
+          return null
+        }
+
+        // The quota check above ran before this transaction, against a
+        // different lock domain (per-asset, not per-user) — two concurrent
+        // claims/bookings from the same user on different assets could both
+        // pass it before either commits. Re-check under a per-user lock, now
+        // that the queue entry write above means throwing (not returning
+        // null) is required to roll it back on failure.
+        await lockUserForBookingQuota(tx, request.user.id)
+        const quotaRecheck = await assertUnderBookingQuota(tx, request.user.id, request.user.globalRole === GlobalRole.SUPER_ADMIN)
+        if (!quotaRecheck.ok) {
+          throw new QuotaExceededError(quotaRecheck.code, quotaRecheck.message)
+        }
+
+        return tx.booking.create({
           data: {
             userId: request.user.id,
             assetId: entry.assetId,
@@ -313,18 +389,18 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
             status: 'CONFIRMED',
           },
         })
-        await tx.queueEntry.update({
-          where: { id },
-          data: { status: 'CLAIMED', claimToken: null },
-        })
-        return created
       })
     } catch (err) {
       if (isOverlapConstraintViolation(err)) booking = null
-      else throw err
+      else if (err instanceof QuotaExceededError) {
+        return reply.status(409).send({ error: { message: err.message, code: err.code } })
+      } else throw err
     }
 
     if (!booking) {
+      if (claimLost) {
+        return reply.status(409).send({ error: { message: 'Claim deadline has passed', code: 'CLAIM_EXPIRED' } })
+      }
       return reply.status(409).send({
         error: { message: 'Asset is no longer available for this period', code: 'ASSET_CONFLICT' },
       })

@@ -484,6 +484,15 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
         where: { floorId: { in: floors.map((f) => f.id) } },
       })
 
+      // Same reasoning as floor plans: BuildingLease/LeaseDocument cascade-delete
+      // with the building (schema.prisma), but the uploaded files on disk don't —
+      // and once the rows are gone there's no longer any record of the paths to
+      // clean up, so this leaks the files on disk forever.
+      const leaseDocuments = await prisma.leaseDocument.findMany({
+        where: { lease: { buildingId: id } },
+        select: { storagePath: true },
+      })
+
       try {
         await prisma.building.delete({ where: { id } })
       } catch {
@@ -500,6 +509,9 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
         if (plan.thumbnailPath) {
           await deleteFile(plan.thumbnailPath)
         }
+      }
+      for (const doc of leaseDocuments) {
+        await deleteFile(doc.storagePath)
       }
 
       return reply.status(200).send({ data: { ok: true } })

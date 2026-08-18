@@ -68,7 +68,7 @@ export async function promoteNextQueueEntry(
  * for cancelFutureBookingsForFloors and cancelFutureBookingsForAssets.
  */
 async function cancelBookingsAndPromoteQueues(
-  bookings: Array<{ id: string; assetId: string; startsAt: Date; endsAt: Date }>,
+  bookings: Array<{ id: string; assetId: string; startsAt: Date; endsAt: Date; recurringRuleId?: string | null }>,
   logMsg: string,
 ): Promise<void> {
   if (bookings.length === 0) return
@@ -77,6 +77,19 @@ async function cancelBookingsAndPromoteQueues(
     where: { id: { in: bookings.map((b) => b.id) } },
     data: { status: 'CANCELLED' },
   })
+
+  // Same series-cancel-then-status-flip recurring.ts DELETE /:id does — without
+  // this, deleting the floor/building/asset underneath a recurring rule cancels
+  // every future Booking row but leaves the rule itself stuck ACTIVE forever
+  // (nothing else ever transitions its status), so it keeps showing as an
+  // active series pointing at a desk that no longer exists.
+  const ruleIds = [...new Set(bookings.map((b) => b.recurringRuleId).filter((id): id is string => !!id))]
+  if (ruleIds.length > 0) {
+    await prisma.recurringBookingRule.updateMany({
+      where: { id: { in: ruleIds }, status: 'ACTIVE' },
+      data: { status: 'CANCELLED' },
+    })
+  }
 
   for (const b of bookings) {
     const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
@@ -109,7 +122,7 @@ export async function cancelFutureBookingsForFloors(floorIds: string[]): Promise
   const now = new Date()
   const bookings = await prisma.booking.findMany({
     where: { status: 'CONFIRMED', startsAt: { gt: now }, asset: { floorId: { in: floorIds } } },
-    select: { id: true, assetId: true, startsAt: true, endsAt: true },
+    select: { id: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
   })
   await cancelBookingsAndPromoteQueues(bookings, '[queue] Cancelled bookings on deleted floor(s)')
 }
@@ -128,9 +141,75 @@ export async function cancelFutureBookingsForAssets(assetIds: string[]): Promise
   const now = new Date()
   const bookings = await prisma.booking.findMany({
     where: { status: 'CONFIRMED', startsAt: { gt: now }, assetId: { in: assetIds } },
-    select: { id: true, assetId: true, startsAt: true, endsAt: true },
+    select: { id: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
   })
   await cancelBookingsAndPromoteQueues(bookings, '[queue] Cancelled bookings on unplaced asset(s)')
+}
+
+/**
+ * Cancel every future CONFIRMED booking a user holds, across every asset (see
+ * cancelBookingsAndPromoteQueues) — used when an admin blocks a user's
+ * account so a desk doesn't stay silently CONFIRMED-and-unusable under a
+ * login the owner can no longer manage or cancel themselves.
+ */
+export async function cancelFutureBookingsForUser(userId: string): Promise<void> {
+  const now = new Date()
+  const bookings = await prisma.booking.findMany({
+    where: { status: 'CONFIRMED', startsAt: { gt: now }, userId },
+    select: { id: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
+  })
+  await cancelBookingsAndPromoteQueues(bookings, '[queue] Cancelled bookings for blocked user')
+}
+
+/**
+ * Cancel a user's own WAITING/PROMOTED queue entries and compact the
+ * positions behind each one — same shape as the user-initiated "leave queue"
+ * path (queue.ts DELETE /:id), just applied to every entry at once. Used
+ * alongside cancelFutureBookingsForUser when blocking an account, so a
+ * blocked user can't still be promoted into a slot they have no way to claim.
+ */
+export async function cancelQueueEntriesForUser(userId: string): Promise<void> {
+  const entries = await prisma.queueEntry.findMany({
+    where: { userId, status: { in: ['WAITING', 'PROMOTED'] } },
+  })
+  for (const entry of entries) {
+    await prisma.queueEntry.update({ where: { id: entry.id }, data: { status: 'CANCELLED' } })
+    await prisma.queueEntry.updateMany({
+      where: {
+        assetId: entry.assetId,
+        status: 'WAITING',
+        position: { gt: entry.position },
+        wantedStartsAt: { lt: entry.wantedEndsAt },
+        wantedEndsAt: { gt: entry.wantedStartsAt },
+      },
+      data: { position: { decrement: 1 } },
+    })
+  }
+}
+
+/**
+ * Release every desk a user is permanently assigned to — same restore-prior-
+ * bookingStatus behavior as the single unassign route (assets.ts DELETE
+ * /:id/user-assignments/:userId), just applied to every assignment the user
+ * holds. Used when blocking an account so it doesn't keep "owning" a desk
+ * indefinitely with no one able to reassign it away.
+ */
+export async function releaseAssetAssignmentsForUser(userId: string): Promise<void> {
+  const assignments = await prisma.assetUserAssignment.findMany({ where: { userId }, select: { assetId: true } })
+  if (assignments.length === 0) return
+  await prisma.assetUserAssignment.deleteMany({ where: { userId } })
+  for (const { assetId } of assignments) {
+    const remaining = await prisma.assetUserAssignment.count({ where: { assetId } })
+    if (remaining === 0) {
+      const current = await prisma.asset.findUnique({ where: { id: assetId }, select: { bookingStatus: true, priorBookingStatus: true } })
+      if (current?.bookingStatus === 'ASSIGNED') {
+        await prisma.asset.update({
+          where: { id: assetId },
+          data: { bookingStatus: current.priorBookingStatus ?? 'OPEN', priorBookingStatus: null },
+        })
+      }
+    }
+  }
 }
 
 // ─── Notification job payload ─────────────────────────────────────────────────
@@ -195,6 +274,7 @@ async function processSendNotification(
           zoneName: booking.asset.primaryZone?.name,
           floorName: booking.asset.floor?.name,
           buildingName: booking.asset.floor?.building?.name,
+          sequence: booking.icsSequence,
         }, 'REQUEST'),
       }
       templateVars = {
@@ -222,6 +302,7 @@ async function processSendNotification(
         content: buildBookingIcs({
           id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
           assetName: booking.asset.name,
+          sequence: booking.icsSequence + 1,
         }, 'CANCEL'),
       }
       templateVars = {
@@ -240,6 +321,17 @@ async function processSendNotification(
       title = `Booking released — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} was released because you didn't check in.`
       emailPayload = renderBookingNoShow(booking, user, booking.asset)
+      // Same as any other cancellation path — without a CANCEL, the invite
+      // this booking's confirmation originally sent stays "confirmed" in the
+      // booker's calendar forever, even though the desk was released.
+      icalEvent = {
+        method: 'CANCEL',
+        content: buildBookingIcs({
+          id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
+          assetName: booking.asset.name,
+          sequence: booking.icsSequence + 1,
+        }, 'CANCEL'),
+      }
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
@@ -261,6 +353,7 @@ async function processSendNotification(
         content: buildBookingIcs({
           id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
           assetName: booking.asset.name,
+          sequence: booking.icsSequence + 1,
         }, 'CANCEL'),
       }
       templateVars = {

@@ -3,7 +3,7 @@ import { useForm, type Resolver } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { differenceInCalendarDays } from 'date-fns'
-import { formatDate } from '@/lib/utils'
+import { formatDate, formatCalendarDate } from '@/lib/utils'
 import {
   FileText, Plus, Trash2, Upload, Download, ChevronDown, ChevronUp, Building2, AlertCircle,
 } from 'lucide-react'
@@ -301,13 +301,13 @@ function LeaseCard({ lease }: { lease: Lease }) {
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1 mt-2 text-sm">
           <div>
             <span className="text-xs text-muted-foreground">Start</span>
-            <p className="font-medium">{formatDate(lease.startDate)}</p>
+            <p className="font-medium">{formatCalendarDate(lease.startDate)}</p>
           </div>
           {lease.endDate && (
             <div>
               <span className="text-xs text-muted-foreground">End</span>
               <p className={`font-medium ${isExpired ? 'text-destructive' : ''}`}>
-                {formatDate(lease.endDate)}
+                {formatCalendarDate(lease.endDate)}
               </p>
             </div>
           )}

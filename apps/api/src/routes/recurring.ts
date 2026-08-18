@@ -293,6 +293,19 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       select: { id: true, assetId: true, startsAt: true, endsAt: true },
     })
 
+    // The series' very first occurrence is the only one that ever got an actual
+    // ICS invite emailed (see POST / above: "Single confirmation notification
+    // for the first booking in the series") — the rest were never added to the
+    // recipient's calendar via ICS at all. So that first occurrence's booking id
+    // is the one whose UID needs a matching CANCEL for the calendar app to
+    // remove/void the invite it's actually holding; it's independent of
+    // futureBookings, which only tracks occurrences still ahead of "now".
+    const firstOccurrence = await prisma.booking.findFirst({
+      where: { recurringRuleId: id },
+      orderBy: { startsAt: 'asc' },
+      select: { id: true },
+    })
+
     await prisma.$transaction([
       prisma.booking.updateMany({
         where: { id: { in: futureBookings.map((b) => b.id) } },
@@ -305,6 +318,7 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
     ])
 
     for (const b of futureBookings) {
+      dispatchWebhook('booking.cancelled', { id: b.id, userId: rule.userId, assetId: b.assetId }).catch(() => {})
       const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
       if (nextQueued) {
         await enqueueNotification({
@@ -315,6 +329,19 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
         })
         dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
       }
+    }
+
+    // Notify the series owner once, same as a single-booking cancel — without
+    // this, cancelling a whole series produced no email and no ICS CANCEL, so
+    // the owner had no confirmation it worked and their calendar app kept
+    // showing the original invite as still confirmed indefinitely.
+    if (firstOccurrence) {
+      const isSelf = rule.userId === request.user.id
+      await enqueueNotification({
+        type: isSelf ? NotificationType.BOOKING_CANCELLED : NotificationType.BOOKING_CANCELLED_BY_ADMIN,
+        userId: rule.userId,
+        bookingId: firstOccurrence.id,
+      })
     }
 
     return reply.status(200).send({ data: { ok: true } })

@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma.js'
 import { GlobalRole, BookableStatus, bulkUpdateAssetPositionsSchema, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole, getManagedFloorIds, getManagedBuildingIds, isFloorManagerForFloor } from '../middleware/requireRole.js'
-import { enqueueNotification, fanOutFloorAvailable } from '../lib/queue.js'
+import { enqueueNotification, fanOutFloorAvailable, cancelFutureBookingsForAssets } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { lockAssetForBooking, lockAssetForQueue, hasConfirmedOverlap, isOverlapConstraintViolation } from '../lib/booking.js'
 import { randomUUID } from 'crypto'
@@ -914,6 +914,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       const assetStatusMap = new Map(assetRows.map((a) => [a.id, a.bookingStatus]))
       const userByEmail = new Map(userRows.map((u) => [u.email.toLowerCase(), u.id]))
 
+      // Same "brand-new assignment only" notify rule the single-item route
+      // uses (POST /:id/user-assignments) — without it, re-running an import
+      // to tweak isPrimary would re-send "assigned to you" to everyone
+      // already assigned. Pre-fetched once as a set, same batching approach
+      // as assetRows/userRows above.
+      const existingAssignments = await prisma.assetUserAssignment.findMany({
+        where: { assetId: { in: allAssetIds }, userId: { in: [...userByEmail.values()] } },
+        select: { assetId: true, userId: true },
+      })
+      const existingAssignmentKeys = new Set(existingAssignments.map((a) => `${a.assetId}::${a.userId}`))
+
       for (let i = 0; i < rows.length; i++) {
         const { assetId, userEmail, isPrimary } = rows[i]
         try {
@@ -942,11 +953,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
               data: { isPrimary: false },
             })
           }
+          const assignmentKey = `${assetId}::${userId}`
+          const wasAlreadyAssigned = existingAssignmentKeys.has(assignmentKey)
           await prisma.assetUserAssignment.upsert({
             where: { assetId_userId: { assetId, userId } },
             update: { isPrimary },
             create: { assetId, userId, isPrimary },
           })
+          existingAssignmentKeys.add(assignmentKey)
           const priorStatus = assetStatusMap.get(assetId)
           await prisma.asset.update({
             where: { id: assetId },
@@ -956,6 +970,9 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
             },
           })
           assetStatusMap.set(assetId, 'ASSIGNED')
+          if (!wasAlreadyAssigned) {
+            await enqueueNotification({ type: NotificationType.ASSET_ASSIGNED, userId, assetId })
+          }
           assigned++
         } catch {
           errors.push({ row: i + 1, assetId, userEmail, error: 'Unexpected error' })
@@ -1196,6 +1213,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         const canManage = await isFloorManagerForFloor(request.user.id, existing.floorId)
         if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
+
+      // Must run before the delete: Booking.asset is onDelete:Cascade, so once
+      // the asset is gone every booking on it (including future CONFIRMED ones)
+      // disappears silently with no cancellation email and no queue promotion —
+      // same reasoning cancelFutureBookingsForFloors already documents for
+      // floor/building deletion. This only cancels+notifies; the cascade still
+      // does the actual row deletion once the asset itself is removed below.
+      await cancelFutureBookingsForAssets([id])
 
       try {
         await prisma.asset.delete({ where: { id } })

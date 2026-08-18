@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
+import { format } from 'date-fns'
 import { Search, MapPin, Home, Calendar, Users } from 'lucide-react'
 import { directoryApi, type WhereaboutsLocation, type WhereaboutsPerson } from '@/lib/api'
 import { toISODateString } from '@/lib/utils'
@@ -22,13 +23,24 @@ function locationLabel(l: WhereaboutsLocation) {
   return [l.assetName, l.zoneName, l.floorName, l.buildingName].filter(Boolean).join(' · ')
 }
 
-function LocationLink({ l, date, kind }: { l: WhereaboutsLocation; date: string; kind: 'today' | 'home' }) {
+function LocationLink({
+  l, date, kind, time,
+}: {
+  l: WhereaboutsLocation
+  date: string
+  kind: 'today' | 'home'
+  // Someone can legitimately hold two bookings the same day (a morning desk,
+  // an afternoon meeting room) — without a time label each "today" entry
+  // read as an identical, unlabelled "Booked" row, giving no way to tell
+  // which one is current or that they're actually different bookings.
+  time?: string
+}) {
   const label = locationLabel(l)
   const Icon = kind === 'today' ? Calendar : Home
   const inner = (
     <span className="inline-flex items-center gap-1.5 text-sm">
       <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-      <span className="text-muted-foreground">{kind === 'today' ? 'Booked' : 'Home desk'}</span>
+      <span className="text-muted-foreground">{kind === 'today' ? 'Booked' : 'Home desk'}{time && ` · ${time}`}</span>
       <span className="font-medium">{label}</span>
     </span>
   )
@@ -49,8 +61,14 @@ function PersonCard({ person, date }: { person: WhereaboutsPerson; date: string 
           <p className="font-medium text-sm">{person.user.displayName}</p>
           <p className="text-xs text-muted-foreground truncate">{person.user.email}</p>
           <div className="mt-2 flex flex-col gap-1.5">
-            {person.today.map((l) => (
-              <LocationLink key={`b-${l.assetId}`} l={l} date={date} kind="today" />
+            {person.today.map((l, i) => (
+              <LocationLink
+                key={`b-${l.assetId}-${i}`}
+                l={l}
+                date={date}
+                kind="today"
+                time={`${format(new Date(l.startsAt), 'HH:mm')}–${format(new Date(l.endsAt), 'HH:mm')}`}
+              />
             ))}
             {person.assignedDesks.map((l) => (
               <div key={`a-${l.assetId}`} className="flex items-center gap-2">

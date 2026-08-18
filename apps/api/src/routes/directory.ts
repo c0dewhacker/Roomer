@@ -206,7 +206,12 @@ export async function directoryRoutes(fastify: FastifyInstance): Promise<void> {
     // Group by user
     type Person = {
       user: { id: string; displayName: string; email: string }
-      today: ReturnType<typeof locationOf>[]
+      // startsAt/endsAt carried through so the frontend can label each entry —
+      // without them, a person with two bookings the same day (a morning desk,
+      // an afternoon meeting room; the app supports AM/PM/custom time-slot
+      // bookings) rendered as two identical, unlabelled "Booked" rows with no
+      // way to tell which one is current.
+      today: (ReturnType<typeof locationOf> & { startsAt: Date; endsAt: Date })[]
       assignedDesks: (ReturnType<typeof locationOf> & { isPrimary: boolean })[]
     }
     const people = new Map<string, Person>()
@@ -217,12 +222,15 @@ export async function directoryRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     for (const b of bookings) {
-      ensure(b.user).today.push(locationOf(b.asset))
+      ensure(b.user).today.push({ ...locationOf(b.asset), startsAt: b.startsAt, endsAt: b.endsAt })
     }
     for (const a of assignments) {
       ensure(a.user).assignedDesks.push({ ...locationOf(a.asset), isPrimary: a.isPrimary })
     }
 
+    for (const p of people.values()) {
+      p.today.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
+    }
     const data = [...people.values()].sort((a, b) => a.user.displayName.localeCompare(b.user.displayName))
 
     return reply.status(200).send({ data, meta: { total: data.length, date: dateStr } })

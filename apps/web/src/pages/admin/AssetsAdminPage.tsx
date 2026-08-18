@@ -777,6 +777,7 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
                                 <AlertDialogTitle>Delete asset?</AlertDialogTitle>
                                 <AlertDialogDescription>
                                   This will permanently delete <strong>{asset.name}</strong> and all its history.
+                                  Any future bookings on it will be cancelled and the booker notified.
                                 </AlertDialogDescription>
                               </AlertDialogHeader>
                               <AlertDialogFooter>

@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'crypto'
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
+import { cancelFutureBookingsForUser, cancelQueueEntriesForUser, releaseAssetAssignmentsForUser } from '../lib/queue.js'
 import {
   userToScim, groupToScim, scimError, listResponse, parseScimFilter,
   applyUserPatchOps, applyGroupPatchOps, hashScimToken,
@@ -355,6 +356,11 @@ function registerUsers(fastify: FastifyInstance): void {
         data: { ...userPatch, ...(departmentId !== undefined ? { departmentId } : {}) },
         select: userSelect,
       })
+      if (userPatch.accountStatus === 'BLOCKED') {
+        await cancelFutureBookingsForUser(user.id)
+        await cancelQueueEntriesForUser(user.id)
+        await releaseAssetAssignmentsForUser(user.id)
+      }
       reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
     } catch {
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
@@ -373,6 +379,9 @@ function registerUsers(fastify: FastifyInstance): void {
 
     try {
       await prisma.user.update({ where: { id }, data: { accountStatus: 'BLOCKED' } })
+      await cancelFutureBookingsForUser(id)
+      await cancelQueueEntriesForUser(id)
+      await releaseAssetAssignmentsForUser(id)
       reply.status(204).send()
     } catch {
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))

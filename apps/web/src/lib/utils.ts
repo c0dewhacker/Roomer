@@ -12,6 +12,23 @@ export function formatDate(date: Date | string): string {
   return format(d, getDateFormat())
 }
 
+/**
+ * Format a pure calendar-date field (no meaningful time-of-day) stored as
+ * UTC midnight of the day an admin picked — e.g. RecurringBookingRule's
+ * firstDate/lastDate, BuildingLease's startDate/endDate. formatDate()
+ * correctly converts real timestamps to the viewer's local time, but doing
+ * that here shifts the date itself backwards by a day for anyone behind
+ * UTC (e.g. 2026-08-25T00:00:00Z renders as "24/08/2026" at UTC-10) since
+ * there's no real instant to convert, only a calendar day. Re-anchors the
+ * UTC components as local midnight first, same fix already applied to
+ * LeasesAdminPage's expiry countdown.
+ */
+export function formatCalendarDate(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(date) : date
+  const localMidnight = new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+  return format(localMidnight, getDateFormat())
+}
+
 export function formatDateTime(date: Date | string): string {
   const d = typeof date === 'string' ? new Date(date) : date
   return `${format(d, getDateFormat())} · ${format(d, 'HH:mm')}`

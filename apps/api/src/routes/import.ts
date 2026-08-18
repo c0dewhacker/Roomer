@@ -90,6 +90,40 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
+      // A duplicate asset_tag anywhere in the batch (against another row in the
+      // same file, or against an existing asset already in the DB) throws a raw
+      // Prisma P2002 partway through the transaction below, uncaught — which
+      // rolls back every row in the batch (not just the offending one) and
+      // returns a generic 500 with no row number, contradicting the itemized
+      // per-row errors this endpoint reports for every other kind of bad row.
+      // Filter these out up front instead, same as any other validation error.
+      const seenTags = new Map<string, number>() // tag → first row's 1-indexed line number
+      const tagsToCheck = [...new Set(
+        validRows.map(({ row }) => row.asset_tag?.trim()).filter((t): t is string => !!t),
+      )]
+      const existingTags = tagsToCheck.length > 0
+        ? new Set((await prisma.asset.findMany({
+            where: { assetTag: { in: tagsToCheck } },
+            select: { assetTag: true },
+          })).map((a) => a.assetTag))
+        : new Set<string>()
+
+      const dedupedRows: typeof validRows = []
+      for (const entry of validRows) {
+        const tag = entry.row.asset_tag?.trim()
+        const rowNum = entry.index + 2
+        if (tag && existingTags.has(tag)) {
+          errors.push({ row: rowNum, message: `asset_tag "${tag}" is already used by an existing asset` })
+        } else if (tag && seenTags.has(tag)) {
+          errors.push({ row: rowNum, message: `asset_tag "${tag}" is used by another row in this file (row ${seenTags.get(tag)})` })
+        } else {
+          if (tag) seenTags.set(tag, rowNum)
+          dedupedRows.push(entry)
+        }
+      }
+      validRows.length = 0
+      validRows.push(...dedupedRows)
+
       if (validRows.length === 0) {
         return reply.status(422).send({
           error: { message: 'No valid rows to import', code: 'NO_VALID_ROWS' },

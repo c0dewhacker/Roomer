@@ -8,7 +8,7 @@ import { enqueueNotification, fanOutFloorAvailable, promoteNextQueueEntry } from
 import { dispatchWebhook } from '../lib/webhook.js'
 import { buildBookingIcs } from '../lib/ical.js'
 import { checkGroupAccess } from './groups.js'
-import { assertBookable, assertUnderBookingQuota, hasConfirmedOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
+import { assertBookable, assertUnderBookingQuota, hasConfirmedOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, lockUserForBookingQuota, isOverlapConstraintViolation } from '../lib/booking.js'
 import { z } from 'zod'
 
 class BookingConflictError extends Error {
@@ -151,7 +151,13 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     }
     const { status } = queryResult.data
     const now = new Date()
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    // UTC midnight, same convention every other day-boundary calculation in
+    // the app uses (directory.ts whereabouts, recurring.ts, analytics working
+    // days) — local Date getters here made the boundary depend on whatever
+    // TZ the API process happens to run under (no TZ=UTC pin exists in the
+    // repo), so a booking that had already ended by the UTC convention could
+    // still sit in the Upcoming tab with live Edit/Cancel/Check-in actions.
+    const startOfToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
 
     const where: Record<string, unknown> = { userId: request.user.id }
 
@@ -232,6 +238,17 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
         if (await checkZoneGroupOverlap(tx, request.user.id, assetId, startsAt, endsAt)) {
           throw new BookingConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
+        }
+
+        // The quota check above ran before this transaction, against a
+        // different lock domain (per-asset, not per-user) — two concurrent
+        // requests from the same user targeting different assets could both
+        // pass it before either commits. Re-check under a per-user lock so
+        // they serialise against each other too, closing that window.
+        await lockUserForBookingQuota(tx, request.user.id)
+        const quotaRecheck = await assertUnderBookingQuota(tx, request.user.id, isSuperAdmin)
+        if (!quotaRecheck.ok) {
+          throw new BookingConflictError(quotaRecheck.code, quotaRecheck.message)
         }
 
         return tx.booking.create({
@@ -332,6 +349,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       zoneName: booking.asset.primaryZone?.name,
       floorName: booking.asset.floor?.name,
       buildingName: booking.asset.floor?.building?.name,
+      sequence: method === 'CANCEL' ? booking.icsSequence + 1 : booking.icsSequence,
     }, method)
 
     return reply
@@ -468,6 +486,10 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
             startsAt: newStartsAt,
             endsAt: newEndsAt,
             notes: result.data.notes !== undefined ? result.data.notes : booking.notes,
+            // Bumped only when the time actually changes — a notes-only edit
+            // has nothing calendar-relevant to re-send, so it shouldn't move
+            // the sequence a client would use to judge "is this newer".
+            ...(timeChanged ? { icsSequence: { increment: 1 } } : {}),
           },
         })
       })

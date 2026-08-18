@@ -99,8 +99,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
                   bookings: {
                     where: {
                       status: 'CONFIRMED',
-                      startsAt: { gte: startDate },
-                      endsAt: { lte: endDate },
+                      startsAt: { gte: startDate, lte: endDate },
                     },
                     select: { id: true },
                   },
@@ -256,6 +255,9 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         if (managedBuildingIds.length === 0) {
           return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
         }
+        if (result.data.buildingId && !managedBuildingIds.includes(result.data.buildingId)) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
       }
 
       const defaults = defaultDateRange()
@@ -263,14 +265,22 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       const endDate = parseDateParam(result.data.endDate, 'T23:59:59.999Z', defaults.endDate)
       const workingDays = countWorkingDays(startDate, endDate)
 
-      const bookingBuildingFilter = !isSuperAdmin
-        ? { asset: { floor: { buildingId: { in: managedBuildingIds } } } }
+      // result.data.buildingId (the Reports page's Building filter) was
+      // accepted here but never referenced — only the non-admin managed-
+      // buildings scope was ever applied, so picking a specific building in
+      // the dropdown silently did nothing; a building admin managing several
+      // buildings, or a super admin, always saw combined org-wide figures.
+      const buildingIdFilter = result.data.buildingId
+        ? { in: [result.data.buildingId] }
+        : !isSuperAdmin ? { in: managedBuildingIds } : undefined
+      const bookingBuildingFilter = buildingIdFilter
+        ? { asset: { floor: { buildingId: buildingIdFilter } } }
         : {}
-      const assetBuildingFilter = !isSuperAdmin
-        ? { floor: { buildingId: { in: managedBuildingIds } } }
+      const assetBuildingFilter = buildingIdFilter
+        ? { floor: { buildingId: buildingIdFilter } }
         : {}
-      const queueBuildingFilter = !isSuperAdmin
-        ? { asset: { floor: { buildingId: { in: managedBuildingIds } } } }
+      const queueBuildingFilter = buildingIdFilter
+        ? { asset: { floor: { buildingId: buildingIdFilter } } }
         : {}
 
       const bookingWhere: Record<string, unknown> = { startsAt: { gte: startDate, lte: endDate }, ...bookingBuildingFilter }
@@ -340,14 +350,22 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         if (managedBuildingIds.length === 0) {
           return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
         }
+        if (result.data.buildingId && !managedBuildingIds.includes(result.data.buildingId)) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
       }
 
       const defaults = defaultDateRange()
       const startDate = result.data.startDate ? new Date(result.data.startDate + 'T00:00:00.000Z') : defaults.startDate
       const endDate = result.data.endDate ? new Date(result.data.endDate + 'T23:59:59.999Z') : defaults.endDate
 
-      const buildingFilter = !isSuperAdmin
-        ? { asset: { floor: { buildingId: { in: managedBuildingIds } } } }
+      // Same gap as /summary above — result.data.buildingId was accepted but
+      // never referenced, only the non-admin managed-buildings scope was ever applied.
+      const buildingIdFilter = result.data.buildingId
+        ? { in: [result.data.buildingId] }
+        : !isSuperAdmin ? { in: managedBuildingIds } : undefined
+      const buildingFilter = buildingIdFilter
+        ? { asset: { floor: { buildingId: buildingIdFilter } } }
         : {}
 
       const [confirmed, cancelled, completed] = await Promise.all([
@@ -381,15 +399,34 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         if (managedBuildingIds.length === 0) {
           return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
         }
+        if (result.data.buildingId && !managedBuildingIds.includes(result.data.buildingId)) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
       }
 
       const defaults = defaultDateRange()
       const startDate = result.data.startDate ? new Date(result.data.startDate + 'T00:00:00.000Z') : defaults.startDate
       const endDate = result.data.endDate ? new Date(result.data.endDate + 'T23:59:59.999Z') : defaults.endDate
 
+      // result.data.buildingId was accepted but never referenced — only the
+      // super-admin/managed-buildings branches existed, so picking a specific
+      // building in the Reports page filter silently did nothing.
       type DowRow = { dow: string; count: bigint }
       let rows: DowRow[]
-      if (isSuperAdmin) {
+      if (result.data.buildingId) {
+        rows = await prisma.$queryRaw<DowRow[]>`
+          SELECT EXTRACT(DOW FROM b."startsAt") AS dow, COUNT(*)::bigint AS count
+          FROM "Booking" b
+          JOIN "Asset" a ON a.id = b."assetId"
+          JOIN "Floor" f ON f.id = a."floorId"
+          WHERE b."startsAt" >= ${startDate}
+            AND b."startsAt" <= ${endDate}
+            AND b.status = 'CONFIRMED'
+            AND f."buildingId" = ${result.data.buildingId}
+          GROUP BY EXTRACT(DOW FROM b."startsAt")
+          ORDER BY dow ASC
+        `
+      } else if (isSuperAdmin) {
         rows = await prisma.$queryRaw<DowRow[]>`
           SELECT EXTRACT(DOW FROM "startsAt") AS dow, COUNT(*)::bigint AS count
           FROM "Booking"
@@ -471,7 +508,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
                 where: { isBookable: true },
                 include: {
                   bookings: {
-                    where: { status: 'CONFIRMED', startsAt: { gte: startDate }, endsAt: { lte: endDate } },
+                    where: { status: 'CONFIRMED', startsAt: { gte: startDate, lte: endDate } },
                     select: { id: true },
                   },
                 },
