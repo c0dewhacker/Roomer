@@ -194,7 +194,7 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
     mutationFn: () => groupsApi.addMember(group!.id, selectedMemberId),
     onSuccess: () => {
       toast.success('Member added')
-      qc.invalidateQueries({ queryKey: ['groups', group?.id] })
+      qc.invalidateQueries({ queryKey: ['groups'] })
       setMemberSearch('')
       setSelectedMemberId('')
     },
@@ -203,7 +203,7 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
 
   const removeMember = useMutation({
     mutationFn: (userId: string) => groupsApi.removeMember(group!.id, userId),
-    onSuccess: () => { toast.success('Member removed'); qc.invalidateQueries({ queryKey: ['groups', group?.id] }) },
+    onSuccess: () => { toast.success('Member removed'); qc.invalidateQueries({ queryKey: ['groups'] }) },
     onError: (err: Error) => toast.error(err.message),
   })
 
@@ -211,7 +211,7 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
     mutationFn: () => groupsApi.addBuildingAccess(group!.id, selectedBuildingId),
     onSuccess: () => {
       toast.success('Building access added')
-      qc.invalidateQueries({ queryKey: ['groups', group?.id] })
+      qc.invalidateQueries({ queryKey: ['groups'] })
       setSelectedBuildingId('')
     },
     onError: (err: Error) => toast.error(err.message),
@@ -219,7 +219,7 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
 
   const removeBuildingAccess = useMutation({
     mutationFn: (buildingId: string) => groupsApi.removeBuildingAccess(group!.id, buildingId),
-    onSuccess: () => { toast.success('Building access removed'); qc.invalidateQueries({ queryKey: ['groups', group?.id] }) },
+    onSuccess: () => { toast.success('Building access removed'); qc.invalidateQueries({ queryKey: ['groups'] }) },
     onError: (err: Error) => toast.error(err.message),
   })
 
@@ -227,7 +227,7 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
     mutationFn: () => groupsApi.addFloorAccess(group!.id, selectedFloorId),
     onSuccess: () => {
       toast.success('Floor access added')
-      qc.invalidateQueries({ queryKey: ['groups', group?.id] })
+      qc.invalidateQueries({ queryKey: ['groups'] })
       setSelectedFloorId('')
     },
     onError: (err: Error) => toast.error(err.message),
@@ -235,7 +235,7 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
 
   const removeFloorAccess = useMutation({
     mutationFn: (floorId: string) => groupsApi.removeFloorAccess(group!.id, floorId),
-    onSuccess: () => { toast.success('Floor access removed'); qc.invalidateQueries({ queryKey: ['groups', group?.id] }) },
+    onSuccess: () => { toast.success('Floor access removed'); qc.invalidateQueries({ queryKey: ['groups'] }) },
     onError: (err: Error) => toast.error(err.message),
   })
 

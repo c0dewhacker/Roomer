@@ -422,7 +422,13 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         throw err
       }
 
-      if (existing.iconUrl) await deleteFile(existing.iconUrl).catch(() => {})
+      // No separate cleanup needed: saveCategoryIcon always writes to the same
+      // deterministic category-icons/{id}.png path, so sharp's toFile() above
+      // already overwrote whatever was there on a replace. A deleteFile call
+      // here would target that exact same path — i.e. delete the file that
+      // was just written, leaving iconUrl pointing at nothing. (Unlike floor
+      // plans/lease documents, which get a fresh unique path per upload and
+      // genuinely need the old file cleaned up separately.)
       // Store the relative storage path — the serve URL is /assets/categories/:id/icon
       const category = await prisma.assetCategory.update({ where: { id }, data: { iconUrl: relPath } })
       // Return with the serve URL so the client can use it immediately

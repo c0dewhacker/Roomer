@@ -571,6 +571,13 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     const amenityFilter = queryResult.data.amenities
       ? queryResult.data.amenities.split(',').map((s) => s.trim()).filter(Boolean)
       : []
+    // Matched case-insensitively below (not via Prisma's hasEvery, which is
+    // exact-string) — amenities are free text entered independently via the
+    // asset form, CSV import, and manual edits, with nothing normalising
+    // casing between them. Without this, "Standing Desk" and "standing desk"
+    // silently never matched each other's assets, splitting one amenity into
+    // two dead-looking filter options.
+    const amenityFilterLower = amenityFilter.map((a) => a.toLowerCase())
 
     const currentUserId = request.user.id
     const dayStart = new Date(`${date}T00:00:00.000Z`)
@@ -583,7 +590,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           orderBy: { name: 'asc' },
           include: {
             assets: {
-              where: { isBookable: true, ...(amenityFilter.length ? { amenities: { hasEvery: amenityFilter } } : {}) },
+              where: { isBookable: true },
               orderBy: { name: 'asc' },
               include: {
                 category: { select: { id: true, name: true, defaultIcon: true, colour: true, iconUrl: true } },
@@ -634,6 +641,15 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
 
     if (!floor) {
       return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+    }
+
+    if (amenityFilterLower.length) {
+      for (const zone of floor.zones) {
+        zone.assets = zone.assets.filter((a) => {
+          const assetAmenitiesLower = a.amenities.map((am) => am.toLowerCase())
+          return amenityFilterLower.every((wanted) => assetAmenitiesLower.includes(wanted))
+        })
+      }
     }
 
     if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {

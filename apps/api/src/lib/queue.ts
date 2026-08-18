@@ -57,6 +57,23 @@ export async function promoteNextQueueEntry(
       where: { id: next.id },
       data: { status: 'PROMOTED', claimDeadline, claimToken: randomUUID() },
     })
+
+    // Same compaction the leave-queue route already does when an entry
+    // ahead is removed (queue.ts DELETE /:id) — without it, everyone still
+    // WAITING behind a promoted entry keeps their old position number
+    // forever, showing a permanently stale (too-high) "your position" to
+    // the end user even though they just moved up in line.
+    await tx.queueEntry.updateMany({
+      where: {
+        assetId,
+        status: 'WAITING',
+        position: { gt: next.position },
+        wantedStartsAt: { lt: next.wantedEndsAt },
+        wantedEndsAt: { gt: next.wantedStartsAt },
+      },
+      data: { position: { decrement: 1 } },
+    })
+
     return { id: next.id, userId: next.userId, assetId: next.assetId, claimDeadline }
   })
 }
@@ -537,6 +554,13 @@ async function processSendNotification(
         metadata: {
           bookingId: bookingId ?? null,
           queueEntryId: queueEntryId ?? null,
+          // FLOOR_AVAILABLE's email deep-links to the floor plan
+          // (floorUrl above), but the in-app bell had nothing to route to at
+          // all since only bookingId/queueEntryId were ever persisted here —
+          // clicking it silently did nothing.
+          floorId: floorId ?? null,
+          assetId: assetId ?? null,
+          slotDate: slotDate ?? null,
         },
       },
     })
@@ -958,7 +982,10 @@ export async function enqueueNotification(data: NotificationJobData): Promise<vo
 
 /** Advisory-lock class serialising the read-cooldown-check + write below, keyed
  * per floor. Distinct from ASSET_BOOKING_LOCK_CLASS (4242) / ASSET_QUEUE_LOCK_CLASS
- * (4243) in lib/booking.ts, which are keyed per asset, not per floor. */
+ * (4243) / USER_BOOKING_QUOTA_LOCK_CLASS (4245) in lib/booking.ts, which are
+ * keyed per asset/user, not per floor. pg_advisory_xact_lock's classid is one
+ * global namespace, not scoped per-file — check lib/booking.ts before adding
+ * another class number here. */
 const FLOOR_NOTIFICATION_LOCK_CLASS = 4244
 
 export async function fanOutFloorAvailable(

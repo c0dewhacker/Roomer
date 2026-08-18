@@ -36,7 +36,16 @@ async function authPlugin(fastify: FastifyInstance): Promise<void> {
       // OIDC state sessions are short-lived (just the redirect round-trip)
       secure: env.COOKIE_SECURE,
       httpOnly: true,
-      sameSite: 'strict',
+      // Must be 'lax', not 'strict' — the whole point of this cookie is to
+      // survive the browser round-trip through the IdP: /oidc/authorize sets
+      // oidcState/oidcNonce, the IdP redirects the browser straight back to
+      // /oidc/callback as a cross-site top-level GET. Browsers never send a
+      // Strict cookie on a cross-site navigation (Lax is the documented
+      // minimum for exactly this OAuth/OIDC redirect pattern), so with
+      // 'strict' the callback always saw an empty session and every OIDC
+      // login attempt failed. The state/nonce values themselves are already
+      // the CSRF protection for this flow — Lax adds no new exposure.
+      sameSite: 'lax',
       maxAge: 10 * 60 * 1000, // 10 minutes — only needs to survive the IdP redirect
     },
     // connect-pg-simple uses express-session's Store interface; @fastify/session expects a

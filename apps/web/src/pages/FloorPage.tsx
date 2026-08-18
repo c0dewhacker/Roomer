@@ -74,19 +74,30 @@ export default function FloorPage() {
   // ─── Amenity filter ─────────────────────────────────────────────────────────
   const [selectedAmenities, setSelectedAmenities] = useState<Set<string>>(new Set())
 
+  // Amenities are free text entered independently via the asset form, CSV
+  // import, and manual edits, with nothing normalising casing between them —
+  // deduped case-insensitively here (keeping whichever casing was seen
+  // first) so "Standing Desk" and "standing desk" show as one filter chip
+  // instead of two that each silently only match half the matching desks.
   const availableAmenities = useMemo(() => {
-    const set = new Set<string>()
-    for (const d of desks ?? []) for (const a of d.amenities ?? []) set.add(a)
-    return [...set].sort((a, b) => a.localeCompare(b))
+    const byLower = new Map<string, string>()
+    for (const d of desks ?? []) {
+      for (const a of d.amenities ?? []) {
+        const key = a.toLowerCase()
+        if (!byLower.has(key)) byLower.set(key, a)
+      }
+    }
+    return [...byLower.values()].sort((a, b) => a.localeCompare(b))
   }, [desks])
 
   // Desks that do NOT have every selected amenity are faded back.
   const dimmedAssetIds = useMemo(() => {
     if (selectedAmenities.size === 0) return undefined
+    const selectedLower = [...selectedAmenities].map((a) => a.toLowerCase())
     const ids = new Set<string>()
     for (const d of desks ?? []) {
-      const has = new Set(d.amenities ?? [])
-      if (![...selectedAmenities].every((a) => has.has(a))) ids.add(d.id)
+      const has = new Set((d.amenities ?? []).map((a) => a.toLowerCase()))
+      if (!selectedLower.every((a) => has.has(a))) ids.add(d.id)
     }
     return ids
   }, [desks, selectedAmenities])

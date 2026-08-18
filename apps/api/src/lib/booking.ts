@@ -31,8 +31,13 @@ export const ASSET_QUEUE_LOCK_CLASS = 4243
  * and exceed maxBookingsPerUser. This lock is keyed on userId instead of
  * assetId so any two booking-creating transactions for the same user
  * serialise against each other regardless of which asset each targets.
+ *
+ * pg_advisory_xact_lock's classid is a single global namespace (not scoped
+ * per-file/module), so every advisory lock class in the codebase must be a
+ * distinct integer — 4244 is FLOOR_NOTIFICATION_LOCK_CLASS in lib/queue.ts;
+ * check there before adding another one here.
  */
-export const USER_BOOKING_QUOTA_LOCK_CLASS = 4244
+export const USER_BOOKING_QUOTA_LOCK_CLASS = 4245
 
 /** Acquire the per-asset advisory lock that serialises booking creation. */
 export async function lockAssetForBooking(tx: Prisma.TransactionClient, assetId: string): Promise<void> {
