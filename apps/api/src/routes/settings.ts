@@ -587,6 +587,9 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(200).send({ data: result })
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error'
+        if (message === 'LDAP_SYNC_IN_PROGRESS') {
+          return reply.status(409).send({ error: { message: 'A directory sync is already in progress', code: 'LDAP_SYNC_IN_PROGRESS' } })
+        }
         return reply.status(502).send({ error: { message: `LDAP sync failed: ${message}`, code: 'LDAP_SYNC_ERROR' } })
       }
     },
