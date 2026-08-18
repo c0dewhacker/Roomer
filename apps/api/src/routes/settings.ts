@@ -85,7 +85,16 @@ const groupMappingSchema = z.object({
 const oidcConfigSchema = z.object({
   issuerUrl: z.string().url(),
   clientId: z.string().min(1),
-  clientSecret: z.string().min(1).optional(),
+  // Required here (not .optional()) so a config that's never had a secret set
+  // fails the merged-config and enable-time schema checks below — the OIDC
+  // client builder (lib/oidc.ts) already hard-requires it at runtime, so an
+  // "enabled" provider with none silently 302s every real login attempt to
+  // "oidc_not_configured" with no signal to the admin who enabled it. This
+  // stays compatible with "leave blank to keep existing on update": the
+  // merge logic below carries the prior encrypted value forward into
+  // mergedConfig whenever the request doesn't resend clientSecret, so this
+  // only actually fires when no secret has ever been set for the provider.
+  clientSecret: z.string().min(1),
   redirectUri: z.string().url().refine(
     (uri) => uri.startsWith(env.APP_URL),
     { message: 'redirectUri must originate from the application URL' },
