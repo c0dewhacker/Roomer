@@ -75,9 +75,16 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Users'], ...route.schema } })
 
   // POST /users — create user (admin)
+  // Every other endpoint that can trigger an outbound email to an
+  // attacker-influenced address (login, refresh, password-change/reset) has
+  // its own per-route limit bounding a compromised-session blast radius —
+  // this one only had the blanket 300/min global default, letting a
+  // hijacked SUPER_ADMIN session email-bomb arbitrary third-party inboxes
+  // via the WELCOME notification. Same 30/15min precedent as
+  // /:id/password/reset below.
   fastify.post(
     '/',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)], config: { rateLimit: { max: 30, timeWindow: '15 minutes' } } },
     async (request, reply) => {
       const result = createUserSchema.safeParse(request.body)
       if (!result.success) {
@@ -623,9 +630,12 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /users/bulk-import — CSV user import with optional group assignments (SUPER_ADMIN)
   // Body: { rows: Array<{ email, display_name, password?, global_role?, access_groups?, send_welcome_email? }> }
   // access_groups: semicolon-separated group names (looked up by name, case-insensitive)
+  // Tighter than the single-create limit above: one call here can already
+  // create hundreds of users (and WELCOME emails) at once, so the
+  // legitimate use case needs far fewer repeated calls than 30/15min.
   fastify.post(
     '/bulk-import',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)], config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } },
     async (request, reply) => {
       const body = userImportBodySchema.safeParse(request.body)
       if (!body.success) {
