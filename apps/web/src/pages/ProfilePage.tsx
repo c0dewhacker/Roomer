@@ -278,7 +278,8 @@ export default function ProfilePage() {
               <div>
                 <p className="text-sm font-medium">Show me in “Who's In”</p>
                 <p className="text-xs text-muted-foreground">
-                  When off, your bookings and assigned desk are hidden from the colleague finder.
+                  When off, you won't appear in Who's In or colleague search. This doesn't hide your name
+                  from the floor plan for people who already have access to your floor.
                 </p>
               </div>
             </div>
