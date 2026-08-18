@@ -30,7 +30,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog'
-import { formatDateRange, formatDate } from '@/lib/utils'
+import { formatDateRange, formatDate, formatCalendarDate } from '@/lib/utils'
 import { DateTimeLocalInput } from '@/components/ui/date-time-input'
 import { assetsApi, recurringBookingsApi, bookingsApi } from '@/lib/api'
 import type { Booking, RecurringBookingRule } from '@/types'
@@ -339,7 +339,7 @@ function RecurringRuleCard({ rule }: { rule: RecurringBookingRule }) {
             </p>
             <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
               <Calendar className="h-3 w-3 shrink-0" />
-              {formatDate(rule.firstDate)} → {formatDate(rule.lastDate)}
+              {formatCalendarDate(rule.firstDate)} → {formatCalendarDate(rule.lastDate)}
               {upcomingCount > 0 && <span className="ml-1">({upcomingCount} upcoming)</span>}
             </p>
           </div>
