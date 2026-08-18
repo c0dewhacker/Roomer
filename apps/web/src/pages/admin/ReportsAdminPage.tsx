@@ -625,6 +625,7 @@ function ManagerRollupCard({ params }: { params: AnalyticsParams }) {
 // ─── Export All ───────────────────────────────────────────────────────────────
 
 function ExportAllButton({ params, days }: { params: AnalyticsParams; days: Preset }) {
+  const { isSuperAdmin } = useNavConfig()
   const { data: summary } = useQuery({ queryKey: ['analytics', 'summary', params], queryFn: () => analyticsApi.summary(params), select: (r) => r.data })
   const { data: bookings } = useQuery({ queryKey: ['analytics', 'bookings', params], queryFn: () => analyticsApi.bookings(params), select: (r) => r.data })
   const { data: utilisation } = useQuery({ queryKey: ['analytics', 'utilisation', params], queryFn: () => analyticsApi.utilisation(params), select: (r) => r.data })
@@ -632,7 +633,16 @@ function ExportAllButton({ params, days }: { params: AnalyticsParams; days: Pres
   const { data: status } = useQuery({ queryKey: ['analytics', 'status-breakdown', params], queryFn: () => analyticsApi.statusBreakdown(params), select: (r) => r.data })
   const { data: peakDays } = useQuery({ queryKey: ['analytics', 'peak-days', params], queryFn: () => analyticsApi.peakDays(params), select: (r) => r.data })
   const { data: floorUtil } = useQuery({ queryKey: ['analytics', 'floor-utilisation', params], queryFn: () => analyticsApi.floorUtilisation(params), select: (r) => r.data })
-  const { data: deptData } = useQuery({ queryKey: ['analytics', 'departments', params], queryFn: () => analyticsApi.departments(params), select: (r) => r.data })
+  // Department Activity is a SUPER_ADMIN-only endpoint with no managed-scope
+  // fallback (same reasoning as the DepartmentAnalyticsTable card below) — a
+  // building admin's "Export All" click was silently 403ing on this one query
+  // in the background on every page load.
+  const { data: deptData } = useQuery({
+    queryKey: ['analytics', 'departments', params],
+    queryFn: () => analyticsApi.departments(params),
+    select: (r) => r.data,
+    enabled: isSuperAdmin,
+  })
 
   const handleExportAll = () => {
     const rangeStr = days === 'custom' ? `${params.startDate}_${params.endDate}` : `last-${days}d`
@@ -830,8 +840,14 @@ export default function ReportsAdminPage() {
         <TopUsersChart params={params} />
         <FloorUtilisationChart params={params} />
         <ZoneUtilisationTable params={params} />
-        <DepartmentAnalyticsTable params={params} />
-        <ManagerRollupCard params={params} />
+        {/* Department Activity and Manager roll-up call SUPER_ADMIN-only
+            endpoints with no managed-scope fallback (analytics.ts, users.ts
+            search) — rendering them for a building admin got three silent
+            403s dressed up as "No departments configured" and a search box
+            that always returns nothing, with no indication it's a
+            permissions issue rather than empty data. */}
+        {isSuperAdmin && <DepartmentAnalyticsTable params={params} />}
+        {isSuperAdmin && <ManagerRollupCard params={params} />}
       </div>
     </div>
   )
