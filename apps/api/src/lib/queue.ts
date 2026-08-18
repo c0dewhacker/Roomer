@@ -474,15 +474,31 @@ async function handleExpireQueueEntries(): Promise<void> {
 
   if (expired.length === 0) return
 
+  // Re-check status right before mutating — expiresAt is a client-chosen
+  // "give up waiting" time independent of the wanted window, so an entry can
+  // still be a valid promotion candidate after it passes. If a slot frees up
+  // (cancellation, no-show release, claim-deadline expiry) between the
+  // findMany above and here, promoteNextQueueEntry could have already moved
+  // this same entry to PROMOTED — an unconditional updateMany would stomp
+  // that back to EXPIRED, leaving the user holding a "you've been promoted"
+  // notification for an entry that's actually expired in the DB.
+  const stillWaiting = await prisma.queueEntry.findMany({
+    where: { id: { in: expired.map((e) => e.id) }, status: 'WAITING' },
+    select: { id: true },
+  })
+  const stillWaitingIds = new Set(stillWaiting.map((e) => e.id))
+  const toExpire = expired.filter((e) => stillWaitingIds.has(e.id))
+  if (toExpire.length === 0) return
+
   await prisma.queueEntry.updateMany({
-    where: { id: { in: expired.map((e) => e.id) } },
+    where: { id: { in: toExpire.map((e) => e.id) } },
     data: { status: 'EXPIRED' },
   })
 
   const b = getBoss()
   await b.insert(
     'send-notification',
-    expired.map((entry) => ({
+    toExpire.map((entry) => ({
       data: {
         type: NotificationType.QUEUE_EXPIRED,
         userId: entry.userId,
@@ -491,7 +507,7 @@ async function handleExpireQueueEntries(): Promise<void> {
     })),
   )
 
-  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Expired queue entries', count: expired.length }) + '\n')
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Expired queue entries', count: toExpire.length }) + '\n')
 }
 
 // ─── Worker: auto-complete-bookings (cron every 30 min) ──────────────────────
