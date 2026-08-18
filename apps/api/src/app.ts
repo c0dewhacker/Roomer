@@ -186,17 +186,21 @@ export async function buildApp(): Promise<FastifyInstance> {
     global: true,
     max: 300,
     timeWindow: '1 minute',
-    // Key authenticated requests by their auth token rather than the source IP.
-    // This binds the rate-limit budget to the credential, so a single compromised
-    // token cannot exhaust the IP budget shared by other users behind a NAT.
-    keyGenerator: (req) => {
-      const cookie = req.headers.cookie
-      if (cookie) {
-        const m = /(?:^|;\s*)access_token=([^;]+)/.exec(cookie)
-        if (m) return m[1]
-      }
-      return req.headers.authorization?.split(' ')[1] ?? req.ip
-    },
+    // Key by source IP only. This previously keyed authenticated requests by
+    // their raw auth-token string instead, on the theory that binding the
+    // budget to the credential stops one compromised token from exhausting
+    // the IP budget shared by other users behind a NAT — but the token is
+    // never validated at this point in the request lifecycle (that only
+    // happens once a route's own requireAuth preHandler runs, well after
+    // rate-limit accounting), so a client could send a fresh/random
+    // Authorization or cookie value on every request and get a brand-new
+    // bucket each time. Verified live: 5 requests with 5 different bogus
+    // bearer tokens each returned a fresh x-ratelimit-remaining: 299,
+    // completely defeating the limiter. IP-only keying can't be evaded by
+    // varying a header; per-credential granularity for the truly sensitive
+    // routes (login, refresh, SSO callbacks) is already handled by the
+    // separate, tighter, IP-keyed limiter on the auth sub-context below.
+    keyGenerator: (req) => req.ip,
     errorResponseBuilder: () => ({
       error: { message: 'Too many requests, please try again later', code: 'RATE_LIMITED' },
     }),
