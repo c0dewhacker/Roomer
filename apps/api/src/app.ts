@@ -99,6 +99,17 @@ export async function buildApp(): Promise<FastifyInstance> {
       },
     } : false,
     referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    // Unlike CSP above, this had no explicit setting at all, so helmet's
+    // default (max-age=1yr, includeSubDomains) was active unconditionally —
+    // sent even over plain HTTP in local dev. A host that's ever reached
+    // once over HTTPS on a shared parent domain (a self-signed cert
+    // click-through, a staging box behind a TLS-terminating proxy sharing a
+    // domain with an HTTP-only dev subdomain) has the browser cache a
+    // 1-year forced-HTTPS-with-subdomains policy, silently breaking any
+    // later plain-HTTP access to that subdomain until the browser's cached
+    // HSTS entry is manually cleared. Only meaningful once the app is
+    // actually served over HTTPS in production.
+    hsts: env.NODE_ENV === 'production',
   })
 
   await fastify.register(cors, {
