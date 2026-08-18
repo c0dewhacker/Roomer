@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.3](https://github.com/c0dewhacker/Roomer/compare/v0.5.2...v0.5.3) (2026-08-18)
+
+
+### Bug Fixes
+
+* admin bookings report silently dropped buildingId whenever floorId was also supplied ([0acccd7](https://github.com/c0dewhacker/Roomer/commit/0acccd7fc72872c9c3a344d78673319d10039baf))
+* asset amenity filtering was case-sensitive, silently splitting one amenity into two non-matching values ([a31d7c1](https://github.com/c0dewhacker/Roomer/commit/a31d7c1aa6b998e799819de0ccc0aae0c523e78d))
+* check-in button was enabled hours before a booking actually started ([6ffc346](https://github.com/c0dewhacker/Roomer/commit/6ffc346c230db0af99d87e6105d9f3f7e6ef2646))
+* FLOOR_AVAILABLE in-app notifications were unclickable dead ends ([f4d1b81](https://github.com/c0dewhacker/Roomer/commit/f4d1b818868a8c27425e575e0d488772ecde4b29))
+* floor-plan layout save sent every asset's position, not just the ones dragged ([f3181b9](https://github.com/c0dewhacker/Roomer/commit/f3181b97492ddbe0489897e95d478ee7e5e23d7b))
+* group card grid showed stale member/access counts after editing in the detail sheet ([fb39ae4](https://github.com/c0dewhacker/Roomer/commit/fb39ae424b80c27a5d233e9569e0f5ea309abfb6))
+* OIDC login always failed - the state/nonce session cookie was SameSite=Strict ([f932621](https://github.com/c0dewhacker/Roomer/commit/f932621848304e57de4f8b887128a8e3507bc9b3))
+* promoting a queue entry never compacted the positions still waiting behind it ([f92e5d4](https://github.com/c0dewhacker/Roomer/commit/f92e5d485c34a215c4a47182c6bd58dbd25882d3))
+* replacing an asset category icon deleted the file it had just written ([841babd](https://github.com/c0dewhacker/Roomer/commit/841babdbf87001b336204e2732e2fe6a69104410))
+* SAML email fallback accepted an opaque NameID with no validation ([0e7883c](https://github.com/c0dewhacker/Roomer/commit/0e7883cc41fa81a5905db37b2e7835092c0005dc))
+
 ## [0.5.2](https://github.com/c0dewhacker/Roomer/compare/v0.5.1...v0.5.2) (2026-08-18)
 
 
