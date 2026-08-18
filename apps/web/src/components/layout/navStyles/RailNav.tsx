@@ -77,6 +77,9 @@ export function RailNav({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <TooltipProvider delayDuration={300}>
+      {activePanel && (
+        <div className="fixed inset-0 z-40 bg-black/50 md:hidden" onClick={() => setActivePanel(null)} />
+      )}
       <div ref={containerRef} className="flex h-full shrink-0">
         {/* Rail */}
         <div className="flex w-12 flex-col items-center border-r bg-background py-3 gap-1 shrink-0">
@@ -153,9 +156,13 @@ export function RailNav({ onNavigate }: { onNavigate?: () => void }) {
           </DropdownMenu>
         </div>
 
-        {/* Slide-out panel */}
+        {/* Slide-out panel — on mobile this overlays the content (fixed,
+            starting after the 48px rail) rather than sitting inline in the
+            flex row, which otherwise squeezed the main content down to a
+            sliver (rail + 220px panel leaves ~100px on a phone). md+ keeps
+            the original inline layout. */}
         {activePanel && (
-          <div className="w-[220px] flex flex-col border-r bg-background shadow-lg animate-in slide-in-from-left-2 duration-150 overflow-y-auto">
+          <div className="fixed left-12 inset-y-0 z-50 md:static md:z-auto w-[220px] flex flex-col border-r bg-background shadow-lg animate-in slide-in-from-left-2 duration-150 overflow-y-auto">
             <div className="flex items-center justify-between px-3 py-3 border-b shrink-0">
               <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 {activePanel === 'personal' ? 'My Space' :
