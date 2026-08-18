@@ -77,15 +77,39 @@ const updateOrgSchema = z.object({
   checkInGraceMinutes: z.number().int().min(5).max(240).optional(),
 })
 
+// The "Direct role" grant option in GroupMappingsEditor sends
+// roomerGroupId/targetGlobalRole as empty strings for whichever field isn't
+// the active mode (see updateGrant in GroupMappingsEditor.tsx), not omitted —
+// z.string().min(1).optional() rejects '' the same as it would reject a
+// missing field, so every "Direct role → Super Admin/Standard user" mapping
+// (a fully-built, advertised UI option) failed to save with a 400. The
+// runtime GroupMapping type (lib/group-mapping.ts) already treats both
+// fields as optional and truthy-checks them, so '' → undefined here matches
+// how they're actually consumed.
+const emptyToUndefined = (v: unknown) => (v === '' ? undefined : v)
+
 const groupMappingSchema = z.object({
   idpGroup: z.string().min(1),
-  roomerGroupId: z.string().min(1),
-})
+  roomerGroupId: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  targetGlobalRole: z.preprocess(emptyToUndefined, z.enum(['SUPER_ADMIN', 'USER']).optional()),
+}).refine(
+  (m) => !!m.roomerGroupId || !!m.targetGlobalRole,
+  { message: 'Each mapping must grant either a Roomer group or a direct role' },
+)
 
 const oidcConfigSchema = z.object({
   issuerUrl: z.string().url(),
   clientId: z.string().min(1),
-  clientSecret: z.string().min(1).optional(),
+  // Required here (not .optional()) so a config that's never had a secret set
+  // fails the merged-config and enable-time schema checks below — the OIDC
+  // client builder (lib/oidc.ts) already hard-requires it at runtime, so an
+  // "enabled" provider with none silently 302s every real login attempt to
+  // "oidc_not_configured" with no signal to the admin who enabled it. This
+  // stays compatible with "leave blank to keep existing on update": the
+  // merge logic below carries the prior encrypted value forward into
+  // mergedConfig whenever the request doesn't resend clientSecret, so this
+  // only actually fires when no secret has ever been set for the provider.
+  clientSecret: z.string().min(1),
   redirectUri: z.string().url().refine(
     (uri) => uri.startsWith(env.APP_URL),
     { message: 'redirectUri must originate from the application URL' },
@@ -587,6 +611,9 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(200).send({ data: result })
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error'
+        if (message === 'LDAP_SYNC_IN_PROGRESS') {
+          return reply.status(409).send({ error: { message: 'A directory sync is already in progress', code: 'LDAP_SYNC_IN_PROGRESS' } })
+        }
         return reply.status(502).send({ error: { message: `LDAP sync failed: ${message}`, code: 'LDAP_SYNC_ERROR' } })
       }
     },
@@ -735,7 +762,7 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
   // ─── Email template endpoints ─────────────────────────────────────────────
 
   const ALLOWED_TEMPLATE_TYPES = [
-    'BOOKING_CONFIRMED', 'BOOKING_CANCELLED', 'BOOKING_CANCELLED_BY_ADMIN',
+    'BOOKING_CONFIRMED', 'BOOKING_CANCELLED', 'BOOKING_CANCELLED_BY_ADMIN', 'BOOKING_NO_SHOW',
     'QUEUE_JOINED', 'QUEUE_PROMOTED', 'QUEUE_EXPIRED', 'QUEUE_CLAIM_EXPIRING',
     'FLOOR_AVAILABLE', 'WELCOME',
   ] as const

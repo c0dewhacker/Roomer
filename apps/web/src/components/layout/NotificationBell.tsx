@@ -26,7 +26,6 @@ const NOTIFICATION_ROUTES: Record<string, string> = {
   QUEUE_EXPIRED: '/queue',
   QUEUE_CLAIM_EXPIRING: '/queue',
   ASSET_ASSIGNED: '/assets',
-  ASSET_DUE_RETURN: '/assets',
 }
 
 const PAGE_SIZE = 30

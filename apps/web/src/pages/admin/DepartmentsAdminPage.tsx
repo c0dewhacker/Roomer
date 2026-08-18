@@ -230,13 +230,18 @@ function DepartmentDetailSheet({ department, onClose }: { department: Department
 export default function DepartmentsAdminPage() {
   const qc = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
-  const [selectedDept, setSelectedDept] = useState<Department | null>(null)
+  const [selectedDeptId, setSelectedDeptId] = useState<string | null>(null)
 
   const { data: departments = [], isLoading } = useQuery({
     queryKey: ['departments'],
     queryFn: () => departmentsApi.list(),
     select: (r) => r.data,
   })
+  // Deriving from the live list (rather than snapshotting the clicked
+  // Department object) keeps the open sheet's header in sync after a rename
+  // — otherwise "Save" invalidates ['departments'] but the sheet keeps
+  // showing whatever name was captured at click time.
+  const selectedDept = departments.find((d) => d.id === selectedDeptId) ?? null
 
   const deleteDept = useMutation({
     mutationFn: (id: string) => departmentsApi.delete(id),
@@ -285,7 +290,7 @@ export default function DepartmentsAdminPage() {
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
           {departments.map((dept) => (
-            <Card key={dept.id} className="hover:shadow-md transition-shadow cursor-pointer" onClick={() => setSelectedDept(dept)}>
+            <Card key={dept.id} className="hover:shadow-md transition-shadow cursor-pointer" onClick={() => setSelectedDeptId(dept.id)}>
               <CardHeader className="pb-2">
                 <div className="flex items-start justify-between">
                   <CardTitle className="text-base">{dept.name}</CardTitle>
@@ -299,7 +304,9 @@ export default function DepartmentsAdminPage() {
                       <AlertDialogHeader>
                         <AlertDialogTitle>Delete department?</AlertDialogTitle>
                         <AlertDialogDescription>
-                          Delete <strong>{dept.name}</strong>? Members will be unassigned.
+                          Delete <strong>{dept.name}</strong>? {(dept._count?.members ?? 0) > 0
+                            ? `${dept._count?.members} member${dept._count?.members !== 1 ? 's' : ''} will be unassigned.`
+                            : 'It has no members.'}
                         </AlertDialogDescription>
                       </AlertDialogHeader>
                       <AlertDialogFooter>
@@ -324,7 +331,7 @@ export default function DepartmentsAdminPage() {
       )}
 
       <CreateDepartmentDialog open={createOpen} onClose={() => setCreateOpen(false)} />
-      <DepartmentDetailSheet department={selectedDept} onClose={() => setSelectedDept(null)} />
+      <DepartmentDetailSheet department={selectedDept} onClose={() => setSelectedDeptId(null)} />
     </div>
   )
 }

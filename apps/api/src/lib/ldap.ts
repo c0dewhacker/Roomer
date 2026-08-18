@@ -52,7 +52,7 @@ export async function getLdapConfig(): Promise<LdapConfig | null> {
 }
 
 function createLdapClient(cfg: LdapConfig): ldap.Client {
-  return ldap.createClient({
+  const client = ldap.createClient({
     url: cfg.url,
     tlsOptions: cfg.tlsEnabled
       ? { rejectUnauthorized: cfg.tlsRejectUnauthorized ?? true }
@@ -60,11 +60,25 @@ function createLdapClient(cfg: LdapConfig): ldap.Client {
     timeout: 5000,
     connectTimeout: 5000,
   })
+  // ldapjs emits 'error' directly on the client for connection-level failures
+  // (unreachable host, connect timeout) — these fire independently of any
+  // bind/search callback. With zero listeners, Node's EventEmitter rethrows
+  // synchronously and crashes the whole process, taking down every user's
+  // session over one bad LDAP config or a transient network blip. bindAsync/
+  // searchAsync attach their own listener while a call is in flight to reject
+  // their promise instead of hanging; this is the permanent fallback so an
+  // error firing at any other time (e.g. between calls, or after the request
+  // that triggered it has already finished) still can't crash the process.
+  client.on('error', () => {})
+  return client
 }
 
 function bindAsync(client: ldap.Client, dn: string, password: string): Promise<void> {
   return new Promise((resolve, reject) => {
+    const onError = (err: Error) => reject(err)
+    client.once('error', onError)
     client.bind(dn, password, (err) => {
+      client.removeListener('error', onError)
       if (err) reject(err)
       else resolve()
     })
@@ -77,12 +91,14 @@ function searchAsync(
   options: ldap.SearchOptions,
 ): Promise<ldap.SearchEntry[]> {
   return new Promise((resolve, reject) => {
+    const onError = (err: Error) => reject(err)
+    client.once('error', onError)
     client.search(base, options, (err, res) => {
-      if (err) { reject(err); return }
+      if (err) { client.removeListener('error', onError); reject(err); return }
       const entries: ldap.SearchEntry[] = []
       res.on('searchEntry', (entry) => entries.push(entry))
-      res.on('error', reject)
-      res.on('end', () => resolve(entries))
+      res.on('error', (searchErr) => { client.removeListener('error', onError); reject(searchErr) })
+      res.on('end', () => { client.removeListener('error', onError); resolve(entries) })
     })
   })
 }
@@ -101,7 +117,26 @@ export interface LdapAuthResult {
   department?: string
 }
 
+// Guards against a second admin (or a second tab) triggering an overlapping
+// full-directory sync — the client only disables its own button while its
+// own request is pending, which doesn't stop a concurrent one from
+// elsewhere, and two syncs racing over the same users wastes a full LDAP
+// traversal and produces error counts that are hard to attribute to either run.
+let ldapSyncInProgress = false
+
 export async function syncLdapUsers(cfg: LdapConfig): Promise<LdapSyncResult> {
+  if (ldapSyncInProgress) {
+    throw new Error('LDAP_SYNC_IN_PROGRESS')
+  }
+  ldapSyncInProgress = true
+  try {
+    return await runLdapSync(cfg)
+  } finally {
+    ldapSyncInProgress = false
+  }
+}
+
+async function runLdapSync(cfg: LdapConfig): Promise<LdapSyncResult> {
   const result: LdapSyncResult = { created: 0, updated: 0, deactivated: 0, skipped: 0, errors: [] }
 
   const emailAttr = cfg.emailAttribute ?? 'mail'

@@ -169,6 +169,19 @@ export const DEFAULT_TEMPLATE_STRINGS: Record<string, { subject: string; html: s
      <a href="{{bookingsUrl}}" class="btn">View My Bookings</a>`),
   },
 
+  BOOKING_NO_SHOW: {
+    subject: 'Booking released — {{assetName}}',
+    html: baseHtml('Booking released — {{assetName}}', `<h1>Booking released</h1>
+     <p>Hi {{userName}}, your booking was released because you didn't check in.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>{{assetName}}</dd>
+         <dt>Was scheduled</dt><dd>{{startsAt}} → {{endsAt}}</dd>
+       </dl>
+     </div>
+     <a href="{{bookingsUrl}}" class="btn">View My Bookings</a>`),
+  },
+
   QUEUE_JOINED: {
     subject: "You've joined the queue — {{assetName}}",
     html: baseHtml("You've joined the queue — {{assetName}}", `<h1>You're in the queue</h1>
@@ -301,6 +314,66 @@ export function renderBookingCancelled(
      <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
   )
   const text = `Hi ${user.displayName},\n\nYour booking for ${asset.name} (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}) has been cancelled.`
+  return { subject, html, text }
+}
+
+// ─── BOOKING_CANCELLED_BY_ADMIN ───────────────────────────────────────────────
+// The admin template editor's "default" preview (DEFAULT_TEMPLATE_STRINGS
+// above) has always had distinct "cancelled by an administrator" copy, but
+// the actual send path called the plain renderBookingCancelled() above —
+// recipients got an email indistinguishable from a self-cancellation, and it
+// disagreed with the in-app notification for the same event. This mirrors
+// DEFAULT_TEMPLATE_STRINGS.BOOKING_CANCELLED_BY_ADMIN so what's shown as the
+// default in the template editor is what's actually sent.
+
+export function renderBookingCancelledByAdmin(
+  booking: Pick<Booking, 'id' | 'startsAt' | 'endsAt'>,
+  user: Pick<User, 'displayName' | 'email'>,
+  asset: Pick<Asset, 'name'>,
+): { subject: string; html: string; text: string } {
+  const subject = `Booking cancelled by administrator — ${escapeHtml(asset.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Booking cancelled by administrator</h1>
+     <p>Hi ${escapeHtml(user.displayName)}, your booking has been cancelled by an administrator.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
+         <dt>Was scheduled</dt><dd>${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
+  )
+  const text = `Hi ${user.displayName},\n\nYour booking for ${asset.name} (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}) has been cancelled by an administrator.`
+  return { subject, html, text }
+}
+
+// ─── BOOKING_NO_SHOW ──────────────────────────────────────────────────────────
+// Previously reused renderBookingCancelled() too, and BOOKING_NO_SHOW wasn't
+// even in the admin-editable template list — a released no-show user got an
+// email that looked exactly like they'd cancelled themselves, with no
+// indication their desk was released for missing check-in, and no way for
+// an admin to fix the wording since it wasn't exposed to customize.
+
+export function renderBookingNoShow(
+  booking: Pick<Booking, 'id' | 'startsAt' | 'endsAt'>,
+  user: Pick<User, 'displayName' | 'email'>,
+  asset: Pick<Asset, 'name'>,
+): { subject: string; html: string; text: string } {
+  const subject = `Booking released — ${escapeHtml(asset.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Booking released</h1>
+     <p>Hi ${escapeHtml(user.displayName)}, your booking was released because you didn't check in.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
+         <dt>Was scheduled</dt><dd>${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
+  )
+  const text = `Hi ${user.displayName},\n\nYour booking for ${asset.name} (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}) was released because you didn't check in.`
   return { subject, html, text }
 }
 

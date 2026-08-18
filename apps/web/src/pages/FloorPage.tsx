@@ -14,6 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import type { AssetWithStatus } from '@/types'
+import { ApiError } from '@/lib/api'
 
 const STATUS_LEGEND: Array<{ label: string; colour: string; status: string }> = [
   { label: 'Available', colour: 'bg-green-500', status: 'available' },
@@ -40,7 +41,7 @@ export default function FloorPage() {
 
   const [showWhoIsIn, setShowWhoIsIn] = useState(false)
   const [showSubscribeDialog, setShowSubscribeDialog] = useState(false)
-  const { data: floor, isLoading } = useFloorData(floorId!)
+  const { data: floor, isLoading, isError, error: floorError } = useFloorData(floorId!)
   const { data: desks } = useFloorAvailability(floorId!, selectedDate)
   const { data: subscriptions } = useFloorSubscriptions()
   const existingSubscription = subscriptions?.find((s) => s.floorId === floorId) ?? null
@@ -114,6 +115,25 @@ export default function FloorPage() {
   const isPast = selectedDate < new Date(today.toDateString())
 
   if (!floorId) return null
+
+  // Without this, a colleague-finder deep link (or any direct navigation)
+  // into a floor the viewer's group can't access — a 403 from the backend's
+  // own group-access check — settled isLoading=false with floor left
+  // undefined, and the page rendered a near-blank shell (no name, no plan,
+  // no error) instead of telling the user why nothing showed up.
+  if (isError) {
+    const isForbidden = floorError instanceof ApiError && floorError.status === 403
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 text-center px-6">
+        <p className="font-medium">{isForbidden ? "You don't have access to this floor" : 'Could not load this floor'}</p>
+        <p className="text-sm text-muted-foreground">
+          {isForbidden
+            ? 'Your group doesn’t have access to this building or floor.'
+            : 'Something went wrong loading this floor. Try again shortly.'}
+        </p>
+      </div>
+    )
+  }
 
   return (
     <div className="flex h-full flex-col">

@@ -70,7 +70,16 @@ export async function departmentRoutes(fastify: FastifyInstance): Promise<void> 
         include: { _count: { select: { members: true } } },
       })
       return reply.status(200).send({ data: department })
-    } catch {
+    } catch (err) {
+      // Renaming to a name that collides with another department in the org
+      // hits the same @@unique([organisationId, name]) constraint POST's
+      // create handler already guards against — without this check every
+      // failure here (including that one) was mislabelled "not found",
+      // telling the admin the department they're actively editing doesn't
+      // exist instead of that the name they typed is already taken.
+      if ((err as { code?: string }).code === 'P2002') {
+        return reply.status(409).send({ error: { message: 'A department with this name already exists', code: 'ALREADY_EXISTS' } })
+      }
       return reply.status(404).send({ error: { message: 'Department not found', code: 'NOT_FOUND' } })
     }
   })

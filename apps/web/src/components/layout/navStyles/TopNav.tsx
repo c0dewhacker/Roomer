@@ -1,6 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useState } from 'react'
-import { ChevronDown, Building2, LogOut, Settings, User, Sun, Moon, Info, ExternalLink } from 'lucide-react'
+import { ChevronDown, Building2, LogOut, Settings, User, Sun, Moon, Info, ExternalLink, Menu } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useNavConfig } from '@/hooks/useNavConfig'
 import { useAuth } from '@/hooks/useAuth'
@@ -10,6 +10,7 @@ import { brandingApi } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { NotificationBell } from '../NotificationBell'
+import { Sidebar } from '../Sidebar'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -35,6 +36,7 @@ export function TopNav() {
   const branding = useBranding()
   const { theme, setTheme } = useThemeStore()
   const [aboutOpen, setAboutOpen] = useState(false)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
   const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
 
@@ -53,6 +55,15 @@ export function TopNav() {
   return (
     <>
       <header className="flex h-14 items-center gap-4 border-b bg-background px-4 shrink-0">
+        {/* Mobile menu trigger — the primary nav below is desktop-only past this point */}
+        <Button
+          variant="ghost" size="icon" className="h-9 w-9 md:hidden shrink-0"
+          aria-label="Open navigation menu"
+          onClick={() => setMobileNavOpen(true)}
+        >
+          <Menu className="h-5 w-5" />
+        </Button>
+
         {/* Logo / App name */}
         <div className="flex items-center gap-3 shrink-0">
           {branding?.logoPath ? (
@@ -68,8 +79,10 @@ export function TopNav() {
 
         <div className="h-5 w-px bg-border shrink-0" />
 
-        {/* Primary nav items */}
-        <nav className="flex items-center gap-1 flex-1 overflow-x-auto">
+        {/* Primary nav items — collapses into the mobile drawer above below md,
+            since it previously just overflowed off-screen with no scroll
+            affordance, leaving Buildings/Admin completely unreachable. */}
+        <nav className="hidden md:flex items-center gap-1 flex-1 overflow-x-auto">
           {personalSection?.items.map((item) => (
             <NavLink
               key={item.to}
@@ -169,6 +182,21 @@ export function TopNav() {
           </DropdownMenu>
         </div>
       </header>
+
+      {/* Mobile nav overlay + drawer — reuses the same Sidebar content the
+          sidebar nav style shows on desktop, since it already has every
+          section (personal items, buildings-with-floors, admin groups). */}
+      {mobileNavOpen && (
+        <div className="fixed inset-0 z-40 bg-black/50 md:hidden" onClick={() => setMobileNavOpen(false)} />
+      )}
+      <aside
+        className={cn(
+          'fixed inset-y-0 left-0 z-50 w-64 border-r bg-background transition-transform duration-200 md:hidden',
+          mobileNavOpen ? 'translate-x-0' : '-translate-x-full',
+        )}
+      >
+        <Sidebar onNavigate={() => setMobileNavOpen(false)} />
+      </aside>
 
       <Dialog open={aboutOpen} onOpenChange={setAboutOpen}>
         <DialogContent className="sm:max-w-sm">

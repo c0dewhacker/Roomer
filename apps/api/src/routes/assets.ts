@@ -406,14 +406,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       const file = await request.file()
       if (!file) return reply.status(400).send({ error: { message: 'No file uploaded', code: 'NO_FILE' } })
 
+      let relPath: string
       try {
-        // Delete old file on disk if any (iconUrl stored as relative storage path)
-        if (existing.iconUrl) await deleteFile(existing.iconUrl).catch(() => {})
-        const relPath = await saveCategoryIcon(file, id)
-        // Store the relative storage path — the serve URL is /assets/categories/:id/icon
-        const category = await prisma.assetCategory.update({ where: { id }, data: { iconUrl: relPath } })
-        // Return with the serve URL so the client can use it immediately
-        return reply.status(200).send({ data: { ...category, iconUrl: `/api/v1/assets/categories/${id}/icon` } })
+        // Validate and save the new file BEFORE touching the old one — this
+        // can still reject on invalid magic bytes, and if the old icon was
+        // already deleted at that point, a rejected replacement would leave
+        // the category with no icon at all instead of just failing the upload
+        // (the same ordering bug already fixed for floor-plan replacement).
+        relPath = await saveCategoryIcon(file, id)
       } catch (err: unknown) {
         const e = err as { code?: string }
         if (e.code === 'INVALID_MAGIC') {
@@ -421,6 +421,12 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         }
         throw err
       }
+
+      if (existing.iconUrl) await deleteFile(existing.iconUrl).catch(() => {})
+      // Store the relative storage path — the serve URL is /assets/categories/:id/icon
+      const category = await prisma.assetCategory.update({ where: { id }, data: { iconUrl: relPath } })
+      // Return with the serve URL so the client can use it immediately
+      return reply.status(200).send({ data: { ...category, iconUrl: `/api/v1/assets/categories/${id}/icon` } })
     },
   )
 
@@ -521,7 +527,21 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         },
       },
     })
-    return reply.status(200).send({ data: favourites.map((f) => f.asset) })
+
+    // Favouriting checks group access at the time it's created, but access
+    // isn't static — a restriction added afterward (or the user's group
+    // membership changing) shouldn't leave a stale favourite still exposing
+    // that asset's name/category/floor/building here indefinitely.
+    const assets = favourites.map((f) => f.asset)
+    const visible = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      ? assets
+      : (await Promise.all(assets.map(async (asset) => {
+          if (!asset.floor) return asset
+          const allowed = await checkGroupAccess(request.user.id, asset.floor.building.id, asset.floor.id)
+          return allowed ? asset : null
+        }))).filter((a) => a !== null)
+
+    return reply.status(200).send({ data: visible })
   })
 
   // POST /assets/:id/favourite — star an asset (idempotent)
@@ -907,6 +927,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           }
           const userId = userByEmail.get(userEmail.toLowerCase())
           if (!userId) { errors.push({ row: i + 1, assetId, userEmail, error: 'User not found' }); continue }
+          // Assigning always sets bookingStatus to ASSIGNED below — for a
+          // DISABLED asset (taken out of service, e.g. for maintenance) that
+          // would silently make it bookable again with no signal to the
+          // admin that a stale row (a leftover assignment CSV, a typo'd
+          // asset ID) just reactivated it mid-maintenance.
+          if (assetStatusMap.get(assetId) === 'DISABLED') {
+            errors.push({ row: i + 1, assetId, userEmail, error: 'Asset is disabled and cannot be assigned' })
+            continue
+          }
           if (isPrimary) {
             await prisma.assetUserAssignment.updateMany({
               where: { assetId, isPrimary: true },
@@ -1229,6 +1258,12 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       if (!user) {
         return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })
       }
+      // Assigning sets bookingStatus to ASSIGNED below — for a DISABLED asset
+      // (taken out of service, e.g. for maintenance) that would silently make
+      // it bookable again with no signal that assigning it just reactivated it.
+      if (asset.bookingStatus === 'DISABLED') {
+        return reply.status(409).send({ error: { message: 'Asset is disabled and cannot be assigned', code: 'ASSET_DISABLED' } })
+      }
       if (result.data.isPrimary) {
         await prisma.assetUserAssignment.updateMany({
           where: { assetId: id, isPrimary: true },
@@ -1473,8 +1508,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       if (!asset) return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
       if (!zone) return reply.status(404).send({ error: { message: 'Zone not found', code: 'NOT_FOUND' } })
 
+      // A secondary zone must belong to the same floor as the asset —
+      // otherwise the asset ends up a member of a zone on an unrelated
+      // floor/building, and (for non-admins) checking permission against
+      // only the asset's floor below would let a manager for that floor
+      // reach into a zone on a floor they don't manage, matching the same
+      // check already enforced for zone groups (see zones.ts).
+      if (!asset.floorId || zone.floorId !== asset.floorId) {
+        return reply.status(404).send({ error: { message: 'Zone not found on this asset\'s floor', code: 'NOT_FOUND' } })
+      }
+
       if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
-        if (!asset.floorId) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
         const canManage = await isFloorManagerForFloor(request.user.id, asset.floorId)
         if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }

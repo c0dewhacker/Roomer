@@ -5,6 +5,22 @@ import { toast } from 'sonner'
 import { authApi, ApiError } from '../lib/api'
 import { useAuthStore } from '../stores/auth'
 
+// The access token cookie is a fixed 8-hour JWT (apps/api/src/lib/jwt.ts,
+// MAX_AGE_SECONDS) with no refresh-token/short-lived-access-token split, so
+// an active user was silently logged out exactly 8 hours after login
+// regardless of activity — POST /auth/refresh existed but nothing ever
+// called it (see #208). A *reactive* refresh-on-401 approach doesn't work
+// here: /auth/refresh itself verifies the incoming token with jsonwebtoken's
+// default strict expiry check, so it rejects an already-expired token the
+// same as any other route would — refresh can only succeed while the
+// current token is still valid. So this has to run proactively, well inside
+// the 8h window, not in response to a failure. 30 minutes keeps the token
+// continuously fresh for an active session while staying far under the
+// refresh endpoint's own 10-per-15-min rate limit; the backend's separate
+// MAX_SESSION_SECONDS (24h) ceiling still applies end-to-end regardless of
+// how often this fires, so this can't turn into an indefinite session.
+const REFRESH_INTERVAL_MS = 30 * 60 * 1000
+
 export function useAuth() {
   const { user, isLoading, setUser, setLoading } = useAuthStore()
   const qc = useQueryClient()
@@ -38,6 +54,23 @@ export function useAuth() {
       setLoading(false)
     }
   }, [data, queryLoading, error, setUser, setLoading, qc, navigate])
+
+  // Proactively keep the access token fresh for as long as the user is
+  // actively authenticated — see REFRESH_INTERVAL_MS above for why this has
+  // to be proactive rather than reactive. If a refresh call itself fails
+  // (token revoked, or the 24h absolute session ceiling reached), don't
+  // retry it here — invalidate ['auth','me'] so the existing 401-handling
+  // effect above runs and redirects to /login, the same as any other
+  // request hitting an expired session would.
+  useEffect(() => {
+    if (!user) return
+    const interval = setInterval(() => {
+      authApi.refresh().catch(() => {
+        qc.invalidateQueries({ queryKey: ['auth', 'me'] })
+      })
+    }, REFRESH_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [user, qc])
 
   const loginMutation = useMutation({
     mutationFn: ({ email, password }: { email: string; password: string }) =>

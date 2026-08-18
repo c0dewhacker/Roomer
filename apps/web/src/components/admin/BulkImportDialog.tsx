@@ -199,9 +199,17 @@ export function BulkImportDialog({ open, onClose }: Props) {
       setParseErrors(['The file appears to be empty or has no data rows.'])
       return
     }
+    // Mirrors the backend's importBodySchema row cap (apps/api/src/routes/import.ts)
+    // — without this, an oversized file reaches the preview step looking fine,
+    // then fails at submit with a generic "Invalid request body" with no row
+    // count or guidance at all.
+    if (parsed.length > 2000) {
+      setParseErrors([`This file has ${parsed.length} rows, which is over the 2000-row import limit. Split it into smaller files.`])
+      return
+    }
 
     const errs: string[] = []
-    const required = ['building_name', 'floor_name', 'zone_name', 'asset_name']
+    const required = ['building_name', 'floor_name', 'zone_name', 'asset_name', 'asset_category']
     const missing = required.filter((h) => !(h in parsed[0]))
     if (missing.length > 0) {
       errs.push(`Missing required columns: ${missing.join(', ')}`)
@@ -389,6 +397,11 @@ export function BulkImportDialog({ open, onClose }: Props) {
                   <ul className="text-xs text-destructive/80 space-y-0.5 max-h-32 overflow-y-auto">
                     {result.errors.map((e, i) => <li key={i}>· Row {e.row}: {e.message}</li>)}
                   </ul>
+                  {result.created.assets > 0 && (
+                    <p className="text-xs text-muted-foreground pt-1">
+                      Assets are always created as new entries, so fixing and re-uploading the full file will re-import the {result.created.assets} row{result.created.assets !== 1 ? 's' : ''} that already succeeded above. Remove those rows from your CSV first, or re-upload with only the corrected rows.
+                    </p>
+                  )}
                 </div>
               )}
             </>

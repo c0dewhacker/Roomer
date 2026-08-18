@@ -2,7 +2,7 @@ import { PgBoss, type Job } from 'pg-boss'
 import { env } from '../env.js'
 import { prisma } from './prisma.js'
 import { buildBookingIcs } from './ical.js'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingCancelledByAdmin, renderBookingNoShow, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
 import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
@@ -239,7 +239,7 @@ async function processSendNotification(
     if (booking) {
       title = `Booking released — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} was released because you didn't check in.`
-      emailPayload = renderBookingCancelled(booking, user, booking.asset)
+      emailPayload = renderBookingNoShow(booking, user, booking.asset)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
@@ -255,7 +255,7 @@ async function processSendNotification(
     if (booking) {
       title = `Booking cancelled by admin — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} has been cancelled by an administrator.`
-      emailPayload = renderBookingCancelled(booking, user, booking.asset)
+      emailPayload = renderBookingCancelledByAdmin(booking, user, booking.asset)
       icalEvent = {
         method: 'CANCEL',
         content: buildBookingIcs({
@@ -474,15 +474,31 @@ async function handleExpireQueueEntries(): Promise<void> {
 
   if (expired.length === 0) return
 
+  // Re-check status right before mutating — expiresAt is a client-chosen
+  // "give up waiting" time independent of the wanted window, so an entry can
+  // still be a valid promotion candidate after it passes. If a slot frees up
+  // (cancellation, no-show release, claim-deadline expiry) between the
+  // findMany above and here, promoteNextQueueEntry could have already moved
+  // this same entry to PROMOTED — an unconditional updateMany would stomp
+  // that back to EXPIRED, leaving the user holding a "you've been promoted"
+  // notification for an entry that's actually expired in the DB.
+  const stillWaiting = await prisma.queueEntry.findMany({
+    where: { id: { in: expired.map((e) => e.id) }, status: 'WAITING' },
+    select: { id: true },
+  })
+  const stillWaitingIds = new Set(stillWaiting.map((e) => e.id))
+  const toExpire = expired.filter((e) => stillWaitingIds.has(e.id))
+  if (toExpire.length === 0) return
+
   await prisma.queueEntry.updateMany({
-    where: { id: { in: expired.map((e) => e.id) } },
+    where: { id: { in: toExpire.map((e) => e.id) } },
     data: { status: 'EXPIRED' },
   })
 
   const b = getBoss()
   await b.insert(
     'send-notification',
-    expired.map((entry) => ({
+    toExpire.map((entry) => ({
       data: {
         type: NotificationType.QUEUE_EXPIRED,
         userId: entry.userId,
@@ -491,7 +507,7 @@ async function handleExpireQueueEntries(): Promise<void> {
     })),
   )
 
-  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Expired queue entries', count: expired.length }) + '\n')
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Expired queue entries', count: toExpire.length }) + '\n')
 }
 
 // ─── Worker: auto-complete-bookings (cron every 30 min) ──────────────────────

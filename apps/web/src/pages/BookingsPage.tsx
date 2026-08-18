@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { parseISO, isToday } from 'date-fns'
-import { Calendar, MapPin, Clock, Trash2, Pencil, CalendarPlus, X, Armchair, Repeat, Check } from 'lucide-react'
+import { Calendar, MapPin, Clock, Trash2, Pencil, CalendarPlus, Armchair, Repeat, Check } from 'lucide-react'
 import { useMyBookings, useCancelBooking, useUpdateBooking } from '@/hooks/useBookings'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -32,8 +32,9 @@ import {
 } from '@/components/ui/dialog'
 import { formatDateRange, formatDate } from '@/lib/utils'
 import { DateTimeLocalInput } from '@/components/ui/date-time-input'
-import { assetsApi, recurringBookingsApi, bookingsApi, type MyAssignment, type AvailabilityWindow } from '@/lib/api'
+import { assetsApi, recurringBookingsApi, bookingsApi } from '@/lib/api'
 import type { Booking, RecurringBookingRule } from '@/types'
+import { AssignedDeskCard } from '@/components/AssignedDeskCard'
 
 type Tab = 'upcoming' | 'past' | 'all'
 
@@ -47,10 +48,6 @@ function toLocalDatetimeValue(iso: string): string {
   const d = parseISO(iso)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-function nowLocalValue(): string {
-  return toLocalDatetimeValue(new Date().toISOString())
 }
 
 // ─── Edit booking dialog ──────────────────────────────────────────────────────
@@ -111,218 +108,6 @@ function EditBookingDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
-}
-
-// ─── Make available dialog ────────────────────────────────────────────────────
-
-function MakeAvailableDialog({
-  assignment,
-  open,
-  onClose,
-}: {
-  assignment: MyAssignment
-  open: boolean
-  onClose: () => void
-}) {
-  const qc = useQueryClient()
-  const [startsAt, setStartsAt] = useState(nowLocalValue())
-  const [endsAt, setEndsAt] = useState('')
-  const [note, setNote] = useState('')
-
-  const create = useMutation({
-    mutationFn: () =>
-      assetsApi.createAvailabilityWindow(assignment.assetId, {
-        startsAt: new Date(startsAt).toISOString(),
-        endsAt: new Date(endsAt).toISOString(),
-        note: note || undefined,
-      }),
-    onSuccess: () => {
-      toast.success(`${assignment.asset.name} is now available for booking during that period`)
-      qc.invalidateQueries({ queryKey: ['my-assignments'] })
-      onClose()
-    },
-    onError: (err: Error) => toast.error(err.message),
-  })
-
-  const assetLabel = assignment.asset.bookingLabel ?? assignment.asset.name
-  const location = [
-    assignment.asset.floor?.building.name,
-    assignment.asset.floor?.name,
-    assignment.asset.primaryZone?.name,
-  ].filter(Boolean).join(' › ')
-
-  return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-sm">
-        <DialogHeader>
-          <DialogTitle>Make {assetLabel} available</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-1 pb-1">
-          {location && <p className="text-xs text-muted-foreground flex items-center gap-1"><MapPin className="h-3 w-3" />{location}</p>}
-          <p className="text-xs text-muted-foreground">
-            Other users will be able to temporarily book your desk during this period. Your permanent assignment is not affected.
-          </p>
-        </div>
-        <div className="space-y-4 py-1">
-          <div>
-            <Label>Available from</Label>
-            <DateTimeLocalInput
-              value={startsAt}
-              min={nowLocalValue()}
-              onChange={setStartsAt}
-              className="mt-1.5"
-            />
-          </div>
-          <div>
-            <Label>Available until</Label>
-            <DateTimeLocalInput
-              value={endsAt}
-              min={startsAt}
-              onChange={setEndsAt}
-              className="mt-1.5"
-            />
-          </div>
-          <div>
-            <Label htmlFor="avail-note">Note <span className="text-muted-foreground font-normal">(optional)</span></Label>
-            <Textarea
-              id="avail-note"
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              rows={2}
-              placeholder="e.g. Working from home this week"
-              className="mt-1.5 resize-none"
-            />
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={create.isPending}>Cancel</Button>
-          <Button
-            onClick={() => create.mutate()}
-            disabled={create.isPending || !startsAt || !endsAt || new Date(endsAt) <= new Date(startsAt)}
-          >
-            {create.isPending ? 'Saving…' : 'Make available'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-// ─── Availability window row ──────────────────────────────────────────────────
-
-function WindowRow({ assetId, window }: { assetId: string; window: AvailabilityWindow }) {
-  const qc = useQueryClient()
-
-  const remove = useMutation({
-    mutationFn: () => assetsApi.deleteAvailabilityWindow(assetId, window.id),
-    onSuccess: () => {
-      toast.success('Availability window removed — desk is no longer shareable for that period')
-      qc.invalidateQueries({ queryKey: ['my-assignments'] })
-    },
-    onError: (err: Error) => toast.error(err.message),
-  })
-
-  return (
-    <div className="flex items-center justify-between gap-2 rounded-md bg-muted/50 px-3 py-2 text-xs">
-      <div className="flex items-center gap-1.5 text-muted-foreground min-w-0">
-        <Clock className="h-3 w-3 shrink-0" />
-        <span className="truncate">{formatDateRange(window.startsAt, window.endsAt)}</span>
-        {window.note && <span className="italic truncate">— {window.note}</span>}
-      </div>
-      <AlertDialog>
-        <AlertDialogTrigger asChild>
-          <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-muted-foreground hover:text-destructive">
-            <X className="h-3.5 w-3.5" />
-          </Button>
-        </AlertDialogTrigger>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove availability window?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Others will no longer be able to book your desk during{' '}
-              <strong>{formatDateRange(window.startsAt, window.endsAt)}</strong>.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Keep</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => remove.mutate()}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Remove
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
-  )
-}
-
-// ─── Assigned desk card ───────────────────────────────────────────────────────
-
-function AssignedDeskCard({ assignment }: { assignment: MyAssignment }) {
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const navigate = useNavigate()
-
-  const { asset } = assignment
-  const location = [
-    asset.floor?.building.name,
-    asset.floor?.name,
-    asset.primaryZone?.name,
-  ].filter(Boolean).join(' › ')
-
-  return (
-    <>
-      <Card>
-        <CardContent className="p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div
-              className="flex-1 min-w-0 cursor-pointer"
-              onClick={() => asset.floor?.id && navigate(`/floors/${asset.floor.id}`)}
-            >
-              <div className="flex items-center gap-2 flex-wrap">
-                <p className="font-medium truncate">{asset.name}</p>
-                <Badge variant="secondary" className="shrink-0 text-xs">Permanently assigned</Badge>
-                {assignment.isPrimary && (
-                  <Badge variant="outline" className="shrink-0 text-xs">Primary</Badge>
-                )}
-              </div>
-              {location && (
-                <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
-                  <MapPin className="h-3 w-3 shrink-0" />
-                  {location}
-                </p>
-              )}
-              <p className="text-xs text-muted-foreground mt-0.5">{asset.category.name}</p>
-            </div>
-
-            <Button
-              size="sm"
-              variant="outline"
-              className="shrink-0 h-8 text-xs gap-1.5"
-              onClick={() => setDialogOpen(true)}
-            >
-              <CalendarPlus className="h-3.5 w-3.5" />
-              Make available
-            </Button>
-          </div>
-
-          {asset.availabilityWindows.length > 0 && (
-            <div className="mt-3 space-y-1.5">
-              <p className="text-xs font-medium text-muted-foreground">Shared periods</p>
-              {asset.availabilityWindows.map((w) => (
-                <WindowRow key={w.id} assetId={asset.id} window={w} />
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {dialogOpen && (
-        <MakeAvailableDialog assignment={assignment} open={dialogOpen} onClose={() => setDialogOpen(false)} />
-      )}
-    </>
   )
 }
 
@@ -485,6 +270,29 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
+// The API stores startTime/endTime/dayOfWeek as UTC wall-clock values (see the
+// comment in DeskPanel's createRecurring) — displaying them as-is shows a
+// Sydney user's local 13:00–18:00 booking as "03:00–08:00", which reads as
+// wrong even though the underlying bookings are scheduled correctly. Anchor
+// each HH:MM to a UTC date matching the stored dayOfWeek (1970-01-04 was a UTC
+// Sunday) and read the local wall-clock fields back off that same instant —
+// this recovers the correct local time and day regardless of which direction
+// the UTC conversion shifted the calendar day.
+function utcRuleTimeToLocal(startTime: string, endTime: string, dayOfWeek?: number | null) {
+  const toDate = (t: string) => {
+    const [h, m] = t.split(':').map(Number)
+    return new Date(Date.UTC(1970, 0, 4 + (dayOfWeek ?? 0), h, m))
+  }
+  const start = toDate(startTime)
+  const end = toDate(endTime)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return {
+    start: `${pad(start.getHours())}:${pad(start.getMinutes())}`,
+    end: `${pad(end.getHours())}:${pad(end.getMinutes())}`,
+    dayOfWeek: dayOfWeek != null ? start.getDay() : null,
+  }
+}
+
 function RecurringRuleCard({ rule }: { rule: RecurringBookingRule }) {
   const qc = useQueryClient()
 
@@ -505,6 +313,7 @@ function RecurringRuleCard({ rule }: { rule: RecurringBookingRule }) {
   const assetLabel = rule.asset?.bookingLabel ?? rule.asset?.name ?? 'Unknown asset'
   const location = [rule.asset?.floor?.building.name, rule.asset?.floor?.name].filter(Boolean).join(' › ')
   const upcomingCount = rule.bookings?.length ?? rule._count?.bookings ?? 0
+  const local = utcRuleTimeToLocal(rule.startTime, rule.endTime, rule.dayOfWeek)
 
   return (
     <Card>
@@ -524,9 +333,9 @@ function RecurringRuleCard({ rule }: { rule: RecurringBookingRule }) {
             )}
             <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
               <Repeat className="h-3 w-3 shrink-0" />
-              {rule.frequency === 'DAILY' && `Every day, ${rule.startTime}–${rule.endTime}`}
-              {rule.frequency === 'WEEKLY' && rule.dayOfWeek != null && `Every ${DAY_NAMES[rule.dayOfWeek]}, ${rule.startTime}–${rule.endTime}`}
-              {rule.frequency === 'MONTHLY' && `Monthly, ${rule.startTime}–${rule.endTime}`}
+              {rule.frequency === 'DAILY' && `Every day, ${local.start}–${local.end}`}
+              {rule.frequency === 'WEEKLY' && local.dayOfWeek != null && `Every ${DAY_NAMES[local.dayOfWeek]}, ${local.start}–${local.end}`}
+              {rule.frequency === 'MONTHLY' && `Monthly, ${local.start}–${local.end}`}
             </p>
             <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
               <Calendar className="h-3 w-3 shrink-0" />
