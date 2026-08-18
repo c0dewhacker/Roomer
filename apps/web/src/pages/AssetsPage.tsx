@@ -1,12 +1,14 @@
-import { Package, Star, MapPin } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { useState } from 'react'
+import { useNavigate, Link } from 'react-router-dom'
+import { Package, Star, MapPin, CalendarPlus } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
-import { assetsApi } from '@/lib/api'
+import { assetsApi, type MyAssignment } from '@/lib/api'
 import { useFavourites } from '@/hooks/useFavourites'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import type { Asset } from '@/types'
+import { MakeAvailableDialog, WindowRow } from '@/components/AssignedDeskCard'
 
 const statusVariant: Record<string, 'default' | 'secondary' | 'destructive' | 'outline'> = {
   AVAILABLE: 'default',
@@ -15,41 +17,93 @@ const statusVariant: Record<string, 'default' | 'secondary' | 'destructive' | 'o
   RETIRED: 'destructive',
 }
 
-function AssetCard({ asset }: { asset: Asset }) {
+function AssignedAssetCard({ assignment }: { assignment: MyAssignment }) {
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const navigate = useNavigate()
+
+  const { asset } = assignment
+  // Only a placed, floor-scoped asset can be shared out — equipment with no
+  // floor (a laptop, a monitor) has nowhere on the floor plan for anyone
+  // else to find or book it, so "Make available" only makes sense here.
+  const isPlacedDesk = !!asset.floor
+  const location = [
+    asset.floor?.building.name,
+    asset.floor?.name,
+    asset.primaryZone?.name,
+  ].filter(Boolean).join(' › ')
+
   return (
-    <Card>
-      <CardContent className="p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <p className="font-medium truncate">{asset.name}</p>
-              <Badge variant={statusVariant[asset.status] ?? 'secondary'} className="shrink-0 text-xs">
-                {asset.status}
-              </Badge>
-            </div>
-            {asset.category && (
-              <p className="text-xs text-muted-foreground mt-1">{asset.category.name}</p>
-            )}
-            <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-1.5">
-              {asset.serialNumber && (
-                <p className="text-xs text-muted-foreground">
-                  <span className="font-medium">Serial:</span> {asset.serialNumber}
+    <>
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div
+              className={isPlacedDesk ? 'flex-1 min-w-0 cursor-pointer' : 'flex-1 min-w-0'}
+              onClick={() => isPlacedDesk && asset.floor?.id && navigate(`/floors/${asset.floor.id}`)}
+            >
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="font-medium truncate">{asset.name}</p>
+                {asset.status && (
+                  <Badge variant={statusVariant[asset.status] ?? 'secondary'} className="shrink-0 text-xs">
+                    {asset.status}
+                  </Badge>
+                )}
+                {assignment.isPrimary && (
+                  <Badge variant="outline" className="shrink-0 text-xs">Primary</Badge>
+                )}
+              </div>
+              {location && (
+                <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
+                  <MapPin className="h-3 w-3 shrink-0" />
+                  {location}
                 </p>
               )}
-              {asset.assetTag && (
-                <p className="text-xs text-muted-foreground">
-                  <span className="font-medium">Tag:</span> {asset.assetTag}
-                </p>
+              <p className="text-xs text-muted-foreground mt-0.5">{asset.category.name}</p>
+              <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-1.5">
+                {asset.serialNumber && (
+                  <p className="text-xs text-muted-foreground">
+                    <span className="font-medium">Serial:</span> {asset.serialNumber}
+                  </p>
+                )}
+                {asset.assetTag && (
+                  <p className="text-xs text-muted-foreground">
+                    <span className="font-medium">Tag:</span> {asset.assetTag}
+                  </p>
+                )}
+              </div>
+              {asset.description && (
+                <p className="text-xs text-muted-foreground mt-1 italic">{asset.description}</p>
               )}
             </div>
-            {asset.description && (
-              <p className="text-xs text-muted-foreground mt-1 italic">{asset.description}</p>
+
+            {isPlacedDesk && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="shrink-0 h-8 text-xs gap-1.5"
+                onClick={() => setDialogOpen(true)}
+              >
+                <CalendarPlus className="h-3.5 w-3.5" />
+                Make available
+              </Button>
             )}
           </div>
-          <Package className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
-        </div>
-      </CardContent>
-    </Card>
+
+          {asset.availabilityWindows.length > 0 && (
+            <div className="mt-3 space-y-1.5">
+              <p className="text-xs font-medium text-muted-foreground">Shared periods</p>
+              {asset.availabilityWindows.map((w) => (
+                <WindowRow key={w.id} assetId={asset.id} window={w} />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {isPlacedDesk && dialogOpen && (
+        <MakeAvailableDialog assignment={assignment} open={dialogOpen} onClose={() => setDialogOpen(false)} />
+      )}
+    </>
   )
 }
 
@@ -102,12 +156,12 @@ function FavouritesSection() {
 export default function AssetsPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['assets', 'my'],
-    // Always "mine" regardless of the caller's role — without this, a
-    // SUPER_ADMIN or floor manager viewing their own personal "My Assets"
-    // page would fall into assets.ts's admin/floor-manager branches (meant
-    // for the org-wide Assets admin page, which calls the same endpoint) and
-    // see every asset in the org, or every asset on their managed floors.
-    queryFn: () => assetsApi.list({ mine: true }),
+    // getMyAssignments (not list({mine:true})) — the same assetUserAssignment
+    // query, but with floor/primaryZone/availabilityWindows included, so
+    // permanently-assigned desks get a location and a "Make available"
+    // action here, matching what the Bookings page's assigned-desk section
+    // already shows for the identical underlying data.
+    queryFn: () => assetsApi.getMyAssignments(),
     select: (r) => r.data,
   })
 
@@ -131,8 +185,8 @@ export default function AssetsPage() {
         </div>
       ) : (
         <div className="space-y-3">
-          {(data ?? []).map((asset) => (
-            <AssetCard key={asset.id} asset={asset} />
+          {(data ?? []).map((a) => (
+            <AssignedAssetCard key={a.assetId} assignment={a} />
           ))}
         </div>
       )}
