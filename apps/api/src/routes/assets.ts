@@ -1508,8 +1508,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       if (!asset) return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
       if (!zone) return reply.status(404).send({ error: { message: 'Zone not found', code: 'NOT_FOUND' } })
 
+      // A secondary zone must belong to the same floor as the asset —
+      // otherwise the asset ends up a member of a zone on an unrelated
+      // floor/building, and (for non-admins) checking permission against
+      // only the asset's floor below would let a manager for that floor
+      // reach into a zone on a floor they don't manage, matching the same
+      // check already enforced for zone groups (see zones.ts).
+      if (!asset.floorId || zone.floorId !== asset.floorId) {
+        return reply.status(404).send({ error: { message: 'Zone not found on this asset\'s floor', code: 'NOT_FOUND' } })
+      }
+
       if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
-        if (!asset.floorId) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
         const canManage = await isFloorManagerForFloor(request.user.id, asset.floorId)
         if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
