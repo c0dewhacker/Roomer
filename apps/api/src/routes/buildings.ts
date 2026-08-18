@@ -317,14 +317,23 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       if (!building) return reply.status(404).send({ error: { message: 'Building not found', code: 'NOT_FOUND' } })
       if (!user) return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })
 
-      try {
-        const role = await prisma.userResourceRole.create({
-          data: { userId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id },
-        })
-        return reply.status(201).send({ data: { roleId: role.id, id: user.id, displayName: user.displayName, email: user.email } })
-      } catch {
+      // The unique index on UserResourceRole is (userId, scopeType, buildingId,
+      // floorId), but building-scope rows always have floorId NULL — Postgres
+      // treats NULL <> NULL for uniqueness, so that constraint never actually
+      // fires here and the same user could be assigned twice as building
+      // manager. The group-manager endpoint below already guards against its
+      // equivalent case with an explicit findFirst; this one didn't.
+      const existing = await prisma.userResourceRole.findFirst({
+        where: { userId, scopeType: 'BUILDING', buildingId: id, role: 'BUILDING_ADMIN' },
+      })
+      if (existing) {
         return reply.status(409).send({ error: { message: 'User is already a building manager', code: 'ALREADY_EXISTS' } })
       }
+
+      const role = await prisma.userResourceRole.create({
+        data: { userId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id },
+      })
+      return reply.status(201).send({ data: { roleId: role.id, id: user.id, displayName: user.displayName, email: user.email } })
     },
   )
 
@@ -335,14 +344,16 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { id, userId } = request.params as { id: string; userId: string }
 
-      const role = await prisma.userResourceRole.findFirst({
+      // deleteMany (not findFirst+delete) so any duplicate grant already
+      // sitting in the DB from before the create-side dedupe fix above is
+      // fully cleared in one removal, rather than leaving a leftover row
+      // that keeps the user's access live after the admin was told it was removed.
+      const result = await prisma.userResourceRole.deleteMany({
         where: { userId, scopeType: 'BUILDING', buildingId: id, role: 'BUILDING_ADMIN' },
       })
-      if (!role) {
+      if (result.count === 0) {
         return reply.status(404).send({ error: { message: 'Manager role not found', code: 'NOT_FOUND' } })
       }
-
-      await prisma.userResourceRole.delete({ where: { id: role.id } })
       return reply.status(200).send({ data: { ok: true } })
     },
   )
