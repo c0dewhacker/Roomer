@@ -146,6 +146,72 @@ export async function cancelFutureBookingsForAssets(assetIds: string[]): Promise
   await cancelBookingsAndPromoteQueues(bookings, '[queue] Cancelled bookings on unplaced asset(s)')
 }
 
+/**
+ * Cancel every future CONFIRMED booking a user holds, across every asset (see
+ * cancelBookingsAndPromoteQueues) — used when an admin blocks a user's
+ * account so a desk doesn't stay silently CONFIRMED-and-unusable under a
+ * login the owner can no longer manage or cancel themselves.
+ */
+export async function cancelFutureBookingsForUser(userId: string): Promise<void> {
+  const now = new Date()
+  const bookings = await prisma.booking.findMany({
+    where: { status: 'CONFIRMED', startsAt: { gt: now }, userId },
+    select: { id: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
+  })
+  await cancelBookingsAndPromoteQueues(bookings, '[queue] Cancelled bookings for blocked user')
+}
+
+/**
+ * Cancel a user's own WAITING/PROMOTED queue entries and compact the
+ * positions behind each one — same shape as the user-initiated "leave queue"
+ * path (queue.ts DELETE /:id), just applied to every entry at once. Used
+ * alongside cancelFutureBookingsForUser when blocking an account, so a
+ * blocked user can't still be promoted into a slot they have no way to claim.
+ */
+export async function cancelQueueEntriesForUser(userId: string): Promise<void> {
+  const entries = await prisma.queueEntry.findMany({
+    where: { userId, status: { in: ['WAITING', 'PROMOTED'] } },
+  })
+  for (const entry of entries) {
+    await prisma.queueEntry.update({ where: { id: entry.id }, data: { status: 'CANCELLED' } })
+    await prisma.queueEntry.updateMany({
+      where: {
+        assetId: entry.assetId,
+        status: 'WAITING',
+        position: { gt: entry.position },
+        wantedStartsAt: { lt: entry.wantedEndsAt },
+        wantedEndsAt: { gt: entry.wantedStartsAt },
+      },
+      data: { position: { decrement: 1 } },
+    })
+  }
+}
+
+/**
+ * Release every desk a user is permanently assigned to — same restore-prior-
+ * bookingStatus behavior as the single unassign route (assets.ts DELETE
+ * /:id/user-assignments/:userId), just applied to every assignment the user
+ * holds. Used when blocking an account so it doesn't keep "owning" a desk
+ * indefinitely with no one able to reassign it away.
+ */
+export async function releaseAssetAssignmentsForUser(userId: string): Promise<void> {
+  const assignments = await prisma.assetUserAssignment.findMany({ where: { userId }, select: { assetId: true } })
+  if (assignments.length === 0) return
+  await prisma.assetUserAssignment.deleteMany({ where: { userId } })
+  for (const { assetId } of assignments) {
+    const remaining = await prisma.assetUserAssignment.count({ where: { assetId } })
+    if (remaining === 0) {
+      const current = await prisma.asset.findUnique({ where: { id: assetId }, select: { bookingStatus: true, priorBookingStatus: true } })
+      if (current?.bookingStatus === 'ASSIGNED') {
+        await prisma.asset.update({
+          where: { id: assetId },
+          data: { bookingStatus: current.priorBookingStatus ?? 'OPEN', priorBookingStatus: null },
+        })
+      }
+    }
+  }
+}
+
 // ─── Notification job payload ─────────────────────────────────────────────────
 
 export interface NotificationJobData {

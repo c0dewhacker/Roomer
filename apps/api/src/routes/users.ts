@@ -5,7 +5,7 @@ import { prisma } from '../lib/prisma.js'
 import { GlobalRole, ResourceRoleType, ResourceScopeType, RoleSource } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole } from '../middleware/requireRole.js'
-import { enqueueNotification } from '../lib/queue.js'
+import { enqueueNotification, cancelFutureBookingsForUser, cancelQueueEntriesForUser, releaseAssetAssignmentsForUser } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { NotificationType } from '@roomer/shared'
 import { signAccessToken, verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE } from '../lib/jwt.js'
@@ -286,6 +286,12 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       })
 
       if (result.data.accountStatus === 'BLOCKED') {
+        // A blocked user can no longer log in to cancel their own bookings or
+        // release their desk, so do it for them — otherwise a desk sits
+        // silently CONFIRMED/ASSIGNED under an account nobody can manage.
+        await cancelFutureBookingsForUser(updated.id)
+        await cancelQueueEntriesForUser(updated.id)
+        await releaseAssetAssignmentsForUser(updated.id)
         dispatchWebhook('user.suspended', { id: updated.id, email: updated.email }).catch(() => {})
       } else {
         dispatchWebhook('user.updated', { id: updated.id, email: updated.email, displayName: updated.displayName }).catch(() => {})

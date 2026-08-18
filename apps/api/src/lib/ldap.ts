@@ -3,6 +3,7 @@ import { prisma, findAuthConfig } from './prisma.js'
 import type { GroupMapping } from './group-mapping.js'
 import { dispatchWebhook } from './webhook.js'
 import { decryptStringMaybe } from './encryption.js'
+import { cancelFutureBookingsForUser, cancelQueueEntriesForUser, releaseAssetAssignmentsForUser } from './queue.js'
 
 export interface LdapConfig {
   url: string
@@ -227,11 +228,25 @@ async function runLdapSync(cfg: LdapConfig): Promise<LdapSyncResult> {
     }
 
     if (cfg.deactivateMissing && seenEmails.size > 0) {
-      const deactivated = await prisma.user.updateMany({
+      // Select the affected users before the bulk update — same reasoning as
+      // every other "must run before" cascade in this codebase: updateMany's
+      // count alone doesn't tell us WHICH users to release bookings/desks for.
+      const toDeactivate = await prisma.user.findMany({
         where: { provider: 'LDAP', accountStatus: 'ACTIVE', email: { notIn: [...seenEmails] } },
-        data: { accountStatus: 'BLOCKED' },
+        select: { id: true },
       })
-      result.deactivated = deactivated.count
+      if (toDeactivate.length > 0) {
+        await prisma.user.updateMany({
+          where: { id: { in: toDeactivate.map((u) => u.id) } },
+          data: { accountStatus: 'BLOCKED' },
+        })
+        for (const { id: userId } of toDeactivate) {
+          await cancelFutureBookingsForUser(userId)
+          await cancelQueueEntriesForUser(userId)
+          await releaseAssetAssignmentsForUser(userId)
+        }
+      }
+      result.deactivated = toDeactivate.length
     }
   } finally {
     unbind(client)
