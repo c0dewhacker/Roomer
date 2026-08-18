@@ -114,13 +114,24 @@ export interface SamlProfile {
   [key: string]: unknown
 }
 
+/** Loose but sufficient shape check — this only needs to reject values that
+ * are clearly not an email address (an opaque/transient SAML NameID), not
+ * fully validate RFC 5322. */
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
 export function extractEmailFromProfile(profile: SamlProfile): string | null {
-  return (
+  const candidate =
     profile.email ??
     profile['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress'] ??
+    // Fallback for IdPs configured with an email-format NameID and no
+    // separate email attribute — but the NameID format is IdP-configurable
+    // and commonly transient/opaque (a random per-session identifier, not an
+    // email at all). Without the shape check below, that opaque string flows
+    // straight into findOrCreateSsoUser as "the" email: a transient NameID
+    // would mint a brand-new bogus user on every single login.
     profile.nameID ??
     null
-  )
+  return candidate && EMAIL_SHAPE.test(candidate) ? candidate : null
 }
 
 export function extractGroupsFromProfile(profile: SamlProfile, groupAttribute?: string): string[] {
