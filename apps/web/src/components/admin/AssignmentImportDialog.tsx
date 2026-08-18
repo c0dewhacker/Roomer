@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { Upload, Download, CheckCircle2, AlertCircle, ChevronRight, X } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { assetsApi } from '@/lib/api'
+import { assetsApi, ApiError } from '@/lib/api'
 import { toCsv } from '@/lib/csv'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -116,7 +116,10 @@ export default function AssignmentImportDialog({
       qc.invalidateQueries({ queryKey: ['assets'] })
       qc.invalidateQueries({ queryKey: ['floors'] })
     },
-    onError: (err: Error) => toast.error(err.message || 'Failed to submit assignments'),
+    onError: (err: Error) => {
+      const details = err instanceof ApiError ? (err.fieldErrors ?? err.message) : err.message
+      toast.error(details || 'Failed to submit assignments')
+    },
   })
 
   function reset() {
@@ -138,6 +141,14 @@ export default function AssignmentImportDialog({
       const parsed = parseCSV(text)
       if (parsed.length === 0) {
         toast.error('No data rows found. Make sure the file has a header row and at least one data row.')
+        return
+      }
+      // Mirrors the backend's row cap (apps/api/src/routes/assets.ts) — without
+      // this, an oversized file reaches the preview step looking fine, then
+      // fails at submit with a generic "Validation failed" and no indication
+      // it was ever a row-count problem.
+      if (parsed.length > 5000) {
+        toast.error(`This file has ${parsed.length} rows, which is over the 5000-row import limit. Split it into smaller files.`)
         return
       }
       setRows(validateRows(parsed))
