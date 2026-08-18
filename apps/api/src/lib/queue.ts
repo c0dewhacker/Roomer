@@ -274,6 +274,7 @@ async function processSendNotification(
           zoneName: booking.asset.primaryZone?.name,
           floorName: booking.asset.floor?.name,
           buildingName: booking.asset.floor?.building?.name,
+          sequence: booking.icsSequence,
         }, 'REQUEST'),
       }
       templateVars = {
@@ -301,6 +302,7 @@ async function processSendNotification(
         content: buildBookingIcs({
           id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
           assetName: booking.asset.name,
+          sequence: booking.icsSequence + 1,
         }, 'CANCEL'),
       }
       templateVars = {
@@ -340,6 +342,7 @@ async function processSendNotification(
         content: buildBookingIcs({
           id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
           assetName: booking.asset.name,
+          sequence: booking.icsSequence + 1,
         }, 'CANCEL'),
       }
       templateVars = {

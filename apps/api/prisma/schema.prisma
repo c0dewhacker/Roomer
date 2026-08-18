@@ -605,6 +605,12 @@ model Booking {
   /// True when this booking was CANCELLED by the no-show release job (vs a manual
   /// cancellation). Lets analytics separate no-show rate from cancellation rate.
   noShow            Boolean              @default(false)
+  /// RFC 5546 SEQUENCE for this booking's ICS invite. Bumped on every
+  /// reschedule so a re-sent REQUEST is recognised as an update to the
+  /// existing calendar entry (not a duplicate/no-op) by clients that key off
+  /// SEQUENCE rather than DTSTAMP; a CANCEL always uses sequence+1 so it
+  /// supersedes whatever REQUEST was last sent.
+  icsSequence       Int                  @default(0)
   recurringRuleId   String?
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt

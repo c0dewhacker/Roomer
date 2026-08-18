@@ -332,6 +332,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       zoneName: booking.asset.primaryZone?.name,
       floorName: booking.asset.floor?.name,
       buildingName: booking.asset.floor?.building?.name,
+      sequence: method === 'CANCEL' ? booking.icsSequence + 1 : booking.icsSequence,
     }, method)
 
     return reply
@@ -468,6 +469,10 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
             startsAt: newStartsAt,
             endsAt: newEndsAt,
             notes: result.data.notes !== undefined ? result.data.notes : booking.notes,
+            // Bumped only when the time actually changes — a notes-only edit
+            // has nothing calendar-relevant to re-send, so it shouldn't move
+            // the sequence a client would use to judge "is this newer".
+            ...(timeChanged ? { icsSequence: { increment: 1 } } : {}),
           },
         })
       })
