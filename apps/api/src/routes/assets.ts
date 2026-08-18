@@ -521,7 +521,21 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         },
       },
     })
-    return reply.status(200).send({ data: favourites.map((f) => f.asset) })
+
+    // Favouriting checks group access at the time it's created, but access
+    // isn't static — a restriction added afterward (or the user's group
+    // membership changing) shouldn't leave a stale favourite still exposing
+    // that asset's name/category/floor/building here indefinitely.
+    const assets = favourites.map((f) => f.asset)
+    const visible = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      ? assets
+      : (await Promise.all(assets.map(async (asset) => {
+          if (!asset.floor) return asset
+          const allowed = await checkGroupAccess(request.user.id, asset.floor.building.id, asset.floor.id)
+          return allowed ? asset : null
+        }))).filter((a) => a !== null)
+
+    return reply.status(200).send({ data: visible })
   })
 
   // POST /assets/:id/favourite — star an asset (idempotent)
