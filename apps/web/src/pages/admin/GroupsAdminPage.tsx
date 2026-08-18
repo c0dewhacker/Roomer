@@ -100,7 +100,7 @@ function CreateGroupDialog({ open, onClose }: { open: boolean; onClose: () => vo
             </Select>
             {globalRole === 'SUPER_ADMIN' && (
               <p className="mt-1.5 text-xs text-destructive">
-                ⚠ Every member of this group — and anyone your identity provider maps into it — will get full org-wide admin.
+                ⚠ Only members your identity provider maps into this group via SSO/LDAP sync get full org-wide admin. Manually adding a member to this group afterward does not grant it.
               </p>
             )}
           </div>
@@ -125,8 +125,8 @@ function CreateGroupDialog({ open, onClose }: { open: boolean; onClose: () => vo
         <AlertDialogHeader>
           <AlertDialogTitle>Grant Super Admin to this group?</AlertDialogTitle>
           <AlertDialogDescription>
-            Every member of <strong>{name || 'this group'}</strong> — and anyone your identity provider maps into it —
-            will get full org-wide admin access.
+            Anyone your identity provider maps into <strong>{name || 'this group'}</strong> via SSO/LDAP sync will get
+            full org-wide admin access. Manually adding a member to this group afterward does not grant it.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -393,8 +393,11 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
                               <AlertDialogTitle>Remove member?</AlertDialogTitle>
                               <AlertDialogDescription>
                                 Remove <strong>{m.user?.displayName}</strong> from <strong>{group?.name}</strong>?
-                                They will immediately lose any access or role this group grants — including Super
-                                Admin, if this group grants it.
+                                They will immediately lose any building/floor access this group grants.
+                                {group?.globalRole === 'SUPER_ADMIN' && (
+                                  <> This group's Super Admin role only applies via SSO/LDAP sync, not manual
+                                  membership — removing them here will not revoke Super Admin if they hold it.</>
+                                )}
                               </AlertDialogDescription>
                             </AlertDialogHeader>
                             <AlertDialogFooter>
@@ -598,8 +601,8 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
         <AlertDialogHeader>
           <AlertDialogTitle>Grant Super Admin to this group?</AlertDialogTitle>
           <AlertDialogDescription>
-            This grants Super Admin to every member of <strong>{group?.name ?? 'this group'}</strong> — and anyone
-            your identity provider maps into it.
+            This grants Super Admin to anyone your identity provider maps into <strong>{group?.name ?? 'this group'}</strong> via
+            SSO/LDAP sync. It does not grant it to members already added manually, or to anyone added manually afterward.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
