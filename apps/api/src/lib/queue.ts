@@ -982,7 +982,10 @@ export async function enqueueNotification(data: NotificationJobData): Promise<vo
 
 /** Advisory-lock class serialising the read-cooldown-check + write below, keyed
  * per floor. Distinct from ASSET_BOOKING_LOCK_CLASS (4242) / ASSET_QUEUE_LOCK_CLASS
- * (4243) in lib/booking.ts, which are keyed per asset, not per floor. */
+ * (4243) / USER_BOOKING_QUOTA_LOCK_CLASS (4245) in lib/booking.ts, which are
+ * keyed per asset/user, not per floor. pg_advisory_xact_lock's classid is one
+ * global namespace, not scoped per-file — check lib/booking.ts before adding
+ * another class number here. */
 const FLOOR_NOTIFICATION_LOCK_CLASS = 4244
 
 export async function fanOutFloorAvailable(
