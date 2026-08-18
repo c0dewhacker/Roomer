@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
@@ -640,6 +641,20 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         memberCount: bigint
       }
 
+      // Every other report tab scopes to the selected building; this one
+      // didn't reference result.data.buildingId at all and always queried the
+      // whole org, silently ignoring the filter. Scoped inside the Booking
+      // JOIN's own ON clause (not a WHERE) so it only narrows which bookings
+      // count toward bookingCount/deskDays — memberCount (department
+      // headcount) stays building-agnostic, and departments/users with no
+      // matching booking are still preserved via the LEFT JOIN.
+      const buildingFilter = result.data.buildingId
+        ? Prisma.sql`AND EXISTS (
+            SELECT 1 FROM "Asset" a JOIN "Floor" f ON f.id = a."floorId"
+            WHERE a.id = b."assetId" AND f."buildingId" = ${result.data.buildingId}
+          )`
+        : Prisma.empty
+
       const rows = await prisma.$queryRaw<DeptRow[]>`
         SELECT
           d.id                                                                         AS "departmentId",
@@ -658,6 +673,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           AND b."startsAt" >= ${startDate}
           AND b."startsAt" <= ${endDate}
           AND b.status = 'CONFIRMED'
+          ${buildingFilter}
         GROUP BY d.id, d.name
         ORDER BY ROUND(
           CAST(
@@ -700,6 +716,20 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       const root = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, displayName: true, email: true } })
       if (!root) return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })
 
+      // Every other report tab scopes to the selected building; this one
+      // didn't reference result.data.buildingId at all and always rolled up
+      // the whole subtree's activity org-wide. Scoped inside the Booking
+      // JOIN's own ON clause (not a WHERE) so it only narrows which bookings
+      // count toward bookingCount/deskDays — peopleCount (subtree headcount)
+      // stays building-agnostic, and people with no matching booking are
+      // still preserved via the LEFT JOIN.
+      const buildingFilter = result.data.buildingId
+        ? Prisma.sql`AND EXISTS (
+            SELECT 1 FROM "Asset" a JOIN "Floor" f ON f.id = a."floorId"
+            WHERE a.id = b."assetId" AND f."buildingId" = ${result.data.buildingId}
+          )`
+        : Prisma.empty
+
       type Totals = { peopleCount: bigint; bookingCount: bigint; deskDays: string | null }
       // UNION (not UNION ALL) so a manager cycle (A→B→A from bad IdP data) can't
       // recurse infinitely — duplicate ids are dropped, terminating traversal.
@@ -716,6 +746,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         FROM subtree s
         LEFT JOIN "Booking" b ON b."userId" = s.id
           AND b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate} AND b.status = 'CONFIRMED'
+          ${buildingFilter}
       `
 
       type BranchRow = Totals & { rootId: string; rootName: string }
@@ -736,6 +767,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         JOIN "User" ru ON ru.id = br.root
         LEFT JOIN "Booking" b ON b."userId" = br.id
           AND b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate} AND b.status = 'CONFIRMED'
+          ${buildingFilter}
         GROUP BY br.root, ru."displayName"
         ORDER BY ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0) AS NUMERIC), 2) DESC NULLS LAST
       `
