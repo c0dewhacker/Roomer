@@ -554,6 +554,13 @@ async function processSendNotification(
         metadata: {
           bookingId: bookingId ?? null,
           queueEntryId: queueEntryId ?? null,
+          // FLOOR_AVAILABLE's email deep-links to the floor plan
+          // (floorUrl above), but the in-app bell had nothing to route to at
+          // all since only bookingId/queueEntryId were ever persisted here —
+          // clicking it silently did nothing.
+          floorId: floorId ?? null,
+          assetId: assetId ?? null,
+          slotDate: slotDate ?? null,
         },
       },
     })

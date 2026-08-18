@@ -11,10 +11,10 @@ import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 
-// Every notification type maps to a list page, not a per-entity detail route
-// — this app doesn't have one for bookings/queue/assets — so routing only
-// needs the notification's type, not the bookingId/queueEntryId in its
-// metadata (which isn't even populated for every type).
+// Every type except FLOOR_AVAILABLE (see getNotificationTarget below) maps
+// to a list page, not a per-entity detail route — this app doesn't have one
+// for bookings/queue/assets — so routing only needs the notification's type,
+// not the bookingId/queueEntryId in its metadata.
 const NOTIFICATION_ROUTES: Record<string, string> = {
   BOOKING_CONFIRMED: '/bookings',
   BOOKING_CANCELLED: '/bookings',
@@ -26,6 +26,22 @@ const NOTIFICATION_ROUTES: Record<string, string> = {
   QUEUE_EXPIRED: '/queue',
   QUEUE_CLAIM_EXPIRING: '/queue',
   ASSET_ASSIGNED: '/assets',
+}
+
+// FLOOR_AVAILABLE is the one type worth a real deep link rather than a list
+// page — it's about one specific desk on one specific date, and the backend
+// now persists floorId/assetId/slotDate in metadata for it (previously only
+// bookingId/queueEntryId were ever stored, so this type had nothing to route
+// to and silently did nothing when clicked).
+function getNotificationTarget(n: { type: string; metadata: Record<string, unknown> }): string | undefined {
+  if (n.type === 'FLOOR_AVAILABLE' && typeof n.metadata.floorId === 'string') {
+    const params = new URLSearchParams()
+    if (typeof n.metadata.slotDate === 'string') params.set('date', n.metadata.slotDate)
+    if (typeof n.metadata.assetId === 'string') params.set('highlight', n.metadata.assetId)
+    const qs = params.toString()
+    return `/floors/${n.metadata.floorId}${qs ? `?${qs}` : ''}`
+  }
+  return NOTIFICATION_ROUTES[n.type]
 }
 
 const PAGE_SIZE = 30
@@ -73,7 +89,7 @@ export function NotificationBell() {
 
   const handleNotificationClick = (n: NonNullable<typeof notificationsData>[number]) => {
     if (!n.read) markRead.mutate(n.id)
-    const target = NOTIFICATION_ROUTES[n.type]
+    const target = getNotificationTarget(n)
     if (target) {
       setOpen(false)
       navigate(target)
@@ -132,7 +148,7 @@ export function NotificationBell() {
             ) : (
               <div className="divide-y">
                 {notificationsData.map((n) => {
-                  const clickable = !!NOTIFICATION_ROUTES[n.type]
+                  const clickable = !!getNotificationTarget(n)
                   return (
                     <button
                       key={n.id}
