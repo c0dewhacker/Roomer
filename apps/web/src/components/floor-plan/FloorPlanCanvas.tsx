@@ -154,6 +154,22 @@ export function FloorPlanCanvas({
   const { data: floorData, isLoading: floorLoading } = useFloorData(floorId)
   const { data: availabilityData, isLoading: availLoading } = useFloorAvailability(floorId, date)
 
+  // Build merged asset list — moved above fitToCanvas (which needs it to
+  // include placed-asset extents in the fit bounds) rather than left where
+  // it originally sat further down the component.
+  const assets: AssetWithStatus[] = (() => {
+    if (availabilityData) return availabilityData
+    if (!floorData) return []
+    return floorData.zones.flatMap((zone) =>
+      zone.assets.map((a) => ({
+        ...a,
+        bookingStatus: 'available' as const,
+        zoneColour: zone.colour,
+        zoneName: zone.name,
+      })),
+    )
+  })()
+
   // Display scale: how large the floor plan image is rendered in the coordinate
   // space. Initialized from the server value; updated locally as the slider moves.
   const serverDisplayScale = floorData?.floorPlan?.displayScale ?? 1
@@ -210,16 +226,35 @@ export function FloorPlanCanvas({
 
   // Fit the floor plan to fill the canvas when the image (or display scale) loads/changes.
   // No artificial 1× cap — small images scale up, large images scale down.
+  //
+  // The fit bounds are the union of the background image and every placed
+  // asset's position (using any pending unsaved drag), not just the image —
+  // otherwise an asset dragged off-canvas (still possible with a small
+  // tolerance past the edges; see AssetShape's drag clamp) was permanently
+  // out of view no matter how many times "Fit to screen" was clicked, since
+  // the image's own bounds never change to bring it back.
   const fitToCanvas = useCallback(() => {
     if (!bgImage || !dimensions.width || !dimensions.height) return
-    const scaleX = dimensions.width  / effectiveWidth
-    const scaleY = dimensions.height / effectiveHeight
+    let minX = 0, minY = 0, maxX = effectiveWidth, maxY = effectiveHeight
+    for (const a of assets) {
+      const local = localPositions[a.id]
+      const x = ((local ? local.x : (a.x ?? 50)) / 100) * effectiveWidth
+      const y = ((local ? local.y : (a.y ?? 50)) / 100) * effectiveHeight
+      minX = Math.min(minX, x)
+      minY = Math.min(minY, y)
+      maxX = Math.max(maxX, x)
+      maxY = Math.max(maxY, y)
+    }
+    const boundsWidth = maxX - minX
+    const boundsHeight = maxY - minY
+    const scaleX = dimensions.width  / boundsWidth
+    const scaleY = dimensions.height / boundsHeight
     const fitScale = Math.min(scaleX, scaleY)
-    const centreX = (dimensions.width  - effectiveWidth  * fitScale) / 2
-    const centreY = (dimensions.height - effectiveHeight * fitScale) / 2
+    const centreX = (dimensions.width  - boundsWidth  * fitScale) / 2 - minX * fitScale
+    const centreY = (dimensions.height - boundsHeight * fitScale) / 2 - minY * fitScale
     setScale(fitScale)
     setPosition({ x: centreX, y: centreY })
-  }, [bgImage, dimensions.width, dimensions.height, effectiveWidth, effectiveHeight])
+  }, [bgImage, dimensions.width, dimensions.height, effectiveWidth, effectiveHeight, assets, localPositions])
 
   useEffect(() => {
     fitToCanvas()
@@ -288,20 +323,6 @@ export function FloorPlanCanvas({
     setDisplayScale(clamped)
     onDisplayScaleChange?.(clamped)
   }, [onDisplayScaleChange])
-
-  // Build merged asset list
-  const assets: AssetWithStatus[] = (() => {
-    if (availabilityData) return availabilityData
-    if (!floorData) return []
-    return floorData.zones.flatMap((zone) =>
-      zone.assets.map((a) => ({
-        ...a,
-        bookingStatus: 'available' as const,
-        zoneColour: zone.colour,
-        zoneName: zone.name,
-      })),
-    )
-  })()
 
   const isLoading = floorLoading || availLoading
 

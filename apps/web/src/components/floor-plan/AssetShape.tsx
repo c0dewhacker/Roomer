@@ -170,7 +170,15 @@ export function AssetShape({
     e.cancelBubble = true
     if (!onDragEnd) return
     const node = e.target
-    onDragEnd((node.x() / stageWidth) * 100, (node.y() / stageHeight) * 100)
+    // A small tolerance past the plan's edges (not a hard [0,100] clamp) —
+    // some furniture legitimately sits flush against a wall/edge — but
+    // without any bound at all, a drag released while panned/zoomed out
+    // (down to MIN_SCALE) could save a position hundreds of percent off the
+    // image, and "Fit to screen" only fits the background image, not placed
+    // assets, so a stray one was otherwise unrecoverable short of manual
+    // trial-and-error panning at extreme zoom.
+    const clamp = (v: number) => Math.min(105, Math.max(-5, v))
+    onDragEnd(clamp((node.x() / stageWidth) * 100), clamp((node.y() / stageHeight) * 100))
   }
 
   const isClickable = isBookable || editMode

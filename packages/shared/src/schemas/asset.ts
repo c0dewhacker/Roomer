@@ -62,8 +62,15 @@ export const createAssetCategorySchema = z.object({
 
 export const assetPositionSchema = z.object({
   id: z.string().min(1),
-  x: z.number(),
-  y: z.number(),
+  // x/y are a percentage of the floor plan image's dimensions. A small
+  // tolerance past the [0,100] edges is allowed (matches the frontend's own
+  // drag clamp) for furniture that legitimately sits flush against a wall,
+  // but without any bound at all a drag released while panned/zoomed out
+  // could save a position hundreds of percent off the image — with no way
+  // back short of manual trial-and-error panning, since "Fit to screen"
+  // only fits the background image, not placed assets.
+  x: z.number().min(-10).max(110),
+  y: z.number().min(-10).max(110),
   width: z.number().positive().optional(),
   height: z.number().positive().optional(),
   rotation: z.number().min(-360).max(360).optional(),
