@@ -921,6 +921,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           }
           const userId = userByEmail.get(userEmail.toLowerCase())
           if (!userId) { errors.push({ row: i + 1, assetId, userEmail, error: 'User not found' }); continue }
+          // Assigning always sets bookingStatus to ASSIGNED below — for a
+          // DISABLED asset (taken out of service, e.g. for maintenance) that
+          // would silently make it bookable again with no signal to the
+          // admin that a stale row (a leftover assignment CSV, a typo'd
+          // asset ID) just reactivated it mid-maintenance.
+          if (assetStatusMap.get(assetId) === 'DISABLED') {
+            errors.push({ row: i + 1, assetId, userEmail, error: 'Asset is disabled and cannot be assigned' })
+            continue
+          }
           if (isPrimary) {
             await prisma.assetUserAssignment.updateMany({
               where: { assetId, isPrimary: true },
@@ -1242,6 +1251,12 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       const user = await prisma.user.findUnique({ where: { id: result.data.userId } })
       if (!user) {
         return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })
+      }
+      // Assigning sets bookingStatus to ASSIGNED below — for a DISABLED asset
+      // (taken out of service, e.g. for maintenance) that would silently make
+      // it bookable again with no signal that assigning it just reactivated it.
+      if (asset.bookingStatus === 'DISABLED') {
+        return reply.status(409).send({ error: { message: 'Asset is disabled and cannot be assigned', code: 'ASSET_DISABLED' } })
       }
       if (result.data.isPrimary) {
         await prisma.assetUserAssignment.updateMany({
