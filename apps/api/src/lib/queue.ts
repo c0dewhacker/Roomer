@@ -321,6 +321,17 @@ async function processSendNotification(
       title = `Booking released — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} was released because you didn't check in.`
       emailPayload = renderBookingNoShow(booking, user, booking.asset)
+      // Same as any other cancellation path — without a CANCEL, the invite
+      // this booking's confirmation originally sent stays "confirmed" in the
+      // booker's calendar forever, even though the desk was released.
+      icalEvent = {
+        method: 'CANCEL',
+        content: buildBookingIcs({
+          id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
+          assetName: booking.asset.name,
+          sequence: booking.icsSequence + 1,
+        }, 'CANCEL'),
+      }
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
