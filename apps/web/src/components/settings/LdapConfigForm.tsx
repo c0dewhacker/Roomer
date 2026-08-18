@@ -95,11 +95,13 @@ export function LdapConfigForm({
   const [syncScope, setSyncScope] = useState<'sub' | 'one'>((current.syncScope as 'sub' | 'one') ?? 'sub')
   const [deactivateMissing, setDeactivateMissing] = useState((current.deactivateMissing as boolean) ?? false)
   const [showPresets, setShowPresets] = useState(false)
+  const [lastSyncErrors, setLastSyncErrors] = useState<Array<{ dn: string; message: string }>>([])
 
   const syncMutation = useMutation({
     mutationFn: () => settingsApi.syncLdap(),
     onSuccess: (res) => {
       const { created, updated, deactivated, skipped, errors } = res.data
+      setLastSyncErrors(errors)
       const parts = [`Created: ${created}`, `Updated: ${updated}`, `Skipped: ${skipped}`]
       if (deactivated) parts.push(`Deactivated: ${deactivated}`)
       if (errors.length) {
@@ -334,6 +336,16 @@ export function LdapConfigForm({
             {syncMutation.isPending ? 'Syncing…' : 'Sync users now'}
           </Button>
         </div>
+        {lastSyncErrors.length > 0 && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 space-y-1">
+            <p className="text-xs font-medium text-destructive">
+              {lastSyncErrors.length} entr{lastSyncErrors.length !== 1 ? 'ies' : 'y'} failed on the last sync
+            </p>
+            <ul className="text-xs text-destructive/80 space-y-0.5 max-h-32 overflow-y-auto">
+              {lastSyncErrors.map((e, i) => <li key={i}>· {e.dn}: {e.message}</li>)}
+            </ul>
+          </div>
+        )}
       </div>
     </div>
   )
