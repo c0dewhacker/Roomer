@@ -762,7 +762,7 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
   // ─── Email template endpoints ─────────────────────────────────────────────
 
   const ALLOWED_TEMPLATE_TYPES = [
-    'BOOKING_CONFIRMED', 'BOOKING_CANCELLED', 'BOOKING_CANCELLED_BY_ADMIN',
+    'BOOKING_CONFIRMED', 'BOOKING_CANCELLED', 'BOOKING_CANCELLED_BY_ADMIN', 'BOOKING_NO_SHOW',
     'QUEUE_JOINED', 'QUEUE_PROMOTED', 'QUEUE_EXPIRED', 'QUEUE_CLAIM_EXPIRING',
     'FLOOR_AVAILABLE', 'WELCOME',
   ] as const

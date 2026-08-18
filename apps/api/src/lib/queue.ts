@@ -2,7 +2,7 @@ import { PgBoss, type Job } from 'pg-boss'
 import { env } from '../env.js'
 import { prisma } from './prisma.js'
 import { buildBookingIcs } from './ical.js'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingCancelledByAdmin, renderBookingNoShow, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
 import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
@@ -239,7 +239,7 @@ async function processSendNotification(
     if (booking) {
       title = `Booking released — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} was released because you didn't check in.`
-      emailPayload = renderBookingCancelled(booking, user, booking.asset)
+      emailPayload = renderBookingNoShow(booking, user, booking.asset)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
@@ -255,7 +255,7 @@ async function processSendNotification(
     if (booking) {
       title = `Booking cancelled by admin — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} has been cancelled by an administrator.`
-      emailPayload = renderBookingCancelled(booking, user, booking.asset)
+      emailPayload = renderBookingCancelledByAdmin(booking, user, booking.asset)
       icalEvent = {
         method: 'CANCEL',
         content: buildBookingIcs({
