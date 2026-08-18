@@ -406,14 +406,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       const file = await request.file()
       if (!file) return reply.status(400).send({ error: { message: 'No file uploaded', code: 'NO_FILE' } })
 
+      let relPath: string
       try {
-        // Delete old file on disk if any (iconUrl stored as relative storage path)
-        if (existing.iconUrl) await deleteFile(existing.iconUrl).catch(() => {})
-        const relPath = await saveCategoryIcon(file, id)
-        // Store the relative storage path — the serve URL is /assets/categories/:id/icon
-        const category = await prisma.assetCategory.update({ where: { id }, data: { iconUrl: relPath } })
-        // Return with the serve URL so the client can use it immediately
-        return reply.status(200).send({ data: { ...category, iconUrl: `/api/v1/assets/categories/${id}/icon` } })
+        // Validate and save the new file BEFORE touching the old one — this
+        // can still reject on invalid magic bytes, and if the old icon was
+        // already deleted at that point, a rejected replacement would leave
+        // the category with no icon at all instead of just failing the upload
+        // (the same ordering bug already fixed for floor-plan replacement).
+        relPath = await saveCategoryIcon(file, id)
       } catch (err: unknown) {
         const e = err as { code?: string }
         if (e.code === 'INVALID_MAGIC') {
@@ -421,6 +421,12 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         }
         throw err
       }
+
+      if (existing.iconUrl) await deleteFile(existing.iconUrl).catch(() => {})
+      // Store the relative storage path — the serve URL is /assets/categories/:id/icon
+      const category = await prisma.assetCategory.update({ where: { id }, data: { iconUrl: relPath } })
+      // Return with the serve URL so the client can use it immediately
+      return reply.status(200).send({ data: { ...category, iconUrl: `/api/v1/assets/categories/${id}/icon` } })
     },
   )
 
