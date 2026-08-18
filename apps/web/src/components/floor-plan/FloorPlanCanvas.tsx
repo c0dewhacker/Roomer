@@ -328,15 +328,24 @@ export function FloorPlanCanvas({
 
   const handleSave = () => {
     if (!onLayoutSave) return
-    const positions = assets.map((a) => {
-      const local = localPositions[a.id]
+    // Only the assets actually dragged in this tab (localPositions), not
+    // every asset on the floor. Sending a full snapshot re-wrote every
+    // untouched asset's position too, using whatever this tab's own
+    // possibly-stale query data happened to hold for it — two admins
+    // editing the same floor at once could have one's save silently revert
+    // the other's, since the second save's "untouched" assets still carried
+    // pre-first-save coordinates. The backend already only updates whatever
+    // asset IDs are present in the request, so omitting untouched ones here
+    // is sufficient — no separate concurrency check needed on either side.
+    const positions = Object.entries(localPositions).map(([id, local]) => {
+      const a = assets.find((asset) => asset.id === id)
       return {
-        id: a.id,
-        x: local ? local.x : (a.x ?? 50),
-        y: local ? local.y : (a.y ?? 50),
-        width: a.width ?? 5,
-        height: a.height ?? 5,
-        rotation: a.rotation ?? 0,
+        id,
+        x: local.x,
+        y: local.y,
+        width: a?.width ?? 5,
+        height: a?.height ?? 5,
+        rotation: a?.rotation ?? 0,
       }
     })
     // Only clear on success — a save that fails (network error, permission
