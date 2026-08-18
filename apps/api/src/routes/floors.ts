@@ -392,18 +392,12 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         })
       }
 
-      // Delete old floor plan files if they exist
       const existing = await prisma.floorPlan.findUnique({ where: { floorId: id } })
-      if (existing) {
-        await deleteFile(existing.originalPath)
-        if (existing.renderedPath !== existing.originalPath) {
-          await deleteFile(existing.renderedPath)
-        }
-        if (existing.thumbnailPath) {
-          await deleteFile(existing.thumbnailPath)
-        }
-      }
 
+      // Validate and save the new file BEFORE touching the old one — this can
+      // still reject on invalid magic bytes, and if the old files were already
+      // deleted at that point, a rejected replacement would leave a floor with
+      // no working plan at all instead of just failing the upload.
       let saved: Awaited<ReturnType<typeof saveFloorPlan>>
       try {
         saved = await saveFloorPlan(data)
@@ -412,6 +406,16 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           return reply.status(400).send({ error: { message: 'File content does not match the declared MIME type', code: 'INVALID_FILE_TYPE' } })
         }
         throw err
+      }
+
+      if (existing) {
+        await deleteFile(existing.originalPath)
+        if (existing.renderedPath !== existing.originalPath) {
+          await deleteFile(existing.renderedPath)
+        }
+        if (existing.thumbnailPath) {
+          await deleteFile(existing.thumbnailPath)
+        }
       }
 
       const floorPlan = await prisma.floorPlan.upsert({
