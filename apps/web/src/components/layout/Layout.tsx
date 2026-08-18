@@ -32,7 +32,11 @@ export default function Layout() {
       <div className="flex h-screen flex-col overflow-hidden bg-background">
         {headerBanner && <Banner text={headerBanner.text} bgColor={headerBanner.bgColor} textColor={headerBanner.textColor} />}
         <FloatingNav />
-        <main className="flex-1 overflow-auto pt-10">
+        {/* The utility pill defaults to top:16 and is ~44-48px tall, so it
+            spans down to roughly y=60-64 — pt-10 (40px) left its bottom edge
+            overlapping the first ~20px of page content (seen covering the
+            floor plan's date-nav header) regardless of viewport width. */}
+        <main className="flex-1 overflow-auto pt-16">
           <Outlet />
         </main>
         {footerBanner && <Banner text={footerBanner.text} bgColor={footerBanner.bgColor} textColor={footerBanner.textColor} />}
