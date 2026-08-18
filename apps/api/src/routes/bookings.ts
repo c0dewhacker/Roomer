@@ -109,10 +109,16 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         if (from) (where['startsAt'] as Record<string, unknown>)['gte'] = new Date(from)
         if (to) (where['startsAt'] as Record<string, unknown>)['lte'] = new Date(to)
       }
-      if (floorId) {
-        where['asset'] = { floorId }
-      } else if (buildingId) {
-        where['asset'] = { floor: { buildingId } }
+      if (floorId || buildingId) {
+        // Both apply together (AND), not floorId-overrides-buildingId — the
+        // previous if/else-if chain silently dropped buildingId whenever
+        // floorId was also supplied, even though both are independently
+        // validated above and neither is reflected as ignored anywhere in
+        // the response.
+        where['asset'] = {
+          ...(floorId ? { floorId } : {}),
+          ...(buildingId ? { floor: { buildingId } } : {}),
+        }
       } else if (!isSuperAdmin) {
         where['asset'] = { floor: { buildingId: { in: managedBuildingIds } } }
       }
