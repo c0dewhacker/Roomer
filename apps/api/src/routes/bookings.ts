@@ -151,7 +151,13 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     }
     const { status } = queryResult.data
     const now = new Date()
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    // UTC midnight, same convention every other day-boundary calculation in
+    // the app uses (directory.ts whereabouts, recurring.ts, analytics working
+    // days) — local Date getters here made the boundary depend on whatever
+    // TZ the API process happens to run under (no TZ=UTC pin exists in the
+    // repo), so a booking that had already ended by the UTC convention could
+    // still sit in the Upcoming tab with live Edit/Cancel/Check-in actions.
+    const startOfToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
 
     const where: Record<string, unknown> = { userId: request.user.id }
 
