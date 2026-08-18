@@ -893,7 +893,7 @@ export interface WhereaboutsLocation {
 }
 export interface WhereaboutsPerson {
   user: { id: string; displayName: string; email: string }
-  today: WhereaboutsLocation[]
+  today: (WhereaboutsLocation & { startsAt: string; endsAt: string })[]
   assignedDesks: (WhereaboutsLocation & { isPrimary: boolean })[]
 }
 export const directoryApi = {
