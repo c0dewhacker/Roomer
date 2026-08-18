@@ -31,6 +31,24 @@ async function isGroupPrivileged(groupId: string): Promise<boolean> {
   return group.globalRole === GlobalRole.SUPER_ADMIN || group._count.groupResourceRoles > 0
 }
 
+/**
+ * True if deactivating this user would leave the org with zero active
+ * SUPER_ADMINs, locking everyone out of the admin UI with no way back in
+ * except direct DB surgery. Every other path that can block/demote a user
+ * (PATCH /users/:id, bulk CSV import, IdP group-mapping sync) already guards
+ * against this — SCIM's PUT/PATCH/DELETE never inherited the same check,
+ * even though routine directory offboarding is exactly the kind of automated
+ * action this is meant to protect against.
+ */
+async function blocksLastActiveSuperAdmin(userId: string): Promise<boolean> {
+  const target = await prisma.user.findUnique({ where: { id: userId }, select: { globalRole: true, accountStatus: true } })
+  if (target?.globalRole !== GlobalRole.SUPER_ADMIN || target.accountStatus !== 'ACTIVE') return false
+  const otherActiveAdmins = await prisma.user.count({
+    where: { id: { not: userId }, globalRole: GlobalRole.SUPER_ADMIN, accountStatus: 'ACTIVE' },
+  })
+  return otherActiveAdmins === 0
+}
+
 const SCIM_CONTENT_TYPE = 'application/scim+json'
 
 // Bounded, linear-time check (no backtracking). Applied to every write path
@@ -149,6 +167,13 @@ function registerUsers(fastify: FastifyInstance): void {
       if (parsed.attr === 'userName' || parsed.attr === 'email') where = { email: { equals: parsed.value, mode: 'insensitive' } }
       else if (parsed.attr === 'externalId') where = { externalId: parsed.value }
       else if (parsed.attr === 'displayName') where = { displayName: { contains: parsed.value, mode: 'insensitive' } }
+      // An attribute this doesn't know how to evaluate must not fall through
+      // to "no filter" — that silently returns the full unfiltered list as if
+      // the caller's filter matched everything, which is backwards for an
+      // IdP's pre-create existence probe (a false "nothing found" causes a
+      // duplicate; this direction just under-reports on an attribute this
+      // endpoint was never asked to support).
+      else where = { id: { in: [] } }
     }
 
     const [users, total] = await Promise.all([
@@ -259,6 +284,14 @@ function registerUsers(fastify: FastifyInstance): void {
       departmentId = null
     }
 
+    if (active === false) {
+      const blocked = await blocksLastActiveSuperAdmin(id)
+      if (blocked) {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, 'Cannot deactivate the last active super admin'))
+      }
+    }
+
     try {
       const user = await prisma.user.update({
         where: { id },
@@ -308,6 +341,14 @@ function registerUsers(fastify: FastifyInstance): void {
       }
     }
 
+    if (userPatch.accountStatus === 'BLOCKED') {
+      const blocked = await blocksLastActiveSuperAdmin(id)
+      if (blocked) {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, 'Cannot deactivate the last active super admin'))
+      }
+    }
+
     try {
       const user = await prisma.user.update({
         where: { id },
@@ -323,6 +364,13 @@ function registerUsers(fastify: FastifyInstance): void {
   // DELETE /Users/:id — deprovision
   fastify.delete('/Users/:id', { preHandler: [scimAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+
+    const blocked = await blocksLastActiveSuperAdmin(id)
+    if (blocked) {
+      return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(409, 'Cannot deactivate the last active super admin'))
+    }
+
     try {
       await prisma.user.update({ where: { id }, data: { accountStatus: 'BLOCKED' } })
       reply.status(204).send()
@@ -349,6 +397,10 @@ function registerGroups(fastify: FastifyInstance): void {
     if (parsed) {
       if (parsed.attr === 'displayName') where = { name: parsed.value }
       else if (parsed.attr === 'externalId') where = { id: parsed.value }
+      // See the same guard on GET /Users — an unsupported attribute (e.g.
+      // `members eq`) must not fall through to "no filter" and return every
+      // group unfiltered.
+      else where = { id: { in: [] } }
     }
 
     const org = await prisma.organisation.findFirst({ select: { id: true } })
