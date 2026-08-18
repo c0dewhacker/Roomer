@@ -612,7 +612,8 @@ function ZoneSection({
               <AlertDialogHeader>
                 <AlertDialogTitle>Delete zone "{zone.name}"?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  This will permanently delete the zone. Assets in this zone will be unlinked from the floor plan but not deleted.
+                  This will permanently delete the zone. Assets in this zone will be unlinked from the floor plan but not
+                  deleted, and any future bookings on them will be cancelled.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
