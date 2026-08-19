@@ -1,5 +1,43 @@
+import { Prisma } from '@prisma/client'
 import { prisma } from './prisma.js'
 import { GlobalRole, RoleSource } from '@roomer/shared'
+
+// Distinct from booking.ts's advisory lock classes (4242-4245) and queue.ts's
+// FLOOR_NOTIFICATION_LOCK_CLASS (4244) — next unused integer.
+const SUPER_ADMIN_GUARD_LOCK_CLASS = 4246
+
+/**
+ * Serialises every check-then-mutate sequence anywhere in the app that could
+ * demote, block, or delete a SUPER_ADMIN, against every other such sequence —
+ * not just against other actions on the same user row. Without this, two
+ * concurrent requests demoting two *different* admins (the only two active
+ * ones) can each read "at least one other active admin exists" before either
+ * commits, and both proceed, leaving zero active super admins with no way
+ * back into the org's own admin UI short of direct DB access.
+ *
+ * Must be called inside a transaction, before wouldRemoveLastActiveSuperAdmin
+ * and the mutation that acts on its result — any gap re-opens the race.
+ */
+export async function lockSuperAdminGuard(tx: Prisma.TransactionClient): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${SUPER_ADMIN_GUARD_LOCK_CLASS})`
+}
+
+/**
+ * True if demoting/blocking/deleting `userId` right now would leave the org
+ * with zero active SUPER_ADMINs. Call after lockSuperAdminGuard, in the same
+ * transaction as the eventual mutation.
+ */
+export async function wouldRemoveLastActiveSuperAdmin(
+  tx: Prisma.TransactionClient,
+  userId: string,
+): Promise<boolean> {
+  const target = await tx.user.findUnique({ where: { id: userId }, select: { globalRole: true, accountStatus: true } })
+  if (target?.globalRole !== GlobalRole.SUPER_ADMIN || target.accountStatus !== 'ACTIVE') return false
+  const otherActiveAdmins = await tx.user.count({
+    where: { id: { not: userId }, globalRole: GlobalRole.SUPER_ADMIN, accountStatus: 'ACTIVE' },
+  })
+  return otherActiveAdmins === 0
+}
 
 /**
  * Record the raw IdP group values seen on this login so admins can copy exact
@@ -145,32 +183,33 @@ export async function applyGroupMappings(
   } else if (sync) {
     // No IdP admin grant. Only downgrade if the current admin role was itself
     // IDP-derived — never strip an admin role an operator set manually.
-    const current = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { globalRole: true, globalRoleSource: true },
-    })
-    if (current?.globalRole === GlobalRole.SUPER_ADMIN && current.globalRoleSource === RoleSource.IDP) {
-      // Same guard as PATCH /users/:id and the bulk user import — but this path
-      // is the most dangerous of the three: it fires silently on an ordinary
-      // SSO login (e.g. after a routine AD group rename or someone briefly
-      // dropped from an "Admins" group), with no admin reviewing the change.
-      // Demoting the org's last active super admin here would lock the org
-      // out of its own admin UI with no way back except direct DB access.
-      const otherActiveAdmins = await prisma.user.count({
-        where: { id: { not: userId }, globalRole: GlobalRole.SUPER_ADMIN, accountStatus: 'ACTIVE' },
+    //
+    // This path is the most dangerous of the four places this guard applies:
+    // it fires silently on an ordinary SSO login (e.g. after a routine AD
+    // group rename or someone briefly dropped from an "Admins" group), with
+    // no admin reviewing the change. lockSuperAdminGuard serialises this
+    // against the other three (PATCH /users/:id, bulk import, SCIM) so two
+    // concurrent demotions of the org's last two admins can't both slip past
+    // the check before either commits.
+    await prisma.$transaction(async (tx) => {
+      await lockSuperAdminGuard(tx)
+      const current = await tx.user.findUnique({
+        where: { id: userId },
+        select: { globalRole: true, globalRoleSource: true },
       })
-      if (otherActiveAdmins > 0) {
-        await prisma.user.update({
-          where: { id: userId },
-          data: { globalRole: GlobalRole.USER, globalRoleSource: RoleSource.MANUAL },
-        })
-      } else {
+      if (current?.globalRole !== GlobalRole.SUPER_ADMIN || current.globalRoleSource !== RoleSource.IDP) return
+      if (await wouldRemoveLastActiveSuperAdmin(tx, userId)) {
         process.stderr.write(JSON.stringify({
           level: 'warn',
           msg: '[group-mapping] Skipped IdP-driven admin demotion — user is the last active super admin',
           userId,
         }) + '\n')
+        return
       }
-    }
+      await tx.user.update({
+        where: { id: userId },
+        data: { globalRole: GlobalRole.USER, globalRoleSource: RoleSource.MANUAL },
+      })
+    })
   }
 }

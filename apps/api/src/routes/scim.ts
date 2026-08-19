@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
 import { cancelFutureBookingsForUser, cancelQueueEntriesForUser, releaseAssetAssignmentsForUser } from '../lib/queue.js'
+import { lockSuperAdminGuard, wouldRemoveLastActiveSuperAdmin } from '../lib/group-mapping.js'
 import {
   userToScim, groupToScim, scimError, listResponse, parseScimFilter,
   applyUserPatchOps, applyGroupPatchOps, hashScimToken,
@@ -32,23 +33,6 @@ async function isGroupPrivileged(groupId: string): Promise<boolean> {
   return group.globalRole === GlobalRole.SUPER_ADMIN || group._count.groupResourceRoles > 0
 }
 
-/**
- * True if deactivating this user would leave the org with zero active
- * SUPER_ADMINs, locking everyone out of the admin UI with no way back in
- * except direct DB surgery. Every other path that can block/demote a user
- * (PATCH /users/:id, bulk CSV import, IdP group-mapping sync) already guards
- * against this — SCIM's PUT/PATCH/DELETE never inherited the same check,
- * even though routine directory offboarding is exactly the kind of automated
- * action this is meant to protect against.
- */
-async function blocksLastActiveSuperAdmin(userId: string): Promise<boolean> {
-  const target = await prisma.user.findUnique({ where: { id: userId }, select: { globalRole: true, accountStatus: true } })
-  if (target?.globalRole !== GlobalRole.SUPER_ADMIN || target.accountStatus !== 'ACTIVE') return false
-  const otherActiveAdmins = await prisma.user.count({
-    where: { id: { not: userId }, globalRole: GlobalRole.SUPER_ADMIN, accountStatus: 'ACTIVE' },
-  })
-  return otherActiveAdmins === 0
-}
 
 const SCIM_CONTENT_TYPE = 'application/scim+json'
 
@@ -285,28 +269,44 @@ function registerUsers(fastify: FastifyInstance): void {
       departmentId = null
     }
 
-    if (active === false) {
-      const blocked = await blocksLastActiveSuperAdmin(id)
-      if (blocked) {
+    try {
+      const user = await prisma.$transaction(async (tx) => {
+        if (active === false) {
+          await lockSuperAdminGuard(tx)
+          if (await wouldRemoveLastActiveSuperAdmin(tx, id)) {
+            throw Object.assign(new Error('LAST_SUPER_ADMIN'), { code: 'LAST_SUPER_ADMIN' })
+          }
+        }
+        return tx.user.update({
+          where: { id },
+          data: {
+            ...(email ? { email } : {}),
+            ...(displayName ? { displayName } : {}),
+            ...(externalId !== undefined ? { externalId } : {}),
+            ...(active !== undefined ? { accountStatus: active ? 'ACTIVE' : 'BLOCKED' } : {}),
+            ...(departmentId !== undefined ? { departmentId } : {}),
+          },
+          select: userSelect,
+        })
+      })
+      // Same cleanup PATCH and DELETE below already do on this exact transition
+      // — without it, a user deactivated via PUT (some SCIM clients send a
+      // full-replace PUT rather than a PATCH for offboarding) keeps their
+      // future CONFIRMED bookings, queue entries, and permanent desk
+      // assignments intact under an account that can no longer log in to
+      // release them itself.
+      if (active === false) {
+        await cancelFutureBookingsForUser(user.id)
+        await cancelQueueEntriesForUser(user.id)
+        await releaseAssetAssignmentsForUser(user.id)
+      }
+      reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
+    } catch (err: unknown) {
+      const e = err as { code?: string }
+      if (e?.code === 'LAST_SUPER_ADMIN') {
         return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
           .send(scimError(409, 'Cannot deactivate the last active super admin'))
       }
-    }
-
-    try {
-      const user = await prisma.user.update({
-        where: { id },
-        data: {
-          ...(email ? { email } : {}),
-          ...(displayName ? { displayName } : {}),
-          ...(externalId !== undefined ? { externalId } : {}),
-          ...(active !== undefined ? { accountStatus: active ? 'ACTIVE' : 'BLOCKED' } : {}),
-          ...(departmentId !== undefined ? { departmentId } : {}),
-        },
-        select: userSelect,
-      })
-      reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
-    } catch {
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
     }
   })
@@ -342,19 +342,19 @@ function registerUsers(fastify: FastifyInstance): void {
       }
     }
 
-    if (userPatch.accountStatus === 'BLOCKED') {
-      const blocked = await blocksLastActiveSuperAdmin(id)
-      if (blocked) {
-        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
-          .send(scimError(409, 'Cannot deactivate the last active super admin'))
-      }
-    }
-
     try {
-      const user = await prisma.user.update({
-        where: { id },
-        data: { ...userPatch, ...(departmentId !== undefined ? { departmentId } : {}) },
-        select: userSelect,
+      const user = await prisma.$transaction(async (tx) => {
+        if (userPatch.accountStatus === 'BLOCKED') {
+          await lockSuperAdminGuard(tx)
+          if (await wouldRemoveLastActiveSuperAdmin(tx, id)) {
+            throw Object.assign(new Error('LAST_SUPER_ADMIN'), { code: 'LAST_SUPER_ADMIN' })
+          }
+        }
+        return tx.user.update({
+          where: { id },
+          data: { ...userPatch, ...(departmentId !== undefined ? { departmentId } : {}) },
+          select: userSelect,
+        })
       })
       if (userPatch.accountStatus === 'BLOCKED') {
         await cancelFutureBookingsForUser(user.id)
@@ -362,7 +362,12 @@ function registerUsers(fastify: FastifyInstance): void {
         await releaseAssetAssignmentsForUser(user.id)
       }
       reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
-    } catch {
+    } catch (err: unknown) {
+      const e = err as { code?: string }
+      if (e?.code === 'LAST_SUPER_ADMIN') {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, 'Cannot deactivate the last active super admin'))
+      }
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
     }
   })
@@ -371,19 +376,24 @@ function registerUsers(fastify: FastifyInstance): void {
   fastify.delete('/Users/:id', { preHandler: [scimAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
 
-    const blocked = await blocksLastActiveSuperAdmin(id)
-    if (blocked) {
-      return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
-        .send(scimError(409, 'Cannot deactivate the last active super admin'))
-    }
-
     try {
-      await prisma.user.update({ where: { id }, data: { accountStatus: 'BLOCKED' } })
+      await prisma.$transaction(async (tx) => {
+        await lockSuperAdminGuard(tx)
+        if (await wouldRemoveLastActiveSuperAdmin(tx, id)) {
+          throw Object.assign(new Error('LAST_SUPER_ADMIN'), { code: 'LAST_SUPER_ADMIN' })
+        }
+        await tx.user.update({ where: { id }, data: { accountStatus: 'BLOCKED' } })
+      })
       await cancelFutureBookingsForUser(id)
       await cancelQueueEntriesForUser(id)
       await releaseAssetAssignmentsForUser(id)
       reply.status(204).send()
-    } catch {
+    } catch (err: unknown) {
+      const e = err as { code?: string }
+      if (e?.code === 'LAST_SUPER_ADMIN') {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, 'Cannot deactivate the last active super admin'))
+      }
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
     }
   })

@@ -6,6 +6,7 @@ import { GlobalRole, ResourceRoleType, ResourceScopeType, RoleSource } from '@ro
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole } from '../middleware/requireRole.js'
 import { enqueueNotification, cancelFutureBookingsForUser, cancelQueueEntriesForUser, releaseAssetAssignmentsForUser } from '../lib/queue.js'
+import { lockSuperAdminGuard, wouldRemoveLastActiveSuperAdmin } from '../lib/group-mapping.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { NotificationType } from '@roomer/shared'
 import { signAccessToken, verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE } from '../lib/jwt.js'
@@ -253,43 +254,42 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    // Guard against removing the last active super admin (would lock the org out).
+    // Guard against removing the last active super admin (would lock the org
+    // out). lockSuperAdminGuard + wouldRemoveLastActiveSuperAdmin run inside
+    // the same transaction as the update itself so two concurrent requests
+    // demoting two *different* admins (the only two active ones) can't both
+    // pass the check before either commits and leave zero.
     const demotesAdmin = result.data.globalRole !== undefined && result.data.globalRole !== GlobalRole.SUPER_ADMIN
     const blocksAccount = result.data.accountStatus === 'BLOCKED'
-    if (demotesAdmin || blocksAccount) {
-      const target = await prisma.user.findUnique({ where: { id }, select: { globalRole: true, accountStatus: true } })
-      if (target?.globalRole === GlobalRole.SUPER_ADMIN && target.accountStatus === 'ACTIVE') {
-        const otherActiveAdmins = await prisma.user.count({
-          where: { id: { not: id }, globalRole: GlobalRole.SUPER_ADMIN, accountStatus: 'ACTIVE' },
-        })
-        if (otherActiveAdmins === 0) {
-          return reply.status(409).send({
-            error: { message: 'Cannot remove the last active super admin', code: 'LAST_SUPER_ADMIN' },
-          })
-        }
-      }
-    }
 
     try {
-      const updated = await prisma.user.update({
-        where: { id },
-        data: {
-          ...result.data,
-          // An admin explicitly setting the role marks it MANUAL so directory
-          // sync will not later downgrade it.
-          ...(result.data.globalRole !== undefined ? { globalRoleSource: RoleSource.MANUAL } : {}),
-        },
-        select: {
-          id: true,
-          email: true,
-          displayName: true,
-          provider: true,
-          accountStatus: true,
-          globalRole: true,
-          visibleInColleagueSearch: true,
-          createdAt: true,
-          updatedAt: true,
-        },
+      const updated = await prisma.$transaction(async (tx) => {
+        if (demotesAdmin || blocksAccount) {
+          await lockSuperAdminGuard(tx)
+          if (await wouldRemoveLastActiveSuperAdmin(tx, id)) {
+            throw Object.assign(new Error('LAST_SUPER_ADMIN'), { code: 'LAST_SUPER_ADMIN' })
+          }
+        }
+        return tx.user.update({
+          where: { id },
+          data: {
+            ...result.data,
+            // An admin explicitly setting the role marks it MANUAL so directory
+            // sync will not later downgrade it.
+            ...(result.data.globalRole !== undefined ? { globalRoleSource: RoleSource.MANUAL } : {}),
+          },
+          select: {
+            id: true,
+            email: true,
+            displayName: true,
+            provider: true,
+            accountStatus: true,
+            globalRole: true,
+            visibleInColleagueSearch: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        })
       })
 
       if (result.data.accountStatus === 'BLOCKED') {
@@ -305,7 +305,13 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       return reply.status(200).send({ data: updated })
-    } catch {
+    } catch (err: unknown) {
+      const e = err as { code?: string }
+      if (e?.code === 'LAST_SUPER_ADMIN') {
+        return reply.status(409).send({
+          error: { message: 'Cannot remove the last active super admin', code: 'LAST_SUPER_ADMIN' },
+        })
+      }
       return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })
     }
   })
@@ -700,20 +706,27 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
             // column defaults every row to 'USER' (see userImportRowSchema), so
             // an "all employees" import that happens to include the org's sole
             // super admin would otherwise silently demote them and lock the org
-            // out with no path back except direct DB access.
-            let nextGlobalRole: typeof existing.globalRole = row.global_role as typeof existing.globalRole
-            if (existing.globalRole === GlobalRole.SUPER_ADMIN && existing.accountStatus === 'ACTIVE' && nextGlobalRole !== GlobalRole.SUPER_ADMIN) {
-              const otherActiveAdmins = await prisma.user.count({
-                where: { id: { not: existing.id }, globalRole: GlobalRole.SUPER_ADMIN, accountStatus: 'ACTIVE' },
-              })
-              if (otherActiveAdmins === 0) {
-                nextGlobalRole = existing.globalRole
-                errors.push({ row: index + 2, message: `Cannot demote ${row.email} — they are the last active super admin; role left unchanged` })
+            // out with no path back except direct DB access. lockSuperAdminGuard
+            // serialises this against the other three guarded paths (PATCH
+            // /users/:id, IdP group-mapping sync, SCIM) so a concurrent request
+            // demoting a different admin can't race this row past the check.
+            const couldDemote = existing.globalRole === GlobalRole.SUPER_ADMIN
+              && existing.accountStatus === 'ACTIVE'
+              && (row.global_role as typeof existing.globalRole) !== GlobalRole.SUPER_ADMIN
+
+            await prisma.$transaction(async (tx) => {
+              let nextGlobalRole: typeof existing.globalRole = row.global_role as typeof existing.globalRole
+              if (couldDemote) {
+                await lockSuperAdminGuard(tx)
+                if (await wouldRemoveLastActiveSuperAdmin(tx, existing.id)) {
+                  nextGlobalRole = existing.globalRole
+                  errors.push({ row: index + 2, message: `Cannot demote ${row.email} — they are the last active super admin; role left unchanged` })
+                }
               }
-            }
-            await prisma.user.update({
-              where: { email: row.email },
-              data: { displayName: row.display_name, globalRole: nextGlobalRole },
+              await tx.user.update({
+                where: { email: row.email },
+                data: { displayName: row.display_name, globalRole: nextGlobalRole },
+              })
             })
             userId = existing.id
             updated++
