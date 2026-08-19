@@ -301,10 +301,6 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
     }
 
     const newLastDateObj = new Date(result.data.lastDate + 'T00:00:00.000Z')
-    const currentLastDateStr = rule.lastDate.toISOString().slice(0, 10)
-    if (result.data.lastDate === currentLastDateStr) {
-      return reply.status(400).send({ error: { message: 'lastDate is unchanged', code: 'NO_CHANGE' } })
-    }
     if (newLastDateObj < rule.firstDate) {
       return reply.status(400).send({ error: { message: 'lastDate must be on or after the series start date', code: 'VALIDATION_ERROR' } })
     }
@@ -318,38 +314,72 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       })
     }
 
-    if (newLastDateObj > rule.lastDate) {
-      // Extending — generate only the newly-covered occurrences (everything
-      // up to the old lastDate already exists as Booking rows).
-      const firstDateStr = rule.firstDate.toISOString().slice(0, 10)
-      const allDates = getOccurrenceDates(rule.frequency, rule.dayOfWeek ?? undefined, firstDateStr, result.data.lastDate)
-      const newDates = allDates.filter((d) => d > rule.lastDate)
-      if (newDates.length === 0) {
-        return reply.status(400).send({ error: { message: 'No new occurrences fall in the extended range', code: 'NO_OCCURRENCES' } })
-      }
-      const slots = newDates.map((d) => ({
-        startsAt: buildSlotDatetime(d, rule.startTime),
-        endsAt: buildSlotDatetime(d, rule.endTime),
-      }))
+    // frequency/dayOfWeek/firstDate are immutable via this endpoint (schema
+    // only accepts lastDate), so it's safe to compute this off the outer,
+    // possibly-stale `rule` — unlike lastDate itself, they can't have
+    // changed underneath us. Catches shortening to a date that eliminates
+    // every real occurrence (e.g. a WEEKLY Wednesday series whose firstDate
+    // is a Monday — the first actual occurrence lands 2 days later, so a
+    // naive "lastDate >= firstDate" check alone lets a shorten past that
+    // point leave the rule ACTIVE with zero bookings and no way to tell).
+    const firstDateStr = rule.firstDate.toISOString().slice(0, 10)
+    const remainingOccurrences = getOccurrenceDates(rule.frequency, rule.dayOfWeek ?? undefined, firstDateStr, result.data.lastDate)
+    if (remainingOccurrences.length === 0) {
+      return reply.status(400).send({
+        error: { message: 'No occurrences would remain with this end date — cancel the series instead', code: 'NO_OCCURRENCES' },
+      })
+    }
 
-      // Same centralised gate as creation, checked per-occurrence for the
-      // same reason (an ASSIGNED-desk allowed-weekday check spanning the
-      // whole range would incorrectly require every day between occurrences
-      // to also be available).
-      for (const slot of slots) {
-        const gate = await assertBookable(prisma, request.user, rule.assetId, slot.startsAt, slot.endsAt)
-        if (!gate.ok) {
-          return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+    // Everything below reads and writes rule.lastDate. A second PATCH on this
+    // same rule (e.g. a concurrent extend racing this shorten) could read its
+    // own stale copy of lastDate between our read above and now, and the two
+    // requests' writes would then race — whichever commits last silently
+    // overwrites the other's lastDate while both sets of booking-row changes
+    // persist, leaving the rule's lastDate inconsistent with its actual
+    // bookings (see #228-adjacent recurring-extend audit). Hold the same
+    // per-asset advisory lock booking creation already uses so a second PATCH
+    // on this rule's asset can't interleave, then re-read the rule inside the
+    // lock and redo every lastDate-dependent decision against that fresh copy.
+    try {
+      const outcome = await prisma.$transaction(async (tx) => {
+        await lockAssetForBooking(tx, rule.assetId)
+
+        const freshRule = await tx.recurringBookingRule.findUnique({ where: { id } })
+        if (!freshRule || freshRule.status === 'CANCELLED') {
+          throw Object.assign(new Error('RULE_GONE'), { code: 'RULE_GONE' })
         }
-      }
+        if (result.data.lastDate === freshRule.lastDate.toISOString().slice(0, 10)) {
+          throw Object.assign(new Error('NO_CHANGE'), { code: 'NO_CHANGE' })
+        }
 
-      try {
-        const updated = await prisma.$transaction(async (tx) => {
-          await lockAssetForBooking(tx, rule.assetId)
+        if (newLastDateObj > freshRule.lastDate) {
+          // Extending — generate only the newly-covered occurrences relative
+          // to the fresh lastDate (everything up to it already exists).
+          const allDates = getOccurrenceDates(freshRule.frequency, freshRule.dayOfWeek ?? undefined, firstDateStr, result.data.lastDate)
+          const newDates = allDates.filter((d) => d > freshRule.lastDate)
+          if (newDates.length === 0) {
+            throw Object.assign(new Error('NO_OCCURRENCES'), { code: 'NO_OCCURRENCES' })
+          }
+          const slots = newDates.map((d) => ({
+            startsAt: buildSlotDatetime(d, freshRule.startTime),
+            endsAt: buildSlotDatetime(d, freshRule.endTime),
+          }))
+
+          // Same centralised gate as creation, checked per-occurrence for the
+          // same reason (an ASSIGNED-desk allowed-weekday check spanning the
+          // whole range would incorrectly require every day between occurrences
+          // to also be available).
+          for (const slot of slots) {
+            const gate = await assertBookable(tx, request.user, freshRule.assetId, slot.startsAt, slot.endsAt)
+            if (!gate.ok) {
+              throw Object.assign(new Error('NOT_BOOKABLE'), { code: gate.code, status: gate.status, message: gate.message })
+            }
+          }
+
           for (const slot of slots) {
             const conflict = await tx.booking.findFirst({
               where: {
-                assetId: rule.assetId,
+                assetId: freshRule.assetId,
                 status: 'CONFIRMED',
                 startsAt: { lt: slot.endsAt },
                 endsAt: { gt: slot.startsAt },
@@ -363,14 +393,15 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
               })
             }
           }
-          return tx.recurringBookingRule.update({
+
+          const updated = await tx.recurringBookingRule.update({
             where: { id },
             data: {
               lastDate: newLastDateObj,
               bookings: {
                 create: slots.map((s) => ({
-                  userId: rule.userId,
-                  assetId: rule.assetId,
+                  userId: freshRule.userId,
+                  assetId: freshRule.assetId,
                   startsAt: s.startsAt,
                   endsAt: s.endsAt,
                   status: 'CONFIRMED',
@@ -382,79 +413,91 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
               asset: { select: { id: true, name: true, floor: { select: { name: true, building: { select: { name: true } } } } } },
             },
           })
-        })
-        return reply.status(200).send({ data: updated })
-      } catch (err: unknown) {
-        const e = err as { code?: string; conflictAt?: string }
-        if (e.code === 'BOOKING_CONFLICT') {
-          return reply.status(409).send({
-            error: { message: `Booking conflict on ${e.conflictAt} — the extension was not applied`, code: 'BOOKING_CONFLICT' },
-          })
+          return { kind: 'extend' as const, rule: updated }
         }
-        if (isOverlapConstraintViolation(err)) {
-          return reply.status(409).send({
-            error: { message: 'One or more new occurrences conflict with an existing booking — the extension was not applied', code: 'BOOKING_CONFLICT' },
-          })
-        }
-        throw err
-      }
-    }
 
-    // Shortening — cancel occurrences that now fall after the new end date.
-    const newLastDateEndOfDay = new Date(newLastDateObj)
-    newLastDateEndOfDay.setUTCHours(23, 59, 59, 999)
-    const droppedBookings = await prisma.booking.findMany({
-      where: { recurringRuleId: id, status: 'CONFIRMED', startsAt: { gt: newLastDateEndOfDay } },
-      select: { id: true, assetId: true, startsAt: true, endsAt: true },
-    })
-
-    await prisma.$transaction([
-      prisma.booking.updateMany({
-        where: { id: { in: droppedBookings.map((b) => b.id) } },
-        data: { status: 'CANCELLED' },
-      }),
-      prisma.recurringBookingRule.update({ where: { id }, data: { lastDate: newLastDateObj } }),
-    ])
-
-    for (const b of droppedBookings) {
-      dispatchWebhook('booking.cancelled', { id: b.id, userId: rule.userId, assetId: b.assetId }).catch(() => {})
-      const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
-      if (nextQueued) {
-        await enqueueNotification({
-          type: NotificationType.QUEUE_PROMOTED,
-          userId: nextQueued.userId,
-          queueEntryId: nextQueued.id,
-          claimDeadline: nextQueued.claimDeadline.toISOString(),
+        // Shortening — cancel occurrences that now fall after the new end date.
+        const newLastDateEndOfDay = new Date(newLastDateObj)
+        newLastDateEndOfDay.setUTCHours(23, 59, 59, 999)
+        const droppedBookings = await tx.booking.findMany({
+          where: { recurringRuleId: id, status: 'CONFIRMED', startsAt: { gt: newLastDateEndOfDay } },
+          select: { id: true, assetId: true, startsAt: true, endsAt: true },
         })
-        dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
-      }
-    }
-
-    // One notification, not one per dropped occurrence — same reasoning as
-    // full cancellation below, though the ICS CANCEL here is a no-op for
-    // most calendar apps (only the series' very first occurrence ever got
-    // an actual REQUEST invite; shortening only ever drops LATER dates,
-    // which never had one to begin with). Still worth sending: the email
-    // body content is accurate ("your booking on [date] was cancelled"),
-    // which is the useful part when the recipient wasn't the one who
-    // shortened the series.
-    if (droppedBookings.length > 0) {
-      const isSelf = rule.userId === request.user.id
-      await enqueueNotification({
-        type: isSelf ? NotificationType.BOOKING_CANCELLED : NotificationType.BOOKING_CANCELLED_BY_ADMIN,
-        userId: rule.userId,
-        bookingId: droppedBookings[0].id,
+        await tx.booking.updateMany({
+          where: { id: { in: droppedBookings.map((b) => b.id) } },
+          data: { status: 'CANCELLED' },
+        })
+        const updated = await tx.recurringBookingRule.update({
+          where: { id },
+          data: { lastDate: newLastDateObj },
+          include: {
+            bookings: { select: { id: true, startsAt: true, endsAt: true, status: true }, orderBy: { startsAt: 'asc' } },
+            asset: { select: { id: true, name: true, floor: { select: { name: true, building: { select: { name: true } } } } } },
+          },
+        })
+        return { kind: 'shorten' as const, rule: updated, droppedBookings }
       })
-    }
 
-    const updated = await prisma.recurringBookingRule.findUnique({
-      where: { id },
-      include: {
-        bookings: { select: { id: true, startsAt: true, endsAt: true, status: true }, orderBy: { startsAt: 'asc' } },
-        asset: { select: { id: true, name: true, floor: { select: { name: true, building: { select: { name: true } } } } } },
-      },
-    })
-    return reply.status(200).send({ data: updated })
+      if (outcome.kind === 'shorten') {
+        for (const b of outcome.droppedBookings) {
+          dispatchWebhook('booking.cancelled', { id: b.id, userId: rule.userId, assetId: b.assetId }).catch(() => {})
+          const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
+          if (nextQueued) {
+            await enqueueNotification({
+              type: NotificationType.QUEUE_PROMOTED,
+              userId: nextQueued.userId,
+              queueEntryId: nextQueued.id,
+              claimDeadline: nextQueued.claimDeadline.toISOString(),
+            })
+            dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+          }
+        }
+
+        // One notification, not one per dropped occurrence — same reasoning as
+        // full cancellation below, though the ICS CANCEL here is a no-op for
+        // most calendar apps (only the series' very first occurrence ever got
+        // an actual REQUEST invite; shortening only ever drops LATER dates,
+        // which never had one to begin with). Still worth sending: the email
+        // body content is accurate ("your booking on [date] was cancelled"),
+        // which is the useful part when the recipient wasn't the one who
+        // shortened the series.
+        if (outcome.droppedBookings.length > 0) {
+          const isSelf = rule.userId === request.user.id
+          await enqueueNotification({
+            type: isSelf ? NotificationType.BOOKING_CANCELLED : NotificationType.BOOKING_CANCELLED_BY_ADMIN,
+            userId: rule.userId,
+            bookingId: outcome.droppedBookings[0].id,
+          })
+        }
+      }
+
+      return reply.status(200).send({ data: outcome.rule })
+    } catch (err: unknown) {
+      const e = err as { code?: string; conflictAt?: string; status?: number; message?: string }
+      if (e.code === 'NO_CHANGE') {
+        return reply.status(400).send({ error: { message: 'lastDate is unchanged', code: 'NO_CHANGE' } })
+      }
+      if (e.code === 'RULE_GONE') {
+        return reply.status(409).send({ error: { message: 'Rule was modified concurrently — please retry', code: 'CONFLICT' } })
+      }
+      if (e.code === 'NO_OCCURRENCES') {
+        return reply.status(400).send({ error: { message: 'No new occurrences fall in the extended range', code: 'NO_OCCURRENCES' } })
+      }
+      if (e.code === 'BOOKING_CONFLICT') {
+        return reply.status(409).send({
+          error: { message: `Booking conflict on ${e.conflictAt} — the change was not applied`, code: 'BOOKING_CONFLICT' },
+        })
+      }
+      if (e.code === 'NOT_BOOKABLE') {
+        return reply.status(e.status ?? 400).send({ error: { message: e.message ?? 'Not bookable', code: 'NOT_BOOKABLE' } })
+      }
+      if (isOverlapConstraintViolation(err)) {
+        return reply.status(409).send({
+          error: { message: 'One or more new occurrences conflict with an existing booking — the change was not applied', code: 'BOOKING_CONFLICT' },
+        })
+      }
+      throw err
+    }
   })
 
   // DELETE /recurring-bookings/:id — cancel rule + all future bookings
