@@ -240,6 +240,8 @@ The Docker images are production-ready as-is. Key checklist:
 - Mount a persistent volume at `/app/uploads` for floor plan storage (already in `docker-compose.yml`)
 - For horizontal API scaling, point `FILE_STORAGE_PATH` at shared network storage rather than a local volume
 
+See [docs/backup-and-recovery.md](docs/backup-and-recovery.md) for backing up the database and uploads volume, and a restore runbook.
+
 ### Kubernetes (Helm)
 
 A Helm chart is included at `charts/roomer/`. Fetch sub-chart dependencies, then install:
