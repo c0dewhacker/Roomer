@@ -35,8 +35,15 @@ export async function departmentRoutes(fastify: FastifyInstance): Promise<void> 
         include: { _count: { select: { members: true } } },
       })
       return reply.status(201).send({ data: department })
-    } catch {
-      return reply.status(409).send({ error: { message: 'A department with this name already exists', code: 'ALREADY_EXISTS' } })
+    } catch (err) {
+      // Narrowed to the actual unique-constraint violation, same as PUT
+      // above — a blanket catch here mislabels any other failure (a
+      // transient DB error) as "already exists" instead of surfacing it as
+      // the real error it is.
+      if ((err as { code?: string }).code === 'P2002') {
+        return reply.status(409).send({ error: { message: 'A department with this name already exists', code: 'ALREADY_EXISTS' } })
+      }
+      throw err
     }
   })
 
