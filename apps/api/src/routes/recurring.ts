@@ -5,7 +5,7 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { z } from 'zod'
 import { enqueueNotification, promoteNextQueueEntry } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
-import { assertBookable, isWithinAdvanceBookingWindow, lockAssetForBooking, isOverlapConstraintViolation } from '../lib/booking.js'
+import { assertBookable, isWithinAdvanceBookingWindow, lockAssetForBooking, lockUserForBookingQuota, checkZoneGroupOverlap, isOverlapConstraintViolation } from '../lib/booking.js'
 
 const createRecurringSchema = z.object({
   assetId: z.string().min(1),
@@ -151,6 +151,11 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       const rule = await prisma.$transaction(async (tx) => {
         // Serialise booking creation for this asset against all other paths
         await lockAssetForBooking(tx, assetId)
+        // ZoneGroup conflicts are scoped per-user (see checkZoneGroupOverlap),
+        // not per-asset, so they also need the per-user lock every other
+        // zone-group-checking path uses to actually serialise against a
+        // concurrent booking/reschedule by this same user in the same group.
+        await lockUserForBookingQuota(tx, request.user.id)
 
         // Check all slots for conflicts atomically
         for (const slot of slots) {
@@ -167,6 +172,17 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
             throw Object.assign(new Error('CONFLICT'), {
               code: 'BOOKING_CONFLICT',
               conflictAt: conflict.startsAt.toISOString().split('T')[0],
+            })
+          }
+          // A recurring series is exempt from booking-quota enforcement (it
+          // materialises every occurrence up front, which the quota isn't
+          // meant to cap), but not from the zone-group rule — a weekly series
+          // in Zone A still shouldn't coexist with the user's own booking in
+          // Zone B of the same group on an overlapping occurrence.
+          if (await checkZoneGroupOverlap(tx, request.user.id, assetId, slot.startsAt, slot.endsAt)) {
+            throw Object.assign(new Error('CONFLICT'), {
+              code: 'ZONE_GROUP_CONFLICT',
+              conflictAt: slot.startsAt.toISOString().split('T')[0],
             })
           }
         }
@@ -215,6 +231,14 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
           error: {
             message: `Booking conflict on ${e.conflictAt} — the entire series was not created`,
             code: 'BOOKING_CONFLICT',
+          },
+        })
+      }
+      if (e.code === 'ZONE_GROUP_CONFLICT') {
+        return reply.status(409).send({
+          error: {
+            message: `You already have a booking in the same zone group on ${e.conflictAt} — the entire series was not created`,
+            code: 'ZONE_GROUP_CONFLICT',
           },
         })
       }
@@ -376,6 +400,12 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
             }
           }
 
+          // ZoneGroup conflicts are scoped per-user, not per-asset (see
+          // checkZoneGroupOverlap), so they need this lock — the per-asset
+          // one above doesn't serialise them against a concurrent booking by
+          // this same user in another zone of the same group.
+          await lockUserForBookingQuota(tx, freshRule.userId)
+
           for (const slot of slots) {
             const conflict = await tx.booking.findFirst({
               where: {
@@ -390,6 +420,12 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
               throw Object.assign(new Error('CONFLICT'), {
                 code: 'BOOKING_CONFLICT',
                 conflictAt: conflict.startsAt.toISOString().split('T')[0],
+              })
+            }
+            if (await checkZoneGroupOverlap(tx, freshRule.userId, freshRule.assetId, slot.startsAt, slot.endsAt)) {
+              throw Object.assign(new Error('CONFLICT'), {
+                code: 'ZONE_GROUP_CONFLICT',
+                conflictAt: slot.startsAt.toISOString().split('T')[0],
               })
             }
           }
@@ -486,6 +522,11 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       if (e.code === 'BOOKING_CONFLICT') {
         return reply.status(409).send({
           error: { message: `Booking conflict on ${e.conflictAt} — the change was not applied`, code: 'BOOKING_CONFLICT' },
+        })
+      }
+      if (e.code === 'ZONE_GROUP_CONFLICT') {
+        return reply.status(409).send({
+          error: { message: `You already have a booking in the same zone group on ${e.conflictAt} — the change was not applied`, code: 'ZONE_GROUP_CONFLICT' },
         })
       }
       if (e.code === 'NOT_BOOKABLE') {

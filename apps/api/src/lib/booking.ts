@@ -76,6 +76,52 @@ export async function hasConfirmedOverlap(
 }
 
 /**
+ * True when this user already holds a CONFIRMED booking overlapping
+ * [startsAt, endsAt) somewhere else in the same ZoneGroup as `assetId`.
+ * Scoped to this one user, not a cross-user "booking Zone A blocks Zone B for
+ * everyone" rule — a ZoneGroup exists to stop one person double-booking
+ * across zones meant to be mutually exclusive for them (e.g. a hot-desk zone
+ * and its adjacent phone-booth zone), not to reserve zone capacity globally.
+ *
+ * Must be called under lockUserForBookingQuota (or an equivalent per-user
+ * lock) for the check to actually serialise against a concurrent request —
+ * see callers.
+ */
+export async function checkZoneGroupOverlap(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  assetId: string,
+  startsAt: Date,
+  endsAt: Date,
+  excludeBookingId?: string,
+): Promise<boolean> {
+  const asset = await tx.asset.findUnique({
+    where: { id: assetId },
+    select: {
+      primaryZoneId: true,
+      primaryZone: { select: { zoneGroupId: true } },
+    },
+  })
+
+  const zoneGroupId = asset?.primaryZone?.zoneGroupId
+  if (!zoneGroupId) return false
+
+  const conflict = await tx.booking.findFirst({
+    where: {
+      userId,
+      status: 'CONFIRMED',
+      id: excludeBookingId ? { not: excludeBookingId } : undefined,
+      startsAt: { lt: endsAt },
+      endsAt: { gt: startsAt },
+      asset: {
+        primaryZone: { zoneGroupId },
+      },
+    },
+  })
+  return conflict !== null
+}
+
+/**
  * Detect the Postgres exclusion-constraint violation raised by the
  * `booking_no_overlap` constraint (error code 23P01). This is the durable
  * backstop against double bookings: even if a code path forgets the advisory

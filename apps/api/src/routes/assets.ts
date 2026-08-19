@@ -6,11 +6,18 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole, getManagedFloorIds, getManagedBuildingIds, isFloorManagerForFloor } from '../middleware/requireRole.js'
 import { enqueueNotification, fanOutFloorAvailable, cancelFutureBookingsForAssets } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
-import { lockAssetForBooking, lockAssetForQueue, hasConfirmedOverlap, isOverlapConstraintViolation, assertBookable, assertUnderBookingQuota } from '../lib/booking.js'
+import { lockAssetForBooking, lockAssetForQueue, lockUserForBookingQuota, hasConfirmedOverlap, checkZoneGroupOverlap, isOverlapConstraintViolation, assertBookable, assertUnderBookingQuota } from '../lib/booking.js'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { checkGroupAccess } from './groups.js'
 import { saveCategoryIcon, deleteFile, resolveStoragePath } from '../lib/storage.js'
+
+class ZoneGroupConflictError extends Error {
+  constructor(public readonly code: string, message: string) {
+    super(message)
+    this.name = 'ZoneGroupConflictError'
+  }
+}
 
 const createCategorySchema = z.object({
   name: z.string().min(1).max(255),
@@ -871,6 +878,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         booking = await prisma.$transaction(async (tx) => {
           await lockAssetForBooking(tx, id)
           if (await hasConfirmedOverlap(tx, id, first.wantedStartsAt, first.wantedEndsAt)) return null
+
+          // ZoneGroup conflicts are scoped per-user, not per-asset, so they
+          // need this lock too — same rule every other booking-creating path
+          // (POST /bookings, reschedule, recurring, queue claim) enforces.
+          await lockUserForBookingQuota(tx, first.userId)
+          if (await checkZoneGroupOverlap(tx, first.userId, id, first.wantedStartsAt, first.wantedEndsAt)) {
+            throw new ZoneGroupConflictError('ZONE_GROUP_CONFLICT', 'This user already has a booking in the same zone group for this time')
+          }
+
           const created = await tx.booking.create({
             data: {
               userId: first.userId,
@@ -885,7 +901,9 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         })
       } catch (err) {
         if (isOverlapConstraintViolation(err)) booking = null
-        else throw err
+        else if (err instanceof ZoneGroupConflictError) {
+          return reply.status(409).send({ error: { message: err.message, code: err.code } })
+        } else throw err
       }
 
       if (!booking) {

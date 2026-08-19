@@ -1,5 +1,4 @@
 import type { FastifyInstance } from 'fastify'
-import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { createBookingSchema, updateBookingSchema, GlobalRole, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
@@ -8,7 +7,7 @@ import { enqueueNotification, fanOutFloorAvailable, promoteNextQueueEntry } from
 import { dispatchWebhook } from '../lib/webhook.js'
 import { buildBookingIcs } from '../lib/ical.js'
 import { checkGroupAccess } from './groups.js'
-import { assertBookable, assertUnderBookingQuota, hasConfirmedOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, lockUserForBookingQuota, isOverlapConstraintViolation } from '../lib/booking.js'
+import { assertBookable, assertUnderBookingQuota, hasConfirmedOverlap, checkZoneGroupOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, lockUserForBookingQuota, isOverlapConstraintViolation } from '../lib/booking.js'
 import { z } from 'zod'
 
 class BookingConflictError extends Error {
@@ -29,40 +28,6 @@ const reportQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),
 })
-
-async function checkZoneGroupOverlap(
-  tx: Prisma.TransactionClient,
-  userId: string,
-  assetId: string,
-  startsAt: Date,
-  endsAt: Date,
-  excludeBookingId?: string,
-): Promise<boolean> {
-  const asset = await tx.asset.findUnique({
-    where: { id: assetId },
-    select: {
-      primaryZoneId: true,
-      primaryZone: { select: { zoneGroupId: true } },
-    },
-  })
-
-  const zoneGroupId = asset?.primaryZone?.zoneGroupId
-  if (!zoneGroupId) return false
-
-  const conflict = await tx.booking.findFirst({
-    where: {
-      userId,
-      status: 'CONFIRMED',
-      id: excludeBookingId ? { not: excludeBookingId } : undefined,
-      startsAt: { lt: endsAt },
-      endsAt: { gt: startsAt },
-      asset: {
-        primaryZone: { zoneGroupId },
-      },
-    },
-  })
-  return conflict !== null
-}
 
 export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Bookings'], ...route.schema } })
@@ -242,19 +207,26 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
           throw new BookingConflictError('ASSET_CONFLICT', 'Asset is already booked for this time')
         }
 
-        if (await checkZoneGroupOverlap(tx, request.user.id, assetId, startsAt, endsAt)) {
-          throw new BookingConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
-        }
-
         // The quota check above ran before this transaction, against a
         // different lock domain (per-asset, not per-user) — two concurrent
         // requests from the same user targeting different assets could both
         // pass it before either commits. Re-check under a per-user lock so
         // they serialise against each other too, closing that window.
+        //
+        // checkZoneGroupOverlap has the exact same lock-domain problem — it's
+        // also scoped per-user, not per-asset, so it must run under this same
+        // lock rather than before it (where it previously sat, unprotected):
+        // two concurrent bookings for different assets in the same ZoneGroup
+        // each only take their own per-asset lock above, which doesn't
+        // serialise them against each other.
         await lockUserForBookingQuota(tx, request.user.id)
         const quotaRecheck = await assertUnderBookingQuota(tx, request.user.id, isSuperAdmin)
         if (!quotaRecheck.ok) {
           throw new BookingConflictError(quotaRecheck.code, quotaRecheck.message)
+        }
+
+        if (await checkZoneGroupOverlap(tx, request.user.id, assetId, startsAt, endsAt)) {
+          throw new BookingConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
         }
 
         return tx.booking.create({
@@ -482,6 +454,13 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
           throw new BookingConflictError('ASSET_CONFLICT', 'Asset is already booked for this time')
         }
 
+        // checkZoneGroupOverlap is scoped per-user (booking.userId — the
+        // booking's owner, who may not be the caller if an admin/floor manager
+        // is rescheduling on someone's behalf), so it needs a per-user lock to
+        // actually serialise against a concurrent reschedule/booking by that
+        // same user, the same reasoning POST /bookings applies. This path
+        // previously had no per-user lock at all.
+        await lockUserForBookingQuota(tx, booking.userId)
         if (await checkZoneGroupOverlap(tx, booking.userId, booking.assetId, newStartsAt, newEndsAt, id)) {
           throw new BookingConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
         }

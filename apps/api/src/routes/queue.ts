@@ -8,6 +8,7 @@ import {
   assertBookable,
   assertUnderBookingQuota,
   hasConfirmedOverlap,
+  checkZoneGroupOverlap,
   lockAssetForBooking,
   lockAssetForQueue,
   lockUserForBookingQuota,
@@ -19,6 +20,13 @@ class QuotaExceededError extends Error {
   constructor(public readonly code: string, message: string) {
     super(message)
     this.name = 'QuotaExceededError'
+  }
+}
+
+class ZoneGroupConflictError extends Error {
+  constructor(public readonly code: string, message: string) {
+    super(message)
+    this.name = 'ZoneGroupConflictError'
   }
 }
 
@@ -260,6 +268,15 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
           throw new QuotaExceededError(quotaRecheck.code, quotaRecheck.message)
         }
 
+        // Same rule direct booking (POST /bookings) and rescheduling enforce —
+        // claiming a promoted queue slot shouldn't let a user end up with two
+        // overlapping bookings across zones meant to be mutually exclusive for
+        // them. Checked here, under the per-user lock just acquired above, for
+        // the same lock-domain reason as the quota recheck.
+        if (await checkZoneGroupOverlap(tx, entry.userId, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)) {
+          throw new ZoneGroupConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
+        }
+
         return tx.booking.create({
           data: {
             userId: entry.userId,
@@ -272,7 +289,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       })
     } catch (err) {
       if (isOverlapConstraintViolation(err)) result = null
-      else if (err instanceof QuotaExceededError) {
+      else if (err instanceof QuotaExceededError || err instanceof ZoneGroupConflictError) {
         return reply.status(409).send({ error: { message: err.message, code: err.code } })
       } else throw err
     }
@@ -380,6 +397,12 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
           throw new QuotaExceededError(quotaRecheck.code, quotaRecheck.message)
         }
 
+        // Same rule direct booking (POST /bookings) and rescheduling enforce —
+        // see the matching comment in /claim-by-token above.
+        if (await checkZoneGroupOverlap(tx, request.user.id, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)) {
+          throw new ZoneGroupConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
+        }
+
         return tx.booking.create({
           data: {
             userId: request.user.id,
@@ -392,7 +415,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       })
     } catch (err) {
       if (isOverlapConstraintViolation(err)) booking = null
-      else if (err instanceof QuotaExceededError) {
+      else if (err instanceof QuotaExceededError || err instanceof ZoneGroupConflictError) {
         return reply.status(409).send({ error: { message: err.message, code: err.code } })
       } else throw err
     }
