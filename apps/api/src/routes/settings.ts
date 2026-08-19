@@ -11,7 +11,7 @@ import { syncLdapUsers, getLdapConfig } from '../lib/ldap.js'
 import { hashScimToken, generateScimToken } from '../lib/scim-helpers.js'
 import { findAuthConfig, listAuthConfigs, upsertAuthConfig } from '../lib/prisma.js'
 import { idpGroupMatchesAny } from '../lib/group-mapping.js'
-import { saveBrandingImage, resolveStoragePath } from '../lib/storage.js'
+import { saveBrandingImage, resolveStoragePath, deleteFile } from '../lib/storage.js'
 import { DEFAULT_TEMPLATE_STRINGS, interpolateTemplate, stripHtmlToText, formatDate, sendEmail, resetMailer } from '../lib/mailer.js'
 import { encrypt } from '../lib/encryption.js'
 import { ENV_SMTP_OVERRIDES, getStoredEmailConfig, getEffectiveSmtpForDisplay, type StoredEmailConfig } from '../lib/smtp-config.js'
@@ -393,13 +393,18 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
       if (!file) {
         return reply.status(400).send({ error: { message: 'No file uploaded', code: 'NO_FILE' } })
       }
-      const relPath = await saveBrandingImage(file, 'logo')
       const org = await prisma.organisation.findFirst()
       if (!org) {
         return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
       }
       const current = (org.branding ?? {}) as Record<string, unknown>
+      const previousLogoPath = current.logoPath as string | undefined
+      const relPath = await saveBrandingImage(file, 'logo')
       await prisma.organisation.update({ where: { id: org.id }, data: { branding: { ...current, logoPath: relPath } } })
+      // Now a genuinely different path each upload (see saveBrandingImage),
+      // so it's safe to clean up the old one — unlike the fixed-path
+      // category-icon case, this never targets the file just written.
+      if (previousLogoPath && previousLogoPath !== relPath) await deleteFile(previousLogoPath).catch(() => {})
       return reply.status(200).send({ data: { logoPath: relPath } })
     },
   )
@@ -413,13 +418,15 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
       if (!file) {
         return reply.status(400).send({ error: { message: 'No file uploaded', code: 'NO_FILE' } })
       }
-      const relPath = await saveBrandingImage(file, 'favicon')
       const org = await prisma.organisation.findFirst()
       if (!org) {
         return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
       }
       const current = (org.branding ?? {}) as Record<string, unknown>
+      const previousFaviconPath = current.faviconPath as string | undefined
+      const relPath = await saveBrandingImage(file, 'favicon')
       await prisma.organisation.update({ where: { id: org.id }, data: { branding: { ...current, faviconPath: relPath } } })
+      if (previousFaviconPath && previousFaviconPath !== relPath) await deleteFile(previousFaviconPath).catch(() => {})
       return reply.status(200).send({ data: { faviconPath: relPath } })
     },
   )
