@@ -6,7 +6,7 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole, getManagedFloorIds, getManagedBuildingIds, isFloorManagerForFloor } from '../middleware/requireRole.js'
 import { enqueueNotification, fanOutFloorAvailable, cancelFutureBookingsForAssets } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
-import { lockAssetForBooking, lockAssetForQueue, hasConfirmedOverlap, isOverlapConstraintViolation } from '../lib/booking.js'
+import { lockAssetForBooking, lockAssetForQueue, hasConfirmedOverlap, isOverlapConstraintViolation, assertBookable, assertUnderBookingQuota } from '../lib/booking.js'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { checkGroupAccess } from './groups.js'
@@ -731,7 +731,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     const waiting = await prisma.queueEntry.findMany({
       where: { assetId: id, status: 'WAITING', wantedStartsAt: { gt: new Date() } },
       orderBy: { position: 'asc' },
-      include: { user: { select: { id: true, email: true, displayName: true } } },
+      include: { user: { select: { id: true, email: true, displayName: true, globalRole: true } } },
     })
 
     if (waiting.length === 0) {
@@ -747,8 +747,24 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     const first = waiting[0]
 
     if (waiting.length === 1) {
-      // Single waiter — confirm booking immediately. Serialise against all other
-      // booking-creating paths and re-check overlap so this cannot double-book.
+      // Single waiter — confirm booking immediately (skips the claim step the
+      // multi-waiter branch below requires, since there's no one to race).
+      // Still re-validate bookability and quota at confirmation time, same as
+      // the claim-by-token/claim routes (queue.ts) — the allow list,
+      // bookingStatus, or the waiter's group access may have changed since
+      // they joined the queue, and this branch bypassing that check would let
+      // someone obtain a CONFIRMED booking they're no longer permitted to make.
+      const gate = await assertBookable(prisma, first.user, id, first.wantedStartsAt, first.wantedEndsAt)
+      if (!gate.ok) {
+        return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+      }
+      const quota = await assertUnderBookingQuota(prisma, first.userId, first.user.globalRole === GlobalRole.SUPER_ADMIN)
+      if (!quota.ok) {
+        return reply.status(quota.status).send({ error: { message: quota.message, code: quota.code } })
+      }
+
+      // Serialise against all other booking-creating paths and re-check overlap
+      // so this cannot double-book.
       let booking: Awaited<ReturnType<typeof prisma.booking.create>> | null
       try {
         booking = await prisma.$transaction(async (tx) => {
