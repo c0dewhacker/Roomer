@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { parseISO, isToday } from 'date-fns'
-import { Calendar, MapPin, Clock, Trash2, Pencil, CalendarPlus, Armchair, Repeat, Check } from 'lucide-react'
+import { Calendar, MapPin, Clock, Trash2, Pencil, CalendarPlus, Armchair, Repeat, Check, List } from 'lucide-react'
 import { useMyBookings, useCancelBooking, useUpdateBooking } from '@/hooks/useBookings'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -300,8 +300,118 @@ function utcRuleTimeToLocal(startTime: string, endTime: string, dayOfWeek?: numb
   }
 }
 
+function EditRecurringEndDateDialog({
+  rule,
+  open,
+  onClose,
+}: {
+  rule: RecurringBookingRule
+  open: boolean
+  onClose: () => void
+}) {
+  const qc = useQueryClient()
+  const [lastDate, setLastDate] = useState(rule.lastDate.slice(0, 10))
+
+  const update = useMutation({
+    mutationFn: () => recurringBookingsApi.update(rule.id, { lastDate }),
+    onSuccess: () => {
+      const extended = new Date(lastDate) > new Date(rule.lastDate.slice(0, 10))
+      toast.success(extended ? 'Series extended' : 'Series shortened')
+      qc.invalidateQueries({ queryKey: ['recurring-bookings'] })
+      // Same reasoning as cancel above — extending/shortening changes the
+      // underlying Booking rows directly, not just the rule.
+      qc.invalidateQueries({ queryKey: ['bookings'] })
+      onClose()
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Change end date</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <div>
+            <Label htmlFor="recur-lastdate">New end date</Label>
+            <input
+              id="recur-lastdate"
+              type="date"
+              value={lastDate}
+              min={rule.firstDate.slice(0, 10)}
+              onChange={(e) => setLastDate(e.target.value)}
+              className="mt-1.5 flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
+            />
+            <p className="text-xs text-muted-foreground mt-1.5">
+              Pick a later date to add more occurrences, or an earlier one to drop occurrences after it.
+              Occurrences up to and including the new date are never affected.
+            </p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={update.isPending}>Cancel</Button>
+          <Button onClick={() => update.mutate()} disabled={update.isPending || !lastDate}>
+            {update.isPending ? 'Saving…' : 'Save changes'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function RecurringOccurrencesDialog({
+  ruleId,
+  assetLabel,
+  open,
+  onClose,
+}: {
+  ruleId: string
+  assetLabel: string
+  open: boolean
+  onClose: () => void
+}) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['recurring-bookings', ruleId],
+    queryFn: () => recurringBookingsApi.get(ruleId),
+    select: (r) => r.data,
+    enabled: open,
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Occurrences — {assetLabel}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-1.5 py-2 max-h-96 overflow-y-auto">
+          {isLoading ? (
+            [1, 2, 3].map((i) => <Skeleton key={i} className="h-9 w-full" />)
+          ) : !data?.bookings || data.bookings.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No occurrences.</p>
+          ) : (
+            data.bookings.map((b) => (
+              <div key={b.id} className="flex items-center justify-between gap-2 text-sm py-1">
+                <span>{formatDateRange(b.startsAt, b.endsAt)}</span>
+                <Badge variant={statusVariant[b.status ?? ''] ?? 'secondary'} className="shrink-0 text-xs">
+                  {b.status}
+                </Badge>
+              </div>
+            ))
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function RecurringRuleCard({ rule }: { rule: RecurringBookingRule }) {
   const qc = useQueryClient()
+  const [editDateOpen, setEditDateOpen] = useState(false)
+  const [occurrencesOpen, setOccurrencesOpen] = useState(false)
 
   const cancel = useMutation({
     mutationFn: () => recurringBookingsApi.cancel(rule.id),
@@ -323,64 +433,91 @@ function RecurringRuleCard({ rule }: { rule: RecurringBookingRule }) {
   const local = utcRuleTimeToLocal(rule.startTime, rule.endTime, rule.dayOfWeek)
 
   return (
-    <Card>
-      <CardContent className="p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <p className="font-medium truncate">{assetLabel}</p>
-              <Badge variant={rule.status === 'ACTIVE' ? 'default' : 'destructive'} className="shrink-0 text-xs">
-                {rule.status}
-              </Badge>
-            </div>
-            {location && (
-              <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
-                <MapPin className="h-3 w-3 shrink-0" />{location}
+    <>
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="font-medium truncate">{assetLabel}</p>
+                <Badge variant={rule.status === 'ACTIVE' ? 'default' : 'destructive'} className="shrink-0 text-xs">
+                  {rule.status}
+                </Badge>
+              </div>
+              {location && (
+                <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
+                  <MapPin className="h-3 w-3 shrink-0" />{location}
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
+                <Repeat className="h-3 w-3 shrink-0" />
+                {rule.frequency === 'DAILY' && `Every day, ${local.start}–${local.end}`}
+                {rule.frequency === 'WEEKLY' && local.dayOfWeek != null && `Every ${DAY_NAMES[local.dayOfWeek]}, ${local.start}–${local.end}`}
+                {rule.frequency === 'MONTHLY' && `Monthly, ${local.start}–${local.end}`}
               </p>
-            )}
-            <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
-              <Repeat className="h-3 w-3 shrink-0" />
-              {rule.frequency === 'DAILY' && `Every day, ${local.start}–${local.end}`}
-              {rule.frequency === 'WEEKLY' && local.dayOfWeek != null && `Every ${DAY_NAMES[local.dayOfWeek]}, ${local.start}–${local.end}`}
-              {rule.frequency === 'MONTHLY' && `Monthly, ${local.start}–${local.end}`}
-            </p>
-            <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
-              <Calendar className="h-3 w-3 shrink-0" />
-              {formatCalendarDate(rule.firstDate)} → {formatCalendarDate(rule.lastDate)}
-              {upcomingCount > 0 && <span className="ml-1">({upcomingCount} upcoming)</span>}
-            </p>
-          </div>
+              <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
+                <Calendar className="h-3 w-3 shrink-0" />
+                {formatCalendarDate(rule.firstDate)} → {formatCalendarDate(rule.lastDate)}
+                {upcomingCount > 0 && <span className="ml-1">({upcomingCount} upcoming)</span>}
+              </p>
+              <button
+                type="button"
+                onClick={() => setOccurrencesOpen(true)}
+                className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 mt-1 underline decoration-dotted underline-offset-2"
+              >
+                <List className="h-3 w-3 shrink-0" />
+                View all occurrences
+              </button>
+            </div>
 
-          {rule.status === 'ACTIVE' && (
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive">
-                  <Trash2 className="h-4 w-4" />
+            {rule.status === 'ACTIVE' && (
+              <div className="flex items-center gap-1 shrink-0">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                  onClick={() => setEditDateOpen(true)}
+                >
+                  <Pencil className="h-4 w-4" />
                 </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Cancel recurring series?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    All future bookings in this series for <strong>{assetLabel}</strong> will be cancelled.
-                    Past bookings are not affected.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Keep series</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={() => cancel.mutate()}
-                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  >
-                    Cancel series
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive">
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Cancel recurring series?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        All future bookings in this series for <strong>{assetLabel}</strong> will be cancelled.
+                        Past bookings are not affected.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep series</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => cancel.mutate()}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      >
+                        Cancel series
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {editDateOpen && (
+        <EditRecurringEndDateDialog rule={rule} open={editDateOpen} onClose={() => setEditDateOpen(false)} />
+      )}
+      {occurrencesOpen && (
+        <RecurringOccurrencesDialog ruleId={rule.id} assetLabel={assetLabel} open={occurrencesOpen} onClose={() => setOccurrencesOpen(false)} />
+      )}
+    </>
   )
 }
 

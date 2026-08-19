@@ -786,6 +786,8 @@ export const recurringBookingsApi = {
     firstDate: string
     lastDate: string
   }) => api.post<{ data: RecurringBookingRule }>('/recurring-bookings', body),
+  update: (id: string, body: { lastDate: string }) =>
+    api.patch<{ data: RecurringBookingRule }>(`/recurring-bookings/${id}`, body),
   cancel: (id: string) => api.delete<{ data: { ok: true } }>(`/recurring-bookings/${id}`),
 }
 
