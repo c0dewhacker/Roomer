@@ -33,6 +33,7 @@ const FloorPage = lazy(() => import('./pages/FloorPage'))
 const OrgChartPage = lazy(() => import('./pages/admin/OrgChartPage'))
 const FloorAdminPage = lazy(() => import('./pages/admin/FloorAdminPage'))
 const ReportsAdminPage = lazy(() => import('./pages/admin/ReportsAdminPage'))
+const BookingsReportPage = lazy(() => import('./pages/admin/BookingsReportPage'))
 
 function PageLoader() {
   return (
@@ -205,6 +206,7 @@ export function AppRouter() {
           <Route element={<BuildingAdminOnlyRoute />}>
             <Route path="/admin/leases" element={<LeasesAdminPage />} />
             <Route path="/admin/reports" element={<Suspense fallback={<PageLoader />}><ReportsAdminPage /></Suspense>} />
+            <Route path="/admin/bookings-report" element={<Suspense fallback={<PageLoader />}><BookingsReportPage /></Suspense>} />
           </Route>
         </Route>
       </Route>

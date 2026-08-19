@@ -382,6 +382,25 @@ export const bookingsApi = {
     api.patch<{ data: Booking }>(`/bookings/${id}`, body),
   cancel: (id: string) => api.delete<{ data: { ok: true } }>(`/bookings/${id}`),
   checkIn: (id: string) => api.post<{ data: { id: string; checkedInAt: string } }>(`/bookings/${id}/check-in`),
+  report: (params: {
+    from?: string
+    to?: string
+    userId?: string
+    assetId?: string
+    floorId?: string
+    buildingId?: string
+    status?: 'CONFIRMED' | 'CANCELLED' | 'COMPLETED'
+    page?: number
+    limit?: number
+  }) => {
+    const qs = new URLSearchParams()
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== '') qs.set(k, String(v))
+    }
+    return api.get<{ data: Booking[]; meta: { page: number; limit: number; total: number; totalPages: number } }>(
+      `/bookings/report${qs.toString() ? `?${qs}` : ''}`,
+    )
+  },
 }
 
 // --- Queue ---
