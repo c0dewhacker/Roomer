@@ -277,7 +277,14 @@ async function deliverOne({ endpointId, deliveryId, url, event, payload }: Webho
     // keeps retrying (up to 5 attempts over 24h) regardless. Record the skip
     // in the delivery log for visibility and stop, rather than throwing (which
     // would just trigger another retry).
-    if (!ep.enabled) {
+    //
+    // A ping is exempt: dispatchPing's whole point is "test this endpoint
+    // before flipping it live" — an admin configuring a new integration
+    // leaves it disabled while wiring up the receiving side, then pings it
+    // to check the URL/secret actually work before enabling. Skipping the
+    // ping the same way a real event gets skipped turned every such test
+    // into a guaranteed, uninformative "Endpoint disabled" failure.
+    if (!ep.enabled && event !== 'ping') {
       const record = { event, payload: JSON.parse(payload), statusCode: null, success: false, error: 'Endpoint disabled', attempt }
       await prisma.webhookDelivery.upsert({
         where: { id: deliveryId },
