@@ -36,8 +36,17 @@ function decryptConfig<T extends { config: Prisma.JsonValue }>(row: T): T {
   return { ...row, config: decryptJson(row.config) }
 }
 
-export async function findAuthConfig(provider: AuthConfigProvider) {
-  const row = await prisma.authConfig.findUnique({ where: { provider } })
+// `client` defaults to the module-level prisma singleton for the many
+// read-only callers (login-time lookups in saml.ts/ldap.ts/oidc.ts, where
+// wrapping every login in a transaction would be pure overhead). The one
+// caller that mutates config (settings.ts PUT /auth-config/:provider) passes
+// its own Prisma.TransactionClient so the read-merge-write it does around
+// this can be lock-protected against a concurrent edit of the same provider.
+export async function findAuthConfig(
+  provider: AuthConfigProvider,
+  client: Prisma.TransactionClient | PrismaClient = prisma,
+) {
+  const row = await client.authConfig.findUnique({ where: { provider } })
   return row ? decryptConfig(row) : null
 }
 
@@ -49,9 +58,10 @@ export async function listAuthConfigs() {
 export async function upsertAuthConfig(
   provider: AuthConfigProvider,
   data: { enabled?: boolean; config?: Record<string, unknown> },
+  client: Prisma.TransactionClient | PrismaClient = prisma,
 ) {
   const encryptedConfig = data.config !== undefined ? encryptJson(data.config) : undefined
-  const row = await prisma.authConfig.upsert({
+  const row = await client.authConfig.upsert({
     where: { provider },
     update: {
       ...(typeof data.enabled === 'boolean' ? { enabled: data.enabled } : {}),

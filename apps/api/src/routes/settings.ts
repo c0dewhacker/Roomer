@@ -17,6 +17,27 @@ import { encrypt } from '../lib/encryption.js'
 import { ENV_SMTP_OVERRIDES, getStoredEmailConfig, getEffectiveSmtpForDisplay, type StoredEmailConfig } from '../lib/smtp-config.js'
 import { z } from 'zod'
 
+// Distinct from lib/booking.ts's lock classes (4242-4245) and
+// lib/group-mapping.ts's SUPER_ADMIN_GUARD_LOCK_CLASS (4246).
+const ORG_SETTINGS_LOCK_CLASS = 4247
+
+/**
+ * Every settings route that mutates a JSON column on the single Organisation
+ * row (branding, emailConfig, emailTemplates) or an AuthConfig row follows a
+ * read → merge in JS → write-the-whole-blob-back pattern with no
+ * transaction, version check, or lock — two concurrent admin edits (e.g. one
+ * uploading a logo while another edits branding colours, or two edits to the
+ * same auth provider) silently lose one of the two updates, since the second
+ * writer's update() replaces the whole column based on a stale in-memory
+ * read. One fixed-key lock for all of it is enough — these are rare,
+ * sequential, admin-only actions; there's no meaningful concurrency to
+ * preserve between e.g. a branding edit and an auth-config edit, only a race
+ * to close.
+ */
+async function lockOrgSettings(tx: Prisma.TransactionClient): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ORG_SETTINGS_LOCK_CLASS})`
+}
+
 const emailConfigSchema = z.object({
   host: z.string().max(255).optional(),
   port: z.coerce.number().int().min(1).max(65535).optional(),
@@ -202,12 +223,41 @@ async function serveUploadedFile(
 export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Settings'], ...route.schema } })
 
+  // Deliberately excludes emailConfig (host/port/user/from + the SMTP
+  // password — encrypted, but legacy rows written before encryption-at-rest
+  // was introduced can hold it in the clear per lib/encryption.ts) — GET
+  // /settings/email already exists specifically to expose SMTP settings to
+  // the admin UI and is careful to redact the password down to a
+  // `hasPassword` boolean. Returning the full org row here shipped that
+  // field (ciphertext, or a legacy plaintext password) to any SUPER_ADMIN
+  // response body for no reason — the org-settings form only ever reads the
+  // fields selected below (see OrgSettingsCard.tsx/DeskPanel.tsx).
+  const orgSettingsSelect = {
+    id: true,
+    name: true,
+    slug: true,
+    defaultBookingDurationHours: true,
+    maxAdvanceBookingDays: true,
+    maxBookingsPerUser: true,
+    queueClaimWindowHours: true,
+    dateFormat: true,
+    emailTemplates: true,
+    branding: true,
+    bookingReminderHours: true,
+    maxRecurringBookingWeeks: true,
+    noShowReleaseEnabled: true,
+    checkInGraceMinutes: true,
+    weeklyReportEnabled: true,
+    createdAt: true,
+    updatedAt: true,
+  } satisfies Prisma.OrganisationSelect
+
   // GET /settings/organisation — return org settings
   fastify.get(
     '/organisation',
     { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
     async (_request, reply) => {
-      const org = await prisma.organisation.findFirst()
+      const org = await prisma.organisation.findFirst({ select: orgSettingsSelect })
       if (!org) {
         return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
       }
@@ -230,7 +280,7 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
       if (!org) {
         return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
       }
-      const updated = await prisma.organisation.update({ where: { id: org.id }, data: result.data })
+      const updated = await prisma.organisation.update({ where: { id: org.id }, data: result.data, select: orgSettingsSelect })
       return reply.status(200).send({ data: updated })
     },
   )
@@ -268,23 +318,29 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
       if (!result.success) {
         return reply.status(400).send({ error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() } })
       }
-      const org = await prisma.organisation.findFirst()
-      if (!org) return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
-
-      const existing = (org.emailConfig ?? {}) as StoredEmailConfig
       const { password, ...rest } = result.data
-      const next: StoredEmailConfig = {
-        ...existing,
-        host: rest.host ?? undefined,
-        port: rest.port ?? undefined,
-        secure: rest.secure ?? undefined,
-        user: rest.user ?? undefined,
-        from: rest.from ?? undefined,
-        // Keep the existing encrypted password unless a new non-empty one is provided.
-        password: password ? encrypt(password) : existing.password,
-      }
-
-      await prisma.organisation.update({ where: { id: org.id }, data: { emailConfig: next as Prisma.InputJsonValue } })
+      const next = await prisma.$transaction(async (tx) => {
+        await lockOrgSettings(tx)
+        const org = await tx.organisation.findFirst()
+        if (!org) throw Object.assign(new Error('NOT_FOUND'), { code: 'NOT_FOUND' })
+        const existing = (org.emailConfig ?? {}) as StoredEmailConfig
+        const merged: StoredEmailConfig = {
+          ...existing,
+          host: rest.host ?? undefined,
+          port: rest.port ?? undefined,
+          secure: rest.secure ?? undefined,
+          user: rest.user ?? undefined,
+          from: rest.from ?? undefined,
+          // Keep the existing encrypted password unless a new non-empty one is provided.
+          password: password ? encrypt(password) : existing.password,
+        }
+        await tx.organisation.update({ where: { id: org.id }, data: { emailConfig: merged as Prisma.InputJsonValue } })
+        return merged
+      }).catch((err: unknown) => {
+        if ((err as { code?: string })?.code === 'NOT_FOUND') return null
+        throw err
+      })
+      if (!next) return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
       resetMailer() // re-resolve transporter on next send
 
       const effective = await getEffectiveSmtpForDisplay()
@@ -374,14 +430,19 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
           error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
         })
       }
-      const org = await prisma.organisation.findFirst()
-      if (!org) {
+      const merged = await prisma.$transaction(async (tx) => {
+        await lockOrgSettings(tx)
+        const org = await tx.organisation.findFirst()
+        if (!org) return null
+        const current = (org.branding ?? {}) as Record<string, unknown>
+        const next = { ...current, ...result.data }
+        const updated = await tx.organisation.update({ where: { id: org.id }, data: { branding: next } })
+        return updated.branding
+      })
+      if (!merged) {
         return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
       }
-      const current = (org.branding ?? {}) as Record<string, unknown>
-      const merged = { ...current, ...result.data }
-      const updated = await prisma.organisation.update({ where: { id: org.id }, data: { branding: merged } })
-      return reply.status(200).send({ data: updated.branding })
+      return reply.status(200).send({ data: merged })
     },
   )
 
@@ -394,14 +455,27 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
       if (!file) {
         return reply.status(400).send({ error: { message: 'No file uploaded', code: 'NO_FILE' } })
       }
-      const org = await prisma.organisation.findFirst()
-      if (!org) {
-        return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
-      }
-      const current = (org.branding ?? {}) as Record<string, unknown>
-      const previousLogoPath = current.logoPath as string | undefined
+      // The file save (disk I/O) stays outside the transaction below — only
+      // the read-merge-write of the branding JSON column needs the lock.
       const relPath = await saveBrandingImage(file, 'logo')
-      await prisma.organisation.update({ where: { id: org.id }, data: { branding: { ...current, logoPath: relPath } } })
+      let previousLogoPath: string | undefined
+      try {
+        previousLogoPath = await prisma.$transaction(async (tx) => {
+          await lockOrgSettings(tx)
+          const org = await tx.organisation.findFirst()
+          if (!org) throw Object.assign(new Error('NOT_FOUND'), { code: 'NOT_FOUND' })
+          const current = (org.branding ?? {}) as Record<string, unknown>
+          const prev = current.logoPath as string | undefined
+          await tx.organisation.update({ where: { id: org.id }, data: { branding: { ...current, logoPath: relPath } } })
+          return prev
+        })
+      } catch (err) {
+        await deleteFile(relPath).catch(() => {}) // don't leave an orphaned upload if the org row vanished mid-request
+        if ((err as { code?: string })?.code === 'NOT_FOUND') {
+          return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
+        }
+        throw err
+      }
       // Now a genuinely different path each upload (see saveBrandingImage),
       // so it's safe to clean up the old one — unlike the fixed-path
       // category-icon case, this never targets the file just written.
@@ -419,14 +493,25 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
       if (!file) {
         return reply.status(400).send({ error: { message: 'No file uploaded', code: 'NO_FILE' } })
       }
-      const org = await prisma.organisation.findFirst()
-      if (!org) {
-        return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
-      }
-      const current = (org.branding ?? {}) as Record<string, unknown>
-      const previousFaviconPath = current.faviconPath as string | undefined
       const relPath = await saveBrandingImage(file, 'favicon')
-      await prisma.organisation.update({ where: { id: org.id }, data: { branding: { ...current, faviconPath: relPath } } })
+      let previousFaviconPath: string | undefined
+      try {
+        previousFaviconPath = await prisma.$transaction(async (tx) => {
+          await lockOrgSettings(tx)
+          const org = await tx.organisation.findFirst()
+          if (!org) throw Object.assign(new Error('NOT_FOUND'), { code: 'NOT_FOUND' })
+          const current = (org.branding ?? {}) as Record<string, unknown>
+          const prev = current.faviconPath as string | undefined
+          await tx.organisation.update({ where: { id: org.id }, data: { branding: { ...current, faviconPath: relPath } } })
+          return prev
+        })
+      } catch (err) {
+        await deleteFile(relPath).catch(() => {})
+        if ((err as { code?: string })?.code === 'NOT_FOUND') {
+          return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
+        }
+        throw err
+      }
       if (previousFaviconPath && previousFaviconPath !== relPath) await deleteFile(previousFaviconPath).catch(() => {})
       return reply.status(200).send({ data: { faviconPath: relPath } })
     },
@@ -486,96 +571,110 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
       const body = request.body as { enabled?: boolean; config?: Record<string, unknown> }
       const schema = configSchemas[upperProvider]
 
-      let mergedConfig: Record<string, unknown> = {}
+      // The read (existing config, for merging or the enable-completeness
+      // check) and the write must all happen under the same lock, in the same
+      // transaction — reading outside a transaction like this route
+      // previously did meant two concurrent PUTs to the *same* provider (e.g.
+      // one setting clientId, another rotating clientSecret moments later)
+      // could each merge onto the same stale snapshot and the second upsert
+      // would silently discard the first one's change.
+      type AuthConfigWriteResult = { provider: string; enabled: boolean; config: unknown }
+      type AuthConfigResult =
+        | { ok: true; row: AuthConfigWriteResult }
+        | { ok: false; status: number; body: { error: { message: string; code: string; details?: unknown } } }
 
-      if (body.config) {
-        // Merge with existing config to support partial updates (keep secrets if not provided)
-        const existing = await findAuthConfig(upperProvider)
-        const existingConfig = (existing?.config ?? {}) as Record<string, unknown>
-        mergedConfig = { ...existingConfig }
+      const result: AuthConfigResult = await prisma.$transaction(async (tx) => {
+        await lockOrgSettings(tx) // AuthConfig is a separate model from Organisation, but sharing one lock class keeps this simple — see lockOrgSettings.
 
-        // Validate only the provided fields (partial validation)
-        const parsed = (schema as z.ZodObject<z.ZodRawShape>).partial().safeParse(body.config)
-        if (!parsed.success) {
-          return reply.status(400).send({
-            error: { message: 'Invalid config', code: 'VALIDATION_ERROR', details: parsed.error.flatten() },
-          })
-        }
+        let mergedConfig: Record<string, unknown> = {}
 
-        // Apply provided values:
-        //   null   → explicitly clear the field (e.g. unsetting syncBase)
-        //   ''     → skip (secrets omit their value rather than send empty)
-        //   other  → set the value
-        // bindCredentials (LDAP) and clientSecret (OIDC) are encrypted at rest,
-        // same as the SMTP password and webhook signing secrets — only when a
-        // *new* value is submitted this request. Values merely carried over
-        // from existingConfig are already an enc:v1: envelope (or, for rows
-        // written before this fix, legacy plaintext handled transparently by
-        // decryptStringMaybe at read time) and must not be re-encrypted here.
-        const secretFieldsByProvider: Partial<Record<ProviderKey, string>> = {
-          LDAP: 'bindCredentials',
-          OIDC: 'clientSecret',
-        }
-        const secretField = secretFieldsByProvider[upperProvider]
-        for (const [key, val] of Object.entries(body.config)) {
-          if (val === null) {
-            delete mergedConfig[key]
-          } else if (val !== undefined && val !== '') {
-            mergedConfig[key] = key === secretField ? encrypt(String(val)) : val
+        if (body.config) {
+          // Merge with existing config to support partial updates (keep secrets if not provided)
+          const existing = await findAuthConfig(upperProvider, tx)
+          const existingConfig = (existing?.config ?? {}) as Record<string, unknown>
+          mergedConfig = { ...existingConfig }
+
+          // Validate only the provided fields (partial validation)
+          const parsed = (schema as z.ZodObject<z.ZodRawShape>).partial().safeParse(body.config)
+          if (!parsed.success) {
+            return { ok: false, status: 400, body: { error: { message: 'Invalid config', code: 'VALIDATION_ERROR', details: parsed.error.flatten() } } }
+          }
+
+          // Apply provided values:
+          //   null   → explicitly clear the field (e.g. unsetting syncBase)
+          //   ''     → skip (secrets omit their value rather than send empty)
+          //   other  → set the value
+          // bindCredentials (LDAP) and clientSecret (OIDC) are encrypted at rest,
+          // same as the SMTP password and webhook signing secrets — only when a
+          // *new* value is submitted this request. Values merely carried over
+          // from existingConfig are already an enc:v1: envelope (or, for rows
+          // written before this fix, legacy plaintext handled transparently by
+          // decryptStringMaybe at read time) and must not be re-encrypted here.
+          const secretFieldsByProvider: Partial<Record<ProviderKey, string>> = {
+            LDAP: 'bindCredentials',
+            OIDC: 'clientSecret',
+          }
+          const secretField = secretFieldsByProvider[upperProvider]
+          for (const [key, val] of Object.entries(body.config)) {
+            if (val === null) {
+              delete mergedConfig[key]
+            } else if (val !== undefined && val !== '') {
+              mergedConfig[key] = key === secretField ? encrypt(String(val)) : val
+            }
+          }
+
+          // Validate merged result against the full (non-partial) schema. Using
+          // .partial() here (as before) meant a request that only sets a few
+          // fields — e.g. a first-ever OIDC config with issuerUrl but no
+          // clientId/redirectUri — passed both checks and got persisted
+          // (optionally enabled) as an unusable half-configured provider,
+          // failing only much later and cryptically at actual login time.
+          const mergedParsed = schema.safeParse(mergedConfig)
+          if (!mergedParsed.success) {
+            return { ok: false, status: 400, body: { error: { message: 'Merged config is invalid', code: 'VALIDATION_ERROR', details: mergedParsed.error.flatten() } } }
           }
         }
 
-        // Validate merged result against the full (non-partial) schema. Using
-        // .partial() here (as before) meant a request that only sets a few
-        // fields — e.g. a first-ever OIDC config with issuerUrl but no
-        // clientId/redirectUri — passed both checks and got persisted
-        // (optionally enabled) as an unusable half-configured provider,
-        // failing only much later and cryptically at actual login time.
-        const mergedParsed = schema.safeParse(mergedConfig)
-        if (!mergedParsed.success) {
-          return reply.status(400).send({
-            error: { message: 'Merged config is invalid', code: 'VALIDATION_ERROR', details: mergedParsed.error.flatten() },
-          })
+        // Enabling a provider must never succeed unless a complete, schema-valid
+        // config backs it — including via a bare {enabled:true} toggle with no
+        // config in this same request (the "Enable" switch sends exactly that).
+        // When body.config was provided above, mergedConfig is already
+        // guaranteed valid by the full-schema check above; this only does real
+        // work for the toggle-only path, which previously bypassed that check
+        // entirely and could flip on a provider with an empty or partial
+        // config — for OIDC/SAML, that hides the local login form (see
+        // LoginPage's showCredentialForm) with no way back in except a small
+        // "sign in with a local account" link.
+        if (body.enabled === true && !body.config) {
+          const existing = await findAuthConfig(upperProvider, tx)
+          const enableCheck = schema.safeParse(existing?.config ?? {})
+          if (!enableCheck.success) {
+            return {
+              ok: false, status: 400,
+              body: { error: { message: 'Cannot enable: provider configuration is incomplete', code: 'INCOMPLETE_CONFIG', details: enableCheck.error.flatten() } },
+            }
+          }
         }
-      }
 
-      // Enabling a provider must never succeed unless a complete, schema-valid
-      // config backs it — including via a bare {enabled:true} toggle with no
-      // config in this same request (the "Enable" switch sends exactly that).
-      // When body.config was provided above, mergedConfig is already
-      // guaranteed valid by the full-schema check at line ~496; this only
-      // does real work for the toggle-only path, which previously bypassed
-      // that check entirely and could flip on a provider with an empty or
-      // partial config — for OIDC/SAML, that hides the local login form
-      // (see LoginPage's showCredentialForm) with no way back in except a
-      // small "sign in with a local account" link.
-      if (body.enabled === true && !body.config) {
-        const existing = await findAuthConfig(upperProvider)
-        const enableCheck = schema.safeParse(existing?.config ?? {})
-        if (!enableCheck.success) {
-          return reply.status(400).send({
-            error: {
-              message: 'Cannot enable: provider configuration is incomplete',
-              code: 'INCOMPLETE_CONFIG',
-              details: enableCheck.error.flatten(),
-            },
-          })
-        }
-      }
-
-      const row = await upsertAuthConfig(upperProvider, {
-        enabled: body.enabled,
-        config: body.config ? mergedConfig : undefined,
+        const row = await upsertAuthConfig(upperProvider, {
+          enabled: body.enabled,
+          config: body.config ? mergedConfig : undefined,
+        }, tx)
+        return { ok: true, row }
       })
+
+      if (!result.ok) {
+        return reply.status(result.status).send(result.body)
+      }
 
       // Invalidate OIDC client cache when OIDC config changes
       if (upperProvider === 'OIDC') invalidateOidcCache()
 
       return reply.status(200).send({
         data: {
-          provider: row.provider,
-          enabled: row.enabled,
-          config: redactSecrets(upperProvider, row.config as Record<string, unknown>),
+          provider: result.row.provider,
+          enabled: result.row.enabled,
+          config: redactSecrets(upperProvider, result.row.config as Record<string, unknown>),
         },
       })
     },
@@ -592,15 +691,21 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
           error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
         })
       }
-      const org = await prisma.organisation.findFirst()
-      if (!org) {
-        return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
-      }
-      const current = (org.branding ?? {}) as Record<string, unknown>
       const patch: Record<string, unknown> = {}
       if ('defaultProvider' in result.data) patch.defaultLoginProvider = result.data.defaultProvider
       if ('showProviderSelector' in result.data) patch.showLoginProviderSelector = result.data.showProviderSelector
-      await prisma.organisation.update({ where: { id: org.id }, data: { branding: { ...current, ...patch } as Record<string, string | boolean | null> } })
+
+      const org = await prisma.$transaction(async (tx) => {
+        await lockOrgSettings(tx)
+        const found = await tx.organisation.findFirst()
+        if (!found) return null
+        const current = (found.branding ?? {}) as Record<string, unknown>
+        await tx.organisation.update({ where: { id: found.id }, data: { branding: { ...current, ...patch } as Record<string, string | boolean | null> } })
+        return found
+      })
+      if (!org) {
+        return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
+      }
       return reply.status(200).send({ data: { ok: true } })
     },
   )
@@ -843,11 +948,16 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
       if (!bodyResult.success) {
         return reply.status(400).send({ error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: bodyResult.error.flatten() } })
       }
-      const org = await prisma.organisation.findFirst()
+      const org = await prisma.$transaction(async (tx) => {
+        await lockOrgSettings(tx)
+        const found = await tx.organisation.findFirst()
+        if (!found) return null
+        const current = (found.emailTemplates ?? {}) as Record<string, unknown>
+        const updated = { ...current, [upperType]: bodyResult.data } as Prisma.InputJsonValue
+        await tx.organisation.update({ where: { id: found.id }, data: { emailTemplates: updated } })
+        return found
+      })
       if (!org) return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
-      const current = (org.emailTemplates ?? {}) as Record<string, unknown>
-      const updated = { ...current, [upperType]: bodyResult.data } as Prisma.InputJsonValue
-      await prisma.organisation.update({ where: { id: org.id }, data: { emailTemplates: updated } })
       return reply.status(200).send({ data: { type: upperType, ...bodyResult.data, isCustom: true } })
     },
   )
@@ -862,11 +972,16 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
       if (!ALLOWED_TEMPLATE_TYPES.includes(upperType)) {
         return reply.status(400).send({ error: { message: `Unknown template type: ${type}`, code: 'VALIDATION_ERROR' } })
       }
-      const org = await prisma.organisation.findFirst()
+      const org = await prisma.$transaction(async (tx) => {
+        await lockOrgSettings(tx)
+        const found = await tx.organisation.findFirst()
+        if (!found) return null
+        const current = (found.emailTemplates ?? {}) as Record<string, unknown>
+        const { [upperType]: _removed, ...rest } = current
+        await tx.organisation.update({ where: { id: found.id }, data: { emailTemplates: rest as Prisma.InputJsonValue } })
+        return found
+      })
       if (!org) return reply.status(404).send({ error: { message: 'Organisation not found', code: 'NOT_FOUND' } })
-      const current = (org.emailTemplates ?? {}) as Record<string, unknown>
-      const { [upperType]: _removed, ...rest } = current
-      await prisma.organisation.update({ where: { id: org.id }, data: { emailTemplates: rest as Prisma.InputJsonValue } })
       const defaults = DEFAULT_TEMPLATE_STRINGS[upperType]
       return reply.status(200).send({ data: { type: upperType, ...defaults, isCustom: false } })
     },
