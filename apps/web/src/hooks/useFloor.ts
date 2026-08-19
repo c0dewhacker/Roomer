@@ -23,6 +23,17 @@ export function useFloorAvailability(floorId: string, date: Date) {
   })
 }
 
+/** "Suggested for you" — ranked available desks for a date, for the booking flow. */
+export function useAssetSuggestions(date: Date) {
+  const dateStr = toISODateString(date)
+  return useQuery({
+    queryKey: ['assets', 'suggestions', dateStr],
+    queryFn: () => assetsApi.suggestions(dateStr),
+    select: (res) => res.data,
+    staleTime: 60 * 1000,
+  })
+}
+
 export function useUpdateAssetPositions() {
   const qc = useQueryClient()
 

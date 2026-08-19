@@ -585,6 +585,107 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.status(200).send({ data: { ok: true, favourited: false } })
   })
 
+  // GET /assets/suggestions?date=YYYY-MM-DD — ranked "suggested for you" desks
+  // for the booking flow (registered before /:id for the same reason as
+  // /favourites above). Ranking, highest weight first:
+  //   1. Assets this user has booked most in the last 30 days.
+  //   2. Other assets in a zone this user has booked into before (all-time) —
+  //      excluding ones already scored by (1), so this surfaces alternatives
+  //      in a zone they clearly like rather than just re-ranking the same desks.
+  //   3. Assets colleagues (same department, per User.departmentId) have
+  //      booked in the last 30 days.
+  // Candidates are walked highest-scored first and filtered through the same
+  // assertBookable gate every other booking-creating path uses, plus a same-day
+  // overlap check — a desk this user usually sits at is a bad suggestion if
+  // their access was revoked or someone else already has it that day.
+  fastify.get('/suggestions', { preHandler: [requireAuth] }, async (request, reply) => {
+    const queryResult = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).safeParse(request.query)
+    if (!queryResult.success) {
+      return reply.status(400).send({ error: { message: 'date query param required (YYYY-MM-DD)', code: 'INVALID_DATE' } })
+    }
+    const { date } = queryResult.data
+    const dayStart = new Date(`${date}T00:00:00.000Z`)
+    const dayEnd = new Date(`${date}T23:59:59.999Z`)
+    const userId = request.user.id
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+
+    const score = new Map<string, number>()
+    const bump = (assetId: string, n: number) => score.set(assetId, (score.get(assetId) ?? 0) + n)
+
+    // Tier 1 — most frequently booked by this user, past 30 days
+    const myRecent = await prisma.booking.groupBy({
+      by: ['assetId'],
+      where: { userId, status: { in: ['CONFIRMED', 'COMPLETED'] }, startsAt: { gte: thirtyDaysAgo } },
+      _count: { assetId: true },
+    })
+    for (const row of myRecent) bump(row.assetId, row._count.assetId * 10)
+
+    // Tier 2 — other bookable assets in a zone this user has booked into before
+    const myPastAssets = await prisma.booking.findMany({
+      where: { userId, status: { in: ['CONFIRMED', 'COMPLETED'] } },
+      select: { asset: { select: { primaryZoneId: true } } },
+      distinct: ['assetId'],
+    })
+    const myZoneIds = [...new Set(myPastAssets.map((b) => b.asset.primaryZoneId).filter((z): z is string => !!z))]
+    if (myZoneIds.length > 0) {
+      const zoneAssets = await prisma.asset.findMany({
+        where: { primaryZoneId: { in: myZoneIds }, isBookable: true, id: { notIn: myRecent.map((r) => r.assetId) } },
+        select: { id: true },
+      })
+      for (const a of zoneAssets) bump(a.id, 3)
+    }
+
+    // Tier 3 — assets colleagues (same department) have booked recently
+    const me = await prisma.user.findUnique({ where: { id: userId }, select: { departmentId: true } })
+    if (me?.departmentId) {
+      const colleagueBookings = await prisma.booking.groupBy({
+        by: ['assetId'],
+        where: {
+          status: { in: ['CONFIRMED', 'COMPLETED'] },
+          startsAt: { gte: thirtyDaysAgo },
+          userId: { not: userId },
+          user: { departmentId: me.departmentId },
+        },
+        _count: { assetId: true },
+      })
+      for (const row of colleagueBookings) bump(row.assetId, row._count.assetId)
+    }
+
+    if (score.size === 0) {
+      return reply.status(200).send({ data: [] })
+    }
+
+    const rankedIds = [...score.entries()].sort((a, b) => b[1] - a[1]).map(([assetId]) => assetId)
+
+    const candidates = await prisma.asset.findMany({
+      where: { id: { in: rankedIds }, isBookable: true },
+      include: {
+        category: { select: { id: true, name: true } },
+        floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
+        primaryZone: { select: { id: true, name: true } },
+        bookings: {
+          where: { status: 'CONFIRMED', startsAt: { lt: dayEnd }, endsAt: { gt: dayStart } },
+          select: { id: true },
+        },
+      },
+    })
+    const candidatesById = new Map(candidates.map((a) => [a.id, a]))
+
+    const SUGGESTION_LIMIT = 3
+    const suggestions: Array<Omit<(typeof candidates)[number], 'bookings'>> = []
+    for (const assetId of rankedIds) {
+      if (suggestions.length >= SUGGESTION_LIMIT) break
+      const asset = candidatesById.get(assetId)
+      if (!asset || asset.bookings.length > 0) continue
+      const gate = await assertBookable(prisma, request.user, assetId, dayStart, dayEnd)
+      if (!gate.ok) continue
+      const { bookings: _bookings, ...rest } = asset
+      suggestions.push(rest)
+    }
+
+    return reply.status(200).send({ data: suggestions })
+  })
+
   // POST /assets/:id/availability-windows — create an availability window
   fastify.post('/:id/availability-windows', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }

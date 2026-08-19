@@ -362,6 +362,9 @@ export const assetsApi = {
     api.post<{ data: { ok: true; favourited: boolean } }>(`/assets/${id}/favourite`),
   removeFavourite: (id: string) =>
     api.delete<{ data: { ok: true; favourited: boolean } }>(`/assets/${id}/favourite`),
+  // "Suggested for you" — ranked available desks for a date, for the booking flow
+  suggestions: (date: string) =>
+    api.get<{ data: FavouriteAsset[] }>(`/assets/suggestions?date=${date}`),
   // Recurring weekday availability (assigned desks)
   getAvailabilityRules: (id: string) =>
     api.get<{ data: { weekdays: number[] } }>(`/assets/${id}/availability-rules`),

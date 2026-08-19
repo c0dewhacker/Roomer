@@ -1,12 +1,12 @@
 import { useState, useCallback, useMemo } from 'react'
 import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { format, addDays } from 'date-fns'
-import { ChevronLeft, ChevronRight, CalendarDays, Info, Users, Bell, BellRing, SlidersHorizontal } from 'lucide-react'
+import { ChevronLeft, ChevronRight, CalendarDays, Info, Users, Bell, BellRing, SlidersHorizontal, Sparkles, X } from 'lucide-react'
 import { FloorPlanCanvas } from '@/components/floor-plan/FloorPlanCanvas'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { DeskPanel } from '@/components/floor-plan/DeskPanel'
 import { FloorSubscribeDialog } from '@/components/floor-plan/FloorSubscribeDialog'
-import { useFloorData, useFloorAvailability } from '@/hooks/useFloor'
+import { useFloorData, useFloorAvailability, useAssetSuggestions } from '@/hooks/useFloor'
 import { useFloorSubscriptions } from '@/hooks/useSubscriptions'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
@@ -45,6 +45,14 @@ export default function FloorPage() {
   const { data: desks } = useFloorAvailability(floorId!, selectedDate)
   const { data: subscriptions } = useFloorSubscriptions()
   const existingSubscription = subscriptions?.find((s) => s.floorId === floorId) ?? null
+
+  // "Suggested for you" — top pick shown when the top suggestion happens to be
+  // available today; dismissible per date rather than permanently, since a
+  // different desk may top the list tomorrow.
+  const dateStr = format(selectedDate, 'yyyy-MM-dd')
+  const { data: suggestions } = useAssetSuggestions(selectedDate)
+  const [dismissedSuggestionDate, setDismissedSuggestionDate] = useState<string | null>(null)
+  const topSuggestion = dismissedSuggestionDate !== dateStr ? (suggestions?.[0] ?? null) : null
 
   // Keep selectedDesk in sync with fresh availability data so mutations (e.g. add permanent user)
   // are reflected immediately in the panel without re-clicking the desk.
@@ -268,6 +276,44 @@ export default function FloorPage() {
         <div className="mx-6 mt-4 flex items-center gap-2 rounded-md bg-muted px-4 py-2 text-sm text-muted-foreground shrink-0">
           <Info className="h-4 w-4 shrink-0" />
           No floor plan uploaded yet. An admin can upload one from the floor settings.
+        </div>
+      )}
+
+      {/* Suggested for you */}
+      {topSuggestion && (
+        <div className="mx-6 mt-4 flex items-center gap-2 rounded-md border border-primary/20 bg-primary/5 px-4 py-2 text-sm shrink-0">
+          <Sparkles className="h-4 w-4 shrink-0 text-primary" />
+          <span className="flex-1">
+            You usually book <span className="font-medium">{topSuggestion.name}</span> — it's available {format(selectedDate, 'EEE, d MMM')}
+            {topSuggestion.floor && topSuggestion.floor.id !== floorId && (
+              <span className="text-muted-foreground"> ({topSuggestion.floor.name})</span>
+            )}
+          </span>
+          {topSuggestion.floor && topSuggestion.floor.id !== floorId ? (
+            <Button asChild variant="secondary" size="sm" className="h-7 text-xs">
+              <Link to={`/floors/${topSuggestion.floor.id}?date=${dateStr}&highlight=${topSuggestion.id}`}>
+                View it
+              </Link>
+            </Button>
+          ) : (
+            <Button
+              variant="secondary"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => setSelectedDeskId(topSuggestion.id)}
+            >
+              Book it
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 shrink-0"
+            title="Dismiss"
+            onClick={() => setDismissedSuggestionDate(dateStr)}
+          >
+            <X className="h-3.5 w-3.5" />
+          </Button>
         </div>
       )}
 
