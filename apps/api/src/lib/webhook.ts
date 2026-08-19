@@ -28,6 +28,14 @@ export const WEBHOOK_EVENTS = [
   'user.updated',
   'user.suspended',
   'user.imported',
+  'booking.transfer_requested',
+  'booking.transfer_accepted',
+  'booking.transfer_declined',
+  'booking.transfer_expired',
+  'booking.swap_requested',
+  'booking.swap_accepted',
+  'booking.swap_declined',
+  'booking.swap_expired',
 ] as const
 
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number]

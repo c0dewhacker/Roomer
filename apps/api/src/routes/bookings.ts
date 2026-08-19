@@ -609,4 +609,442 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     return reply.status(200).send({ data: { ok: true } })
   })
+
+  // ─── Booking transfer ──────────────────────────────────────────────────────
+  // Hand a CONFIRMED booking to a colleague. The recipient must accept before
+  // booking.userId actually changes (see #83) — a unilateral reassignment
+  // would let someone dump an unwanted booking on a colleague with no say.
+
+  const transferRequestSchema = z.object({ toUserId: z.string().min(1) })
+
+  // POST /bookings/:id/transfer — offer a booking to a colleague
+  fastify.post('/:id/transfer', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const result = transferRequestSchema.safeParse(request.body)
+    if (!result.success) {
+      return reply.status(400).send({ error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() } })
+    }
+    const { toUserId } = result.data
+
+    const booking = await prisma.booking.findUnique({ where: { id } })
+    if (!booking) return reply.status(404).send({ error: { message: 'Booking not found', code: 'NOT_FOUND' } })
+    if (booking.userId !== request.user.id) {
+      return reply.status(403).send({ error: { message: 'You can only transfer your own bookings', code: 'FORBIDDEN' } })
+    }
+    if (booking.status !== 'CONFIRMED') {
+      return reply.status(409).send({ error: { message: 'Booking is not active', code: 'BOOKING_NOT_ACTIVE' } })
+    }
+    if (!isNotAlreadyElapsed(booking.endsAt)) {
+      return reply.status(400).send({ error: { message: 'This booking has already passed', code: 'ALREADY_ELAPSED' } })
+    }
+    if (toUserId === request.user.id) {
+      return reply.status(400).send({ error: { message: 'You cannot transfer a booking to yourself', code: 'VALIDATION_ERROR' } })
+    }
+    const toUser = await prisma.user.findUnique({ where: { id: toUserId }, select: { id: true, accountStatus: true } })
+    if (!toUser || toUser.accountStatus !== 'ACTIVE') {
+      return reply.status(404).send({ error: { message: 'Recipient not found', code: 'NOT_FOUND' } })
+    }
+
+    const existingPending = await prisma.bookingTransfer.findFirst({ where: { bookingId: id, status: 'PENDING' } })
+    if (existingPending) {
+      return reply.status(409).send({ error: { message: 'This booking already has a pending transfer request', code: 'TRANSFER_ALREADY_PENDING' } })
+    }
+
+    const org = await prisma.organisation.findFirst({ select: { queueClaimWindowHours: true } })
+    const windowHours = org?.queueClaimWindowHours ?? 4
+    const expiresAt = new Date(Date.now() + windowHours * 3600 * 1000)
+
+    const transfer = await prisma.bookingTransfer.create({
+      data: { bookingId: id, fromUserId: request.user.id, toUserId, expiresAt },
+    })
+
+    await enqueueNotification({
+      type: NotificationType.BOOKING_TRANSFER_REQUESTED,
+      userId: toUserId,
+      transferId: transfer.id,
+    })
+    dispatchWebhook('booking.transfer_requested', { id: transfer.id, bookingId: id, fromUserId: request.user.id, toUserId }).catch(() => {})
+
+    return reply.status(201).send({ data: transfer })
+  })
+
+  // GET /bookings/transfers — transfers sent and received (pending only for received) by the current user
+  fastify.get('/transfers', { preHandler: [requireAuth] }, async (request, reply) => {
+    const bookingSelect = { select: { id: true, startsAt: true, endsAt: true, asset: { select: { name: true } } } } as const
+    const [sent, received] = await Promise.all([
+      prisma.bookingTransfer.findMany({
+        where: { fromUserId: request.user.id },
+        orderBy: { createdAt: 'desc' },
+        include: { booking: bookingSelect, toUser: { select: { id: true, displayName: true, email: true } } },
+      }),
+      prisma.bookingTransfer.findMany({
+        where: { toUserId: request.user.id, status: 'PENDING' },
+        orderBy: { createdAt: 'desc' },
+        include: { booking: bookingSelect, fromUser: { select: { id: true, displayName: true, email: true } } },
+      }),
+    ])
+    return reply.status(200).send({ data: { sent, received } })
+  })
+
+  // POST /bookings/transfers/:id/accept
+  fastify.post('/transfers/:id/accept', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const transfer = await prisma.bookingTransfer.findUnique({ where: { id }, include: { booking: true } })
+    if (!transfer) return reply.status(404).send({ error: { message: 'Transfer not found', code: 'NOT_FOUND' } })
+    if (transfer.toUserId !== request.user.id) {
+      return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+    }
+    if (transfer.status !== 'PENDING') {
+      return reply.status(409).send({ error: { message: 'This transfer request is no longer pending', code: 'NOT_PENDING' } })
+    }
+    if (transfer.expiresAt < new Date()) {
+      return reply.status(409).send({ error: { message: 'This transfer request has expired', code: 'TRANSFER_EXPIRED' } })
+    }
+    if (transfer.booking.status !== 'CONFIRMED') {
+      return reply.status(409).send({ error: { message: 'This booking is no longer active', code: 'BOOKING_NOT_ACTIVE' } })
+    }
+    if (!isNotAlreadyElapsed(transfer.booking.endsAt)) {
+      return reply.status(400).send({ error: { message: 'This booking has already passed', code: 'ALREADY_ELAPSED' } })
+    }
+
+    // Re-validate the recipient can actually book this asset — the allow
+    // list, bookingStatus, or the recipient's group access may have changed
+    // since the transfer was offered (same reasoning every other
+    // accept-a-pending-thing path in this codebase re-checks: queue claims,
+    // make-available auto-confirm).
+    const gate = await assertBookable(prisma, request.user, transfer.booking.assetId, transfer.booking.startsAt, transfer.booking.endsAt)
+    if (!gate.ok) {
+      return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+    }
+    const quota = await assertUnderBookingQuota(prisma, request.user.id, request.user.globalRole === GlobalRole.SUPER_ADMIN)
+    if (!quota.ok) {
+      return reply.status(quota.status).send({ error: { message: quota.message, code: quota.code } })
+    }
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        await lockAssetForBooking(tx, transfer.booking.assetId)
+        await lockUserForBookingQuota(tx, request.user.id)
+
+        const quotaRecheck = await assertUnderBookingQuota(tx, request.user.id, request.user.globalRole === GlobalRole.SUPER_ADMIN)
+        if (!quotaRecheck.ok) {
+          throw new BookingConflictError(quotaRecheck.code, quotaRecheck.message)
+        }
+        if (await checkZoneGroupOverlap(tx, request.user.id, transfer.booking.assetId, transfer.booking.startsAt, transfer.booking.endsAt)) {
+          throw new BookingConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
+        }
+
+        const fresh = await tx.bookingTransfer.findUnique({ where: { id }, include: { booking: true } })
+        if (!fresh || fresh.status !== 'PENDING') {
+          throw new BookingConflictError('NOT_PENDING', 'This transfer request is no longer pending')
+        }
+        if (fresh.booking.status !== 'CONFIRMED') {
+          throw new BookingConflictError('BOOKING_NOT_ACTIVE', 'This booking is no longer active')
+        }
+
+        // Ownership changes, the time slot doesn't — bump icsSequence so a
+        // re-sent REQUEST (to the new owner) is recognised as superseding
+        // whatever the original owner's calendar app still has.
+        await tx.booking.update({
+          where: { id: fresh.bookingId },
+          data: { userId: request.user.id, icsSequence: { increment: 1 } },
+        })
+        await tx.bookingTransfer.update({
+          where: { id },
+          data: { status: 'ACCEPTED', respondedAt: new Date() },
+        })
+      })
+    } catch (err) {
+      if (err instanceof BookingConflictError) {
+        return reply.status(409).send({ error: { message: err.message, code: err.code } })
+      }
+      throw err
+    }
+
+    await enqueueNotification({ type: NotificationType.BOOKING_TRANSFER_ACCEPTED, userId: transfer.fromUserId, transferId: transfer.id })
+    await enqueueNotification({ type: NotificationType.BOOKING_CONFIRMED, userId: request.user.id, bookingId: transfer.bookingId })
+    dispatchWebhook('booking.transfer_accepted', { id: transfer.id, bookingId: transfer.bookingId, fromUserId: transfer.fromUserId, toUserId: transfer.toUserId }).catch(() => {})
+
+    return reply.status(200).send({ data: { ok: true } })
+  })
+
+  // POST /bookings/transfers/:id/decline
+  fastify.post('/transfers/:id/decline', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const transfer = await prisma.bookingTransfer.findUnique({ where: { id } })
+    if (!transfer) return reply.status(404).send({ error: { message: 'Transfer not found', code: 'NOT_FOUND' } })
+    if (transfer.toUserId !== request.user.id) {
+      return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+    }
+    if (transfer.status !== 'PENDING') {
+      return reply.status(409).send({ error: { message: 'This transfer request is no longer pending', code: 'NOT_PENDING' } })
+    }
+    await prisma.bookingTransfer.update({ where: { id }, data: { status: 'DECLINED', respondedAt: new Date() } })
+    await enqueueNotification({ type: NotificationType.BOOKING_TRANSFER_DECLINED, userId: transfer.fromUserId, transferId: transfer.id })
+    dispatchWebhook('booking.transfer_declined', { id: transfer.id, bookingId: transfer.bookingId, fromUserId: transfer.fromUserId, toUserId: transfer.toUserId }).catch(() => {})
+    return reply.status(200).send({ data: { ok: true } })
+  })
+
+  // DELETE /bookings/transfers/:id — requester withdraws a still-pending offer
+  fastify.delete('/transfers/:id', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const transfer = await prisma.bookingTransfer.findUnique({ where: { id } })
+    if (!transfer) return reply.status(404).send({ error: { message: 'Transfer not found', code: 'NOT_FOUND' } })
+    if (transfer.fromUserId !== request.user.id) {
+      return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+    }
+    if (transfer.status !== 'PENDING') {
+      return reply.status(409).send({ error: { message: 'This transfer request is no longer pending', code: 'NOT_PENDING' } })
+    }
+    await prisma.bookingTransfer.update({ where: { id }, data: { status: 'CANCELLED', respondedAt: new Date() } })
+    return reply.status(200).send({ data: { ok: true } })
+  })
+
+  // ─── Booking swap ───────────────────────────────────────────────────────────
+  // Two users trade bookings — same start/end time (see #83: mismatched-time
+  // swaps are out of scope for now), different assets. Requires mutual
+  // consent, same shape as transfer.
+
+  const swapRequestSchema = z.object({ withBookingId: z.string().min(1) })
+
+  // GET /bookings/:id/swap-candidate?userId= — does this colleague have a
+  // CONFIRMED booking at exactly the same time as booking :id? Powers the
+  // swap-request UI: a user can't be expected to already know another
+  // booking's id, so given "swap booking :id with this colleague", this
+  // looks up which (if any) of their bookings actually qualifies. Narrow by
+  // design — only returns a match for the one exact time window being
+  // proposed, not the colleague's other bookings.
+  fastify.get('/:id/swap-candidate', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const query = z.object({ userId: z.string().min(1) }).safeParse(request.query)
+    if (!query.success) {
+      return reply.status(400).send({ error: { message: 'userId query param required', code: 'VALIDATION_ERROR' } })
+    }
+    const booking = await prisma.booking.findUnique({ where: { id } })
+    if (!booking) return reply.status(404).send({ error: { message: 'Booking not found', code: 'NOT_FOUND' } })
+    if (booking.userId !== request.user.id) {
+      return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+    }
+    const candidate = await prisma.booking.findFirst({
+      where: {
+        userId: query.data.userId,
+        status: 'CONFIRMED',
+        startsAt: booking.startsAt,
+        endsAt: booking.endsAt,
+        assetId: { not: booking.assetId },
+      },
+      select: { id: true, startsAt: true, endsAt: true, asset: { select: { id: true, name: true } } },
+    })
+    return reply.status(200).send({ data: candidate })
+  })
+
+  // POST /bookings/:id/swap-request
+  fastify.post('/:id/swap-request', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const result = swapRequestSchema.safeParse(request.body)
+    if (!result.success) {
+      return reply.status(400).send({ error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() } })
+    }
+    const { withBookingId } = result.data
+    if (withBookingId === id) {
+      return reply.status(400).send({ error: { message: 'Cannot swap a booking with itself', code: 'VALIDATION_ERROR' } })
+    }
+
+    const [bookingA, bookingB] = await Promise.all([
+      prisma.booking.findUnique({ where: { id } }),
+      prisma.booking.findUnique({ where: { id: withBookingId } }),
+    ])
+    if (!bookingA) return reply.status(404).send({ error: { message: 'Booking not found', code: 'NOT_FOUND' } })
+    if (!bookingB) return reply.status(404).send({ error: { message: 'The other booking was not found', code: 'NOT_FOUND' } })
+    if (bookingA.userId !== request.user.id) {
+      return reply.status(403).send({ error: { message: 'You can only propose a swap for your own booking', code: 'FORBIDDEN' } })
+    }
+    if (bookingB.userId === request.user.id) {
+      return reply.status(400).send({ error: { message: 'You cannot swap with your own booking', code: 'VALIDATION_ERROR' } })
+    }
+    if (bookingA.status !== 'CONFIRMED' || bookingB.status !== 'CONFIRMED') {
+      return reply.status(409).send({ error: { message: 'Both bookings must be active', code: 'BOOKING_NOT_ACTIVE' } })
+    }
+    if (!isNotAlreadyElapsed(bookingA.endsAt) || !isNotAlreadyElapsed(bookingB.endsAt)) {
+      return reply.status(400).send({ error: { message: 'Both bookings must be in the future', code: 'ALREADY_ELAPSED' } })
+    }
+    if (bookingA.assetId === bookingB.assetId) {
+      return reply.status(400).send({ error: { message: 'These bookings are already for the same desk', code: 'VALIDATION_ERROR' } })
+    }
+    if (bookingA.startsAt.getTime() !== bookingB.startsAt.getTime() || bookingA.endsAt.getTime() !== bookingB.endsAt.getTime()) {
+      return reply.status(400).send({ error: { message: 'Swaps are only supported for bookings at the same time', code: 'TIME_MISMATCH' } })
+    }
+
+    const existingPending = await prisma.bookingSwap.findFirst({
+      where: {
+        status: 'PENDING',
+        OR: [
+          { bookingAId: { in: [id, withBookingId] } },
+          { bookingBId: { in: [id, withBookingId] } },
+        ],
+      },
+    })
+    if (existingPending) {
+      return reply.status(409).send({ error: { message: 'One of these bookings already has a pending swap request', code: 'SWAP_ALREADY_PENDING' } })
+    }
+
+    const org = await prisma.organisation.findFirst({ select: { queueClaimWindowHours: true } })
+    const windowHours = org?.queueClaimWindowHours ?? 4
+    const expiresAt = new Date(Date.now() + windowHours * 3600 * 1000)
+
+    const swap = await prisma.bookingSwap.create({
+      data: {
+        bookingAId: id,
+        bookingBId: withBookingId,
+        initiatorUserId: request.user.id,
+        recipientUserId: bookingB.userId,
+        expiresAt,
+      },
+    })
+
+    await enqueueNotification({ type: NotificationType.BOOKING_SWAP_REQUESTED, userId: bookingB.userId, swapId: swap.id })
+    dispatchWebhook('booking.swap_requested', { id: swap.id, bookingAId: id, bookingBId: withBookingId, initiatorUserId: request.user.id, recipientUserId: bookingB.userId }).catch(() => {})
+
+    return reply.status(201).send({ data: swap })
+  })
+
+  // GET /bookings/swaps
+  fastify.get('/swaps', { preHandler: [requireAuth] }, async (request, reply) => {
+    const bookingSelect = { select: { id: true, startsAt: true, endsAt: true, asset: { select: { name: true } } } } as const
+    const [sent, received] = await Promise.all([
+      prisma.bookingSwap.findMany({
+        where: { initiatorUserId: request.user.id },
+        orderBy: { createdAt: 'desc' },
+        include: { bookingA: bookingSelect, bookingB: bookingSelect, recipient: { select: { id: true, displayName: true, email: true } } },
+      }),
+      prisma.bookingSwap.findMany({
+        where: { recipientUserId: request.user.id, status: 'PENDING' },
+        orderBy: { createdAt: 'desc' },
+        include: { bookingA: bookingSelect, bookingB: bookingSelect, initiator: { select: { id: true, displayName: true, email: true } } },
+      }),
+    ])
+    return reply.status(200).send({ data: { sent, received } })
+  })
+
+  // POST /bookings/swaps/:id/accept
+  fastify.post('/swaps/:id/accept', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const swap = await prisma.bookingSwap.findUnique({ where: { id }, include: { bookingA: true, bookingB: true } })
+    if (!swap) return reply.status(404).send({ error: { message: 'Swap not found', code: 'NOT_FOUND' } })
+    if (swap.recipientUserId !== request.user.id) {
+      return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+    }
+    if (swap.status !== 'PENDING') {
+      return reply.status(409).send({ error: { message: 'This swap request is no longer pending', code: 'NOT_PENDING' } })
+    }
+    if (swap.expiresAt < new Date()) {
+      return reply.status(409).send({ error: { message: 'This swap request has expired', code: 'SWAP_EXPIRED' } })
+    }
+    if (swap.bookingA.status !== 'CONFIRMED' || swap.bookingB.status !== 'CONFIRMED') {
+      return reply.status(409).send({ error: { message: 'Both bookings must still be active', code: 'BOOKING_NOT_ACTIVE' } })
+    }
+    if (!isNotAlreadyElapsed(swap.bookingA.endsAt) || !isNotAlreadyElapsed(swap.bookingB.endsAt)) {
+      return reply.status(400).send({ error: { message: 'Both bookings must be in the future', code: 'ALREADY_ELAPSED' } })
+    }
+
+    // Re-validate both directions — the initiator ends up on bookingB's
+    // asset, the recipient (this caller) ends up on bookingA's asset. Same
+    // "access may have changed since the request was made" reasoning as
+    // transfer accept.
+    const initiatorUser = await prisma.user.findUnique({ where: { id: swap.initiatorUserId }, select: { id: true, globalRole: true } })
+    if (!initiatorUser) return reply.status(404).send({ error: { message: 'Initiator no longer exists', code: 'NOT_FOUND' } })
+
+    const [gateForInitiatorOnB, gateForRecipientOnA] = await Promise.all([
+      assertBookable(prisma, initiatorUser, swap.bookingB.assetId, swap.bookingB.startsAt, swap.bookingB.endsAt),
+      assertBookable(prisma, request.user, swap.bookingA.assetId, swap.bookingA.startsAt, swap.bookingA.endsAt),
+    ])
+    if (!gateForInitiatorOnB.ok) {
+      return reply.status(409).send({ error: { message: `The other desk is no longer available to its new owner: ${gateForInitiatorOnB.message}`, code: gateForInitiatorOnB.code } })
+    }
+    if (!gateForRecipientOnA.ok) {
+      return reply.status(gateForRecipientOnA.status).send({ error: { message: gateForRecipientOnA.message, code: gateForRecipientOnA.code } })
+    }
+
+    // Lock both assets and both users in a fixed, globally consistent order
+    // (sorted ids) — otherwise two concurrent swap-accepts touching an
+    // overlapping pair of assets/users could each acquire their first lock
+    // and then deadlock waiting on the other's.
+    const assetIds = [swap.bookingA.assetId, swap.bookingB.assetId].sort()
+    const userIds = [swap.initiatorUserId, swap.recipientUserId].sort()
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        for (const assetId of assetIds) await lockAssetForBooking(tx, assetId)
+        for (const userId of userIds) await lockUserForBookingQuota(tx, userId)
+
+        const fresh = await tx.bookingSwap.findUnique({ where: { id }, include: { bookingA: true, bookingB: true } })
+        if (!fresh || fresh.status !== 'PENDING') {
+          throw new BookingConflictError('NOT_PENDING', 'This swap request is no longer pending')
+        }
+        if (fresh.bookingA.status !== 'CONFIRMED' || fresh.bookingB.status !== 'CONFIRMED') {
+          throw new BookingConflictError('BOOKING_NOT_ACTIVE', 'Both bookings must still be active')
+        }
+
+        // Quota doesn't change for either party (each trades one CONFIRMED
+        // booking for another, not gaining one), so no quota recheck is
+        // needed here — unlike transfer/queue-claim, which do add a new
+        // booking to the recipient's count. Excluding each party's own
+        // about-to-be-given-up booking from its own zone-group check below
+        // avoids it trivially conflicting with itself.
+        if (await checkZoneGroupOverlap(tx, fresh.recipientUserId, fresh.bookingA.assetId, fresh.bookingA.startsAt, fresh.bookingA.endsAt, fresh.bookingB.id)) {
+          throw new BookingConflictError('ZONE_GROUP_CONFLICT', 'The recipient already has a booking in the same zone group for this time')
+        }
+        if (await checkZoneGroupOverlap(tx, fresh.initiatorUserId, fresh.bookingB.assetId, fresh.bookingB.startsAt, fresh.bookingB.endsAt, fresh.bookingA.id)) {
+          throw new BookingConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
+        }
+
+        await tx.booking.update({ where: { id: fresh.bookingAId }, data: { userId: fresh.recipientUserId, icsSequence: { increment: 1 } } })
+        await tx.booking.update({ where: { id: fresh.bookingBId }, data: { userId: fresh.initiatorUserId, icsSequence: { increment: 1 } } })
+        await tx.bookingSwap.update({ where: { id }, data: { status: 'ACCEPTED', respondedAt: new Date() } })
+      })
+    } catch (err) {
+      if (err instanceof BookingConflictError) {
+        return reply.status(409).send({ error: { message: err.message, code: err.code } })
+      }
+      throw err
+    }
+
+    await enqueueNotification({ type: NotificationType.BOOKING_SWAP_ACCEPTED, userId: swap.initiatorUserId, swapId: swap.id })
+    await enqueueNotification({ type: NotificationType.BOOKING_SWAP_ACCEPTED, userId: swap.recipientUserId, swapId: swap.id })
+    dispatchWebhook('booking.swap_accepted', { id: swap.id, bookingAId: swap.bookingAId, bookingBId: swap.bookingBId, initiatorUserId: swap.initiatorUserId, recipientUserId: swap.recipientUserId }).catch(() => {})
+
+    return reply.status(200).send({ data: { ok: true } })
+  })
+
+  // POST /bookings/swaps/:id/decline
+  fastify.post('/swaps/:id/decline', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const swap = await prisma.bookingSwap.findUnique({ where: { id } })
+    if (!swap) return reply.status(404).send({ error: { message: 'Swap not found', code: 'NOT_FOUND' } })
+    if (swap.recipientUserId !== request.user.id) {
+      return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+    }
+    if (swap.status !== 'PENDING') {
+      return reply.status(409).send({ error: { message: 'This swap request is no longer pending', code: 'NOT_PENDING' } })
+    }
+    await prisma.bookingSwap.update({ where: { id }, data: { status: 'DECLINED', respondedAt: new Date() } })
+    await enqueueNotification({ type: NotificationType.BOOKING_SWAP_DECLINED, userId: swap.initiatorUserId, swapId: swap.id })
+    dispatchWebhook('booking.swap_declined', { id: swap.id, bookingAId: swap.bookingAId, bookingBId: swap.bookingBId, initiatorUserId: swap.initiatorUserId, recipientUserId: swap.recipientUserId }).catch(() => {})
+    return reply.status(200).send({ data: { ok: true } })
+  })
+
+  // DELETE /bookings/swaps/:id — initiator withdraws a still-pending request
+  fastify.delete('/swaps/:id', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const swap = await prisma.bookingSwap.findUnique({ where: { id } })
+    if (!swap) return reply.status(404).send({ error: { message: 'Swap not found', code: 'NOT_FOUND' } })
+    if (swap.initiatorUserId !== request.user.id) {
+      return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+    }
+    if (swap.status !== 'PENDING') {
+      return reply.status(409).send({ error: { message: 'This swap request is no longer pending', code: 'NOT_PENDING' } })
+    }
+    await prisma.bookingSwap.update({ where: { id }, data: { status: 'CANCELLED', respondedAt: new Date() } })
+    return reply.status(200).send({ data: { ok: true } })
+  })
 }

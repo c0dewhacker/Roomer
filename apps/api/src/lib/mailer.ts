@@ -620,3 +620,187 @@ export function renderWeeklyReport(
   const text = `Hi ${user.displayName},\n\nWeekly utilisation summary — ${stats.rangeLabel}\n\nOverall utilisation: ${stats.overallUtilisationPct}%\nConfirmed bookings: ${stats.totalBookings}\nUnique bookers: ${stats.uniqueBookers}\nCancelled bookings: ${stats.cancelledBookings}\nNo-shows: ${stats.noShowBookings}\n\nFull report: ${env.APP_URL}/admin/reports`
   return { subject, html, text }
 }
+
+// ─── BOOKING_TRANSFER_* / BOOKING_SWAP_* (see #83) ─────────────────────────────
+
+export function renderBookingTransferRequested(
+  booking: Pick<Booking, 'startsAt' | 'endsAt'>,
+  toUser: Pick<User, 'displayName'>,
+  fromUser: Pick<User, 'displayName'>,
+  asset: Pick<Asset, 'name'>,
+): { subject: string; html: string; text: string } {
+  const subject = `${fromUser.displayName} wants to transfer a booking to you — ${escapeHtml(asset.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Booking transfer request</h1>
+     <p>Hi ${escapeHtml(toUser.displayName)}, ${escapeHtml(fromUser.displayName)} wants to hand you their booking.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
+         <dt>When</dt><dd>${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/bookings" class="btn">Review Request</a>`,
+  )
+  const text = `Hi ${toUser.displayName},\n\n${fromUser.displayName} wants to transfer their booking for ${asset.name} (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}) to you. Review it at ${env.APP_URL}/bookings`
+  return { subject, html, text }
+}
+
+export function renderBookingTransferAccepted(
+  booking: Pick<Booking, 'startsAt' | 'endsAt'>,
+  fromUser: Pick<User, 'displayName'>,
+  toUser: Pick<User, 'displayName'>,
+  asset: Pick<Asset, 'name'>,
+): { subject: string; html: string; text: string } {
+  const subject = `${toUser.displayName} accepted your transfer — ${escapeHtml(asset.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Transfer accepted</h1>
+     <p>Hi ${escapeHtml(fromUser.displayName)}, ${escapeHtml(toUser.displayName)} accepted your booking transfer. They now have this booking — it's no longer on your calendar.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
+         <dt>Was scheduled</dt><dd>${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
+  )
+  const text = `Hi ${fromUser.displayName},\n\n${toUser.displayName} accepted your transfer of the ${asset.name} booking (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}). It's no longer on your calendar.`
+  return { subject, html, text }
+}
+
+export function renderBookingTransferDeclined(
+  booking: Pick<Booking, 'startsAt' | 'endsAt'>,
+  fromUser: Pick<User, 'displayName'>,
+  toUser: Pick<User, 'displayName'>,
+  asset: Pick<Asset, 'name'>,
+): { subject: string; html: string; text: string } {
+  const subject = `${toUser.displayName} declined your transfer — ${escapeHtml(asset.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Transfer declined</h1>
+     <p>Hi ${escapeHtml(fromUser.displayName)}, ${escapeHtml(toUser.displayName)} declined your booking transfer. It's still yours.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
+         <dt>When</dt><dd>${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
+  )
+  const text = `Hi ${fromUser.displayName},\n\n${toUser.displayName} declined your transfer of the ${asset.name} booking (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}). It's still yours.`
+  return { subject, html, text }
+}
+
+export function renderBookingTransferExpired(
+  booking: Pick<Booking, 'startsAt' | 'endsAt'>,
+  fromUser: Pick<User, 'displayName'>,
+  asset: Pick<Asset, 'name'>,
+): { subject: string; html: string; text: string } {
+  const subject = `Your transfer request expired — ${escapeHtml(asset.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Transfer request expired</h1>
+     <p>Hi ${escapeHtml(fromUser.displayName)}, nobody responded to your booking transfer in time, so it's still yours.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
+         <dt>When</dt><dd>${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
+  )
+  const text = `Hi ${fromUser.displayName},\n\nNobody responded to your transfer request for the ${asset.name} booking (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}) in time, so it's still yours.`
+  return { subject, html, text }
+}
+
+export function renderBookingSwapRequested(
+  bookingB: Pick<Booking, 'startsAt' | 'endsAt'>,
+  recipient: Pick<User, 'displayName'>,
+  initiator: Pick<User, 'displayName'>,
+  assetA: Pick<Asset, 'name'>,
+): { subject: string; html: string; text: string } {
+  const subject = `${initiator.displayName} wants to swap desks with you — ${escapeHtml(assetA.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Desk swap request</h1>
+     <p>Hi ${escapeHtml(recipient.displayName)}, ${escapeHtml(initiator.displayName)} would like to swap their booking for yours.</p>
+     <div class="detail">
+       <dl>
+         <dt>You'd get</dt><dd>${escapeHtml(assetA.name)}</dd>
+         <dt>When</dt><dd>${formatDate(bookingB.startsAt)} → ${formatDate(bookingB.endsAt)}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/bookings" class="btn">Review Request</a>`,
+  )
+  const text = `Hi ${recipient.displayName},\n\n${initiator.displayName} would like to swap their booking for ${assetA.name} (${formatDate(bookingB.startsAt)} → ${formatDate(bookingB.endsAt)}) with yours. Review it at ${env.APP_URL}/bookings`
+  return { subject, html, text }
+}
+
+export function renderBookingSwapAccepted(
+  newBooking: Pick<Booking, 'startsAt' | 'endsAt'>,
+  user: Pick<User, 'displayName'>,
+  otherUser: Pick<User, 'displayName'>,
+  newAsset: Pick<Asset, 'name'>,
+): { subject: string; html: string; text: string } {
+  const subject = `Desk swap complete — you're now on ${escapeHtml(newAsset.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Swap complete</h1>
+     <p>Hi ${escapeHtml(user.displayName)}, your desk swap with ${escapeHtml(otherUser.displayName)} is complete.</p>
+     <div class="detail">
+       <dl>
+         <dt>You're now on</dt><dd>${escapeHtml(newAsset.name)}</dd>
+         <dt>When</dt><dd>${formatDate(newBooking.startsAt)} → ${formatDate(newBooking.endsAt)}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
+  )
+  const text = `Hi ${user.displayName},\n\nYour desk swap with ${otherUser.displayName} is complete. You're now on ${newAsset.name} (${formatDate(newBooking.startsAt)} → ${formatDate(newBooking.endsAt)}).`
+  return { subject, html, text }
+}
+
+export function renderBookingSwapDeclined(
+  bookingA: Pick<Booking, 'startsAt' | 'endsAt'>,
+  initiator: Pick<User, 'displayName'>,
+  recipient: Pick<User, 'displayName'>,
+  assetA: Pick<Asset, 'name'>,
+): { subject: string; html: string; text: string } {
+  const subject = `${recipient.displayName} declined your swap request — ${escapeHtml(assetA.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Swap declined</h1>
+     <p>Hi ${escapeHtml(initiator.displayName)}, ${escapeHtml(recipient.displayName)} declined your desk swap request. Your booking is unchanged.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>${escapeHtml(assetA.name)}</dd>
+         <dt>When</dt><dd>${formatDate(bookingA.startsAt)} → ${formatDate(bookingA.endsAt)}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
+  )
+  const text = `Hi ${initiator.displayName},\n\n${recipient.displayName} declined your desk swap request. Your booking for ${assetA.name} (${formatDate(bookingA.startsAt)} → ${formatDate(bookingA.endsAt)}) is unchanged.`
+  return { subject, html, text }
+}
+
+export function renderBookingSwapExpired(
+  bookingA: Pick<Booking, 'startsAt' | 'endsAt'>,
+  initiator: Pick<User, 'displayName'>,
+  assetA: Pick<Asset, 'name'>,
+): { subject: string; html: string; text: string } {
+  const subject = `Your swap request expired — ${escapeHtml(assetA.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Swap request expired</h1>
+     <p>Hi ${escapeHtml(initiator.displayName)}, nobody responded to your desk swap request in time. Your booking is unchanged.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>${escapeHtml(assetA.name)}</dd>
+         <dt>When</dt><dd>${formatDate(bookingA.startsAt)} → ${formatDate(bookingA.endsAt)}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
+  )
+  const text = `Hi ${initiator.displayName},\n\nNobody responded to your desk swap request for ${assetA.name} (${formatDate(bookingA.startsAt)} → ${formatDate(bookingA.endsAt)}) in time. Your booking is unchanged.`
+  return { subject, html, text }
+}

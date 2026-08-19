@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { parseISO, isToday } from 'date-fns'
-import { Calendar, MapPin, Clock, Trash2, Pencil, CalendarPlus, Armchair, Repeat, Check, List } from 'lucide-react'
+import { Calendar, MapPin, Clock, Trash2, Pencil, CalendarPlus, Armchair, Repeat, Check, List, Send, ArrowLeftRight, Inbox } from 'lucide-react'
 import { useMyBookings, useCancelBooking, useUpdateBooking } from '@/hooks/useBookings'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { Input } from '@/components/ui/input'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,8 +33,8 @@ import {
 } from '@/components/ui/dialog'
 import { formatDateRange, formatDate, formatCalendarDate } from '@/lib/utils'
 import { DateTimeLocalInput } from '@/components/ui/date-time-input'
-import { assetsApi, recurringBookingsApi, bookingsApi } from '@/lib/api'
-import type { Booking, RecurringBookingRule } from '@/types'
+import { assetsApi, recurringBookingsApi, bookingsApi, usersApi } from '@/lib/api'
+import type { Booking, RecurringBookingRule, BookingTransfer, BookingSwap } from '@/types'
 import { AssignedDeskCard } from '@/components/AssignedDeskCard'
 
 type Tab = 'upcoming' | 'past' | 'all'
@@ -138,6 +139,316 @@ function MyAssignedDesks() {
   )
 }
 
+// ─── Transfer a booking to a colleague ─────────────────────────────────────────
+
+function TransferBookingDialog({ booking, open, onClose }: { booking: Booking; open: boolean; onClose: () => void }) {
+  const qc = useQueryClient()
+  const [search, setSearch] = useState('')
+  const [selectedUserId, setSelectedUserId] = useState('')
+
+  const { data: users } = useQuery({
+    queryKey: ['users', 'search', search],
+    queryFn: () => usersApi.list({ q: search, limit: 20 }),
+    select: (r) => r.data,
+    enabled: search.length >= 2,
+  })
+
+  const transfer = useMutation({
+    mutationFn: () => bookingsApi.transfer(booking.id, selectedUserId),
+    onSuccess: () => {
+      toast.success('Transfer request sent')
+      qc.invalidateQueries({ queryKey: ['bookings', 'transfers'] })
+      onClose()
+      setSearch('')
+      setSelectedUserId('')
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+
+  const bookingAsset = booking.asset ?? booking.desk
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Transfer booking</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <p className="text-sm text-muted-foreground">
+            Hand your booking for <strong>{bookingAsset?.name}</strong> on {formatDate(booking.startsAt)} to a
+            colleague. They'll need to accept before it's theirs.
+          </p>
+          <div>
+            <Label>Search colleague</Label>
+            <Input
+              className="mt-1.5"
+              placeholder="Name or email…"
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setSelectedUserId('') }}
+            />
+          </div>
+          {users && users.length > 0 && (
+            <div className="rounded-md border divide-y max-h-48 overflow-y-auto">
+              {users.map((u) => (
+                <button
+                  key={u.id}
+                  type="button"
+                  className={`w-full text-left px-3 py-2 hover:bg-muted transition-colors ${selectedUserId === u.id ? 'bg-muted' : ''}`}
+                  onClick={() => setSelectedUserId(u.id)}
+                >
+                  <p className="text-sm font-medium">{u.displayName}</p>
+                  <p className="text-xs text-muted-foreground">{u.email}</p>
+                </button>
+              ))}
+            </div>
+          )}
+          {search.length >= 2 && (!users || users.length === 0) && (
+            <p className="text-sm text-muted-foreground">No users found</p>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button onClick={() => transfer.mutate()} disabled={!selectedUserId || transfer.isPending}>
+            {transfer.isPending ? 'Sending…' : 'Send transfer request'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ─── Swap a booking with a colleague ───────────────────────────────────────────
+
+function SwapBookingDialog({ booking, open, onClose }: { booking: Booking; open: boolean; onClose: () => void }) {
+  const qc = useQueryClient()
+  const [search, setSearch] = useState('')
+  const [selectedUserId, setSelectedUserId] = useState('')
+
+  const { data: users } = useQuery({
+    queryKey: ['users', 'search', search],
+    queryFn: () => usersApi.list({ q: search, limit: 20 }),
+    select: (r) => r.data,
+    enabled: search.length >= 2,
+  })
+
+  // Swaps only work when the colleague has a booking at exactly this time
+  // (see #83 — mismatched-time swaps are out of scope) — look up whether
+  // they do as soon as one is selected, rather than letting the user submit
+  // a request that's guaranteed to fail.
+  const { data: candidate, isLoading: candidateLoading } = useQuery({
+    queryKey: ['bookings', booking.id, 'swap-candidate', selectedUserId],
+    queryFn: () => bookingsApi.swapCandidate(booking.id, selectedUserId),
+    select: (r) => r.data,
+    enabled: !!selectedUserId,
+  })
+
+  const swap = useMutation({
+    mutationFn: () => bookingsApi.swapRequest(booking.id, candidate!.id),
+    onSuccess: () => {
+      toast.success('Swap request sent')
+      qc.invalidateQueries({ queryKey: ['bookings', 'swaps'] })
+      onClose()
+      setSearch('')
+      setSelectedUserId('')
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+
+  const bookingAsset = booking.asset ?? booking.desk
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Swap booking</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <p className="text-sm text-muted-foreground">
+            Trade your booking for <strong>{bookingAsset?.name}</strong> on {formatDate(booking.startsAt)} with a
+            colleague who has a booking at the exact same time. They'll need to accept.
+          </p>
+          <div>
+            <Label>Search colleague</Label>
+            <Input
+              className="mt-1.5"
+              placeholder="Name or email…"
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setSelectedUserId('') }}
+            />
+          </div>
+          {users && users.length > 0 && (
+            <div className="rounded-md border divide-y max-h-48 overflow-y-auto">
+              {users.map((u) => (
+                <button
+                  key={u.id}
+                  type="button"
+                  className={`w-full text-left px-3 py-2 hover:bg-muted transition-colors ${selectedUserId === u.id ? 'bg-muted' : ''}`}
+                  onClick={() => setSelectedUserId(u.id)}
+                >
+                  <p className="text-sm font-medium">{u.displayName}</p>
+                  <p className="text-xs text-muted-foreground">{u.email}</p>
+                </button>
+              ))}
+            </div>
+          )}
+          {search.length >= 2 && (!users || users.length === 0) && (
+            <p className="text-sm text-muted-foreground">No users found</p>
+          )}
+          {selectedUserId && candidateLoading && (
+            <p className="text-sm text-muted-foreground">Checking for a matching booking…</p>
+          )}
+          {selectedUserId && !candidateLoading && candidate && (
+            <p className="text-sm rounded-md border border-green-500/30 bg-green-500/5 px-3 py-2">
+              They have <strong>{candidate.asset.name}</strong> booked at this exact time — ready to propose the swap.
+            </p>
+          )}
+          {selectedUserId && !candidateLoading && !candidate && (
+            <p className="text-sm rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+              They don't have a booking at this exact time, so a swap isn't possible with them for this slot.
+            </p>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button onClick={() => swap.mutate()} disabled={!candidate || swap.isPending}>
+            {swap.isPending ? 'Sending…' : 'Send swap request'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ─── Pending transfer/swap requests ────────────────────────────────────────────
+// Only surfaces requests actually needing attention (received, still PENDING)
+// or still withdrawable (sent, still PENDING) — accepted/declined/expired ones
+// aren't actionable here, so they'd just be clutter; their outcome already
+// arrives as a notification.
+
+function TransferAndSwapRequestsSection() {
+  const qc = useQueryClient()
+  const { data: transfers } = useQuery({
+    queryKey: ['bookings', 'transfers'],
+    queryFn: () => bookingsApi.listTransfers(),
+    select: (r) => r.data,
+  })
+  const { data: swaps } = useQuery({
+    queryKey: ['bookings', 'swaps'],
+    queryFn: () => bookingsApi.listSwaps(),
+    select: (r) => r.data,
+  })
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['bookings', 'transfers'] })
+    qc.invalidateQueries({ queryKey: ['bookings', 'swaps'] })
+    qc.invalidateQueries({ queryKey: ['bookings'] })
+  }
+
+  const acceptTransfer = useMutation({
+    mutationFn: (id: string) => bookingsApi.acceptTransfer(id),
+    onSuccess: () => { toast.success('Transfer accepted'); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+  const declineTransfer = useMutation({
+    mutationFn: (id: string) => bookingsApi.declineTransfer(id),
+    onSuccess: () => { toast.success('Transfer declined'); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+  const cancelTransfer = useMutation({
+    mutationFn: (id: string) => bookingsApi.cancelTransfer(id),
+    onSuccess: () => { toast.success('Transfer request withdrawn'); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+  const acceptSwap = useMutation({
+    mutationFn: (id: string) => bookingsApi.acceptSwap(id),
+    onSuccess: () => { toast.success('Swap complete'); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+  const declineSwap = useMutation({
+    mutationFn: (id: string) => bookingsApi.declineSwap(id),
+    onSuccess: () => { toast.success('Swap declined'); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+  const cancelSwap = useMutation({
+    mutationFn: (id: string) => bookingsApi.cancelSwap(id),
+    onSuccess: () => { toast.success('Swap request withdrawn'); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const receivedTransfers = (transfers?.received ?? []).filter((t) => t.status === 'PENDING')
+  const sentTransfers = (transfers?.sent ?? []).filter((t) => t.status === 'PENDING')
+  const receivedSwaps = (swaps?.received ?? []).filter((s) => s.status === 'PENDING')
+  const sentSwaps = (swaps?.sent ?? []).filter((s) => s.status === 'PENDING')
+
+  const hasAnything = receivedTransfers.length + sentTransfers.length + receivedSwaps.length + sentSwaps.length > 0
+  if (!hasAnything) return null
+
+  return (
+    <Card className="mb-6">
+      <CardContent className="p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Inbox className="h-4 w-4 text-primary" />
+          <h2 className="font-medium text-sm">Transfer &amp; swap requests</h2>
+        </div>
+        <div className="space-y-2">
+          {receivedTransfers.map((t: BookingTransfer) => (
+            <div key={t.id} className="flex items-center justify-between gap-3 rounded-md border p-3">
+              <div className="min-w-0">
+                <p className="text-sm">
+                  <strong>{t.fromUser?.displayName}</strong> wants to transfer <strong>{t.booking?.asset.name}</strong> to you
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {t.booking && formatDateRange(t.booking.startsAt, t.booking.endsAt)}
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <Button size="sm" variant="outline" onClick={() => declineTransfer.mutate(t.id)} disabled={declineTransfer.isPending}>Decline</Button>
+                <Button size="sm" onClick={() => acceptTransfer.mutate(t.id)} disabled={acceptTransfer.isPending}>Accept</Button>
+              </div>
+            </div>
+          ))}
+          {receivedSwaps.map((s: BookingSwap) => (
+            <div key={s.id} className="flex items-center justify-between gap-3 rounded-md border p-3">
+              <div className="min-w-0">
+                <p className="text-sm">
+                  <strong>{s.initiator?.displayName}</strong> wants to swap <strong>{s.bookingA?.asset.name}</strong> for your <strong>{s.bookingB?.asset.name}</strong>
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {s.bookingA && formatDateRange(s.bookingA.startsAt, s.bookingA.endsAt)}
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <Button size="sm" variant="outline" onClick={() => declineSwap.mutate(s.id)} disabled={declineSwap.isPending}>Decline</Button>
+                <Button size="sm" onClick={() => acceptSwap.mutate(s.id)} disabled={acceptSwap.isPending}>Accept</Button>
+              </div>
+            </div>
+          ))}
+          {sentTransfers.map((t: BookingTransfer) => (
+            <div key={t.id} className="flex items-center justify-between gap-3 rounded-md border border-dashed p-3">
+              <div className="min-w-0">
+                <p className="text-sm text-muted-foreground">
+                  Waiting for <strong>{t.toUser?.displayName}</strong> to respond to your transfer of <strong>{t.booking?.asset.name}</strong>
+                </p>
+              </div>
+              <Button size="sm" variant="ghost" onClick={() => cancelTransfer.mutate(t.id)} disabled={cancelTransfer.isPending}>Withdraw</Button>
+            </div>
+          ))}
+          {sentSwaps.map((s: BookingSwap) => (
+            <div key={s.id} className="flex items-center justify-between gap-3 rounded-md border border-dashed p-3">
+              <div className="min-w-0">
+                <p className="text-sm text-muted-foreground">
+                  Waiting for <strong>{s.recipient?.displayName}</strong> to respond to your swap request
+                </p>
+              </div>
+              <Button size="sm" variant="ghost" onClick={() => cancelSwap.mutate(s.id)} disabled={cancelSwap.isPending}>Withdraw</Button>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 // ─── Booking list ─────────────────────────────────────────────────────────────
 
 function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boolean }) {
@@ -148,6 +459,8 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
   const floorId = bookingAsset?.floor?.id ?? bookingAsset?.zone?.floor?.id
   const todayBooking = isToday(parseISO(booking.startsAt))
   const [editOpen, setEditOpen] = useState(false)
+  const [transferOpen, setTransferOpen] = useState(false)
+  const [swapOpen, setSwapOpen] = useState(false)
   const canModify = showCancel && booking.status === 'CONFIRMED'
   // Mirrors the backend's actual check-in window (bookings.ts POST
   // /:id/check-in: rejects with BOOKING_NOT_STARTED while startsAt > now,
@@ -233,6 +546,24 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
                 >
                   <Pencil className="h-4 w-4" />
                 </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  title="Transfer to a colleague"
+                  className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                  onClick={() => setTransferOpen(true)}
+                >
+                  <Send className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  title="Swap with a colleague"
+                  className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                  onClick={() => setSwapOpen(true)}
+                >
+                  <ArrowLeftRight className="h-4 w-4" />
+                </Button>
 
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
@@ -268,6 +599,12 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
 
       {editOpen && (
         <EditBookingDialog booking={booking} open={editOpen} onClose={() => setEditOpen(false)} />
+      )}
+      {transferOpen && (
+        <TransferBookingDialog booking={booking} open={transferOpen} onClose={() => setTransferOpen(false)} />
+      )}
+      {swapOpen && (
+        <SwapBookingDialog booking={booking} open={swapOpen} onClose={() => setSwapOpen(false)} />
       )}
     </>
   )
@@ -590,6 +927,7 @@ export default function BookingsPage() {
       </div>
 
       <MyAssignedDesks />
+      <TransferAndSwapRequestsSection />
       <RecurringBookingsSection />
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>

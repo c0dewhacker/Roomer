@@ -2,7 +2,7 @@ import { PgBoss, type Job } from 'pg-boss'
 import { env } from '../env.js'
 import { prisma } from './prisma.js'
 import { buildBookingIcs } from './ical.js'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingCancelledByAdmin, renderBookingNoShow, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, renderWeeklyReport, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingCancelledByAdmin, renderBookingNoShow, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, renderWeeklyReport, renderBookingTransferRequested, renderBookingTransferAccepted, renderBookingTransferDeclined, renderBookingTransferExpired, renderBookingSwapRequested, renderBookingSwapAccepted, renderBookingSwapDeclined, renderBookingSwapExpired, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
 import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
@@ -301,6 +301,9 @@ export interface NotificationJobData {
   cancelledStartsAt?: string
   cancelledEndsAt?: string
   cancelledIcsSequence?: number
+  /** BookingTransfer id / BookingSwap id — see the transfer and swap notification branches below. */
+  transferId?: string
+  swapId?: string
 }
 
 // ─── Worker: send-notification ────────────────────────────────────────────────
@@ -316,7 +319,7 @@ async function handleSendNotification(
 async function processSendNotification(
   job: Job<NotificationJobData>,
 ): Promise<void> {
-  const { type, userId, bookingId, queueEntryId, claimDeadline, floorId, zoneId, assetId, slotDate } = job.data
+  const { type, userId, bookingId, queueEntryId, claimDeadline, floorId, zoneId, assetId, slotDate, transferId, swapId } = job.data
 
   const user = await prisma.user.findUnique({ where: { id: userId } })
   if (!user) {
@@ -593,6 +596,147 @@ async function processSendNotification(
         appUrl: env.APP_URL,
       }
     }
+  } else if (type === NotificationType.BOOKING_TRANSFER_REQUESTED && transferId) {
+    const transfer = await prisma.bookingTransfer.findUnique({
+      where: { id: transferId },
+      include: { booking: { include: { asset: true } }, fromUser: true },
+    })
+    if (transfer) {
+      title = `Transfer request — ${transfer.booking.asset.name}`
+      body = `${transfer.fromUser.displayName} wants to transfer their ${transfer.booking.asset.name} booking to you.`
+      emailPayload = renderBookingTransferRequested(transfer.booking, user, transfer.fromUser, transfer.booking.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        fromUserName: transfer.fromUser.displayName,
+        assetName: transfer.booking.asset.name,
+        startsAt: formatDate(transfer.booking.startsAt), endsAt: formatDate(transfer.booking.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_TRANSFER_ACCEPTED && transferId) {
+    const transfer = await prisma.bookingTransfer.findUnique({
+      where: { id: transferId },
+      include: { booking: { include: { asset: true } }, toUser: true },
+    })
+    if (transfer) {
+      title = `Transfer accepted — ${transfer.booking.asset.name}`
+      body = `${transfer.toUser.displayName} accepted your transfer of ${transfer.booking.asset.name}.`
+      emailPayload = renderBookingTransferAccepted(transfer.booking, user, transfer.toUser, transfer.booking.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        toUserName: transfer.toUser.displayName,
+        assetName: transfer.booking.asset.name,
+        startsAt: formatDate(transfer.booking.startsAt), endsAt: formatDate(transfer.booking.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_TRANSFER_DECLINED && transferId) {
+    const transfer = await prisma.bookingTransfer.findUnique({
+      where: { id: transferId },
+      include: { booking: { include: { asset: true } }, toUser: true },
+    })
+    if (transfer) {
+      title = `Transfer declined — ${transfer.booking.asset.name}`
+      body = `${transfer.toUser.displayName} declined your transfer of ${transfer.booking.asset.name}.`
+      emailPayload = renderBookingTransferDeclined(transfer.booking, user, transfer.toUser, transfer.booking.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        toUserName: transfer.toUser.displayName,
+        assetName: transfer.booking.asset.name,
+        startsAt: formatDate(transfer.booking.startsAt), endsAt: formatDate(transfer.booking.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_TRANSFER_EXPIRED && transferId) {
+    const transfer = await prisma.bookingTransfer.findUnique({
+      where: { id: transferId },
+      include: { booking: { include: { asset: true } } },
+    })
+    if (transfer) {
+      title = `Transfer request expired — ${transfer.booking.asset.name}`
+      body = `Nobody responded to your transfer of ${transfer.booking.asset.name} in time — it's still yours.`
+      emailPayload = renderBookingTransferExpired(transfer.booking, user, transfer.booking.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: transfer.booking.asset.name,
+        startsAt: formatDate(transfer.booking.startsAt), endsAt: formatDate(transfer.booking.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_SWAP_REQUESTED && swapId) {
+    const swap = await prisma.bookingSwap.findUnique({
+      where: { id: swapId },
+      include: { bookingA: { include: { asset: true } }, bookingB: true, initiator: true },
+    })
+    if (swap) {
+      title = `Swap request — ${swap.bookingA.asset.name}`
+      body = `${swap.initiator.displayName} wants to swap desks with you.`
+      emailPayload = renderBookingSwapRequested(swap.bookingB, user, swap.initiator, swap.bookingA.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        initiatorName: swap.initiator.displayName,
+        assetName: swap.bookingA.asset.name,
+        startsAt: formatDate(swap.bookingB.startsAt), endsAt: formatDate(swap.bookingB.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_SWAP_ACCEPTED && swapId) {
+    const swap = await prisma.bookingSwap.findUnique({
+      where: { id: swapId },
+      include: { bookingA: { include: { asset: true } }, bookingB: { include: { asset: true } }, initiator: true, recipient: true },
+    })
+    if (swap) {
+      // Each recipient of this notification is now on the *other* booking's
+      // asset — this job fires once per party (see bookings.ts swap accept),
+      // so work out which side `user` ended up on.
+      const userEndsUpOnA = user.id === swap.recipientUserId
+      const newBooking = userEndsUpOnA ? swap.bookingA : swap.bookingB
+      const newAsset = userEndsUpOnA ? swap.bookingA.asset : swap.bookingB.asset
+      const otherUser = userEndsUpOnA ? swap.initiator : swap.recipient
+      title = `Swap complete — ${newAsset.name}`
+      body = `Your desk swap with ${otherUser.displayName} is complete — you're now on ${newAsset.name}.`
+      emailPayload = renderBookingSwapAccepted(newBooking, user, otherUser, newAsset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        otherUserName: otherUser.displayName,
+        assetName: newAsset.name,
+        startsAt: formatDate(newBooking.startsAt), endsAt: formatDate(newBooking.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_SWAP_DECLINED && swapId) {
+    const swap = await prisma.bookingSwap.findUnique({
+      where: { id: swapId },
+      include: { bookingA: { include: { asset: true } }, recipient: true },
+    })
+    if (swap) {
+      title = `Swap declined — ${swap.bookingA.asset.name}`
+      body = `${swap.recipient.displayName} declined your desk swap request.`
+      emailPayload = renderBookingSwapDeclined(swap.bookingA, user, swap.recipient, swap.bookingA.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        recipientName: swap.recipient.displayName,
+        assetName: swap.bookingA.asset.name,
+        startsAt: formatDate(swap.bookingA.startsAt), endsAt: formatDate(swap.bookingA.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_SWAP_EXPIRED && swapId) {
+    const swap = await prisma.bookingSwap.findUnique({
+      where: { id: swapId },
+      include: { bookingA: { include: { asset: true } } },
+    })
+    if (swap) {
+      title = `Swap request expired — ${swap.bookingA.asset.name}`
+      body = `Nobody responded to your desk swap request in time — your booking is unchanged.`
+      emailPayload = renderBookingSwapExpired(swap.bookingA, user, swap.bookingA.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: swap.bookingA.asset.name,
+        startsAt: formatDate(swap.bookingA.startsAt), endsAt: formatDate(swap.bookingA.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
   } else if (type === NotificationType.WELCOME) {
     title = 'Welcome to Roomer'
     body = 'Your account has been created.'
@@ -708,6 +852,67 @@ async function handleExpireQueueEntries(): Promise<void> {
   )
 
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Expired queue entries', count: toExpire.length }) + '\n')
+}
+
+// ─── Worker: expire-transfer-requests (cron every 15 min) ────────────────────
+// Auto-declines a pending BookingTransfer/BookingSwap nobody responded to in
+// time — same "don't leave a request dangling forever" reasoning as
+// expire-queue-entries above, reusing the org's queueClaimWindowHours as the
+// response window (set at request-creation time in bookings.ts) rather than
+// re-deriving it here.
+
+async function handleExpireTransferRequests(): Promise<void> {
+  const now = new Date()
+
+  const expiredTransfers = await prisma.bookingTransfer.findMany({
+    where: { status: 'PENDING', expiresAt: { lt: now } },
+    select: { id: true, fromUserId: true },
+  })
+  if (expiredTransfers.length > 0) {
+    // Atomic per-row conditional update — only rows still PENDING at the
+    // moment this runs actually flip, so a transfer the recipient accepted/
+    // declined (or the requester cancelled) in the race window between the
+    // findMany above and here is left alone.
+    const { count } = await prisma.bookingTransfer.updateMany({
+      where: { id: { in: expiredTransfers.map((t) => t.id) }, status: 'PENDING' },
+      data: { status: 'EXPIRED', respondedAt: now },
+    })
+    if (count > 0) {
+      const b = getBoss()
+      await b.insert(
+        'send-notification',
+        expiredTransfers.map((t) => ({
+          data: { type: NotificationType.BOOKING_TRANSFER_EXPIRED, userId: t.fromUserId, transferId: t.id } satisfies NotificationJobData,
+        })),
+      )
+      for (const t of expiredTransfers) {
+        dispatchWebhook('booking.transfer_expired', { id: t.id }).catch(() => {})
+      }
+    }
+  }
+
+  const expiredSwaps = await prisma.bookingSwap.findMany({
+    where: { status: 'PENDING', expiresAt: { lt: now } },
+    select: { id: true, initiatorUserId: true },
+  })
+  if (expiredSwaps.length > 0) {
+    const { count } = await prisma.bookingSwap.updateMany({
+      where: { id: { in: expiredSwaps.map((s) => s.id) }, status: 'PENDING' },
+      data: { status: 'EXPIRED', respondedAt: now },
+    })
+    if (count > 0) {
+      const b = getBoss()
+      await b.insert(
+        'send-notification',
+        expiredSwaps.map((s) => ({
+          data: { type: NotificationType.BOOKING_SWAP_EXPIRED, userId: s.initiatorUserId, swapId: s.id } satisfies NotificationJobData,
+        })),
+      )
+      for (const s of expiredSwaps) {
+        dispatchWebhook('booking.swap_expired', { id: s.id }).catch(() => {})
+      }
+    }
+  }
 }
 
 // ─── Worker: auto-complete-bookings (cron every 30 min) ──────────────────────
@@ -1075,6 +1280,7 @@ export async function startQueue(): Promise<void> {
   await b.createQueue('warn-claim-expiring')
   await b.createQueue('webhook-delivery')
   await b.createQueue('send-weekly-report')
+  await b.createQueue('expire-transfer-requests')
 
   await b.work<NotificationJobData>('send-notification', handleSendNotification)
 
@@ -1086,6 +1292,11 @@ export async function startQueue(): Promise<void> {
     await handleExpireQueueEntries()
   })
   await b.schedule('expire-queue-entries', '*/15 * * * *', {})
+
+  await b.work('expire-transfer-requests', async () => {
+    await handleExpireTransferRequests()
+  })
+  await b.schedule('expire-transfer-requests', '*/15 * * * *', {})
 
   await b.work('expire-claim-deadlines', async () => {
     await handleExpireClaimDeadlines()

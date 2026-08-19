@@ -104,6 +104,25 @@ enum NotificationType {
   ASSET_ASSIGNED
   WELCOME
   FLOOR_AVAILABLE
+  BOOKING_TRANSFER_REQUESTED
+  BOOKING_TRANSFER_ACCEPTED
+  BOOKING_TRANSFER_DECLINED
+  BOOKING_TRANSFER_EXPIRED
+  BOOKING_SWAP_REQUESTED
+  BOOKING_SWAP_ACCEPTED
+  BOOKING_SWAP_DECLINED
+  BOOKING_SWAP_EXPIRED
+}
+
+/// PENDING → ACCEPTED/DECLINED/EXPIRED (recipient-driven) or CANCELLED
+/// (requester withdraws before the recipient responds). Shared by
+/// BookingTransfer and BookingSwap — same lifecycle shape for both.
+enum TransferRequestStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  CANCELLED
+  EXPIRED
 }
 
 enum FloorPlanFileType {
@@ -155,36 +174,36 @@ model Organisation {
 }
 
 model Building {
-  id             String             @id @default(cuid())
-  organisationId String
-  name           String
-  address        String?
+  id                   String                @id @default(cuid())
+  organisationId       String
+  name                 String
+  address              String?
   /// Per-building override for no-show release. null = inherit the org default.
   noShowReleaseEnabled Boolean?
-  createdAt      DateTime           @default(now())
-  updatedAt      DateTime           @updatedAt
-  organisation   Organisation       @relation(fields: [organisationId], references: [id], onDelete: Cascade)
-  floors         Floor[]
-  resourceRoles       UserResourceRole[]
-  groupResourceRoles  GroupResourceRole[]
-  leases              BuildingLease[]
-  groupAccess         GroupBuildingAccess[]
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  organisation         Organisation          @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  floors               Floor[]
+  resourceRoles        UserResourceRole[]
+  groupResourceRoles   GroupResourceRole[]
+  leases               BuildingLease[]
+  groupAccess          GroupBuildingAccess[]
 }
 
 model BuildingLease {
-  id           String          @id @default(cuid())
-  buildingId   String
-  name         String
-  startDate    DateTime
-  endDate      DateTime?
-  landlord     String?
-  rentAmount   Float?
-  currency     String          @default("GBP")
-  notes        String?
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
-  building     Building        @relation(fields: [buildingId], references: [id], onDelete: Cascade)
-  documents    LeaseDocument[]
+  id         String          @id @default(cuid())
+  buildingId String
+  name       String
+  startDate  DateTime
+  endDate    DateTime?
+  landlord   String?
+  rentAmount Float?
+  currency   String          @default("GBP")
+  notes      String?
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+  building   Building        @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  documents  LeaseDocument[]
 
   @@index([buildingId])
 }
@@ -203,23 +222,23 @@ model LeaseDocument {
 }
 
 model Floor {
-  id         String             @id @default(cuid())
-  buildingId String
-  name       String
-  level      Int                @default(0)
+  id                   String              @id @default(cuid())
+  buildingId           String
+  name                 String
+  level                Int                 @default(0)
   /// Per-floor override for no-show release. null = inherit (floor → building → org).
   noShowReleaseEnabled Boolean?
-  createdAt  DateTime           @default(now())
-  updatedAt  DateTime           @updatedAt
-  building   Building           @relation(fields: [buildingId], references: [id], onDelete: Cascade)
-  floorPlan  FloorPlan?
-  zoneGroups ZoneGroup[]
-  zones      Zone[]
-  assets     Asset[]
-  resourceRoles      UserResourceRole[]
-  groupResourceRoles GroupResourceRole[]
-  groupAccess        GroupFloorAccess[]
-  subscriptions      FloorSubscription[]
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  building             Building            @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  floorPlan            FloorPlan?
+  zoneGroups           ZoneGroup[]
+  zones                Zone[]
+  assets               Asset[]
+  resourceRoles        UserResourceRole[]
+  groupResourceRoles   GroupResourceRole[]
+  groupAccess          GroupFloorAccess[]
+  subscriptions        FloorSubscription[]
 }
 
 model FloorPlan {
@@ -248,19 +267,19 @@ model ZoneGroup {
 }
 
 model Zone {
-  id          String     @id @default(cuid())
-  floorId     String
-  zoneGroupId String?
-  name        String
-  colour      String     @default("#6366f1")
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-  floor       Floor      @relation(fields: [floorId], references: [id], onDelete: Cascade)
-  zoneGroup   ZoneGroup? @relation(fields: [zoneGroupId], references: [id])
+  id                String                  @id @default(cuid())
+  floorId           String
+  zoneGroupId       String?
+  name              String
+  colour            String                  @default("#6366f1")
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  floor             Floor                   @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  zoneGroup         ZoneGroup?              @relation(fields: [zoneGroupId], references: [id])
   /// Assets whose primary zone is this zone
-  assets      Asset[]    @relation("PrimaryZone")
+  assets            Asset[]                 @relation("PrimaryZone")
   /// Additional zone memberships (asset can belong to multiple zones)
-  assetZones  AssetZone[]
+  assetZones        AssetZone[]
   subscriptionZones FloorSubscriptionZone[]
 }
 
@@ -292,19 +311,19 @@ model AssetAllowList {
 
 /// Category for an asset. Controls default bookability and map appearance.
 model AssetCategory {
-  id               String   @id @default(cuid())
-  name             String   @unique
-  description      String?
+  id                String   @id @default(cuid())
+  name              String   @unique
+  description       String?
   /// New assets in this category are bookable by default when true.
-  defaultIsBookable Boolean @default(false)
+  defaultIsBookable Boolean  @default(false)
   /// Icon slug used on the floor-plan canvas (e.g. "monitor", "phone", "lock").
-  defaultIcon      String?
+  defaultIcon       String?
   /// Relative storage path for a custom uploaded icon image.
-  iconUrl          String?
+  iconUrl           String?
   /// Hex colour for map markers in this category.
-  colour           String   @default("#6366f1")
-  createdAt        DateTime @default(now())
-  assets           Asset[]
+  colour            String   @default("#6366f1")
+  createdAt         DateTime @default(now())
+  assets            Asset[]
 }
 
 /// Unified asset model. Bookable assets (isBookable=true) replace the old Desk model.
@@ -322,13 +341,13 @@ model Asset {
 
   // ── Bookability ────────────────────────────────────────────────────────────
   /// When true, users can book this asset on the floor plan.
-  isBookable    Boolean        @default(false)
+  isBookable         Boolean         @default(false)
   /// Label shown in the booking UI, e.g. "Desk", "Phone Booth", "Room".
-  bookingLabel  String?
+  bookingLabel       String?
   /// Amenities available on this asset (only meaningful when isBookable=true).
-  amenities     String[]
+  amenities          String[]
   /// Booking eligibility. Null when not bookable.
-  bookingStatus BookableStatus?
+  bookingStatus      BookableStatus?
   /// bookingStatus as it was immediately before a permanent user-assignment
   /// forced it to ASSIGNED (e.g. RESTRICTED). Restored when the last
   /// permanent assignment is removed, instead of defaulting to OPEN.
@@ -354,11 +373,11 @@ model Asset {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  category        AssetCategory         @relation(fields: [categoryId], references: [id])
-  primaryZone     Zone?                 @relation("PrimaryZone", fields: [primaryZoneId], references: [id], onDelete: SetNull)
-  floor           Floor?                @relation(fields: [floorId], references: [id], onDelete: SetNull)
-  additionalZones AssetZone[]
-  allowList       AssetAllowList[]
+  category              AssetCategory             @relation(fields: [categoryId], references: [id])
+  primaryZone           Zone?                     @relation("PrimaryZone", fields: [primaryZoneId], references: [id], onDelete: SetNull)
+  floor                 Floor?                    @relation(fields: [floorId], references: [id], onDelete: SetNull)
+  additionalZones       AssetZone[]
+  allowList             AssetAllowList[]
   userAssignments       AssetUserAssignment[]
   availabilityWindows   AssetAvailabilityWindow[]
   availabilityRules     AssetAvailabilityRule[]
@@ -452,58 +471,62 @@ model Department {
 }
 
 model User {
-  id                      String        @id @default(cuid())
-  email                   String        @unique
-  displayName             String
-  passwordHash            String?
+  id                       String        @id @default(cuid())
+  email                    String        @unique
+  displayName              String
+  passwordHash             String?
   /// Set whenever passwordHash changes (self-service or admin-initiated). Access
   /// tokens issued before this timestamp are rejected in requireAuth, so changing
   /// a password immediately invalidates any other still-live session/stolen token
   /// instead of leaving it valid until its own expiry (up to MAX_SESSION_SECONDS).
-  passwordChangedAt      DateTime?
-  provider                AuthProvider  @default(LOCAL)
-  externalId              String?
-  accountStatus           AccountStatus @default(ACTIVE)
-  globalRole              GlobalRole    @default(USER)
+  passwordChangedAt        DateTime?
+  provider                 AuthProvider  @default(LOCAL)
+  externalId               String?
+  accountStatus            AccountStatus @default(ACTIVE)
+  globalRole               GlobalRole    @default(USER)
   /// Provenance of globalRole. When IDP, directory sync may downgrade it; when
   /// MANUAL (an admin set it), sync leaves it untouched.
-  globalRoleSource        RoleSource    @default(MANUAL)
-  departmentId            String?
+  globalRoleSource         RoleSource    @default(MANUAL)
+  departmentId             String?
   /// The user's manager, derived from the IdP (LDAP `manager` DN, or an OIDC/SAML
   /// manager claim). Drives the inferred org/department hierarchy.
-  managerId               String?
+  managerId                String?
   /// Raw manager identifier from the IdP (a DN, email, or UPN) before it is
   /// resolved to a Roomer user — kept so forward references reconcile on later sync/login.
-  managerExternalRef      String?
-  notificationPreferences Json          @default("{}")
+  managerExternalRef       String?
+  notificationPreferences  Json          @default("{}")
   /// When false, the user is hidden from the colleague finder / "who's in"
   /// directory (their bookings and assigned desks are not surfaced to others).
   /// Users can always see their own whereabouts regardless of this flag.
-  visibleInColleagueSearch Boolean      @default(true)
+  visibleInColleagueSearch Boolean       @default(true)
   /// Raw IdP group values received on the user's most recent SSO/LDAP login.
   /// Surfaced in the admin UI so admins can copy exact group identifiers when
   /// configuring mappings, and used by the mapping dry-run preview.
-  lastIdpGroups           String[]      @default([])
-  lastSsoLoginAt          DateTime?
-  createdAt               DateTime      @default(now())
-  updatedAt               DateTime      @updatedAt
+  lastIdpGroups            String[]      @default([])
+  lastSsoLoginAt           DateTime?
+  createdAt                DateTime      @default(now())
+  updatedAt                DateTime      @updatedAt
 
-  department           Department?  @relation(fields: [departmentId], references: [id], onDelete: SetNull)
-  manager              User?        @relation("UserManager", fields: [managerId], references: [id], onDelete: SetNull)
-  reports              User[]       @relation("UserManager")
-  resourceRoles        UserResourceRole[]
-  bookings             Booking[]
-  queueEntries         QueueEntry[]
-  notifications        Notification[]
-  auditLogsAsActor     AuditLog[]           @relation("actor")
-  assetAllowList       AssetAllowList[]
-  groupMemberships     UserGroupMember[]
-  assetUserAssignments AssetUserAssignment[]
+  department            Department?               @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  manager               User?                     @relation("UserManager", fields: [managerId], references: [id], onDelete: SetNull)
+  reports               User[]                    @relation("UserManager")
+  resourceRoles         UserResourceRole[]
+  bookings              Booking[]
+  queueEntries          QueueEntry[]
+  notifications         Notification[]
+  auditLogsAsActor      AuditLog[]                @relation("actor")
+  assetAllowList        AssetAllowList[]
+  groupMemberships      UserGroupMember[]
+  assetUserAssignments  AssetUserAssignment[]
   availabilityWindows   AssetAvailabilityWindow[] @relation("AvailabilityWindowOwner")
   availabilityRules     AssetAvailabilityRule[]   @relation("AvailabilityRuleOwner")
   floorSubscriptions    FloorSubscription[]
   recurringBookingRules RecurringBookingRule[]
   favouriteAssets       UserFavouriteAsset[]
+  transfersSent         BookingTransfer[]         @relation("BookingTransferFrom")
+  transfersReceived     BookingTransfer[]         @relation("BookingTransferTo")
+  swapsInitiated        BookingSwap[]             @relation("BookingSwapInitiator")
+  swapsReceived         BookingSwap[]             @relation("BookingSwapRecipient")
 
   @@index([email])
   @@index([provider, externalId])
@@ -512,17 +535,17 @@ model User {
 }
 
 model UserGroup {
-  id             String            @id @default(cuid())
-  organisationId String
-  name           String
-  description    String?
-  globalRole     GlobalRole        @default(USER)
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-  organisation   Organisation      @relation(fields: [organisationId], references: [id], onDelete: Cascade)
-  members        UserGroupMember[]
-  buildingAccess GroupBuildingAccess[]
-  floorAccess    GroupFloorAccess[]
+  id                 String                @id @default(cuid())
+  organisationId     String
+  name               String
+  description        String?
+  globalRole         GlobalRole            @default(USER)
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  organisation       Organisation          @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  members            UserGroupMember[]
+  buildingAccess     GroupBuildingAccess[]
+  floorAccess        GroupFloorAccess[]
   groupResourceRoles GroupResourceRole[]
 
   @@unique([organisationId, name])
@@ -595,32 +618,35 @@ model GroupResourceRole {
 }
 
 model Booking {
-  id                String               @id @default(cuid())
-  userId            String
-  assetId           String
-  startsAt          DateTime
-  endsAt            DateTime
-  status            BookingStatus        @default(CONFIRMED)
-  notes             String?
-  reminderSentAt    DateTime?
+  id              String                @id @default(cuid())
+  userId          String
+  assetId         String
+  startsAt        DateTime
+  endsAt          DateTime
+  status          BookingStatus         @default(CONFIRMED)
+  notes           String?
+  reminderSentAt  DateTime?
   /// When the booker confirmed they are physically present. Null = not checked
   /// in; the no-show release job cancels un-checked-in bookings past the grace.
-  checkedInAt       DateTime?
+  checkedInAt     DateTime?
   /// True when this booking was CANCELLED by the no-show release job (vs a manual
   /// cancellation). Lets analytics separate no-show rate from cancellation rate.
-  noShow            Boolean              @default(false)
+  noShow          Boolean               @default(false)
   /// RFC 5546 SEQUENCE for this booking's ICS invite. Bumped on every
   /// reschedule so a re-sent REQUEST is recognised as an update to the
   /// existing calendar entry (not a duplicate/no-op) by clients that key off
   /// SEQUENCE rather than DTSTAMP; a CANCEL always uses sequence+1 so it
   /// supersedes whatever REQUEST was last sent.
-  icsSequence       Int                  @default(0)
-  recurringRuleId   String?
-  createdAt         DateTime             @default(now())
-  updatedAt         DateTime             @updatedAt
-  user              User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  asset             Asset                @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  recurringRule     RecurringBookingRule? @relation(fields: [recurringRuleId], references: [id], onDelete: SetNull)
+  icsSequence     Int                   @default(0)
+  recurringRuleId String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  user            User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  asset           Asset                 @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  recurringRule   RecurringBookingRule? @relation(fields: [recurringRuleId], references: [id], onDelete: SetNull)
+  transfers       BookingTransfer[]
+  swapsAsA        BookingSwap[]         @relation("SwapBookingA")
+  swapsAsB        BookingSwap[]         @relation("SwapBookingB")
 
   @@index([assetId, startsAt, endsAt])
   @@index([userId, startsAt])
@@ -628,52 +654,105 @@ model Booking {
   @@index([status])
 }
 
+/// A request to hand a CONFIRMED booking to another user — the recipient
+/// must accept before booking.userId actually changes, so nobody can dump an
+/// unwanted booking on a colleague without consent. Single bookings only
+/// (not recurring-series occurrences) for now — see #83.
+model BookingTransfer {
+  id          String                @id @default(cuid())
+  bookingId   String
+  fromUserId  String
+  toUserId    String
+  status      TransferRequestStatus @default(PENDING)
+  /// Auto-declines if the recipient doesn't respond in time — reuses
+  /// org.queueClaimWindowHours (the same "how long do we wait for someone to
+  /// respond" window the queue-claim flow already exposes) rather than
+  /// adding a second, easily-confused setting.
+  expiresAt   DateTime
+  respondedAt DateTime?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  booking     Booking               @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  fromUser    User                  @relation("BookingTransferFrom", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser      User                  @relation("BookingTransferTo", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@index([toUserId, status])
+  @@index([status, expiresAt])
+}
+
+/// A mutual request to swap two users' CONFIRMED bookings — same start/end
+/// time (see #83: mismatched-time swaps are out of scope for now), different
+/// assets. Both sides keep their own time slot, just on the other person's
+/// desk.
+model BookingSwap {
+  id              String                @id @default(cuid())
+  bookingAId      String
+  bookingBId      String
+  initiatorUserId String
+  recipientUserId String
+  status          TransferRequestStatus @default(PENDING)
+  expiresAt       DateTime
+  respondedAt     DateTime?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  bookingA        Booking               @relation("SwapBookingA", fields: [bookingAId], references: [id], onDelete: Cascade)
+  bookingB        Booking               @relation("SwapBookingB", fields: [bookingBId], references: [id], onDelete: Cascade)
+  initiator       User                  @relation("BookingSwapInitiator", fields: [initiatorUserId], references: [id], onDelete: Cascade)
+  recipient       User                  @relation("BookingSwapRecipient", fields: [recipientUserId], references: [id], onDelete: Cascade)
+
+  @@index([bookingAId])
+  @@index([bookingBId])
+  @@index([recipientUserId, status])
+  @@index([status, expiresAt])
+}
+
 /// A weekly recurring booking rule. All individual Booking rows linked to this
 /// rule are materialized immediately at creation time.
 model RecurringBookingRule {
-  id          String               @id @default(cuid())
-  userId      String
-  assetId     String
-  frequency   RecurringFrequency   @default(WEEKLY)
+  id        String              @id @default(cuid())
+  userId    String
+  assetId   String
+  frequency RecurringFrequency  @default(WEEKLY)
   /// ISO day of week: 0=Sunday … 6=Saturday. Required only for WEEKLY frequency.
-  dayOfWeek   Int?
+  dayOfWeek Int?
   /// Wall-clock start time in HH:MM UTC
-  startTime   String
+  startTime String
   /// Wall-clock end time in HH:MM UTC
-  endTime     String
+  endTime   String
   /// Date of first occurrence (stored as midnight UTC)
-  firstDate   DateTime             @db.Date
+  firstDate DateTime            @db.Date
   /// Date of last occurrence (stored as midnight UTC)
-  lastDate    DateTime             @db.Date
-  status      RecurringRuleStatus  @default(ACTIVE)
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
-  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  asset       Asset               @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  bookings    Booking[]
+  lastDate  DateTime            @db.Date
+  status    RecurringRuleStatus @default(ACTIVE)
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  asset     Asset               @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  bookings  Booking[]
 
   @@index([userId])
   @@index([assetId])
 }
 
 model QueueEntry {
-  id             String           @id @default(cuid())
-  userId         String
-  assetId        String
-  wantedStartsAt DateTime
-  wantedEndsAt   DateTime
-  position       Int
-  status         QueueEntryStatus @default(WAITING)
-  expiresAt      DateTime
-  claimDeadline  DateTime?
-  claimToken     String?          @unique
+  id                  String           @id @default(cuid())
+  userId              String
+  assetId             String
+  wantedStartsAt      DateTime
+  wantedEndsAt        DateTime
+  position            Int
+  status              QueueEntryStatus @default(WAITING)
+  expiresAt           DateTime
+  claimDeadline       DateTime?
+  claimToken          String?          @unique
   /// Set once the claim-expiring-soon warning has been sent, so the cron
   /// sweep doesn't re-notify every run before the deadline actually passes.
   claimExpiryWarnedAt DateTime?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
-  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  asset          Asset            @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  user                User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  asset               Asset            @relation(fields: [assetId], references: [id], onDelete: Cascade)
 
   @@index([assetId, status, wantedStartsAt, wantedEndsAt])
   @@index([userId, status])
@@ -730,13 +809,13 @@ model ScimConfig {
 }
 
 model FloorSubscription {
-  id             String    @id @default(cuid())
+  id             String                  @id @default(cuid())
   userId         String
   floorId        String
   lastNotifiedAt DateTime?
-  createdAt      DateTime  @default(now())
-  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  floor          Floor     @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  createdAt      DateTime                @default(now())
+  user           User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  floor          Floor                   @relation(fields: [floorId], references: [id], onDelete: Cascade)
   zones          FloorSubscriptionZone[]
 
   @@unique([userId, floorId])

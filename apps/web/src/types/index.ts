@@ -206,6 +206,51 @@ export interface Booking {
   }
 }
 
+export type TransferRequestStatus = 'PENDING' | 'ACCEPTED' | 'DECLINED' | 'CANCELLED' | 'EXPIRED'
+
+interface BookingSummary {
+  id: string
+  startsAt: string
+  endsAt: string
+  asset: { name: string }
+}
+
+interface UserRef {
+  id: string
+  displayName: string
+  email: string
+}
+
+export interface BookingTransfer {
+  id: string
+  bookingId: string
+  fromUserId: string
+  toUserId: string
+  status: TransferRequestStatus
+  expiresAt: string
+  respondedAt?: string | null
+  createdAt: string
+  booking?: BookingSummary
+  fromUser?: UserRef
+  toUser?: UserRef
+}
+
+export interface BookingSwap {
+  id: string
+  bookingAId: string
+  bookingBId: string
+  initiatorUserId: string
+  recipientUserId: string
+  status: TransferRequestStatus
+  expiresAt: string
+  respondedAt?: string | null
+  createdAt: string
+  bookingA?: BookingSummary
+  bookingB?: BookingSummary
+  initiator?: UserRef
+  recipient?: UserRef
+}
+
 export interface QueueEntry {
   id: string
   userId: string

@@ -18,6 +18,8 @@ import type {
   UserGroup,
   FloorSubscription,
   RecurringBookingRule,
+  BookingTransfer,
+  BookingSwap,
 } from '../types'
 
 const BASE = '/api/v1'
@@ -404,6 +406,37 @@ export const bookingsApi = {
       `/bookings/report${qs.toString() ? `?${qs}` : ''}`,
     )
   },
+  // Transfer — hand a booking to a colleague
+  transfer: (id: string, toUserId: string) =>
+    api.post<{ data: BookingTransfer }>(`/bookings/${id}/transfer`, { toUserId }),
+  listTransfers: () =>
+    api.get<{ data: { sent: BookingTransfer[]; received: BookingTransfer[] } }>('/bookings/transfers'),
+  acceptTransfer: (id: string) =>
+    api.post<{ data: { ok: true } }>(`/bookings/transfers/${id}/accept`),
+  declineTransfer: (id: string) =>
+    api.post<{ data: { ok: true } }>(`/bookings/transfers/${id}/decline`),
+  cancelTransfer: (id: string) =>
+    api.delete<{ data: { ok: true } }>(`/bookings/transfers/${id}`),
+  // Swap — two users trade bookings at the same time
+  swapCandidate: (bookingId: string, userId: string) =>
+    api.get<{ data: BookingSummaryMatch | null }>(`/bookings/${bookingId}/swap-candidate?userId=${encodeURIComponent(userId)}`),
+  swapRequest: (bookingId: string, withBookingId: string) =>
+    api.post<{ data: BookingSwap }>(`/bookings/${bookingId}/swap-request`, { withBookingId }),
+  listSwaps: () =>
+    api.get<{ data: { sent: BookingSwap[]; received: BookingSwap[] } }>('/bookings/swaps'),
+  acceptSwap: (id: string) =>
+    api.post<{ data: { ok: true } }>(`/bookings/swaps/${id}/accept`),
+  declineSwap: (id: string) =>
+    api.post<{ data: { ok: true } }>(`/bookings/swaps/${id}/decline`),
+  cancelSwap: (id: string) =>
+    api.delete<{ data: { ok: true } }>(`/bookings/swaps/${id}`),
+}
+
+interface BookingSummaryMatch {
+  id: string
+  startsAt: string
+  endsAt: string
+  asset: { id: string; name: string }
 }
 
 // --- Queue ---
