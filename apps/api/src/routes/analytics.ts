@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { getManagedBuildingIds } from '../middleware/requireRole.js'
+import { wantsCsv, sendCsv } from '../lib/csv.js'
 import { z } from 'zod'
 
 const analyticsQuerySchema = z.object({
@@ -139,6 +140,12 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         }),
       )
 
+      if (wantsCsv(request)) {
+        return sendCsv(reply, 'zone-utilisation.csv',
+          ['Floor', 'Zone', 'Total Desks', 'Bookable', 'Assigned', 'Disabled', 'Bookings', 'Utilisation %'],
+          data.map((d) => [d.floorName, d.zoneName, d.totalDesks, d.bookableDesks, d.assignedDesks, d.disabledDesks, d.bookingCount, d.utilisationPct]),
+        )
+      }
       return reply.status(200).send({ data })
     },
   )
@@ -236,6 +243,9 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         count: Number(r.count),
       }))
 
+      if (wantsCsv(request)) {
+        return sendCsv(reply, 'booking-activity.csv', ['Date', 'Bookings'], data.map((d) => [d.date, d.count]))
+      }
       return reply.status(200).send({ data })
     },
   )
@@ -374,13 +384,15 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         prisma.booking.count({ where: { startsAt: { gte: startDate, lte: endDate }, status: 'COMPLETED', ...buildingFilter } }),
       ])
 
-      return reply.status(200).send({
-        data: [
-          { status: 'CONFIRMED', label: 'Confirmed', count: confirmed },
-          { status: 'COMPLETED', label: 'Completed', count: completed },
-          { status: 'CANCELLED', label: 'Cancelled', count: cancelled },
-        ],
-      })
+      const data = [
+        { status: 'CONFIRMED', label: 'Confirmed', count: confirmed },
+        { status: 'COMPLETED', label: 'Completed', count: completed },
+        { status: 'CANCELLED', label: 'Cancelled', count: cancelled },
+      ]
+      if (wantsCsv(request)) {
+        return sendCsv(reply, 'booking-status.csv', ['Status', 'Count'], data.map((d) => [d.label, d.count]))
+      }
+      return reply.status(200).send({ data })
     },
   )
 
@@ -461,6 +473,9 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         count: countByDow[d] ?? 0,
       }))
 
+      if (wantsCsv(request)) {
+        return sendCsv(reply, 'peak-days.csv', ['Day', 'Bookings'], data.map((d) => [d.dayName, d.count]))
+      }
       return reply.status(200).send({ data })
     },
   )
@@ -541,6 +556,12 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         }
       })
 
+      if (wantsCsv(request)) {
+        return sendCsv(reply, 'floor-utilisation.csv',
+          ['Building', 'Floor', 'Desks', 'Bookings', 'Utilisation %'],
+          data.map((d) => [d.buildingName, d.floorName, d.totalDesks, d.bookingCount, d.utilisationPct]),
+        )
+      }
       return reply.status(200).send({ data })
     },
   )
@@ -648,6 +669,9 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         bookingCount: Number(r.count),
       }))
 
+      if (wantsCsv(request)) {
+        return sendCsv(reply, 'top-users.csv', ['Name', 'Email', 'Bookings'], data.map((d) => [d.displayName, d.email, d.bookingCount]))
+      }
       return reply.status(200).send({ data })
     },
   )
@@ -728,6 +752,12 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         memberCount: Number(r.memberCount),
       }))
 
+      if (wantsCsv(request)) {
+        return sendCsv(reply, 'department-activity.csv',
+          ['Department', 'Members', 'Bookings', 'Desk-Days'],
+          data.map((d) => [d.departmentName, d.memberCount, d.bookingCount, d.deskDays]),
+        )
+      }
       return reply.status(200).send({ data })
     },
   )
