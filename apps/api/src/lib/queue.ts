@@ -78,15 +78,34 @@ export async function promoteNextQueueEntry(
   })
 }
 
+type CancellableBooking = {
+  id: string
+  userId: string
+  assetId: string
+  assetName: string
+  startsAt: Date
+  endsAt: Date
+  icsSequence: number
+  recurringRuleId?: string | null
+}
+
 /**
- * Cancel every given CONFIRMED-future booking and promote the next queued
- * entry for each freed slot — same cancel+promote+notify shape as a
- * recurring-series cancellation (see recurring.ts DELETE /:id). Shared core
- * for cancelFutureBookingsForFloors and cancelFutureBookingsForAssets.
+ * Cancel every given CONFIRMED-future booking, notify each original booker,
+ * and promote the next queued entry for each freed slot — same
+ * cancel+promote+notify shape as a recurring-series cancellation (see
+ * recurring.ts DELETE /:id). Shared core for cancelFutureBookingsForFloors,
+ * cancelFutureBookingsForAssets and cancelFutureBookingsForUser.
+ *
+ * `skipQueuePromotion` must be set by any caller whose asset(s) are about to
+ * be hard-deleted (not just unplaced/detached): the asset won't be bookable
+ * for anyone to promote into, and cascade-deleting it destroys the Booking/
+ * QueueEntry rows before the async QUEUE_PROMOTED notification job would
+ * even run (see #228).
  */
 async function cancelBookingsAndPromoteQueues(
-  bookings: Array<{ id: string; assetId: string; startsAt: Date; endsAt: Date; recurringRuleId?: string | null }>,
+  bookings: CancellableBooking[],
   logMsg: string,
+  opts: { skipQueuePromotion?: boolean } = {},
 ): Promise<void> {
   if (bookings.length === 0) return
 
@@ -109,15 +128,30 @@ async function cancelBookingsAndPromoteQueues(
   }
 
   for (const b of bookings) {
-    const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
-    if (nextQueued) {
-      await enqueueNotification({
-        type: NotificationType.QUEUE_PROMOTED,
-        userId: nextQueued.userId,
-        queueEntryId: nextQueued.id,
-        claimDeadline: nextQueued.claimDeadline.toISOString(),
-      })
-      dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+    // Snapshot the rendering data at enqueue time (not just bookingId) so the
+    // notification survives even if the caller cascade-deletes this Booking
+    // row (via a hard asset delete) before the async job is delivered.
+    await enqueueNotification({
+      type: NotificationType.BOOKING_CANCELLED_BY_ADMIN,
+      userId: b.userId,
+      bookingId: b.id,
+      cancelledAssetName: b.assetName,
+      cancelledStartsAt: b.startsAt.toISOString(),
+      cancelledEndsAt: b.endsAt.toISOString(),
+      cancelledIcsSequence: b.icsSequence,
+    })
+
+    if (!opts.skipQueuePromotion) {
+      const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
+      if (nextQueued) {
+        await enqueueNotification({
+          type: NotificationType.QUEUE_PROMOTED,
+          userId: nextQueued.userId,
+          queueEntryId: nextQueued.id,
+          claimDeadline: nextQueued.claimDeadline.toISOString(),
+        })
+        dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+      }
     }
   }
 
@@ -139,9 +173,12 @@ export async function cancelFutureBookingsForFloors(floorIds: string[]): Promise
   const now = new Date()
   const bookings = await prisma.booking.findMany({
     where: { status: 'CONFIRMED', startsAt: { gt: now }, asset: { floorId: { in: floorIds } } },
-    select: { id: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true } } },
   })
-  await cancelBookingsAndPromoteQueues(bookings, '[queue] Cancelled bookings on deleted floor(s)')
+  await cancelBookingsAndPromoteQueues(
+    bookings.map((b) => ({ ...b, assetName: b.asset.name })),
+    '[queue] Cancelled bookings on deleted floor(s)',
+  )
 }
 
 /**
@@ -152,15 +189,22 @@ export async function cancelFutureBookingsForFloors(floorIds: string[]): Promise
  * unplaces every asset still in it — see zones.ts DELETE /:id) so a booking
  * never sits CONFIRMED for a desk that just became unreachable from any floor
  * plan. Must be called before the unplacing update.
+ *
+ * `skipQueuePromotion` must be true when the caller is about to hard-delete
+ * these assets rather than just unplace them (see cancelBookingsAndPromoteQueues).
  */
-export async function cancelFutureBookingsForAssets(assetIds: string[]): Promise<void> {
+export async function cancelFutureBookingsForAssets(assetIds: string[], opts: { skipQueuePromotion?: boolean } = {}): Promise<void> {
   if (assetIds.length === 0) return
   const now = new Date()
   const bookings = await prisma.booking.findMany({
     where: { status: 'CONFIRMED', startsAt: { gt: now }, assetId: { in: assetIds } },
-    select: { id: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true } } },
   })
-  await cancelBookingsAndPromoteQueues(bookings, '[queue] Cancelled bookings on unplaced asset(s)')
+  await cancelBookingsAndPromoteQueues(
+    bookings.map((b) => ({ ...b, assetName: b.asset.name })),
+    '[queue] Cancelled bookings on unplaced asset(s)',
+    opts,
+  )
 }
 
 /**
@@ -173,9 +217,12 @@ export async function cancelFutureBookingsForUser(userId: string): Promise<void>
   const now = new Date()
   const bookings = await prisma.booking.findMany({
     where: { status: 'CONFIRMED', startsAt: { gt: now }, userId },
-    select: { id: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true } } },
   })
-  await cancelBookingsAndPromoteQueues(bookings, '[queue] Cancelled bookings for blocked user')
+  await cancelBookingsAndPromoteQueues(
+    bookings.map((b) => ({ ...b, assetName: b.asset.name })),
+    '[queue] Cancelled bookings for blocked user',
+  )
 }
 
 /**
@@ -241,6 +288,19 @@ export interface NotificationJobData {
   zoneId?: string
   assetId?: string
   slotDate?: string
+  /**
+   * Fallback rendering data for BOOKING_CANCELLED_BY_ADMIN, used only when
+   * the live `bookingId` lookup below comes back empty. Needed because
+   * cancelBookingsAndPromoteQueues enqueues this notification before some
+   * callers go on to hard-delete the asset, which cascades and destroys the
+   * Booking row (schema.prisma `onDelete: Cascade`) well before this async
+   * job is picked up — without a snapshot taken at enqueue time, the
+   * cancellation notice would silently vanish (see #228).
+   */
+  cancelledAssetName?: string
+  cancelledStartsAt?: string
+  cancelledEndsAt?: string
+  cancelledIcsSequence?: number
 }
 
 // ─── Worker: send-notification ────────────────────────────────────────────────
@@ -377,6 +437,29 @@ async function processSendNotification(
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
         startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    } else if (job.data.cancelledAssetName && job.data.cancelledStartsAt && job.data.cancelledEndsAt) {
+      // Live row is gone (cascade-deleted) — render from the enqueue-time
+      // snapshot instead of dropping the notice. See NotificationJobData's
+      // cancelled* fields for why this can happen.
+      const assetName = job.data.cancelledAssetName
+      const startsAt = new Date(job.data.cancelledStartsAt)
+      const endsAt = new Date(job.data.cancelledEndsAt)
+      title = `Booking cancelled by admin — ${assetName}`
+      body = `Your booking for ${assetName} has been cancelled by an administrator.`
+      emailPayload = renderBookingCancelledByAdmin({ id: bookingId, startsAt, endsAt }, user, { name: assetName })
+      icalEvent = {
+        method: 'CANCEL',
+        content: buildBookingIcs({
+          id: bookingId, startsAt, endsAt, assetName,
+          sequence: (job.data.cancelledIcsSequence ?? 0) + 1,
+        }, 'CANCEL'),
+      }
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName,
+        startsAt: formatDate(startsAt), endsAt: formatDate(endsAt),
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }

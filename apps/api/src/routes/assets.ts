@@ -1226,7 +1226,9 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       // same reasoning cancelFutureBookingsForFloors already documents for
       // floor/building deletion. This only cancels+notifies; the cascade still
       // does the actual row deletion once the asset itself is removed below.
-      await cancelFutureBookingsForAssets([id])
+      // skipQueuePromotion: the asset is about to be destroyed, not just
+      // unplaced, so there's no slot left for anyone to be promoted into.
+      await cancelFutureBookingsForAssets([id], { skipQueuePromotion: true })
 
       try {
         await prisma.asset.delete({ where: { id } })
