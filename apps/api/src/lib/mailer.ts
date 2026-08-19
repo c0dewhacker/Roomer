@@ -583,3 +583,40 @@ export function renderWelcome(
   const text = `Hi ${user.displayName},\n\nWelcome to Roomer! Your account is ready.\n\nGet started: ${env.APP_URL}`
   return { subject, html, text }
 }
+
+// ─── WEEKLY_REPORT ────────────────────────────────────────────────────────────
+
+export interface WeeklyReportStats {
+  rangeLabel: string
+  totalBookings: number
+  cancelledBookings: number
+  noShowBookings: number
+  uniqueBookers: number
+  overallUtilisationPct: number
+}
+
+export function renderWeeklyReport(
+  user: Pick<User, 'displayName' | 'email'>,
+  stats: WeeklyReportStats,
+): { subject: string; html: string; text: string } {
+  const subject = `Weekly utilisation summary — ${stats.rangeLabel}`
+  const safeUser = escapeHtml(user.displayName)
+  const html = baseHtml(
+    subject,
+    `<h1>Weekly utilisation summary</h1>
+     <p>Hi ${safeUser}, here's how desk booking looked for ${escapeHtml(stats.rangeLabel)}.</p>
+     <div class="detail">
+       <dl>
+         <dt>Overall utilisation</dt><dd>${stats.overallUtilisationPct}%</dd>
+         <dt>Confirmed bookings</dt><dd>${stats.totalBookings}</dd>
+         <dt>Unique bookers</dt><dd>${stats.uniqueBookers}</dd>
+         <dt>Cancelled bookings</dt><dd>${stats.cancelledBookings}</dd>
+         <dt>No-shows</dt><dd>${stats.noShowBookings}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/admin/reports" class="btn">View Full Report</a>
+     <p style="font-size:12px;color:#a1a1aa;margin-top:24px;">You're receiving this because weekly report emails are enabled for your organisation. Turn them off in Settings.</p>`,
+  )
+  const text = `Hi ${user.displayName},\n\nWeekly utilisation summary — ${stats.rangeLabel}\n\nOverall utilisation: ${stats.overallUtilisationPct}%\nConfirmed bookings: ${stats.totalBookings}\nUnique bookers: ${stats.uniqueBookers}\nCancelled bookings: ${stats.cancelledBookings}\nNo-shows: ${stats.noShowBookings}\n\nFull report: ${env.APP_URL}/admin/reports`
+  return { subject, html, text }
+}

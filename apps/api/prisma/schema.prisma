@@ -143,6 +143,10 @@ model Organisation {
   /// is promoted, freeing ghost desks.
   noShowReleaseEnabled        Boolean      @default(false)
   checkInGraceMinutes         Int          @default(30)
+  /// Weekly utilisation-summary email sent to every active SUPER_ADMIN.
+  /// Opt-in (default off) — shipping this on by default would start emailing
+  /// every existing org's admins with no action on their part.
+  weeklyReportEnabled         Boolean      @default(false)
   createdAt                   DateTime     @default(now())
   updatedAt                   DateTime     @updatedAt
   buildings                   Building[]

@@ -75,6 +75,7 @@ const updateOrgSchema = z.object({
   // Check-in / no-show release (global default; buildings & floors can override).
   noShowReleaseEnabled: z.boolean().optional(),
   checkInGraceMinutes: z.number().int().min(5).max(240).optional(),
+  weeklyReportEnabled: z.boolean().optional(),
 })
 
 // The "Direct role" grant option in GroupMappingsEditor sends

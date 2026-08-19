@@ -27,6 +27,7 @@ const orgSchema = z.object({
   dateFormat: z.string().min(1),
   noShowReleaseEnabled: z.boolean(),
   checkInGraceMinutes: z.coerce.number().int().min(5).max(240),
+  weeklyReportEnabled: z.boolean(),
 })
 type OrgForm = z.infer<typeof orgSchema>
 
@@ -43,6 +44,7 @@ export function OrgSettingsCard() {
       dateFormat: 'dd/MM/yyyy',
       noShowReleaseEnabled: false,
       checkInGraceMinutes: 30,
+      weeklyReportEnabled: false,
     },
   })
 
@@ -63,6 +65,7 @@ export function OrgSettingsCard() {
         dateFormat: orgData.dateFormat ?? 'dd/MM/yyyy',
         noShowReleaseEnabled: orgData.noShowReleaseEnabled ?? false,
         checkInGraceMinutes: orgData.checkInGraceMinutes ?? 30,
+        weeklyReportEnabled: orgData.weeklyReportEnabled ?? false,
       })
     }
   }, [orgData, reset])
@@ -71,7 +74,7 @@ export function OrgSettingsCard() {
     mutationFn: (data: OrgForm) => settingsApi.updateOrg(data),
     onSuccess: (res) => {
       toast.success('Settings saved')
-      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4, dateFormat: res.data.dateFormat ?? 'dd/MM/yyyy', noShowReleaseEnabled: res.data.noShowReleaseEnabled ?? false, checkInGraceMinutes: res.data.checkInGraceMinutes ?? 30 })
+      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4, dateFormat: res.data.dateFormat ?? 'dd/MM/yyyy', noShowReleaseEnabled: res.data.noShowReleaseEnabled ?? false, checkInGraceMinutes: res.data.checkInGraceMinutes ?? 30, weeklyReportEnabled: res.data.weeklyReportEnabled ?? false })
       qc.invalidateQueries({ queryKey: ['settings', 'organisation'] })
       qc.invalidateQueries({ queryKey: ['settings', 'public'] })
     },
@@ -139,6 +142,22 @@ export function OrgSettingsCard() {
               <p className="text-xs text-destructive mt-1">{errors.checkInGraceMinutes.message}</p>
             )}
           </div>
+        </div>
+        <div className="rounded-md border p-3">
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4"
+              checked={watch('weeklyReportEnabled')}
+              onChange={(e) => setValue('weeklyReportEnabled', e.target.checked, { shouldDirty: true })}
+            />
+            <span>
+              <span className="text-sm font-medium">Weekly utilisation email</span>
+              <span className="block text-xs text-muted-foreground">
+                Send a weekly desk-utilisation summary to every active Super Admin, every Monday.
+              </span>
+            </span>
+          </label>
         </div>
         <div>
           <Label htmlFor="dateFormat">Date format</Label>

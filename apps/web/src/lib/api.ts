@@ -511,6 +511,7 @@ type OrgSettings = {
   dateFormat: string
   noShowReleaseEnabled?: boolean
   checkInGraceMinutes?: number
+  weeklyReportEnabled?: boolean
 }
 
 export interface BrandingBanner {

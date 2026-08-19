@@ -2,7 +2,7 @@ import { PgBoss, type Job } from 'pg-boss'
 import { env } from '../env.js'
 import { prisma } from './prisma.js'
 import { buildBookingIcs } from './ical.js'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingCancelledByAdmin, renderBookingNoShow, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingCancelledByAdmin, renderBookingNoShow, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, renderWeeklyReport, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
 import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
@@ -906,6 +906,75 @@ async function handleWarnClaimExpiring(): Promise<void> {
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Warned expiring claims', count: entries.length }) + '\n')
 }
 
+/**
+ * Weekly utilisation digest for every active SUPER_ADMIN, gated on
+ * Organisation.weeklyReportEnabled (opt-in — see #78). Org-wide, not scoped
+ * to a building/floor, matching who it's for. Sent directly via sendEmail
+ * rather than through enqueueNotification/NotificationType: this isn't a
+ * per-user notification about the recipient's own bookings (the
+ * notification-preferences system it would otherwise be gated by doesn't
+ * apply to an operational digest tied to an org-level setting), and it has
+ * no in-app/bell equivalent to record.
+ */
+async function handleSendWeeklyReport(): Promise<void> {
+  const org = await prisma.organisation.findFirst({ select: { weeklyReportEnabled: true } })
+  if (!org?.weeklyReportEnabled) return
+
+  const endDate = new Date()
+  const startDate = new Date(endDate.getTime() - 7 * 24 * 60 * 60 * 1000)
+  let workingDays = 0
+  const cursor = new Date(startDate)
+  while (cursor <= endDate) {
+    const d = cursor.getUTCDay()
+    if (d !== 0 && d !== 6) workingDays++
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  workingDays = workingDays || 1
+
+  const bookingWhere = { startsAt: { gte: startDate, lte: endDate } }
+  const [confirmed, cancelled, noShowCount, uniqueBookers, bookableDesks, assignedDesks] = await Promise.all([
+    prisma.booking.count({ where: { ...bookingWhere, status: 'CONFIRMED' } }),
+    prisma.booking.count({ where: { ...bookingWhere, status: 'CANCELLED' } }),
+    prisma.booking.count({ where: { ...bookingWhere, status: 'CANCELLED', noShow: true } }),
+    prisma.booking.findMany({
+      where: { ...bookingWhere, status: { in: ['CONFIRMED', 'COMPLETED'] } },
+      select: { userId: true },
+      distinct: ['userId'],
+    }),
+    prisma.asset.count({ where: { isBookable: true, bookingStatus: { in: ['OPEN', 'RESTRICTED'] } } }),
+    prisma.asset.count({ where: { isBookable: true, bookingStatus: 'ASSIGNED' } }),
+  ])
+  const manualCancelled = Math.max(0, cancelled - noShowCount)
+  const activeDesks = bookableDesks + assignedDesks
+  const totalCapacity = activeDesks * workingDays
+  const overallUtilisationPct = totalCapacity > 0 ? Math.round((confirmed / totalCapacity) * 100) : 0
+  const rangeLabel = `${formatDate(startDate)} – ${formatDate(endDate)}`
+
+  const admins = await prisma.user.findMany({
+    where: { globalRole: 'SUPER_ADMIN', accountStatus: 'ACTIVE' },
+    select: { displayName: true, email: true },
+  })
+  if (admins.length === 0) return
+
+  const stats = {
+    rangeLabel,
+    totalBookings: confirmed,
+    cancelledBookings: manualCancelled,
+    noShowBookings: noShowCount,
+    uniqueBookers: uniqueBookers.length,
+    overallUtilisationPct,
+  }
+
+  for (const admin of admins) {
+    const { subject, html, text } = renderWeeklyReport(admin, stats)
+    await sendEmail({ to: admin.email, subject, html, text }).catch((err) => {
+      process.stderr.write(JSON.stringify({ level: 'error', msg: '[queue] Failed to send weekly report', email: admin.email, err: String(err) }) + '\n')
+    })
+  }
+
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Sent weekly report', recipients: admins.length }) + '\n')
+}
+
 // ─── Start queue ──────────────────────────────────────────────────────────────
 
 export async function startQueue(): Promise<void> {
@@ -922,6 +991,7 @@ export async function startQueue(): Promise<void> {
   await b.createQueue('release-no-shows')
   await b.createQueue('warn-claim-expiring')
   await b.createQueue('webhook-delivery')
+  await b.createQueue('send-weekly-report')
 
   await b.work<NotificationJobData>('send-notification', handleSendNotification)
 
@@ -964,6 +1034,13 @@ export async function startQueue(): Promise<void> {
     await handleWarnClaimExpiring()
   })
   await b.schedule('warn-claim-expiring', '*/5 * * * *', {})
+
+  // Monday 08:00 UTC — handleSendWeeklyReport itself no-ops when
+  // weeklyReportEnabled is off, so this can stay unconditionally scheduled.
+  await b.work('send-weekly-report', async () => {
+    await handleSendWeeklyReport()
+  })
+  await b.schedule('send-weekly-report', '0 8 * * 1', {})
 
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] pg-boss started and workers registered' }) + '\n')
 }
