@@ -184,7 +184,12 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
       const rawGroups = (userinfo as Record<string, unknown>)[groupsClaimName]
       const idpGroups = Array.isArray(rawGroups) ? rawGroups.map(String) : []
       await recordLastIdpGroups(user.id, idpGroups)
-      if (idpGroups.length && cfg.groupMappings?.length) {
+      // Deliberately does NOT require idpGroups.length here: an empty array is
+      // exactly the "user was removed from every mapped group" signal that must
+      // reach applyGroupMappings so its sync=true eviction/demotion logic can
+      // run — gating this on a non-empty claim silently skipped revocation for
+      // a fully-deprovisioned user on every subsequent login.
+      if (cfg.groupMappings?.length) {
         await applyGroupMappings(user.id, idpGroups, cfg.groupMappings, true)
       }
 
@@ -272,7 +277,12 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
 
       const idpGroups = extractGroupsFromProfile(samlProfile, cfg.groupAttribute)
       await recordLastIdpGroups(user.id, idpGroups)
-      if (idpGroups.length && cfg.groupMappings?.length) {
+      // Deliberately does NOT require idpGroups.length here: an empty array is
+      // exactly the "user was removed from every mapped group" signal that must
+      // reach applyGroupMappings so its sync=true eviction/demotion logic can
+      // run — gating this on a non-empty claim silently skipped revocation for
+      // a fully-deprovisioned user on every subsequent login.
+      if (cfg.groupMappings?.length) {
         await applyGroupMappings(user.id, idpGroups, cfg.groupMappings, true)
       }
 

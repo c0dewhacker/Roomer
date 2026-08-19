@@ -209,7 +209,12 @@ async function runLdapSync(cfg: LdapConfig): Promise<LdapSyncResult> {
         }
 
         const userId = existing?.id ?? (await prisma.user.findUnique({ where: { email }, select: { id: true } }))!.id
-        if (cfg.groupMappings?.length && groups.length) {
+        // Deliberately does NOT also require groups.length: an empty array is
+        // exactly the "user was removed from every mapped group" signal that
+        // must reach applyGroupMappings so its sync=true eviction/demotion
+        // logic can run — gating this on a non-empty group list silently
+        // skipped revocation for a fully-deprovisioned directory entry.
+        if (cfg.groupMappings?.length) {
           const { applyGroupMappings } = await import('./group-mapping.js')
           await applyGroupMappings(userId, groups, cfg.groupMappings, true)
         }
