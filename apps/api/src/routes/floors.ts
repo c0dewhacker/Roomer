@@ -359,7 +359,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /floors/:id/floor-plan — upload floor plan (SUPER_ADMIN or floor manager for that floor)
   fastify.post(
     '/:id/floor-plan',
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth], config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
     async (request, reply) => {
       const { id } = request.params as { id: string }
 
@@ -380,13 +380,23 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(400).send({ error: { message: 'No file uploaded', code: 'NO_FILE' } })
       }
 
-      // Validate MIME type
+      // Validate MIME type. DXF has no browser-standard MIME type, so real
+      // uploads legitimately arrive as 'application/octet-stream' (the
+      // common fallback for unrecognised extensions) or 'text/plain' (DXF is
+      // plaintext) rather than a DXF-specific value — both already covered
+      // below. This used to also unconditionally accept ANY declared
+      // mimetype whenever the filename ended in '.dxf', which let a request
+      // skip MIME validation entirely just by naming the upload right
+      // (content-type is never trusted for serving it back — floor-plan
+      // image serving derives Content-Type from the file extension, not
+      // this stored value — but it's still a real validation gap the
+      // allowlist exists to close).
       const allowedMimes = [
         'image/png', 'image/jpeg', 'image/webp', 'image/gif',
         'application/pdf',
-        'image/vnd.dxf', 'application/dxf', 'application/octet-stream',
+        'image/vnd.dxf', 'application/dxf', 'application/octet-stream', 'text/plain',
       ]
-      if (!allowedMimes.includes(data.mimetype) && !data.filename.endsWith('.dxf')) {
+      if (!allowedMimes.includes(data.mimetype)) {
         return reply.status(400).send({
           error: { message: 'Unsupported file type', code: 'INVALID_FILE_TYPE' },
         })

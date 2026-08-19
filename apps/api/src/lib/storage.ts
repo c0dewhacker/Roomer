@@ -110,16 +110,27 @@ export async function saveFloorPlan(
 
   await fs.promises.writeFile(originalAbsPath, buffer)
 
-  if (fileType === FloorPlanFileType.IMAGE) {
-    return saveImageFloorPlan(originalAbsPath, originalRelPath, filename)
+  // Everything past this point can still fail (a PNG with valid magic bytes
+  // but corrupt/truncated pixel data throws in sharp's metadata() call, for
+  // instance) — without this try/catch, the file written above is orphaned
+  // on disk with no FloorPlan row ever created and nothing to clean it up,
+  // while the route handler sees an unrecognised error and 500s instead of
+  // reporting a normal validation failure. DXF failures don't hit this path
+  // (saveDxfFloorPlan already catches its own parse errors and degrades
+  // gracefully instead of throwing), so only IMAGE/PDF land here today.
+  try {
+    if (fileType === FloorPlanFileType.IMAGE) {
+      return await saveImageFloorPlan(originalAbsPath, originalRelPath, filename)
+    }
+    if (fileType === FloorPlanFileType.PDF) {
+      return await savePdfFloorPlan(originalRelPath)
+    }
+    // DXF — convert to SVG for rendering
+    return await saveDxfFloorPlan(originalAbsPath, originalRelPath, filename)
+  } catch (err) {
+    await fs.promises.unlink(originalAbsPath).catch(() => {})
+    throw Object.assign(new Error('File could not be processed as the declared type'), { code: 'INVALID_MAGIC', cause: err })
   }
-
-  if (fileType === FloorPlanFileType.PDF) {
-    return savePdfFloorPlan(originalRelPath)
-  }
-
-  // DXF — convert to SVG for rendering
-  return saveDxfFloorPlan(originalAbsPath, originalRelPath, filename)
 }
 
 async function saveImageFloorPlan(
