@@ -3,7 +3,7 @@ import { prisma } from '../lib/prisma.js'
 import { GlobalRole, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { z } from 'zod'
-import { enqueueNotification, promoteNextQueueEntry } from '../lib/queue.js'
+import { enqueueNotification, promoteNextQueueEntry, fanOutFloorAvailable } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { assertBookable, isWithinAdvanceBookingWindow, lockAssetForBooking, lockUserForBookingQuota, checkZoneGroupOverlap, isOverlapConstraintViolation } from '../lib/booking.js'
 
@@ -477,6 +477,16 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       })
 
       if (outcome.kind === 'shorten') {
+        // A recurring rule is always for a single asset, so this is fetched
+        // once rather than per dropped occurrence. Only used in the "nobody
+        // was queued" branch below — same fan-out a single ad-hoc booking
+        // cancellation does (bookings.ts DELETE /:id), which this series-cancel
+        // path previously skipped entirely, so floor subscribers never heard
+        // about a slot freed by shortening or cancelling a recurring series.
+        const droppedAsset = outcome.droppedBookings.length > 0
+          ? await prisma.asset.findUnique({ where: { id: rule.assetId }, select: { floorId: true, primaryZoneId: true } })
+          : null
+
         for (const b of outcome.droppedBookings) {
           dispatchWebhook('booking.cancelled', { id: b.id, userId: rule.userId, assetId: b.assetId }).catch(() => {})
           const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
@@ -488,6 +498,9 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
               claimDeadline: nextQueued.claimDeadline.toISOString(),
             })
             dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+          } else if (droppedAsset?.floorId) {
+            const slotDate = b.startsAt.toISOString().slice(0, 10)
+            await fanOutFloorAvailable(b.assetId, droppedAsset.floorId, droppedAsset.primaryZoneId, slotDate, rule.userId).catch(() => {})
           }
         }
 
@@ -548,7 +561,7 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
     const { id } = request.params as { id: string }
     const rule = await prisma.recurringBookingRule.findUnique({
       where: { id },
-      select: { id: true, userId: true, status: true },
+      select: { id: true, userId: true, status: true, assetId: true },
     })
     if (!rule) return reply.status(404).send({ error: { message: 'Rule not found', code: 'NOT_FOUND' } })
     if (rule.userId !== request.user.id && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
@@ -594,6 +607,15 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       }),
     ])
 
+    // A recurring rule is always for a single asset — fetched once, only used
+    // in the "nobody was queued" branch below. Same fan-out a single ad-hoc
+    // booking cancellation does (bookings.ts DELETE /:id); this series-cancel
+    // path previously never called it, so floor subscribers never heard about
+    // a slot freed by cancelling a recurring series.
+    const cancelledAsset = futureBookings.length > 0
+      ? await prisma.asset.findUnique({ where: { id: rule.assetId }, select: { floorId: true, primaryZoneId: true } })
+      : null
+
     for (const b of futureBookings) {
       dispatchWebhook('booking.cancelled', { id: b.id, userId: rule.userId, assetId: b.assetId }).catch(() => {})
       const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
@@ -605,6 +627,9 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
           claimDeadline: nextQueued.claimDeadline.toISOString(),
         })
         dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+      } else if (cancelledAsset?.floorId) {
+        const slotDate = b.startsAt.toISOString().slice(0, 10)
+        await fanOutFloorAvailable(b.assetId, cancelledAsset.floorId, cancelledAsset.primaryZoneId, slotDate, rule.userId).catch(() => {})
       }
     }
 

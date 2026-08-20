@@ -83,6 +83,8 @@ type CancellableBooking = {
   userId: string
   assetId: string
   assetName: string
+  assetFloorId: string | null
+  assetPrimaryZoneId: string | null
   startsAt: Date
   endsAt: Date
   icsSequence: number
@@ -101,11 +103,18 @@ type CancellableBooking = {
  * for anyone to promote into, and cascade-deleting it destroys the Booking/
  * QueueEntry rows before the async QUEUE_PROMOTED notification job would
  * even run (see #228).
+ *
+ * `fanOutOnFree` opts into notifying floor subscribers (same as a single
+ * ad-hoc booking cancel, bookings.ts DELETE /:id) when a freed slot has no
+ * one to promote. Only cancelFutureBookingsForUser sets it — the
+ * floor/asset-delete callers cancel bookings on a floor or asset that's
+ * about to be deleted or unplaced, so there's nothing left to point
+ * subscribers back at by the time the notification would be read.
  */
 async function cancelBookingsAndPromoteQueues(
   bookings: CancellableBooking[],
   logMsg: string,
-  opts: { skipQueuePromotion?: boolean } = {},
+  opts: { skipQueuePromotion?: boolean; fanOutOnFree?: boolean } = {},
 ): Promise<void> {
   if (bookings.length === 0) return
 
@@ -151,6 +160,9 @@ async function cancelBookingsAndPromoteQueues(
           claimDeadline: nextQueued.claimDeadline.toISOString(),
         })
         dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+      } else if (opts.fanOutOnFree && b.assetFloorId) {
+        const slotDate = b.startsAt.toISOString().slice(0, 10)
+        await fanOutFloorAvailable(b.assetId, b.assetFloorId, b.assetPrimaryZoneId, slotDate, b.userId).catch(() => {})
       }
     }
   }
@@ -173,10 +185,10 @@ export async function cancelFutureBookingsForFloors(floorIds: string[]): Promise
   const now = new Date()
   const bookings = await prisma.booking.findMany({
     where: { status: 'CONFIRMED', startsAt: { gt: now }, asset: { floorId: { in: floorIds } } },
-    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true } } },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true, floorId: true, primaryZoneId: true } } },
   })
   await cancelBookingsAndPromoteQueues(
-    bookings.map((b) => ({ ...b, assetName: b.asset.name })),
+    bookings.map((b) => ({ ...b, assetName: b.asset.name, assetFloorId: b.asset.floorId, assetPrimaryZoneId: b.asset.primaryZoneId })),
     '[queue] Cancelled bookings on deleted floor(s)',
   )
 }
@@ -198,10 +210,10 @@ export async function cancelFutureBookingsForAssets(assetIds: string[], opts: { 
   const now = new Date()
   const bookings = await prisma.booking.findMany({
     where: { status: 'CONFIRMED', startsAt: { gt: now }, assetId: { in: assetIds } },
-    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true } } },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true, floorId: true, primaryZoneId: true } } },
   })
   await cancelBookingsAndPromoteQueues(
-    bookings.map((b) => ({ ...b, assetName: b.asset.name })),
+    bookings.map((b) => ({ ...b, assetName: b.asset.name, assetFloorId: b.asset.floorId, assetPrimaryZoneId: b.asset.primaryZoneId })),
     '[queue] Cancelled bookings on unplaced asset(s)',
     opts,
   )
@@ -217,11 +229,12 @@ export async function cancelFutureBookingsForUser(userId: string): Promise<void>
   const now = new Date()
   const bookings = await prisma.booking.findMany({
     where: { status: 'CONFIRMED', startsAt: { gt: now }, userId },
-    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true } } },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true, floorId: true, primaryZoneId: true } } },
   })
   await cancelBookingsAndPromoteQueues(
-    bookings.map((b) => ({ ...b, assetName: b.asset.name })),
+    bookings.map((b) => ({ ...b, assetName: b.asset.name, assetFloorId: b.asset.floorId, assetPrimaryZoneId: b.asset.primaryZoneId })),
     '[queue] Cancelled bookings for blocked user',
+    { fanOutOnFree: true },
   )
 }
 
@@ -1341,9 +1354,24 @@ export async function startQueue(): Promise<void> {
 
 // ─── Enqueue helper ───────────────────────────────────────────────────────────
 
+// Every call site in routes/ treats this as fire-and-forget — the primary
+// mutation (booking created/cancelled/rescheduled, transfer accepted, queue
+// claimed, etc.) has already committed by the time this runs, so a failure
+// here must never surface as an error response for a request that actually
+// succeeded. Two call sites (users.ts) already wrapped this in their own
+// .catch(), which is the correct intent — but the other ~28 call sites across
+// bookings/queue/recurring/assets awaited it unguarded, so a transient
+// pg-boss/DB blip would throw past an already-committed transaction straight
+// into Fastify's generic 500 handler, telling the client an operation that
+// fully succeeded had failed. Catching here, once, guarantees that
+// regardless of call site.
 export async function enqueueNotification(data: NotificationJobData): Promise<void> {
   const b = getBoss()
-  await b.send('send-notification', data)
+  try {
+    await b.send('send-notification', data)
+  } catch (err) {
+    process.stderr.write(JSON.stringify({ level: 'error', msg: '[queue] Failed to enqueue notification', type: data.type, err: String(err) }) + '\n')
+  }
 }
 
 // ─── Floor-subscription fan-out ──────────────────────────────────────────────
