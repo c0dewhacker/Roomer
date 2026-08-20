@@ -645,9 +645,17 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(404).send({ error: { message: 'Recipient not found', code: 'NOT_FOUND' } })
     }
 
-    const existingPending = await prisma.bookingTransfer.findFirst({ where: { bookingId: id, status: 'PENDING' } })
-    if (existingPending) {
-      return reply.status(409).send({ error: { message: 'This booking already has a pending transfer request', code: 'TRANSFER_ALREADY_PENDING' } })
+    // A booking can only have one live offer against it at a time — check
+    // both tables, not just this one. Without this, the same booking could
+    // have a pending transfer AND a pending swap simultaneously, and
+    // whichever gets accepted second would silently undo the first (see
+    // the ownership recheck in both accept handlers for the backstop).
+    const [existingTransfer, existingSwap] = await Promise.all([
+      prisma.bookingTransfer.findFirst({ where: { bookingId: id, status: 'PENDING' } }),
+      prisma.bookingSwap.findFirst({ where: { status: 'PENDING', OR: [{ bookingAId: id }, { bookingBId: id }] } }),
+    ])
+    if (existingTransfer || existingSwap) {
+      return reply.status(409).send({ error: { message: 'This booking already has a pending transfer or swap request', code: 'TRANSFER_ALREADY_PENDING' } })
     }
 
     const org = await prisma.organisation.findFirst({ select: { queueClaimWindowHours: true } })
@@ -726,20 +734,32 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         await lockAssetForBooking(tx, transfer.booking.assetId)
         await lockUserForBookingQuota(tx, request.user.id)
 
-        const quotaRecheck = await assertUnderBookingQuota(tx, request.user.id, request.user.globalRole === GlobalRole.SUPER_ADMIN)
-        if (!quotaRecheck.ok) {
-          throw new BookingConflictError(quotaRecheck.code, quotaRecheck.message)
-        }
-        if (await checkZoneGroupOverlap(tx, request.user.id, transfer.booking.assetId, transfer.booking.startsAt, transfer.booking.endsAt)) {
-          throw new BookingConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
-        }
-
+        // Re-fetch under the lock before doing anything else — the booking
+        // may have been reassigned by a different pending offer (e.g. this
+        // same booking also had a swap proposed and accepted concurrently)
+        // or rescheduled to a new time since the checks above ran. Every
+        // check below must use `fresh`, not the outer `transfer`/`booking`
+        // snapshot, or it validates a state that's no longer live.
         const fresh = await tx.bookingTransfer.findUnique({ where: { id }, include: { booking: true } })
         if (!fresh || fresh.status !== 'PENDING') {
           throw new BookingConflictError('NOT_PENDING', 'This transfer request is no longer pending')
         }
         if (fresh.booking.status !== 'CONFIRMED') {
           throw new BookingConflictError('BOOKING_NOT_ACTIVE', 'This booking is no longer active')
+        }
+        if (fresh.booking.userId !== fresh.fromUserId) {
+          // Ownership already moved (e.g. a competing swap on the same
+          // booking was accepted first) — this offer is stale even though
+          // its own status/expiry never changed.
+          throw new BookingConflictError('BOOKING_NOT_ACTIVE', 'This booking is no longer available for transfer')
+        }
+
+        const quotaRecheck = await assertUnderBookingQuota(tx, request.user.id, request.user.globalRole === GlobalRole.SUPER_ADMIN)
+        if (!quotaRecheck.ok) {
+          throw new BookingConflictError(quotaRecheck.code, quotaRecheck.message)
+        }
+        if (await checkZoneGroupOverlap(tx, request.user.id, fresh.booking.assetId, fresh.booking.startsAt, fresh.booking.endsAt)) {
+          throw new BookingConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
         }
 
         // Ownership changes, the time slot doesn't — bump icsSequence so a
@@ -875,17 +895,23 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(400).send({ error: { message: 'Swaps are only supported for bookings at the same time', code: 'TIME_MISMATCH' } })
     }
 
-    const existingPending = await prisma.bookingSwap.findFirst({
-      where: {
-        status: 'PENDING',
-        OR: [
-          { bookingAId: { in: [id, withBookingId] } },
-          { bookingBId: { in: [id, withBookingId] } },
-        ],
-      },
-    })
-    if (existingPending) {
-      return reply.status(409).send({ error: { message: 'One of these bookings already has a pending swap request', code: 'SWAP_ALREADY_PENDING' } })
+    // Same cross-type check as transfer creation — a booking with a pending
+    // transfer shouldn't also be offerable in a swap (see the ownership
+    // recheck in both accept handlers for the backstop).
+    const [existingSwap, existingTransfer] = await Promise.all([
+      prisma.bookingSwap.findFirst({
+        where: {
+          status: 'PENDING',
+          OR: [
+            { bookingAId: { in: [id, withBookingId] } },
+            { bookingBId: { in: [id, withBookingId] } },
+          ],
+        },
+      }),
+      prisma.bookingTransfer.findFirst({ where: { bookingId: { in: [id, withBookingId] }, status: 'PENDING' } }),
+    ])
+    if (existingSwap || existingTransfer) {
+      return reply.status(409).send({ error: { message: 'One of these bookings already has a pending transfer or swap request', code: 'SWAP_ALREADY_PENDING' } })
     }
 
     const org = await prisma.organisation.findFirst({ select: { queueClaimWindowHours: true } })
@@ -983,6 +1009,12 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         }
         if (fresh.bookingA.status !== 'CONFIRMED' || fresh.bookingB.status !== 'CONFIRMED') {
           throw new BookingConflictError('BOOKING_NOT_ACTIVE', 'Both bookings must still be active')
+        }
+        if (fresh.bookingA.userId !== fresh.initiatorUserId || fresh.bookingB.userId !== fresh.recipientUserId) {
+          // Ownership of one side already moved (e.g. a competing transfer
+          // on the same booking was accepted first) — this swap is stale
+          // even though its own status/expiry never changed.
+          throw new BookingConflictError('BOOKING_NOT_ACTIVE', 'This swap is no longer valid — one of the bookings has changed hands')
         }
 
         // Quota doesn't change for either party (each trades one CONFIRMED
