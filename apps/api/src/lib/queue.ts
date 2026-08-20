@@ -149,6 +149,13 @@ async function cancelBookingsAndPromoteQueues(
       cancelledEndsAt: b.endsAt.toISOString(),
       cancelledIcsSequence: b.icsSequence,
     })
+    // Same event a single ad-hoc cancel (bookings.ts DELETE /:id) and a
+    // recurring-series cancel (recurring.ts) both fire — this shared helper
+    // (floor/building/zone delete, blocking a user) is a sibling "a booking
+    // just got cancelled" path and was the one place that never dispatched
+    // it, leaving any integration subscribed to booking.cancelled blind to
+    // exactly the cancellations most likely to affect many bookings at once.
+    dispatchWebhook('booking.cancelled', { id: b.id, userId: b.userId, assetId: b.assetId }).catch(() => {})
 
     if (!opts.skipQueuePromotion) {
       const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
