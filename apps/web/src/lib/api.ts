@@ -381,9 +381,9 @@ export const bookingsApi = {
       `/bookings${status ? `?status=${status}` : ''}`,
     ),
   get: (id: string) => api.get<{ data: Booking }>(`/bookings/${id}`),
-  create: (body: { assetId: string; startsAt: string; endsAt: string; notes?: string }) =>
+  create: (body: { assetId: string; startsAt: string; endsAt: string; notes?: string; attendeeCount?: number }) =>
     api.post<{ data: Booking }>('/bookings', body),
-  update: (id: string, body: Partial<{ startsAt: string; endsAt: string; notes: string }>) =>
+  update: (id: string, body: Partial<{ startsAt: string; endsAt: string; notes: string; attendeeCount: number | null }>) =>
     api.patch<{ data: Booking }>(`/bookings/${id}`, body),
   cancel: (id: string) => api.delete<{ data: { ok: true } }>(`/bookings/${id}`),
   checkIn: (id: string) => api.post<{ data: { id: string; checkedInAt: string } }>(`/bookings/${id}/check-in`),
@@ -841,6 +841,7 @@ export const recurringBookingsApi = {
     endTime: string
     firstDate: string
     lastDate: string
+    attendeeCount?: number
   }) => api.post<{ data: RecurringBookingRule }>('/recurring-bookings', body),
   update: (id: string, body: { lastDate: string }) =>
     api.patch<{ data: RecurringBookingRule }>(`/recurring-bookings/${id}`, body),

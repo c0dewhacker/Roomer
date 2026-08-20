@@ -98,6 +98,9 @@ const assetSchema = z.object({
   isBookable: z.boolean().optional(),
   bookingLabel: z.string().optional(),
   bookingStatus: z.enum(['OPEN', 'RESTRICTED', 'ASSIGNED', 'DISABLED']).optional(),
+  // Empty string = "not a room" (sent as undefined); otherwise a positive
+  // occupant count. Kept as a string in the form so the input can be blank.
+  capacity: z.string().optional(),
   notes: z.string().optional(),
 })
 type AssetForm = z.infer<typeof assetSchema>
@@ -129,6 +132,7 @@ function AssetDialog({
       isBookable: existing?.isBookable ?? false,
       bookingLabel: existing?.bookingLabel ?? '',
       bookingStatus: (existing?.bookingStatus as AssetForm['bookingStatus']) ?? 'OPEN',
+      capacity: existing?.capacity ? String(existing.capacity) : '',
       notes: existing?.notes ?? '',
     },
   })
@@ -145,6 +149,7 @@ function AssetDialog({
       isBookable: existing?.isBookable ?? false,
       bookingLabel: existing?.bookingLabel ?? '',
       bookingStatus: (existing?.bookingStatus as AssetForm['bookingStatus']) ?? 'OPEN',
+      capacity: existing?.capacity ? String(existing.capacity) : '',
       notes: existing?.notes ?? '',
     })
     setAmenities(existing?.amenities ?? [])
@@ -152,13 +157,13 @@ function AssetDialog({
   }, [existing, reset])
 
   const create = useMutation({
-    mutationFn: (d: AssetForm) => assetsApi.create({ ...d, amenities }),
+    mutationFn: (d: AssetForm) => assetsApi.create({ ...d, amenities, capacity: d.capacity ? Number(d.capacity) : undefined }),
     onSuccess: () => { toast.success('Asset created'); qc.invalidateQueries({ queryKey: ['assets'] }); onClose(); reset() },
     onError: (err: Error) => toast.error(err.message),
   })
 
   const update = useMutation({
-    mutationFn: (d: AssetForm) => assetsApi.update(existing!.id, { ...d, amenities }),
+    mutationFn: (d: AssetForm) => assetsApi.update(existing!.id, { ...d, amenities, capacity: d.capacity ? Number(d.capacity) : null }),
     onSuccess: () => { toast.success('Asset updated'); qc.invalidateQueries({ queryKey: ['assets'] }); onClose() },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -275,6 +280,21 @@ function AssetDialog({
                 <div>
                   <Label htmlFor="bookingLabel">Booking Label</Label>
                   <Input id="bookingLabel" {...register('bookingLabel')} className="mt-1.5" placeholder="e.g. Hot desk, Standing desk…" />
+                </div>
+                <div>
+                  <Label htmlFor="capacity">Capacity <span className="text-muted-foreground font-normal text-xs">(leave blank for a single-occupant desk)</span></Label>
+                  <Input
+                    id="capacity"
+                    type="number"
+                    min={1}
+                    step={1}
+                    {...register('capacity')}
+                    className="mt-1.5"
+                    placeholder="e.g. 8 for a meeting room"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Rooms with a capacity render as a rectangle on the floor plan and warn (but don't block) if a booking's attendee count is larger.
+                  </p>
                 </div>
                 <div>
                   <Label>Amenities</Label>
@@ -691,7 +711,12 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
                   : (asset.bookingStatus ?? 'OPEN')
                 return (
                   <TableRow key={asset.id}>
-                    <TableCell className="font-medium">{asset.name}</TableCell>
+                    <TableCell className="font-medium">
+                      {asset.name}
+                      {asset.capacity ? (
+                        <span className="ml-1.5 font-normal text-xs text-muted-foreground">· Seats {asset.capacity}</span>
+                      ) : null}
+                    </TableCell>
                     <TableCell>{asset.category?.name ?? '—'}</TableCell>
                     <TableCell className="text-muted-foreground text-sm">{asset.serialNumber ?? '—'}</TableCell>
                     <TableCell className="text-muted-foreground text-sm">{asset.assetTag ?? '—'}</TableCell>

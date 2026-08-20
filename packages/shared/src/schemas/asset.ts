@@ -22,6 +22,8 @@ export const createAssetSchema = z.object({
   width: z.number().positive().optional(),
   height: z.number().positive().optional(),
   rotation: z.number().min(-360).max(360).optional(),
+  // Occupant capacity — a room/shared space sets this, a desk leaves it unset.
+  capacity: z.number().int().positive().max(1000).optional(),
 })
 
 export const updateAssetSchema = z.object({
@@ -45,6 +47,7 @@ export const updateAssetSchema = z.object({
   width: z.number().positive().nullable().optional(),
   height: z.number().positive().nullable().optional(),
   rotation: z.number().min(-360).max(360).nullable().optional(),
+  capacity: z.number().int().positive().max(1000).nullable().optional(),
 })
 
 export const assignAssetSchema = z.object({

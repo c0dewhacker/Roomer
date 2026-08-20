@@ -622,6 +622,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
                     userId: true,
                     startsAt: true,
                     endsAt: true,
+                    attendeeCount: true,
                     user: { select: { displayName: true } },
                   },
                 },
@@ -779,14 +780,15 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           width: asset.width,
           height: asset.height,
           rotation: asset.rotation,
+          capacity: asset.capacity,
           bookingStatus: bookingStatus,
           rawBookingStatus: asset.bookingStatus,
           amenities: asset.amenities,
           availabilityStatus: bookingStatus,
           currentBooking: myBooking
-            ? { id: myBooking.id, userId: myBooking.userId, startsAt: myBooking.startsAt, endsAt: myBooking.endsAt }
+            ? { id: myBooking.id, userId: myBooking.userId, startsAt: myBooking.startsAt, endsAt: myBooking.endsAt, attendeeCount: myBooking.attendeeCount }
             : othersBookings[0]
-            ? { id: othersBookings[0].id, userId: othersBookings[0].userId, startsAt: othersBookings[0].startsAt, endsAt: othersBookings[0].endsAt, bookerName: othersBookings[0].user?.displayName }
+            ? { id: othersBookings[0].id, userId: othersBookings[0].userId, startsAt: othersBookings[0].startsAt, endsAt: othersBookings[0].endsAt, attendeeCount: othersBookings[0].attendeeCount, bookerName: othersBookings[0].user?.displayName }
             : null,
           bookedBy: othersBookings.map((b) => ({ userId: b.userId, displayName: b.user?.displayName ?? 'Unknown' })),
           myQueueEntry,

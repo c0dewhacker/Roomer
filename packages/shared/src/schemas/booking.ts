@@ -5,6 +5,10 @@ export const createBookingSchema = z.object({
   startsAt: z.string().datetime('startsAt must be a valid ISO 8601 datetime'),
   endsAt: z.string().datetime('endsAt must be a valid ISO 8601 datetime'),
   notes: z.string().max(1000).optional(),
+  // Declared group size for a room/shared-space booking. Purely informational
+  // — never validated against the asset's capacity server-side, since an
+  // oversized group is a client-side warning, not a rejection reason.
+  attendeeCount: z.number().int().positive().max(1000).optional(),
 }).refine(
   (data) => new Date(data.startsAt) < new Date(data.endsAt),
   { message: 'startsAt must be before endsAt', path: ['startsAt'] },
@@ -14,6 +18,7 @@ export const updateBookingSchema = z.object({
   startsAt: z.string().datetime().optional(),
   endsAt: z.string().datetime().optional(),
   notes: z.string().max(1000).nullable().optional(),
+  attendeeCount: z.number().int().positive().max(1000).nullable().optional(),
 }).refine(
   (data) => {
     if (data.startsAt && data.endsAt) {

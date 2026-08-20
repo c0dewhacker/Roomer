@@ -115,6 +115,8 @@ export interface Asset {
   isBookable?: boolean
   bookingLabel?: string
   bookingStatus?: BookableStatus
+  /** Occupant capacity. Unset = single-occupant (a desk); >1 = a room/shared space. */
+  capacity?: number | null
   primaryZoneId?: string
   floorId?: string
   x?: number
@@ -180,6 +182,8 @@ export interface Booking {
   endsAt: string
   status: BookingStatus
   notes?: string
+  /** Declared group size for a room/shared-space booking. Informational only. */
+  attendeeCount?: number | null
   checkedInAt?: string | null
   recurringRuleId?: string | null
   user?: User

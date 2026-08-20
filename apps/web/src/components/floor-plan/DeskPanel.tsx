@@ -517,11 +517,16 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   const [isRecurring, setIsRecurring] = useState(false)
   const [recurringFrequency, setRecurringFrequency] = useState<'DAILY' | 'WEEKLY' | 'MONTHLY'>('WEEKLY')
   const [recurringLastDate, setRecurringLastDate] = useState('')
+  const [attendeeCount, setAttendeeCount] = useState('')
 
   // Keep endDate in sync when the floor page navigates to a different day
   useEffect(() => { setEndDate(date) }, [date])
   // Reset recurring state when a different asset is selected
   useEffect(() => { setIsRecurring(false); setRecurringFrequency('WEEKLY'); setRecurringLastDate('') }, [desk?.id])
+  // Reset the attendee count too — it's meaningless carried over to a
+  // different asset (and a previous room's headcount silently attaching to a
+  // newly-selected desk would be a confusing, wrong default).
+  useEffect(() => { setAttendeeCount('') }, [desk?.id])
   const [showAdmin, setShowAdmin] = useState(false)
   const [editAssetOpen, setEditAssetOpen] = useState(false)
   const [addAllowListOpen, setAddAllowListOpen] = useState(false)
@@ -670,6 +675,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
         endTime: utcEndTime,
         firstDate: utcFirstDate,
         lastDate: recurringLastDate,
+        attendeeCount: attendeeCount ? Number(attendeeCount) : undefined,
       })
     },
     onSuccess: () => {
@@ -720,6 +726,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
         assetId: desk.id,
         startsAt: start.toISOString(),
         endsAt: end.toISOString(),
+        attendeeCount: attendeeCount ? Number(attendeeCount) : undefined,
       })
       onBookingCreated()
     } catch {
@@ -967,6 +974,30 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                   </div>
                 )}
 
+                {!!desk.capacity && desk.capacity > 1 && (
+                  <div>
+                    <Label htmlFor="attendeeCount" className="text-xs">
+                      Attendees <span className="text-muted-foreground font-normal">(optional — this room seats {desk.capacity})</span>
+                    </Label>
+                    <Input
+                      id="attendeeCount"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={attendeeCount}
+                      onChange={(e) => setAttendeeCount(e.target.value)}
+                      className="mt-1"
+                      placeholder="e.g. 6"
+                    />
+                    {!!attendeeCount && Number(attendeeCount) > desk.capacity && (
+                      <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
+                        <AlertCircle className="h-3 w-3 shrink-0" />
+                        This is more people than the room seats ({desk.capacity}) — you can still book it.
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 {/* Recurring toggle — always visible */}
                 <div className="space-y-3 pt-1">
                   <div className="flex items-center gap-2">
@@ -1050,6 +1081,12 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                   </p>
                   {desk.currentBooking.notes && (
                     <p className="text-xs text-blue-600 mt-1">{desk.currentBooking.notes}</p>
+                  )}
+                  {!!desk.currentBooking.attendeeCount && (
+                    <p className="text-xs text-blue-600 mt-1 flex items-center gap-1">
+                      <Users className="h-3 w-3" />
+                      {desk.currentBooking.attendeeCount} attendee{desk.currentBooking.attendeeCount === 1 ? '' : 's'}
+                    </p>
                   )}
                 </div>
                 <AlertDialog>

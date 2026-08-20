@@ -167,7 +167,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    const { assetId, notes } = result.data
+    const { assetId, notes, attendeeCount } = result.data
     const startsAt = new Date(result.data.startsAt)
     const endsAt = new Date(result.data.endsAt)
 
@@ -236,6 +236,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
             startsAt,
             endsAt,
             notes: notes ?? null,
+            attendeeCount,
             status: 'CONFIRMED',
           },
           include: {
@@ -471,6 +472,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
             startsAt: newStartsAt,
             endsAt: newEndsAt,
             notes: result.data.notes !== undefined ? result.data.notes : booking.notes,
+            attendeeCount: result.data.attendeeCount !== undefined ? result.data.attendeeCount : booking.attendeeCount,
             // Bumped only when the time actually changes — a notes-only edit
             // has nothing calendar-relevant to re-send, so it shouldn't move
             // the sequence a client would use to judge "is this newer".

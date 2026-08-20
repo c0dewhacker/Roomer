@@ -352,6 +352,11 @@ model Asset {
   /// forced it to ASSIGNED (e.g. RESTRICTED). Restored when the last
   /// permanent assignment is removed, instead of defaulting to OPEN.
   priorBookingStatus BookableStatus?
+  /// Occupant capacity. Null = single-occupant (a desk); a room/shared space
+  /// sets this so the booking flow can warn (not block) when the declared
+  /// attendeeCount exceeds it, and the floor plan can render it as a room
+  /// rather than a desk marker.
+  capacity           Int?
 
   // ── Map placement ──────────────────────────────────────────────────────────
   /// Primary zone this asset belongs to (null = not placed on any floor plan).
@@ -625,6 +630,10 @@ model Booking {
   endsAt          DateTime
   status          BookingStatus         @default(CONFIRMED)
   notes           String?
+  /// Optional declared group size for a room/shared-space booking (see
+  /// Asset.capacity). Purely informational — an oversized group only warns
+  /// the booker client-side, it never blocks confirming.
+  attendeeCount   Int?
   reminderSentAt  DateTime?
   /// When the booker confirmed they are physically present. Null = not checked
   /// in; the no-show release job cancels un-checked-in bookings past the grace.

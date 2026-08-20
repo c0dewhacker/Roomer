@@ -15,6 +15,7 @@ const createRecurringSchema = z.object({
   endTime: z.string().regex(/^\d{2}:\d{2}$/, 'endTime must be HH:MM'),
   firstDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'firstDate must be YYYY-MM-DD'),
   lastDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'lastDate must be YYYY-MM-DD'),
+  attendeeCount: z.number().int().positive().max(1000).optional(),
 }).refine(
   (d) => d.frequency !== 'WEEKLY' || d.dayOfWeek !== undefined,
   { message: 'dayOfWeek is required for weekly recurrence', path: ['dayOfWeek'] },
@@ -83,7 +84,7 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       })
     }
 
-    const { assetId, frequency, dayOfWeek, startTime, endTime, firstDate, lastDate } = result.data
+    const { assetId, frequency, dayOfWeek, startTime, endTime, firstDate, lastDate, attendeeCount } = result.data
 
     if (parseTimeToMinutes(startTime) >= parseTimeToMinutes(endTime)) {
       return reply.status(400).send({ error: { message: 'startTime must be before endTime', code: 'VALIDATION_ERROR' } })
@@ -204,6 +205,7 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
                 startsAt: s.startsAt,
                 endsAt: s.endsAt,
                 status: 'CONFIRMED',
+                attendeeCount,
               })),
             },
           },
