@@ -1045,6 +1045,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     await enqueueNotification({ type: NotificationType.BOOKING_SWAP_ACCEPTED, userId: swap.initiatorUserId, swapId: swap.id })
     await enqueueNotification({ type: NotificationType.BOOKING_SWAP_ACCEPTED, userId: swap.recipientUserId, swapId: swap.id })
+    // BOOKING_SWAP_ACCEPTED above only sends a REQUEST for each party's *new*
+    // desk — a calendar invite can only carry one event, so the desk each
+    // party gave up needs its own CANCEL, sent as its own notification. Both
+    // booking rows already changed owner (userId swapped) by this point, but
+    // enqueueNotification's recipient is this job's own userId, independent
+    // of the booking row's current owner — so this correctly reaches the
+    // former owner even though the row itself now belongs to someone else.
+    await enqueueNotification({ type: NotificationType.BOOKING_CANCELLED, userId: swap.initiatorUserId, bookingId: swap.bookingAId })
+    await enqueueNotification({ type: NotificationType.BOOKING_CANCELLED, userId: swap.recipientUserId, bookingId: swap.bookingBId })
     dispatchWebhook('booking.swap_accepted', { id: swap.id, bookingAId: swap.bookingAId, bookingBId: swap.bookingBId, initiatorUserId: swap.initiatorUserId, recipientUserId: swap.recipientUserId }).catch(() => {})
 
     return reply.status(200).send({ data: { ok: true } })

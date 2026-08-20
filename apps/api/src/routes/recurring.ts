@@ -210,12 +210,26 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
             },
           },
           include: {
-            bookings: { select: { id: true, startsAt: true, endsAt: true } },
+            // Explicit order, not relying on nested-create return order — the
+            // occurrence that actually gets the ICS invite below must be the
+            // chronologically earliest one, deterministically.
+            bookings: { select: { id: true, startsAt: true, endsAt: true }, orderBy: { startsAt: 'asc' } },
             asset: { select: { id: true, name: true, floor: { select: { name: true, building: { select: { name: true } } } } } },
           },
         })
 
-        return createdRule
+        // Recorded once, now, while "the earliest occurrence" is unambiguous
+        // — see the matching comment on firstInvitedBookingId in schema.prisma
+        // and its use in DELETE /:id below.
+        await tx.recurringBookingRule.update({
+          where: { id: createdRule.id },
+          data: { firstInvitedBookingId: createdRule.bookings[0].id },
+        })
+
+        // createdRule is a snapshot from before the update above — patch the
+        // field in manually rather than re-querying, so the response reflects
+        // what's actually in the DB now.
+        return { ...createdRule, firstInvitedBookingId: createdRule.bookings[0].id }
       })
 
       // Single confirmation notification for the first booking in the series
@@ -514,19 +528,23 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
         }
 
         // One notification, not one per dropped occurrence — same reasoning as
-        // full cancellation below, though the ICS CANCEL here is a no-op for
-        // most calendar apps (only the series' very first occurrence ever got
-        // an actual REQUEST invite; shortening only ever drops LATER dates,
-        // which never had one to begin with). Still worth sending: the email
-        // body content is accurate ("your booking on [date] was cancelled"),
-        // which is the useful part when the recipient wasn't the one who
-        // shortened the series.
+        // full cancellation below. The ICS CANCEL is normally a no-op (only
+        // the series' very first occurrence ever got an actual REQUEST
+        // invite, and shortening only drops LATER dates, which never had one
+        // to begin with) — except when that first occurrence was itself
+        // individually rescheduled past the new cutoff (PATCH /bookings/:id
+        // has no recurring-series special-casing), in which case it IS among
+        // the dropped set and genuinely does have a live invite to cancel.
+        // Prefer it explicitly rather than an arbitrary dropped booking (the
+        // query has no orderBy) so that case gets a real CANCEL instead of a
+        // moot one referencing the wrong UID.
         if (outcome.droppedBookings.length > 0) {
           const isSelf = rule.userId === request.user.id
+          const invitedDrop = outcome.droppedBookings.find((b) => b.id === rule.firstInvitedBookingId)
           await enqueueNotification({
             type: isSelf ? NotificationType.BOOKING_CANCELLED : NotificationType.BOOKING_CANCELLED_BY_ADMIN,
             userId: rule.userId,
-            bookingId: outcome.droppedBookings[0].id,
+            bookingId: (invitedDrop ?? outcome.droppedBookings[0]).id,
           })
         }
       }
@@ -570,7 +588,7 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
     const { id } = request.params as { id: string }
     const rule = await prisma.recurringBookingRule.findUnique({
       where: { id },
-      select: { id: true, userId: true, status: true, assetId: true },
+      select: { id: true, userId: true, status: true, assetId: true, firstInvitedBookingId: true },
     })
     if (!rule) return reply.status(404).send({ error: { message: 'Rule not found', code: 'NOT_FOUND' } })
     if (rule.userId !== request.user.id && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
@@ -599,11 +617,22 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
     // is the one whose UID needs a matching CANCEL for the calendar app to
     // remove/void the invite it's actually holding; it's independent of
     // futureBookings, which only tracks occurrences still ahead of "now".
-    const firstOccurrence = await prisma.booking.findFirst({
-      where: { recurringRuleId: id },
-      orderBy: { startsAt: 'asc' },
-      select: { id: true },
-    })
+    //
+    // Looked up via the id recorded at creation (rule.firstInvitedBookingId),
+    // not by re-deriving "earliest startsAt" now — an individual occurrence
+    // can be rescheduled (PATCH /bookings/:id has no recurring-series
+    // special-casing) to a date after its siblings, which would silently
+    // point a by-date lookup at the wrong booking and send the CANCEL to a
+    // UID the recipient's calendar has never seen, leaving the one they
+    // actually have permanently stuck as "confirmed". Falls back to the old
+    // by-date heuristic only for rules created before this field existed.
+    const firstOccurrence = rule.firstInvitedBookingId
+      ? { id: rule.firstInvitedBookingId }
+      : await prisma.booking.findFirst({
+          where: { recurringRuleId: id },
+          orderBy: { startsAt: 'asc' },
+          select: { id: true },
+        })
 
     await prisma.$transaction([
       prisma.booking.updateMany({

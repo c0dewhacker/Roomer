@@ -734,6 +734,13 @@ model RecurringBookingRule {
   /// Date of last occurrence (stored as midnight UTC)
   lastDate  DateTime            @db.Date
   status    RecurringRuleStatus @default(ACTIVE)
+  /// Id of the one occurrence that actually received an ICS REQUEST invite
+  /// (only the series' first-created occurrence ever gets one — see POST /).
+  /// Recorded once at creation, not re-derived by date later: an individual
+  /// occurrence can be rescheduled to a date after its siblings, so "the
+  /// earliest-dated booking on this rule" is not a stable way to find which
+  /// one the recipient's calendar actually has a live invite for.
+  firstInvitedBookingId String?
   createdAt DateTime            @default(now())
   updatedAt DateTime            @updatedAt
   user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)

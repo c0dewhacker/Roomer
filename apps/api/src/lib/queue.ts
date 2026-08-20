@@ -635,6 +635,22 @@ async function processSendNotification(
       title = `Transfer accepted — ${transfer.booking.asset.name}`
       body = `${transfer.toUser.displayName} accepted your transfer of ${transfer.booking.asset.name}.`
       emailPayload = renderBookingTransferAccepted(transfer.booking, user, transfer.toUser, transfer.booking.asset)
+      // This notification goes to the FORMER owner (see bookings.ts transfer
+      // accept). The BOOKING_CONFIRMED job sent alongside it only sends a
+      // fresh REQUEST to the NEW owner's calendar — a different mailbox
+      // entirely, so it does nothing for this recipient's copy of the
+      // original invite. Without an explicit CANCEL here, the former owner's
+      // calendar keeps showing the booking as confirmed forever, which is
+      // exactly what renderBookingTransferAccepted's copy ("it's no longer
+      // on your calendar") wrongly promised was already handled.
+      icalEvent = {
+        method: 'CANCEL',
+        content: buildBookingIcs({
+          id: transfer.booking.id, startsAt: transfer.booking.startsAt, endsAt: transfer.booking.endsAt,
+          assetName: transfer.booking.asset.name,
+          sequence: transfer.booking.icsSequence,
+        }, 'CANCEL'),
+      }
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         toUserName: transfer.toUser.displayName,
@@ -709,6 +725,19 @@ async function processSendNotification(
       title = `Swap complete — ${newAsset.name}`
       body = `Your desk swap with ${otherUser.displayName} is complete — you're now on ${newAsset.name}.`
       emailPayload = renderBookingSwapAccepted(newBooking, user, otherUser, newAsset)
+      // This booking row's icsSequence was already bumped by the swap-accept
+      // transaction (ownership changed, same reasoning as transfer above) —
+      // a fresh REQUEST here is what actually puts the new desk on this
+      // user's calendar. The desk they gave up is handled separately: see
+      // the BOOKING_CANCELLED job bookings.ts enqueues alongside this one.
+      icalEvent = {
+        method: 'REQUEST',
+        content: buildBookingIcs({
+          id: newBooking.id, startsAt: newBooking.startsAt, endsAt: newBooking.endsAt,
+          assetName: newAsset.name,
+          sequence: newBooking.icsSequence,
+        }, 'REQUEST'),
+      }
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         otherUserName: otherUser.displayName,
