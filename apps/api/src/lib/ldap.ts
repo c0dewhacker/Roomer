@@ -1,6 +1,8 @@
 import ldap from 'ldapjs'
 import { prisma, findAuthConfig } from './prisma.js'
 import type { GroupMapping } from './group-mapping.js'
+import { lockSuperAdminGuard } from './group-mapping.js'
+import { GlobalRole } from '@roomer/shared'
 import { dispatchWebhook } from './webhook.js'
 import { decryptStringMaybe } from './encryption.js'
 import { cancelFutureBookingsForUser, cancelQueueEntriesForUser, releaseAssetAssignmentsForUser } from './queue.js'
@@ -238,20 +240,61 @@ async function runLdapSync(cfg: LdapConfig): Promise<LdapSyncResult> {
       // count alone doesn't tell us WHICH users to release bookings/desks for.
       const toDeactivate = await prisma.user.findMany({
         where: { provider: 'LDAP', accountStatus: 'ACTIVE', email: { notIn: [...seenEmails] } },
-        select: { id: true },
+        select: { id: true, email: true, globalRole: true },
       })
       if (toDeactivate.length > 0) {
-        await prisma.user.updateMany({
-          where: { id: { in: toDeactivate.map((u) => u.id) } },
-          data: { accountStatus: 'BLOCKED' },
+        // Blocking a user is functionally identical to demoting them for
+        // last-active-super-admin purposes (requireAuth rejects a BLOCKED
+        // user's every request, same as a non-SUPER_ADMIN's) — every other
+        // path that can flip accountStatus to BLOCKED (PATCH /users/:id, CSV
+        // bulk import, SCIM PUT/PATCH/DELETE, the IdP group-mapping globalRole
+        // demotion) serialises against SUPER_ADMIN_GUARD_LOCK_CLASS and
+        // refuses to zero out active admins. This directory-driven mass
+        // deactivation is reachable the exact same way (an admin's LDAP entry
+        // ages out of the sync filter, or is deleted upstream) and previously
+        // had no such guard — silently locking an org out of its own admin UI
+        // with no recovery path short of direct DB access.
+        const safeToDeactivate = await prisma.$transaction(async (tx) => {
+          await lockSuperAdminGuard(tx)
+          const candidateIds = toDeactivate.map((u) => u.id)
+          const activeSuperAdminIds = new Set(
+            (await tx.user.findMany({
+              where: { globalRole: GlobalRole.SUPER_ADMIN, accountStatus: 'ACTIVE' },
+              select: { id: true },
+            })).map((u) => u.id),
+          )
+          const superAdminsInBatch = candidateIds.filter((id) => activeSuperAdminIds.has(id))
+          // Deactivating this whole batch would leave zero active super
+          // admins — protect ALL of them rather than arbitrarily sparing one;
+          // an automated directory sync shouldn't be the thing deciding which
+          // admin account survives.
+          const wouldZeroOutAdmins = superAdminsInBatch.length > 0 && superAdminsInBatch.length === activeSuperAdminIds.size
+          const safe = wouldZeroOutAdmins
+            ? toDeactivate.filter((u) => !superAdminsInBatch.includes(u.id))
+            : toDeactivate
+
+          if (safe.length > 0) {
+            await tx.user.updateMany({
+              where: { id: { in: safe.map((u) => u.id) } },
+              data: { accountStatus: 'BLOCKED' },
+            })
+          }
+          return safe
         })
-        for (const { id: userId } of toDeactivate) {
+
+        for (const u of toDeactivate) {
+          if (!safeToDeactivate.some((s) => s.id === u.id)) {
+            result.errors.push({ dn: u.email, message: 'Skipped deactivation — would leave the organisation with no active Super Admin' })
+          }
+        }
+
+        for (const { id: userId } of safeToDeactivate) {
           await cancelFutureBookingsForUser(userId)
           await cancelQueueEntriesForUser(userId)
           await releaseAssetAssignmentsForUser(userId)
         }
+        result.deactivated = safeToDeactivate.length
       }
-      result.deactivated = toDeactivate.length
     }
   } finally {
     unbind(client)
