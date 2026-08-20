@@ -534,7 +534,16 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       orderBy: { createdAt: 'desc' },
       include: {
         asset: {
-          include: {
+          // Explicit select, not include — internal inventory/management
+          // fields (serialNumber, assetTag, notes, physical status,
+          // purchaseDate, warrantyExpiry) are gated to SUPER_ADMIN/assignee/
+          // floor-manager on GET /assets/:id; this endpoint is reachable by
+          // any authenticated user who's favourited an asset, so it must not
+          // leak them via a bare `include` the way it previously did.
+          select: {
+            id: true, name: true, bookingLabel: true, isBookable: true,
+            bookingStatus: true, amenities: true, capacity: true,
+            x: true, y: true, width: true, height: true, rotation: true,
             category: { select: { id: true, name: true } },
             floor: {
               select: { id: true, name: true, building: { select: { id: true, name: true } } },
@@ -639,9 +648,16 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     })
     const myZoneIds = [...new Set(myPastAssets.map((b) => b.asset.primaryZoneId).filter((z): z is string => !!z))]
     if (myZoneIds.length > 0) {
+      // Capped — every match in this tier gets the same flat score, so which
+      // ones get cut off doesn't bias the ranking, but leaving it unbounded
+      // meant a user who's ever booked into a large open-plan zone (hundreds
+      // of desks) would push the same number of candidates through the
+      // per-candidate assertBookable gate below, one sequential await at a
+      // time, for every suggestions request.
       const zoneAssets = await prisma.asset.findMany({
         where: { primaryZoneId: { in: myZoneIds }, isBookable: true, id: { notIn: myRecent.map((r) => r.assetId) } },
         select: { id: true },
+        take: 50,
       })
       for (const a of zoneAssets) bump(a.id, 3)
     }
@@ -668,9 +684,16 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
     const rankedIds = [...score.entries()].sort((a, b) => b[1] - a[1]).map(([assetId]) => assetId)
 
+    // Explicit select, not include — same reasoning as GET /assets/favourites:
+    // internal inventory/management fields must not leak to every
+    // authenticated user just because their booking history scored a desk
+    // highly.
     const candidates = await prisma.asset.findMany({
       where: { id: { in: rankedIds }, isBookable: true },
-      include: {
+      select: {
+        id: true, name: true, bookingLabel: true, isBookable: true,
+        bookingStatus: true, amenities: true, capacity: true,
+        x: true, y: true, width: true, height: true, rotation: true,
         category: { select: { id: true, name: true } },
         floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
         primaryZone: { select: { id: true, name: true } },
