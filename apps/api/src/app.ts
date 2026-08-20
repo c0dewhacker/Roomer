@@ -36,6 +36,19 @@ import { prisma } from './lib/prisma.js'
 import { register, httpRequestDuration, setupMetrics } from './lib/metrics.js'
 import { randomUUID } from 'crypto'
 
+// @fastify/rate-limit throws whatever this returns (`throw
+// params.errorResponseBuilder(...)`, not `reply.send(...)`), so it must be a
+// real Error with `.statusCode` set — a plain `{ error: { message, code } }`
+// object has neither, and fell through setErrorHandler's `if
+// (fastifyError.statusCode)` branch straight to a generic 500 on every
+// rate-limited request across the whole API, both this global limiter and
+// every route-level `config.rateLimit` override (they all share this same
+// builder). setErrorHandler rebuilds the actual response body from
+// `.message`/`.statusCode`, so only those two need to be right here.
+function rateLimitError(): Error & { statusCode: number } {
+  return Object.assign(new Error('Too many requests, please try again later'), { statusCode: 429 })
+}
+
 export async function buildApp(): Promise<FastifyInstance> {
   const fastify = Fastify({
     logger:
@@ -70,8 +83,14 @@ export async function buildApp(): Promise<FastifyInstance> {
       // Only surface the original message for 4xx client errors.
       // For 5xx, use a generic message to avoid leaking internal details.
       const message = fastifyError.statusCode < 500 ? fastifyError.message : 'Internal server error'
+      // @fastify/rate-limit's errorResponseBuilder result is thrown as-is
+      // (see index.js: `throw params.errorResponseBuilder(...)`) and lands
+      // here like any other error — 429 has exactly one meaning in this API,
+      // so it's worth a specific code rather than the generic REQUEST_ERROR
+      // every other 4xx/5xx gets.
+      const code = fastifyError.statusCode === 429 ? 'RATE_LIMITED' : 'REQUEST_ERROR'
       return reply.status(fastifyError.statusCode).send({
-        error: { message, code: 'REQUEST_ERROR' },
+        error: { message, code },
       })
     }
 
@@ -213,9 +232,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     // routes (login, refresh, SSO callbacks) is already handled by the
     // separate, tighter, IP-keyed limiter on the auth sub-context below.
     keyGenerator: (req) => req.ip,
-    errorResponseBuilder: () => ({
-      error: { message: 'Too many requests, please try again later', code: 'RATE_LIMITED' },
-    }),
+    errorResponseBuilder: rateLimitError,
   })
 
   // ─── Rate limiting on auth endpoints ───────────────────────────────────────
@@ -232,9 +249,7 @@ export async function buildApp(): Promise<FastifyInstance> {
           const path = request.url.replace(/\?.*$/, '')
           return path.endsWith('/me') || path.endsWith('/providers')
         },
-        errorResponseBuilder: () => ({
-          error: { message: 'Too many requests, please try again later', code: 'RATE_LIMITED' },
-        }),
+        errorResponseBuilder: rateLimitError,
       })
       await authFastify.register(authRoutes)
       await authFastify.register(enterpriseAuthRoutes)

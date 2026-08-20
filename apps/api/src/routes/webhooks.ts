@@ -104,8 +104,12 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.send({ data: { ok: true } })
   })
 
-  // POST /webhooks/:id/ping — send a test ping to this endpoint only
-  fastify.post('/:id/ping', { preHandler: adminGuard }, async (request, reply) => {
+  // POST /webhooks/:id/ping — send a test ping to this endpoint only. Rate
+  // limited like other admin actions that make a real outbound request to an
+  // admin-chosen URL (see floor-plan upload) — SSRF protection already makes
+  // this safe against reaching internal addresses, but nothing previously
+  // bounded how many real requests a session could fire at one external URL.
+  fastify.post('/:id/ping', { preHandler: adminGuard, config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { id } = request.params as { id: string }
     const existing = await prisma.webhookEndpoint.findUnique({ where: { id } })
     if (!existing) return reply.status(404).send({ error: { message: 'Webhook endpoint not found', code: 'NOT_FOUND' } })
