@@ -739,6 +739,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
             })
             userId = user.id
             created++
+            dispatchWebhook('user.created', { id: userId, email: row.email, displayName: row.display_name, globalRole: row.global_role as GlobalRole }).catch(() => {})
             if (row.send_welcome_email) {
               enqueueNotification({ type: NotificationType.WELCOME, userId }).catch(() => {})
             }

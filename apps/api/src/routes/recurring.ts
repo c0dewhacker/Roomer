@@ -225,6 +225,15 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
         bookingId: rule.bookings[0].id,
       })
 
+      // One booking.created per materialised occurrence — same event a direct
+      // POST /bookings fires, unlike the notification above (deliberately
+      // deduplicated to one per series so the user isn't emailed N times).
+      // An integration reconciling desk occupancy off booking.created
+      // previously never learned about any recurring booking at all.
+      for (const b of rule.bookings) {
+        dispatchWebhook('booking.created', { id: b.id, userId: request.user.id, assetId, startsAt: b.startsAt, endsAt: b.endsAt }).catch(() => {})
+      }
+
       return reply.status(201).send({ data: rule })
     } catch (err: unknown) {
       const e = err as { code?: string; conflictAt?: string }

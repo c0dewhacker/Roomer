@@ -190,6 +190,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
             },
           })
           created.push({ id: asset.id, name: asset.name })
+          dispatchWebhook('asset.created', { id: asset.id, name: asset.name, categoryId: asset.categoryId }).catch(() => {})
         } catch (err) {
           errors.push({
             row: index + 1,
@@ -933,6 +934,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         userId: first.userId,
         bookingId: booking.id,
       })
+      dispatchWebhook('queue.claimed', { id: first.id, userId: first.userId, assetId: id, bookingId: booking.id }).catch(() => {})
 
       return reply.status(200).send({ data: { queued: 1, action: 'auto_confirmed', userId: first.userId } })
     }
@@ -994,6 +996,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       queueEntryId: promoted.id,
       claimDeadline: promoted.claimDeadline.toISOString(),
     })
+    dispatchWebhook('queue.promoted', { id: promoted.id, userId: promoted.userId, assetId: id, claimDeadline: promoted.claimDeadline.toISOString() }).catch(() => {})
 
     return reply.status(200).send({ data: { queued: waiting.length, action: 'promoted', userId: promoted.userId, claimDeadline: promoted.claimDeadline } })
   })

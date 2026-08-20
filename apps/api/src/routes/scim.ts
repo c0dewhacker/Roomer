@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
 import { cancelFutureBookingsForUser, cancelQueueEntriesForUser, releaseAssetAssignmentsForUser } from '../lib/queue.js'
 import { lockSuperAdminGuard, wouldRemoveLastActiveSuperAdmin } from '../lib/group-mapping.js'
+import { dispatchWebhook } from '../lib/webhook.js'
 import {
   userToScim, groupToScim, scimError, listResponse, parseScimFilter,
   applyUserPatchOps, applyGroupPatchOps, hashScimToken,
@@ -223,6 +224,10 @@ function registerUsers(fastify: FastifyInstance): void {
       },
       select: userSelect,
     })
+    // SCIM never sets globalRole (not part of its data model) — provisioned
+    // users always start at the schema default, GlobalRole.USER, same as the
+    // admin-console create route this mirrors (users.ts POST /).
+    dispatchWebhook('user.created', { id: user.id, email: user.email, displayName: user.displayName, globalRole: GlobalRole.USER }).catch(() => {})
 
     reply.status(201).header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
   })
@@ -299,6 +304,9 @@ function registerUsers(fastify: FastifyInstance): void {
         await cancelFutureBookingsForUser(user.id)
         await cancelQueueEntriesForUser(user.id)
         await releaseAssetAssignmentsForUser(user.id)
+        dispatchWebhook('user.suspended', { id: user.id, email: user.email }).catch(() => {})
+      } else {
+        dispatchWebhook('user.updated', { id: user.id, email: user.email, displayName: user.displayName }).catch(() => {})
       }
       reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
     } catch (err: unknown) {
@@ -360,6 +368,9 @@ function registerUsers(fastify: FastifyInstance): void {
         await cancelFutureBookingsForUser(user.id)
         await cancelQueueEntriesForUser(user.id)
         await releaseAssetAssignmentsForUser(user.id)
+        dispatchWebhook('user.suspended', { id: user.id, email: user.email }).catch(() => {})
+      } else {
+        dispatchWebhook('user.updated', { id: user.id, email: user.email, displayName: user.displayName }).catch(() => {})
       }
       reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
     } catch (err: unknown) {
@@ -377,16 +388,17 @@ function registerUsers(fastify: FastifyInstance): void {
     const { id } = request.params as { id: string }
 
     try {
-      await prisma.$transaction(async (tx) => {
+      const user = await prisma.$transaction(async (tx) => {
         await lockSuperAdminGuard(tx)
         if (await wouldRemoveLastActiveSuperAdmin(tx, id)) {
           throw Object.assign(new Error('LAST_SUPER_ADMIN'), { code: 'LAST_SUPER_ADMIN' })
         }
-        await tx.user.update({ where: { id }, data: { accountStatus: 'BLOCKED' } })
+        return tx.user.update({ where: { id }, data: { accountStatus: 'BLOCKED' }, select: { id: true, email: true } })
       })
       await cancelFutureBookingsForUser(id)
       await cancelQueueEntriesForUser(id)
       await releaseAssetAssignmentsForUser(id)
+      dispatchWebhook('user.suspended', { id: user.id, email: user.email }).catch(() => {})
       reply.status(204).send()
     } catch (err: unknown) {
       const e = err as { code?: string }
