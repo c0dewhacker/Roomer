@@ -2,7 +2,7 @@ import { PgBoss, type Job } from 'pg-boss'
 import { env } from '../env.js'
 import { prisma } from './prisma.js'
 import { buildBookingIcs } from './ical.js'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingCancelledByAdmin, renderBookingNoShow, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, renderWeeklyReport, renderBookingTransferRequested, renderBookingTransferAccepted, renderBookingTransferDeclined, renderBookingTransferExpired, renderBookingSwapRequested, renderBookingSwapAccepted, renderBookingSwapDeclined, renderBookingSwapExpired, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingCancelledByAdmin, renderBookingNoShow, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, renderWeeklyReport, renderBookingTransferRequested, renderBookingTransferAccepted, renderBookingTransferDeclined, renderBookingTransferExpired, renderBookingSwapRequested, renderBookingSwapAccepted, renderBookingSwapDeclined, renderBookingSwapExpired, renderManagerRequestSubmitted, renderManagerRequestApproved, renderManagerRequestRejected, renderManagerRequestExpired, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
 import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
@@ -317,6 +317,8 @@ export interface NotificationJobData {
   /** BookingTransfer id / BookingSwap id — see the transfer and swap notification branches below. */
   transferId?: string
   swapId?: string
+  /** FloorManagerRequest id — see the MANAGER_REQUEST_* branches below. */
+  managerRequestId?: string
 }
 
 // ─── Worker: send-notification ────────────────────────────────────────────────
@@ -332,7 +334,7 @@ async function handleSendNotification(
 async function processSendNotification(
   job: Job<NotificationJobData>,
 ): Promise<void> {
-  const { type, userId, bookingId, queueEntryId, claimDeadline, floorId, zoneId, assetId, slotDate, transferId, swapId } = job.data
+  const { type, userId, bookingId, queueEntryId, claimDeadline, floorId, zoneId, assetId, slotDate, transferId, swapId, managerRequestId } = job.data
 
   const user = await prisma.user.findUnique({ where: { id: userId } })
   if (!user) {
@@ -779,6 +781,72 @@ async function processSendNotification(
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }
+  } else if (type === NotificationType.MANAGER_REQUEST_SUBMITTED && managerRequestId) {
+    const req = await prisma.floorManagerRequest.findUnique({
+      where: { id: managerRequestId },
+      include: { user: true, floor: { include: { building: true } } },
+    })
+    if (req) {
+      const floorLabel = { name: req.floor.name, buildingName: req.floor.building.name }
+      title = `Floor manager access request — ${req.floor.name}`
+      body = `${req.user.displayName} has requested floor manager access to ${req.floor.name}.`
+      emailPayload = renderManagerRequestSubmitted(user, req.user, floorLabel)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        requesterName: req.user.displayName, requesterEmail: req.user.email,
+        floorName: req.floor.name, buildingName: req.floor.building.name,
+        appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.MANAGER_REQUEST_APPROVED && managerRequestId) {
+    const req = await prisma.floorManagerRequest.findUnique({
+      where: { id: managerRequestId },
+      include: { floor: { include: { building: true } } },
+    })
+    if (req) {
+      const floorLabel = { name: req.floor.name, buildingName: req.floor.building.name }
+      title = `Floor manager access approved — ${req.floor.name}`
+      body = `You're now a floor manager for ${req.floor.name}.`
+      emailPayload = renderManagerRequestApproved(user, floorLabel)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        floorName: req.floor.name, buildingName: req.floor.building.name,
+        appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.MANAGER_REQUEST_REJECTED && managerRequestId) {
+    const req = await prisma.floorManagerRequest.findUnique({
+      where: { id: managerRequestId },
+      include: { floor: { include: { building: true } } },
+    })
+    if (req) {
+      const floorLabel = { name: req.floor.name, buildingName: req.floor.building.name }
+      title = `Floor manager access declined — ${req.floor.name}`
+      body = `Your request for floor manager access to ${req.floor.name} was declined.`
+      emailPayload = renderManagerRequestRejected(user, floorLabel, req.reviewNote)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        floorName: req.floor.name, buildingName: req.floor.building.name,
+        reviewNote: req.reviewNote ?? '',
+        appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.MANAGER_REQUEST_EXPIRED && managerRequestId) {
+    const req = await prisma.floorManagerRequest.findUnique({
+      where: { id: managerRequestId },
+      include: { floor: { include: { building: true } } },
+    })
+    if (req) {
+      const floorLabel = { name: req.floor.name, buildingName: req.floor.building.name }
+      title = `Floor manager access request expired — ${req.floor.name}`
+      body = `Nobody reviewed your floor manager access request for ${req.floor.name} in time.`
+      emailPayload = renderManagerRequestExpired(user, floorLabel)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        floorName: req.floor.name, buildingName: req.floor.building.name,
+        appUrl: env.APP_URL,
+      }
+    }
   } else if (type === NotificationType.WELCOME) {
     title = 'Welcome to Roomer'
     body = 'Your account has been created.'
@@ -954,6 +1022,41 @@ async function handleExpireTransferRequests(): Promise<void> {
         dispatchWebhook('booking.swap_expired', { id: s.id }).catch(() => {})
       }
     }
+  }
+}
+
+// ─── Worker: expire-manager-requests (cron every 15 min) ─────────────────────
+// Auto-closes a pending FloorManagerRequest nobody reviewed within
+// MANAGER_REQUEST_EXPIRY_DAYS — same "don't leave a request dangling forever"
+// reasoning as expire-transfer-requests above.
+
+async function handleExpireManagerRequests(): Promise<void> {
+  const now = new Date()
+
+  const expired = await prisma.floorManagerRequest.findMany({
+    where: { status: 'PENDING', expiresAt: { lt: now } },
+    select: { id: true, userId: true },
+  })
+  if (expired.length === 0) return
+
+  // Atomic per-row conditional update — only rows still PENDING at the
+  // moment this runs actually flip, so a request approved/rejected/withdrawn
+  // in the race window between the findMany above and here is left alone.
+  const { count } = await prisma.floorManagerRequest.updateMany({
+    where: { id: { in: expired.map((r) => r.id) }, status: 'PENDING' },
+    data: { status: 'EXPIRED' },
+  })
+  if (count === 0) return
+
+  const b = getBoss()
+  await b.insert(
+    'send-notification',
+    expired.map((r) => ({
+      data: { type: NotificationType.MANAGER_REQUEST_EXPIRED, userId: r.userId, managerRequestId: r.id } satisfies NotificationJobData,
+    })),
+  )
+  for (const r of expired) {
+    dispatchWebhook('manager_request.expired', { id: r.id, userId: r.userId }).catch(() => {})
   }
 }
 
@@ -1323,6 +1426,7 @@ export async function startQueue(): Promise<void> {
   await b.createQueue('webhook-delivery')
   await b.createQueue('send-weekly-report')
   await b.createQueue('expire-transfer-requests')
+  await b.createQueue('expire-manager-requests')
 
   await b.work<NotificationJobData>('send-notification', handleSendNotification)
 
@@ -1339,6 +1443,11 @@ export async function startQueue(): Promise<void> {
     await handleExpireTransferRequests()
   })
   await b.schedule('expire-transfer-requests', '*/15 * * * *', {})
+
+  await b.work('expire-manager-requests', async () => {
+    await handleExpireManagerRequests()
+  })
+  await b.schedule('expire-manager-requests', '*/15 * * * *', {})
 
   await b.work('expire-claim-deadlines', async () => {
     await handleExpireClaimDeadlines()

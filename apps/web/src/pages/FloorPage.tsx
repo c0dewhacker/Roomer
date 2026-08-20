@@ -1,13 +1,16 @@
 import { useState, useCallback, useMemo } from 'react'
 import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { format, addDays } from 'date-fns'
-import { ChevronLeft, ChevronRight, CalendarDays, Info, Users, Bell, BellRing, SlidersHorizontal, Sparkles, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, CalendarDays, Info, Users, Bell, BellRing, SlidersHorizontal, Sparkles, X, ShieldPlus } from 'lucide-react'
 import { FloorPlanCanvas } from '@/components/floor-plan/FloorPlanCanvas'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Textarea } from '@/components/ui/textarea'
 import { DeskPanel } from '@/components/floor-plan/DeskPanel'
 import { FloorSubscribeDialog } from '@/components/floor-plan/FloorSubscribeDialog'
 import { useFloorData, useFloorAvailability, useAssetSuggestions } from '@/hooks/useFloor'
 import { useFloorSubscriptions } from '@/hooks/useSubscriptions'
+import { useMyManagerRequests, useCreateManagerRequest } from '@/hooks/useManagerRequests'
+import { useAuthStore } from '@/stores/auth'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -45,6 +48,24 @@ export default function FloorPage() {
   const { data: desks } = useFloorAvailability(floorId!, selectedDate)
   const { data: subscriptions } = useFloorSubscriptions()
   const existingSubscription = subscriptions?.find((s) => s.floorId === floorId) ?? null
+
+  // "Request manager access" — hidden once the user is already a manager here
+  // (directly or via a group role, same check DeskPanel's canManageDesk uses)
+  // or a Super Admin (who already has full access everywhere), and while they
+  // already have a pending request open for this floor.
+  const { user } = useAuthStore()
+  const isSuperAdmin = user?.globalRole === 'SUPER_ADMIN'
+  const isAlreadyManagerHere = !isSuperAdmin && (
+    (user?.resourceRoles ?? []).some((r) => r.scopeType === 'FLOOR' && r.floorId === floorId && r.role === 'FLOOR_MANAGER') ||
+    (user?.groupMemberships ?? []).some((m) =>
+      (m.group.groupResourceRoles ?? []).some((r) => r.scopeType === 'FLOOR' && r.floorId === floorId && r.role === 'FLOOR_MANAGER')
+    )
+  )
+  const { data: myManagerRequests } = useMyManagerRequests()
+  const pendingManagerRequest = myManagerRequests?.find((r) => r.floorId === floorId && r.status === 'PENDING')
+  const createManagerRequest = useCreateManagerRequest()
+  const [showRequestAccess, setShowRequestAccess] = useState(false)
+  const [requestNote, setRequestNote] = useState('')
 
   // "Suggested for you" — top pick shown when the top suggestion happens to be
   // available today; dismissible per date rather than permanently, since a
@@ -267,6 +288,51 @@ export default function FloorPage() {
                 : <Bell className="h-3.5 w-3.5" />
               }
             </Button>
+            {!isAlreadyManagerHere && (
+              pendingManagerRequest ? (
+                <Badge variant="outline" className="h-7 gap-1 rounded-md px-2 text-xs font-normal">
+                  <ShieldPlus className="h-3.5 w-3.5" />
+                  Access requested
+                </Badge>
+              ) : (
+                <Popover open={showRequestAccess} onOpenChange={setShowRequestAccess}>
+                  <PopoverTrigger asChild>
+                    <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-xs">
+                      <ShieldPlus className="h-3.5 w-3.5" />
+                      Request manager access
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="end" className="w-72 space-y-3">
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium">Request floor manager access</p>
+                      <p className="text-xs text-muted-foreground">
+                        A Super Admin or this building's admin will review your request.
+                      </p>
+                    </div>
+                    <Textarea
+                      placeholder="Optional note — why do you need access?"
+                      value={requestNote}
+                      onChange={(e) => setRequestNote(e.target.value)}
+                      className="resize-none text-sm"
+                      rows={3}
+                    />
+                    <Button
+                      size="sm"
+                      className="w-full"
+                      disabled={createManagerRequest.isPending}
+                      onClick={() => {
+                        createManagerRequest.mutate(
+                          { floorId: floorId!, note: requestNote.trim() || undefined },
+                          { onSuccess: () => { setShowRequestAccess(false); setRequestNote('') } },
+                        )
+                      }}
+                    >
+                      {createManagerRequest.isPending ? 'Sending…' : 'Send Request'}
+                    </Button>
+                  </PopoverContent>
+                </Popover>
+              )
+            )}
           </div>
         </div>
       </div>

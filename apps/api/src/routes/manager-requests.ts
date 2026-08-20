@@ -1,0 +1,221 @@
+import type { FastifyInstance } from 'fastify'
+import { prisma } from '../lib/prisma.js'
+import { GlobalRole, NotificationType } from '@roomer/shared'
+import { requireAuth } from '../middleware/requireAuth.js'
+import { isBuildingManagerForBuilding, isFloorManagerForFloor, getManagedBuildingIds, getBuildingAdminUserIds } from '../middleware/requireRole.js'
+import { enqueueNotification } from '../lib/queue.js'
+import { dispatchWebhook } from '../lib/webhook.js'
+import { z } from 'zod'
+
+// How long an unactioned request stays open before the expire-manager-requests
+// cron worker (lib/queue.ts) auto-closes it. Fixed rather than org-configurable
+// — this is a low-effort, low-stakes feature (see #85); a per-org setting can
+// be added later if anyone actually needs to tune it.
+export const MANAGER_REQUEST_EXPIRY_DAYS = 14
+
+const createRequestSchema = z.object({
+  floorId: z.string().min(1),
+  note: z.string().max(1000).optional(),
+})
+
+const reviewRequestSchema = z.object({
+  reviewNote: z.string().max(1000).optional(),
+})
+
+/** SUPER_ADMIN, or a BUILDING_ADMIN for the given building. */
+async function canReview(userId: string, globalRole: string, buildingId: string): Promise<boolean> {
+  if (globalRole === GlobalRole.SUPER_ADMIN) return true
+  return isBuildingManagerForBuilding(userId, buildingId)
+}
+
+export async function managerRequestRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Manager Requests'], ...route.schema } })
+
+  // POST /manager-requests — request floor manager access to a floor
+  fastify.post('/', { preHandler: [requireAuth] }, async (request, reply) => {
+    const result = createRequestSchema.safeParse(request.body)
+    if (!result.success) {
+      return reply.status(400).send({
+        error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
+      })
+    }
+    const { floorId, note } = result.data
+
+    const floor = await prisma.floor.findUnique({
+      where: { id: floorId },
+      include: { building: { select: { id: true, name: true } } },
+    })
+    if (!floor) return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+
+    if (await isFloorManagerForFloor(request.user.id, floorId)) {
+      return reply.status(409).send({ error: { message: 'You are already a floor manager for this floor', code: 'ALREADY_MANAGER' } })
+    }
+
+    const existing = await prisma.floorManagerRequest.findFirst({
+      where: { userId: request.user.id, floorId, status: 'PENDING' },
+    })
+    if (existing) {
+      return reply.status(409).send({ error: { message: 'You already have a pending request for this floor', code: 'ALREADY_PENDING' } })
+    }
+
+    const expiresAt = new Date(Date.now() + MANAGER_REQUEST_EXPIRY_DAYS * 24 * 3600 * 1000)
+    const created = await prisma.floorManagerRequest.create({
+      data: { userId: request.user.id, floorId, note: note ?? null, expiresAt },
+    })
+
+    const approverIds = new Set<string>(await getBuildingAdminUserIds(floor.building.id))
+    const superAdmins = await prisma.user.findMany({
+      where: { globalRole: GlobalRole.SUPER_ADMIN, accountStatus: 'ACTIVE' },
+      select: { id: true },
+    })
+    for (const a of superAdmins) approverIds.add(a.id)
+    // Don't notify the requester about their own request, in the unlikely
+    // case they're also a building admin/super admin for this floor's building.
+    approverIds.delete(request.user.id)
+
+    for (const approverId of approverIds) {
+      await enqueueNotification({ type: NotificationType.MANAGER_REQUEST_SUBMITTED, userId: approverId, managerRequestId: created.id })
+    }
+    dispatchWebhook('manager_request.submitted', { id: created.id, userId: request.user.id, floorId, buildingId: floor.building.id }).catch(() => {})
+
+    return reply.status(201).send({ data: created })
+  })
+
+  // GET /manager-requests/mine — the caller's own request history
+  fastify.get('/mine', { preHandler: [requireAuth] }, async (request, reply) => {
+    const requests = await prisma.floorManagerRequest.findMany({
+      where: { userId: request.user.id },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
+        reviewedBy: { select: { id: true, displayName: true } },
+      },
+    })
+    return reply.status(200).send({ data: requests })
+  })
+
+  // GET /manager-requests — admin dashboard: SUPER_ADMIN sees every request,
+  // a BUILDING_ADMIN sees only requests for floors in buildings they manage.
+  // Neither role → forbidden, same as every other admin-listing endpoint.
+  fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
+    const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+    let buildingIds: string[] | null = null
+    if (!isSuperAdmin) {
+      buildingIds = await getManagedBuildingIds(request.user.id)
+      if (buildingIds.length === 0) {
+        return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
+    }
+
+    const statusParam = (request.query as { status?: string }).status
+    const status = statusParam && statusParam !== 'all' ? (statusParam as 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED' | 'EXPIRED') : undefined
+
+    const requests = await prisma.floorManagerRequest.findMany({
+      where: {
+        ...(status ? { status } : {}),
+        ...(buildingIds ? { floor: { buildingId: { in: buildingIds } } } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: { select: { id: true, displayName: true, email: true } },
+        floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
+        reviewedBy: { select: { id: true, displayName: true } },
+      },
+    })
+    return reply.status(200).send({ data: requests })
+  })
+
+  // POST /manager-requests/:id/approve
+  fastify.post('/:id/approve', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const req = await prisma.floorManagerRequest.findUnique({
+      where: { id },
+      include: { floor: { include: { building: { select: { id: true, name: true } } } }, user: true },
+    })
+    if (!req) return reply.status(404).send({ error: { message: 'Request not found', code: 'NOT_FOUND' } })
+    if (!(await canReview(request.user.id, request.user.globalRole, req.floor.buildingId))) {
+      return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+    }
+    if (req.status !== 'PENDING') {
+      return reply.status(409).send({ error: { message: 'This request is no longer pending', code: 'NOT_PENDING' } })
+    }
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.floorManagerRequest.update({
+          where: { id },
+          data: { status: 'APPROVED', reviewedById: request.user.id, reviewedAt: new Date() },
+        })
+        await tx.userResourceRole.create({
+          data: { userId: req.userId, role: 'FLOOR_MANAGER', scopeType: 'FLOOR', floorId: req.floorId },
+        })
+      })
+    } catch (err) {
+      // Unique constraint on UserResourceRole — the user picked up the same
+      // FLOOR_MANAGER grant some other way (direct admin assignment, a group
+      // role) between the request being created and this approval. The
+      // request itself should still resolve as approved rather than error.
+      if ((err as { code?: string }).code === 'P2002') {
+        await prisma.floorManagerRequest.update({
+          where: { id },
+          data: { status: 'APPROVED', reviewedById: request.user.id, reviewedAt: new Date() },
+        })
+      } else {
+        throw err
+      }
+    }
+
+    await enqueueNotification({ type: NotificationType.MANAGER_REQUEST_APPROVED, userId: req.userId, managerRequestId: req.id })
+    dispatchWebhook('manager_request.approved', { id: req.id, userId: req.userId, floorId: req.floorId, reviewedById: request.user.id }).catch(() => {})
+
+    return reply.status(200).send({ data: { ok: true } })
+  })
+
+  // POST /manager-requests/:id/reject
+  fastify.post('/:id/reject', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const result = reviewRequestSchema.safeParse(request.body ?? {})
+    if (!result.success) {
+      return reply.status(400).send({
+        error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
+      })
+    }
+
+    const req = await prisma.floorManagerRequest.findUnique({
+      where: { id },
+      include: { floor: { select: { buildingId: true } } },
+    })
+    if (!req) return reply.status(404).send({ error: { message: 'Request not found', code: 'NOT_FOUND' } })
+    if (!(await canReview(request.user.id, request.user.globalRole, req.floor.buildingId))) {
+      return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+    }
+    if (req.status !== 'PENDING') {
+      return reply.status(409).send({ error: { message: 'This request is no longer pending', code: 'NOT_PENDING' } })
+    }
+
+    await prisma.floorManagerRequest.update({
+      where: { id },
+      data: { status: 'REJECTED', reviewedById: request.user.id, reviewedAt: new Date(), reviewNote: result.data.reviewNote ?? null },
+    })
+
+    await enqueueNotification({ type: NotificationType.MANAGER_REQUEST_REJECTED, userId: req.userId, managerRequestId: req.id })
+    dispatchWebhook('manager_request.rejected', { id: req.id, userId: req.userId, floorId: req.floorId, reviewedById: request.user.id }).catch(() => {})
+
+    return reply.status(200).send({ data: { ok: true } })
+  })
+
+  // DELETE /manager-requests/:id — requester withdraws their own still-pending request
+  fastify.delete('/:id', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const req = await prisma.floorManagerRequest.findUnique({ where: { id } })
+    if (!req) return reply.status(404).send({ error: { message: 'Request not found', code: 'NOT_FOUND' } })
+    if (req.userId !== request.user.id) {
+      return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+    }
+    if (req.status !== 'PENDING') {
+      return reply.status(409).send({ error: { message: 'This request is no longer pending', code: 'NOT_PENDING' } })
+    }
+    await prisma.floorManagerRequest.update({ where: { id }, data: { status: 'CANCELLED' } })
+    return reply.status(200).send({ data: { ok: true } })
+  })
+}

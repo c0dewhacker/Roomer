@@ -15,6 +15,8 @@ import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { useFloorSubscriptions, useUnsubscribeFromFloor } from '@/hooks/useSubscriptions'
+import { useMyManagerRequests, useWithdrawManagerRequest } from '@/hooks/useManagerRequests'
+import type { ManagerRequestStatus } from '@/types'
 
 const profileSchema = z.object({
   displayName: z.string().min(2, 'Name must be at least 2 characters'),
@@ -180,6 +182,8 @@ export default function ProfilePage() {
   }
 
   const { data: subscriptions } = useFloorSubscriptions()
+  const { data: managerRequests } = useMyManagerRequests()
+  const withdrawManagerRequest = useWithdrawManagerRequest()
   const unsubscribe = useUnsubscribeFromFloor()
 
   if (!user) return null
@@ -519,6 +523,58 @@ export default function ProfilePage() {
                 </Button>
               </div>
             ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Floor manager access requests */}
+      {managerRequests && managerRequests.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <Shield className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-base">Manager access requests</CardTitle>
+            </div>
+            <CardDescription>Your requests for floor manager access</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {managerRequests.map((r) => {
+              const statusClass: Record<ManagerRequestStatus, string> = {
+                PENDING: 'bg-yellow-100 text-yellow-800 border-yellow-200',
+                APPROVED: 'bg-green-100 text-green-800 border-green-200',
+                REJECTED: 'bg-red-100 text-red-700 border-red-200',
+                CANCELLED: 'bg-slate-100 text-slate-600 border-slate-200',
+                EXPIRED: 'bg-slate-100 text-slate-500 border-slate-200',
+              }
+              return (
+                <div key={r.id} className="flex items-center justify-between rounded-md border px-3 py-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium truncate">
+                      {r.floor?.building.name} — {r.floor?.name}
+                    </p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <Badge variant="outline" className={`text-xs border ${statusClass[r.status]}`}>
+                        {r.status === 'REJECTED' ? 'Declined' : r.status === 'CANCELLED' ? 'Withdrawn' : r.status.charAt(0) + r.status.slice(1).toLowerCase()}
+                      </Badge>
+                      {r.status === 'REJECTED' && r.reviewNote && (
+                        <span className="text-xs text-muted-foreground truncate">{r.reviewNote}</span>
+                      )}
+                    </div>
+                  </div>
+                  {r.status === 'PENDING' && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="shrink-0 ml-2 text-muted-foreground hover:text-destructive"
+                      onClick={() => withdrawManagerRequest.mutate(r.id)}
+                      disabled={withdrawManagerRequest.isPending}
+                    >
+                      Withdraw
+                    </Button>
+                  )}
+                </div>
+              )
+            })}
           </CardContent>
         </Card>
       )}

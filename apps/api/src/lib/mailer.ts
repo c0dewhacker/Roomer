@@ -804,3 +804,70 @@ export function renderBookingSwapExpired(
   const text = `Hi ${initiator.displayName},\n\nNobody responded to your desk swap request for ${assetA.name} (${formatDate(bookingA.startsAt)} → ${formatDate(bookingA.endsAt)}) in time. Your booking is unchanged.`
   return { subject, html, text }
 }
+
+export function renderManagerRequestSubmitted(
+  approver: Pick<User, 'displayName'>,
+  requester: Pick<User, 'displayName' | 'email'>,
+  floor: { name: string; buildingName: string },
+): { subject: string; html: string; text: string } {
+  const subject = `Floor manager access request — ${escapeHtml(floor.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Floor manager access request</h1>
+     <p>Hi ${escapeHtml(approver.displayName)}, ${escapeHtml(requester.displayName)} (${escapeHtml(requester.email)}) has requested floor manager access.</p>
+     <div class="detail">
+       <dl>
+         <dt>Floor</dt><dd>${escapeHtml(floor.name)}, ${escapeHtml(floor.buildingName)}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/admin/manager-requests" class="btn">Review Request</a>`,
+  )
+  const text = `Hi ${approver.displayName},\n\n${requester.displayName} (${requester.email}) has requested floor manager access to ${floor.name}, ${floor.buildingName}. Review it at ${env.APP_URL}/admin/manager-requests`
+  return { subject, html, text }
+}
+
+export function renderManagerRequestApproved(
+  requester: Pick<User, 'displayName'>,
+  floor: { name: string; buildingName: string },
+): { subject: string; html: string; text: string } {
+  const subject = `Floor manager access approved — ${escapeHtml(floor.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Access request approved</h1>
+     <p>Hi ${escapeHtml(requester.displayName)}, you're now a floor manager for ${escapeHtml(floor.name)}, ${escapeHtml(floor.buildingName)}.</p>
+     <a href="${env.APP_URL}/floors" class="btn">Go to Floor</a>`,
+  )
+  const text = `Hi ${requester.displayName},\n\nYou're now a floor manager for ${floor.name}, ${floor.buildingName}.`
+  return { subject, html, text }
+}
+
+export function renderManagerRequestRejected(
+  requester: Pick<User, 'displayName'>,
+  floor: { name: string; buildingName: string },
+  reviewNote: string | null,
+): { subject: string; html: string; text: string } {
+  const subject = `Floor manager access declined — ${escapeHtml(floor.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Access request declined</h1>
+     <p>Hi ${escapeHtml(requester.displayName)}, your request for floor manager access to ${escapeHtml(floor.name)}, ${escapeHtml(floor.buildingName)} was declined.</p>
+     ${reviewNote ? `<div class="detail"><dl><dt>Note</dt><dd>${escapeHtml(reviewNote)}</dd></dl></div>` : ''}`,
+  )
+  const text = `Hi ${requester.displayName},\n\nYour request for floor manager access to ${floor.name}, ${floor.buildingName} was declined.${reviewNote ? `\n\nNote: ${reviewNote}` : ''}`
+  return { subject, html, text }
+}
+
+export function renderManagerRequestExpired(
+  requester: Pick<User, 'displayName'>,
+  floor: { name: string; buildingName: string },
+): { subject: string; html: string; text: string } {
+  const subject = `Floor manager access request expired — ${escapeHtml(floor.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Access request expired</h1>
+     <p>Hi ${escapeHtml(requester.displayName)}, nobody reviewed your floor manager access request for ${escapeHtml(floor.name)}, ${escapeHtml(floor.buildingName)} in time, so it's been automatically closed. You're welcome to request again.</p>
+     <a href="${env.APP_URL}/floors" class="btn">Go to Floor</a>`,
+  )
+  const text = `Hi ${requester.displayName},\n\nNobody reviewed your floor manager access request for ${floor.name}, ${floor.buildingName} in time, so it's been automatically closed. You're welcome to request again.`
+  return { subject, html, text }
+}

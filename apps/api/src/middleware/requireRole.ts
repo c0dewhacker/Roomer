@@ -83,6 +83,30 @@ export async function getManagedBuildingIds(userId: string): Promise<string[]> {
 }
 
 /**
+ * Returns the userIds of everyone who holds BUILDING_ADMIN access on the
+ * given building — the inverse of getManagedBuildingIds. Used to notify the
+ * right people about something building-scoped (e.g. a floor manager access
+ * request) without needing a separate per-admin loop over every building.
+ */
+export async function getBuildingAdminUserIds(buildingId: string): Promise<string[]> {
+  const [direct, via] = await Promise.all([
+    prisma.userResourceRole.findMany({
+      where: { scopeType: 'BUILDING', buildingId, role: 'BUILDING_ADMIN' },
+      select: { userId: true },
+    }),
+    prisma.groupResourceRole.findMany({
+      where: { scopeType: 'BUILDING', buildingId, role: 'BUILDING_ADMIN' },
+      select: { group: { select: { members: { select: { userId: true } } } } },
+    }),
+  ])
+  const ids = [
+    ...direct.map((r) => r.userId),
+    ...via.flatMap((r) => r.group.members.map((m) => m.userId)),
+  ]
+  return [...new Set(ids)]
+}
+
+/**
  * Returns true if the user holds FLOOR_MANAGER access on the given floor,
  * either via a direct UserResourceRole or through a GroupResourceRole.
  * Building admins inherit floor manager permissions for all floors in their building.

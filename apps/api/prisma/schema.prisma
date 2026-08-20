@@ -112,6 +112,10 @@ enum NotificationType {
   BOOKING_SWAP_ACCEPTED
   BOOKING_SWAP_DECLINED
   BOOKING_SWAP_EXPIRED
+  MANAGER_REQUEST_SUBMITTED
+  MANAGER_REQUEST_APPROVED
+  MANAGER_REQUEST_REJECTED
+  MANAGER_REQUEST_EXPIRED
 }
 
 /// PENDING → ACCEPTED/DECLINED/EXPIRED (recipient-driven) or CANCELLED
@@ -239,6 +243,7 @@ model Floor {
   groupResourceRoles   GroupResourceRole[]
   groupAccess          GroupFloorAccess[]
   subscriptions        FloorSubscription[]
+  managerRequests      FloorManagerRequest[]
 }
 
 model FloorPlan {
@@ -532,6 +537,8 @@ model User {
   transfersReceived     BookingTransfer[]         @relation("BookingTransferTo")
   swapsInitiated        BookingSwap[]             @relation("BookingSwapInitiator")
   swapsReceived         BookingSwap[]             @relation("BookingSwapRecipient")
+  managerRequestsMade     FloorManagerRequest[] @relation("FloorManagerRequestUser")
+  managerRequestsReviewed FloorManagerRequest[] @relation("FloorManagerRequestReviewer")
 
   @@index([email])
   @@index([provider, externalId])
@@ -603,6 +610,44 @@ model UserResourceRole {
 
   @@unique([userId, scopeType, buildingId, floorId])
   @@index([userId])
+}
+
+enum ManagerRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  /// Requester withdrew before it was reviewed — same shape as
+  /// TransferRequestStatus.CANCELLED.
+  CANCELLED
+  EXPIRED
+}
+
+/// Self-service request for FLOOR_MANAGER access to a specific floor —
+/// reviewed by a Super Admin or a Building Admin for the floor's building,
+/// approval creates a UserResourceRole exactly as if granted directly. See #85.
+model FloorManagerRequest {
+  id           String               @id @default(cuid())
+  userId       String
+  floorId      String
+  status       ManagerRequestStatus @default(PENDING)
+  /// Requester's optional note explaining why they need access.
+  note         String?
+  reviewedById String?
+  reviewedAt   DateTime?
+  /// Reviewer's optional note — most useful on rejection.
+  reviewNote   String?
+  /// Auto-rejected if left PENDING past this — see the expire-manager-requests
+  /// cron worker in lib/queue.ts.
+  expiresAt    DateTime
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  user         User                 @relation("FloorManagerRequestUser", fields: [userId], references: [id], onDelete: Cascade)
+  floor        Floor                @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  reviewedBy   User?                @relation("FloorManagerRequestReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([floorId])
+  @@index([status])
 }
 
 model GroupResourceRole {

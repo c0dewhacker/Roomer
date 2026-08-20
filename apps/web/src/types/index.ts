@@ -402,3 +402,22 @@ export interface TopUserDataPoint {
   email: string
   bookingCount: number
 }
+
+export type ManagerRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED' | 'EXPIRED'
+
+export interface FloorManagerRequest {
+  id: string
+  userId: string
+  floorId: string
+  status: ManagerRequestStatus
+  note: string | null
+  reviewedById: string | null
+  reviewedAt: string | null
+  reviewNote: string | null
+  expiresAt: string
+  createdAt: string
+  updatedAt: string
+  user?: { id: string; displayName: string; email: string }
+  floor?: { id: string; name: string; building: { id: string; name: string } }
+  reviewedBy?: { id: string; displayName: string } | null
+}

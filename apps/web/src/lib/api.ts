@@ -20,6 +20,8 @@ import type {
   RecurringBookingRule,
   BookingTransfer,
   BookingSwap,
+  FloorManagerRequest,
+  ManagerRequestStatus,
 } from '../types'
 
 const BASE = '/api/v1'
@@ -969,4 +971,18 @@ export const directoryApi = {
       `/directory/whereabouts${qs.toString() ? `?${qs}` : ''}`,
     )
   },
+}
+
+// --- Self-service floor manager access requests ---
+export const managerRequestsApi = {
+  create: (floorId: string, note?: string) =>
+    api.post<{ data: FloorManagerRequest }>('/manager-requests', { floorId, note }),
+  mine: () => api.get<{ data: FloorManagerRequest[] }>('/manager-requests/mine'),
+  // Admin dashboard — scoped server-side to what the caller can review (Super Admin: all, Building Admin: their buildings only).
+  list: (status?: ManagerRequestStatus | 'all') =>
+    api.get<{ data: FloorManagerRequest[] }>(`/manager-requests${status ? `?status=${status}` : ''}`),
+  approve: (id: string) => api.post<{ data: { ok: true } }>(`/manager-requests/${id}/approve`, {}),
+  reject: (id: string, reviewNote?: string) =>
+    api.post<{ data: { ok: true } }>(`/manager-requests/${id}/reject`, { reviewNote }),
+  withdraw: (id: string) => api.delete<{ data: { ok: true } }>(`/manager-requests/${id}`),
 }

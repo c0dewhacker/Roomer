@@ -36,6 +36,10 @@ export const WEBHOOK_EVENTS = [
   'booking.swap_accepted',
   'booking.swap_declined',
   'booking.swap_expired',
+  'manager_request.submitted',
+  'manager_request.approved',
+  'manager_request.rejected',
+  'manager_request.expired',
 ] as const
 
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number]

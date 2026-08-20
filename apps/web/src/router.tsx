@@ -25,6 +25,7 @@ import LeasesAdminPage from './pages/admin/LeasesAdminPage'
 import GroupsAdminPage from './pages/admin/GroupsAdminPage'
 import DepartmentsAdminPage from './pages/admin/DepartmentsAdminPage'
 import WebhooksAdminPage from './pages/admin/WebhooksAdminPage'
+import ManagerRequestsAdminPage from './pages/admin/ManagerRequestsAdminPage'
 import { Loader2 } from 'lucide-react'
 
 // Lazy-load pages that pull in large dependencies (pdfjs-dist, react-konva, recharts)
@@ -200,6 +201,7 @@ export function AppRouter() {
             <Route path="/admin/buildings/:buildingId" element={<BuildingDetailAdminPage />} />
             <Route path="/admin/floors/:floorId" element={<Suspense fallback={<PageLoader />}><FloorAdminPage /></Suspense>} />
             <Route path="/admin/assets" element={<AssetsAdminPage />} />
+            <Route path="/admin/manager-requests" element={<ManagerRequestsAdminPage />} />
           </Route>
 
           {/* SUPER_ADMIN or BUILDING_ADMIN only — no floor-scoped backend support exists for these */}

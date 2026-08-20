@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useAuthStore } from '@/stores/auth'
 import { useQuery } from '@tanstack/react-query'
 import { buildingsApi } from '@/lib/api'
-import { Calendar, Clock, Building2, Users, Settings, Package, BarChart3, FileText, Shield, Layers, Network, Workflow, Webhook, MapPin, Table } from 'lucide-react'
+import { Calendar, Clock, Building2, Users, Settings, Package, BarChart3, FileText, Shield, Layers, Network, Workflow, Webhook, MapPin, Table, ShieldPlus } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
 export interface NavItem {
@@ -87,6 +87,7 @@ export function useNavConfig() {
             { to: '/admin/users', icon: Users, label: 'Users' },
             { to: '/admin/departments', icon: Network, label: 'Departments' },
             { to: '/admin/org-chart', icon: Workflow, label: 'Org Chart' },
+            { to: '/admin/manager-requests', icon: ShieldPlus, label: 'Manager Requests' },
           ],
         },
         {
@@ -126,6 +127,7 @@ export function useNavConfig() {
           { to: '/admin/leases', icon: FileText, label: 'Leases' },
           { to: '/admin/reports', icon: BarChart3, label: 'Reports' },
           { to: '/admin/bookings-report', icon: Table, label: 'Bookings Report' },
+          { to: '/admin/manager-requests', icon: ShieldPlus, label: 'Manager Requests' },
         ],
       })
     } else if (isFloorManager) {
