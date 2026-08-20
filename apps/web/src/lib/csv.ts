@@ -12,7 +12,9 @@ export function toCsv(rows: string[][]): string {
 }
 
 export function downloadCsv(filename: string, rows: string[][]) {
-  const csv = toCsv(rows)
+  // Prefixed with a UTF-8 BOM so Excel (which otherwise assumes the system
+  // codepage) renders non-ASCII cell values correctly instead of as mojibake.
+  const csv = '\uFEFF' + toCsv(rows)
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

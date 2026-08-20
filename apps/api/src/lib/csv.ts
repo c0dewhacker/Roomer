@@ -24,10 +24,12 @@ function escapeCsvCell(value: unknown): string {
 }
 
 /** Send a CSV attachment response — header row + data rows, RFC 4180-ish
- * (CRLF line endings, every cell quoted). */
+ * (CRLF line endings, every cell quoted). Prefixed with a UTF-8 BOM so
+ * Excel (which otherwise assumes the system codepage) renders non-ASCII
+ * cell values correctly instead of as mojibake. */
 export function sendCsv(reply: FastifyReply, filename: string, header: string[], rows: unknown[][]): void {
   const lines = [header, ...rows].map((row) => row.map(escapeCsvCell).join(','))
-  const csv = lines.join('\r\n') + '\r\n'
+  const csv = '\uFEFF' + lines.join('\r\n') + '\r\n'
   reply
     .header('Content-Type', 'text/csv; charset=utf-8')
     .header('Content-Disposition', `attachment; filename="${filename}"`)
