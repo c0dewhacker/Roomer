@@ -6,7 +6,7 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole, getManagedFloorIds, getManagedBuildingIds, isFloorManagerForFloor } from '../middleware/requireRole.js'
 import { enqueueNotification, fanOutFloorAvailable, cancelFutureBookingsForAssets } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
-import { lockAssetForBooking, lockAssetForQueue, lockUserForBookingQuota, hasConfirmedOverlap, checkZoneGroupOverlap, isOverlapConstraintViolation, assertBookable, assertUnderBookingQuota } from '../lib/booking.js'
+import { lockAssetForBooking, lockAssetForQueue, lockUserForBookingQuota, hasConfirmedOverlap, checkZoneGroupOverlap, isOverlapConstraintViolation, assertBookable, assertUnderBookingQuota, isWithinAdvanceBookingWindow } from '../lib/booking.js'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { checkGroupAccess } from './groups.js'
@@ -866,6 +866,21 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       if (!gate.ok) {
         return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
       }
+
+      // A queue entry isn't itself a booking commitment (see the comment on
+      // isWithinAdvanceBookingWindow), but auto-confirming one here creates a
+      // real CONFIRMED booking exactly like POST /bookings does, so it must
+      // pass the same advance-booking cap the queue-claim routes now also
+      // enforce at their own commitment point.
+      if (first.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const org = await prisma.organisation.findFirst({ select: { maxAdvanceBookingDays: true } })
+        if (!isWithinAdvanceBookingWindow(first.wantedStartsAt, org?.maxAdvanceBookingDays)) {
+          return reply.status(400).send({
+            error: { message: `Bookings cannot be made more than ${org?.maxAdvanceBookingDays} days in advance`, code: 'MAX_ADVANCE_EXCEEDED' },
+          })
+        }
+      }
+
       const quota = await assertUnderBookingQuota(prisma, first.userId, first.user.globalRole === GlobalRole.SUPER_ADMIN)
       if (!quota.ok) {
         return reply.status(quota.status).send({ error: { message: quota.message, code: quota.code } })
@@ -943,6 +958,24 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         where: { id: current.id },
         data: { status: 'PROMOTED', claimDeadline, claimToken: randomUUID() },
       })
+
+      // Same compaction promoteNextQueueEntry (lib/queue.ts) and the leave-queue
+      // route both do — without it, everyone still WAITING behind `current` in
+      // its window keeps a stale position number forever, and since position is
+      // only unique within an overlapping-window cohort (not asset-wide), a
+      // later joiner's freshly-counted position can collide with a stale one,
+      // leaving promotion order for a tie undefined.
+      await tx.queueEntry.updateMany({
+        where: {
+          assetId: id,
+          status: 'WAITING',
+          position: { gt: current.position },
+          wantedStartsAt: { lt: current.wantedEndsAt },
+          wantedEndsAt: { gt: current.wantedStartsAt },
+        },
+        data: { position: { decrement: 1 } },
+      })
+
       return { id: current.id, userId: current.userId, claimDeadline }
     })
 

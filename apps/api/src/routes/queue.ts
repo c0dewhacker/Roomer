@@ -13,6 +13,7 @@ import {
   lockAssetForQueue,
   lockUserForBookingQuota,
   isOverlapConstraintViolation,
+  isWithinAdvanceBookingWindow,
 } from '../lib/booking.js'
 import { z } from 'zod'
 
@@ -222,6 +223,23 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
     }
 
+    // A queue entry isn't itself a booking commitment, so joining the queue
+    // was never checked against maxAdvanceBookingDays (see the comment on
+    // isWithinAdvanceBookingWindow) — but claiming one creates a real
+    // CONFIRMED booking exactly like POST /bookings does, so it must pass the
+    // same gate. Without this, the org's advance-booking cap was bypassable
+    // by queueing behind a far-future booking (e.g. one occurrence of a
+    // recurring series, which has its own separate horizon) and claiming
+    // once that booking was cancelled and freed the slot.
+    if (entry.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const org = await prisma.organisation.findFirst({ select: { maxAdvanceBookingDays: true } })
+      if (!isWithinAdvanceBookingWindow(entry.wantedStartsAt, org?.maxAdvanceBookingDays)) {
+        return reply.status(400).send({
+          error: { message: `Bookings cannot be made more than ${org?.maxAdvanceBookingDays} days in advance`, code: 'MAX_ADVANCE_EXCEEDED' },
+        })
+      }
+    }
+
     const quota = await assertUnderBookingQuota(prisma, entry.userId, entry.user.globalRole === GlobalRole.SUPER_ADMIN)
     if (!quota.ok) {
       return reply.status(quota.status).send({ error: { message: quota.message, code: quota.code } })
@@ -348,6 +366,18 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
     const gate = await assertBookable(prisma, request.user, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)
     if (!gate.ok) {
       return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+    }
+
+    // See the matching comment in /claim-by-token — claiming creates a real
+    // CONFIRMED booking, which must pass the org's advance-booking cap the
+    // same way POST /bookings does, even though joining the queue didn't.
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const org = await prisma.organisation.findFirst({ select: { maxAdvanceBookingDays: true } })
+      if (!isWithinAdvanceBookingWindow(entry.wantedStartsAt, org?.maxAdvanceBookingDays)) {
+        return reply.status(400).send({
+          error: { message: `Bookings cannot be made more than ${org?.maxAdvanceBookingDays} days in advance`, code: 'MAX_ADVANCE_EXCEEDED' },
+        })
+      }
     }
 
     const quota = await assertUnderBookingQuota(prisma, request.user.id, request.user.globalRole === GlobalRole.SUPER_ADMIN)
