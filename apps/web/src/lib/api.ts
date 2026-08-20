@@ -473,6 +473,9 @@ export const usersApi = {
     )
   },
   get: (id: string) => api.get<{ data: User }>(`/users/${id}`),
+  // Colleague picker for any authenticated user (transfer/swap/allow-list) —
+  // unlike list() above, not SUPER_ADMIN-gated, and returns only id/displayName/email.
+  search: (q: string) => api.get<{ data: Pick<User, 'id' | 'displayName' | 'email'>[] }>(`/users/search?q=${encodeURIComponent(q)}`),
   create: (body: { email: string; displayName: string; password: string; globalRole?: string }) =>
     api.post<{ data: User }>('/users', body),
   update: (id: string, body: Partial<User>) =>

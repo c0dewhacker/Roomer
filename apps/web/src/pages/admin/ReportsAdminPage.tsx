@@ -547,7 +547,7 @@ function ManagerRollupCard({ params }: { params: AnalyticsParams }) {
 
   const { data: results } = useQuery({
     queryKey: ['users', 'search', search],
-    queryFn: () => usersApi.list({ q: search, limit: 10 }),
+    queryFn: () => usersApi.search(search),
     select: (r) => r.data,
     enabled: search.length >= 2 && !selected,
   })

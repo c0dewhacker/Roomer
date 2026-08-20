@@ -350,7 +350,7 @@ function AssignDialog({ open, onClose, assetId }: { open: boolean; onClose: () =
 
   const { data: userResults } = useQuery({
     queryKey: ['users', 'search', userSearch],
-    queryFn: () => usersApi.list({ q: userSearch, limit: 20 }),
+    queryFn: () => usersApi.search(userSearch),
     select: (r) => r.data,
     enabled: userSearch.length >= 2,
   })

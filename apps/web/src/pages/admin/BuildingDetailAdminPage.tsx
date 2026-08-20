@@ -333,7 +333,7 @@ function BuildingManagersPanel({ buildingId, buildingName }: { buildingId: strin
 
   const { data: searchResults } = useQuery({
     queryKey: ['users', 'search', search],
-    queryFn: () => usersApi.list({ q: search, limit: 20 }),
+    queryFn: () => usersApi.search(search),
     select: (r) => r.data,
     enabled: search.length >= 2,
   })

@@ -62,7 +62,7 @@ function AddAllowListDialog({
 
   const { data: users } = useQuery({
     queryKey: ['users', 'search', search],
-    queryFn: () => usersApi.list({ q: search, limit: 20 }),
+    queryFn: () => usersApi.search(search),
     select: (r) => r.data,
     enabled: search.length >= 2,
   })
@@ -146,7 +146,7 @@ function AddAssignmentDialog({
 
   const { data: users } = useQuery({
     queryKey: ['users', 'search', search],
-    queryFn: () => usersApi.list({ q: search, limit: 20 }),
+    queryFn: () => usersApi.search(search),
     select: (r) => r.data,
     enabled: search.length >= 2,
   })

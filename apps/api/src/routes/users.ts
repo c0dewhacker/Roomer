@@ -188,6 +188,34 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
+  // GET /users/search — colleague picker for any authenticated user (transfer
+  // a booking, propose a swap, add someone to an asset's allow list). Deliberately
+  // separate from GET / above (which stays SUPER_ADMIN-only, admin-only fields,
+  // paginated) rather than loosening that route's auth — this returns just
+  // enough to render a name+email picker row and nothing else (no globalRole,
+  // accountStatus, provider, etc.), the same minimal shape GET /directory/whereabouts
+  // already uses for the colleague-finder feature. Registered before /:id so
+  // "search" is never captured as a user id.
+  fastify.get('/search', { preHandler: [requireAuth] }, async (request, reply) => {
+    const result = z.object({ q: z.string().min(2).max(255) }).safeParse(request.query)
+    if (!result.success) {
+      return reply.status(200).send({ data: [] })
+    }
+    const users = await prisma.user.findMany({
+      where: {
+        accountStatus: 'ACTIVE',
+        OR: [
+          { email: { contains: result.data.q, mode: 'insensitive' } },
+          { displayName: { contains: result.data.q, mode: 'insensitive' } },
+        ],
+      },
+      select: { id: true, email: true, displayName: true },
+      orderBy: { displayName: 'asc' },
+      take: 20,
+    })
+    return reply.status(200).send({ data: users })
+  })
+
   // GET /users/:id — get user
   fastify.get('/:id', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
