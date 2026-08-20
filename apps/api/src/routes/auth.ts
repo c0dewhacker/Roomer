@@ -5,6 +5,7 @@ import { loginSchema } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { authenticateWithLdap, getLdapConfig } from '../lib/ldap.js'
 import { applyGroupMappings, recordLastIdpGroups } from '../lib/group-mapping.js'
+import { recordManagerRef, resolveManagerForUser } from '../lib/manager.js'
 import { signAccessToken, verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE, MAX_SESSION_SECONDS } from '../lib/jwt.js'
 import { blockToken, isTokenBlocked } from '../lib/token-blocklist.js'
 
@@ -78,6 +79,15 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
             await prisma.user.update({ where: { id: user.id }, data: { departmentId: dept.id } })
           }
         }
+        // Same manager-attribute handling the admin-triggered LDAP directory
+        // sync already does (see runLdapSync/reconcileAllManagers) — an org
+        // that authenticates via interactive LDAP bind rather than routinely
+        // running that separate, manual sync would otherwise never populate
+        // manager data at all, no matter how many times a user logs in.
+        if (ldapCfg?.managerAttribute) {
+          await recordManagerRef(user.id, ldapResult.manager)
+        }
+        await resolveManagerForUser(user.id)
       } else if (!user || !user.passwordHash) {
         // Run a dummy bcrypt comparison so this path takes a similar amount of
         // time to the local-password path — avoids account-enumeration via timing.

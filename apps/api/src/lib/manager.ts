@@ -67,30 +67,49 @@ export async function resolveManagerForUser(userId: string): Promise<void> {
   if (!u) return
 
   if (u.managerExternalRef) {
-    const mgr = await prisma.user.findFirst({
-      where: {
-        id: { not: u.id },
-        OR: [
-          { externalId: { equals: u.managerExternalRef, mode: 'insensitive' } },
-          { email: { equals: u.managerExternalRef, mode: 'insensitive' } },
-        ],
-      },
-      select: { id: true },
-    })
-    await prisma.user.update({ where: { id: u.id }, data: { managerId: mgr?.id ?? null } })
+    // Case-insensitive *and* comma-whitespace-collapsed, matching normRef —
+    // a plain Prisma `equals`/`mode: insensitive` (as this used to be) only
+    // covers the case half. reconcileAllManagers' bulk path already collapses
+    // comma whitespace (LDAP servers/clients aren't always consistent about
+    // "CN=X,OU=Y" vs "CN=X, OU=Y"); this incremental path — run on every
+    // SSO login — needs the exact same transform, expressed in SQL since it
+    // queries the DB directly rather than comparing in memory. Without it, a
+    // correctly-resolved managerId could flap back to null on a later login
+    // if the directory's manager attribute and the target's own DN happen to
+    // differ only in comma spacing.
+    const normalizedRef = normRef(u.managerExternalRef)
+    // Also match on raw id — SCIM's manager.value is, per RFC 7643 §4.1.2,
+    // the SCIM id of the manager's User resource, which for this app's SCIM
+    // implementation *is* the Roomer user id (see userToScim: `id: user.id`)
+    // rather than a DN or email, so a spec-correct SCIM-provisioned manager
+    // ref needs this extra branch the LDAP/OIDC/SAML-oriented DN/email match
+    // alone wouldn't catch.
+    const candidates = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM "User"
+      WHERE id != ${u.id}
+        AND (
+          id = ${u.managerExternalRef}
+          OR regexp_replace(lower("externalId"), '\\s*,\\s*', ',', 'g') = ${normalizedRef}
+          OR regexp_replace(lower(email), '\\s*,\\s*', ',', 'g') = ${normalizedRef}
+        )
+      LIMIT 1
+    `
+    await prisma.user.update({ where: { id: u.id }, data: { managerId: candidates[0]?.id ?? null } })
   }
 
-  // Forward references: reports whose stored ref points at this user's DN/email.
-  // Case-insensitive to match the "resolve my manager" lookup above — without
-  // this, a managerExternalRef that differs only in case from the manager's
-  // actual externalId/email (common with LDAP DNs and email addresses, both
-  // conventionally case-insensitive) would silently never link, even though
-  // reconcileAllManagers' bulk path already normalises case for exactly this.
-  const refs = [u.externalId, u.email].filter((x): x is string => !!x)
-  if (refs.length) {
-    await prisma.user.updateMany({
-      where: { id: { not: u.id }, managerId: null, managerExternalRef: { in: refs, mode: 'insensitive' } },
-      data: { managerId: u.id },
-    })
-  }
+  // Forward references: reports whose stored ref points at this user's id/DN/email.
+  // Same case + comma-whitespace normalisation as above, applied to the
+  // report's stored managerExternalRef instead, plus the same raw-id branch
+  // for spec-correct SCIM manager.value refs.
+  const normalizedExternalId = u.externalId ? normRef(u.externalId) : null
+  const normalizedEmail = normRef(u.email)
+  await prisma.$executeRaw`
+    UPDATE "User" SET "managerId" = ${u.id}
+    WHERE id != ${u.id} AND "managerId" IS NULL AND "managerExternalRef" IS NOT NULL
+      AND (
+        "managerExternalRef" = ${u.id}
+        OR (${normalizedExternalId}::text IS NOT NULL AND regexp_replace(lower("managerExternalRef"), '\\s*,\\s*', ',', 'g') = ${normalizedExternalId})
+        OR regexp_replace(lower("managerExternalRef"), '\\s*,\\s*', ',', 'g') = ${normalizedEmail}
+      )
+  `
 }

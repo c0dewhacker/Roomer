@@ -118,6 +118,8 @@ export interface LdapAuthResult {
   groups: string[]
   /** Department attribute value, if departmentAttribute is configured */
   department?: string
+  /** Raw manager attribute value (a DN, email, or UPN), if managerAttribute is configured */
+  manager?: string
 }
 
 // Guards against a second admin (or a second tab) triggering an overlapping
@@ -339,9 +341,11 @@ export async function authenticateWithLdap(
     const nameAttr = cfg.displayNameAttribute ?? 'displayName'
     const groupAttr = cfg.groupAttribute ?? 'memberOf'
     const deptAttr = cfg.departmentAttribute
+    const managerAttr = cfg.managerAttribute
 
     const searchAttrs = ['dn', emailAttr, nameAttr, groupAttr]
     if (deptAttr) searchAttrs.push(deptAttr)
+    if (managerAttr) searchAttrs.push(managerAttr)
 
     const entries = await searchAsync(adminClient, cfg.searchBase, {
       filter,
@@ -364,6 +368,7 @@ export async function authenticateWithLdap(
     // Group values are trimmed to avoid whitespace issues in DN comparisons
     const groups = (getAttr(groupAttr)?.values ?? []).map((g) => g.trim().toLowerCase())
     const department = deptAttr ? getAttr(deptAttr)?.values[0]?.trim() : undefined
+    const manager = managerAttr ? getAttr(managerAttr)?.values[0]?.trim() : undefined
 
     // 3. Try binding as the user to verify password
     const userClient = createLdapClient(cfg)
@@ -375,7 +380,7 @@ export async function authenticateWithLdap(
       return null
     }
 
-    return { email: userEmail, displayName: userDisplayName, dn: userDn, groups, department }
+    return { email: userEmail, displayName: userDisplayName, dn: userDn, groups, department, manager }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code ?? 'unknown'
     const message = err instanceof Error ? err.message : 'Unknown error'

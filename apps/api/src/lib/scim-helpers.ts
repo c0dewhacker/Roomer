@@ -132,6 +132,8 @@ export interface UserPatch {
   externalId?: string
   /** Resolved from the EnterpriseUser extension — callers must convert to departmentId */
   departmentName?: string
+  /** Raw manager.value from the EnterpriseUser extension — callers pass to recordManagerRef */
+  managerRef?: string
 }
 
 /**
@@ -186,6 +188,18 @@ export function applyUserPatchOps(
       if (typeof enterprise?.department === 'string' && enterprise.department.trim()) {
         patch.departmentName = enterprise.department.trim()
       }
+    }
+
+    // EnterpriseUser manager — RFC 7643 §4.1.2 has this as an object
+    // ({ value, $ref, displayName }), not a plain string like department;
+    // accept a bare string too since not every IdP is spec-strict about it.
+    const managerPath = path.startsWith(enterprisePrefix) && path.endsWith('manager')
+    const managerVal = managerPath ? val : (obj?.[enterprisePrefix] as Record<string, unknown> | undefined)?.manager
+    if (typeof managerVal === 'string' && managerVal.trim()) {
+      patch.managerRef = managerVal.trim()
+    } else if (managerVal && typeof managerVal === 'object' && typeof (managerVal as Record<string, unknown>).value === 'string') {
+      const ref = ((managerVal as Record<string, unknown>).value as string).trim()
+      if (ref) patch.managerRef = ref
     }
   }
 

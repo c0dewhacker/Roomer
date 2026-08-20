@@ -5,6 +5,7 @@ import { GlobalRole } from '@roomer/shared'
 import { cancelFutureBookingsForUser, cancelQueueEntriesForUser, releaseAssetAssignmentsForUser } from '../lib/queue.js'
 import { lockSuperAdminGuard, wouldRemoveLastActiveSuperAdmin } from '../lib/group-mapping.js'
 import { dispatchWebhook } from '../lib/webhook.js'
+import { recordManagerRef, resolveManagerForUser } from '../lib/manager.js'
 import {
   userToScim, groupToScim, scimError, listResponse, parseScimFilter,
   applyUserPatchOps, applyGroupPatchOps, hashScimToken,
@@ -48,6 +49,18 @@ const SCIM_CONTENT_TYPE = 'application/scim+json'
 const SCIM_EMAIL_REGEX = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,64}$/
 function isValidScimEmail(email: string): boolean {
   return email.length <= 254 && SCIM_EMAIL_REGEX.test(email)
+}
+
+// EnterpriseUser's `manager` sub-attribute is an object ({ value, $ref,
+// displayName }) per RFC 7643 §4.1.2, not a plain string like department;
+// accept a bare string too since not every IdP is spec-strict about it.
+function extractScimManagerRef(enterpriseExt: Record<string, unknown> | undefined): string | undefined {
+  const mgr = enterpriseExt?.manager
+  if (typeof mgr === 'string') return mgr.trim() || undefined
+  if (mgr && typeof mgr === 'object' && typeof (mgr as Record<string, unknown>).value === 'string') {
+    return ((mgr as Record<string, unknown>).value as string).trim() || undefined
+  }
+  return undefined
 }
 
 async function scimAuth(request: FastifyRequest, reply: FastifyReply): Promise<void> {
@@ -180,6 +193,7 @@ function registerUsers(fastify: FastifyInstance): void {
     const active = body.active !== false
     const enterpriseExt = body[SCIM_SCHEMAS.ENTERPRISE_USER] as Record<string, unknown> | undefined
     const incomingDeptName = typeof enterpriseExt?.department === 'string' ? enterpriseExt.department.trim() : undefined
+    const managerRef = extractScimManagerRef(enterpriseExt)
 
     if (!email) {
       return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
@@ -224,6 +238,16 @@ function registerUsers(fastify: FastifyInstance): void {
       },
       select: userSelect,
     })
+    // Same manager-attribute handling LDAP/OIDC/SAML already do on login —
+    // SCIM's own department handling above had no equivalent asymmetry, but
+    // manager did: recordManagerRef stores the raw ref for later fuzzy
+    // matching, resolveManagerForUser both resolves this user's own manager
+    // now (if already provisioned) and picks up any existing users whose
+    // pending forward reference points at this one.
+    if (managerRef) {
+      await recordManagerRef(user.id, managerRef)
+    }
+    await resolveManagerForUser(user.id)
     // SCIM never sets globalRole (not part of its data model) — provisioned
     // users always start at the schema default, GlobalRole.USER, same as the
     // admin-console create route this mirrors (users.ts POST /).
@@ -253,6 +277,7 @@ function registerUsers(fastify: FastifyInstance): void {
     const active = body.active as boolean | undefined
     const enterpriseExt = body[SCIM_SCHEMAS.ENTERPRISE_USER] as Record<string, unknown> | undefined
     const incomingDeptName = typeof enterpriseExt?.department === 'string' ? enterpriseExt.department.trim() : undefined
+    const managerRef = extractScimManagerRef(enterpriseExt)
 
     if (email && !isValidScimEmail(email)) {
       return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
@@ -308,6 +333,10 @@ function registerUsers(fastify: FastifyInstance): void {
       } else {
         dispatchWebhook('user.updated', { id: user.id, email: user.email, displayName: user.displayName }).catch(() => {})
       }
+      if (managerRef !== undefined) {
+        await recordManagerRef(user.id, managerRef)
+      }
+      await resolveManagerForUser(user.id)
       reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
     } catch (err: unknown) {
       const e = err as { code?: string }
@@ -325,8 +354,8 @@ function registerUsers(fastify: FastifyInstance): void {
     const body = request.body as { Operations?: Array<{ op: string; path?: string; value?: unknown }> }
     const ops = body.Operations ?? []
 
-    const { departmentName, ...userPatch } = applyUserPatchOps(ops)
-    if (Object.keys(userPatch).length === 0 && !departmentName) {
+    const { departmentName, managerRef, ...userPatch } = applyUserPatchOps(ops)
+    if (Object.keys(userPatch).length === 0 && !departmentName && !managerRef) {
       const user = await prisma.user.findUnique({ where: { id }, select: userSelect })
       if (!user) return reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
       return reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
@@ -371,6 +400,10 @@ function registerUsers(fastify: FastifyInstance): void {
         dispatchWebhook('user.suspended', { id: user.id, email: user.email }).catch(() => {})
       } else {
         dispatchWebhook('user.updated', { id: user.id, email: user.email, displayName: user.displayName }).catch(() => {})
+      }
+      if (managerRef) {
+        await recordManagerRef(user.id, managerRef)
+        await resolveManagerForUser(user.id)
       }
       reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
     } catch (err: unknown) {
