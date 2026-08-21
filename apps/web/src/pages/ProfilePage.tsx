@@ -121,6 +121,13 @@ const NOTIFICATION_GROUPS: Array<{ label: string; types: Array<{ key: string; la
     ],
   },
   {
+    label: 'Leases',
+    types: [
+      { key: 'LEASE_EXPIRING', label: 'Lease expiring within 90 days' },
+      { key: 'LEASE_EXPIRED', label: 'Lease expired' },
+    ],
+  },
+  {
     label: 'Other',
     types: [
       { key: 'WELCOME', label: 'Welcome email' },

@@ -116,6 +116,8 @@ enum NotificationType {
   MANAGER_REQUEST_APPROVED
   MANAGER_REQUEST_REJECTED
   MANAGER_REQUEST_EXPIRED
+  LEASE_EXPIRING
+  LEASE_EXPIRED
 }
 
 /// DISABLED: no QR functionality shown/generated for the scope.
@@ -222,6 +224,13 @@ model BuildingLease {
   rentAmount Float?
   currency   String          @default("GBP")
   notes      String?
+  /// Set once the "expiring within 90 days" notification/webhook has fired
+  /// for this lease (matching the same 90-day threshold the admin UI's
+  /// banner already uses) — prevents re-notifying on every cron run.
+  /// Cleared automatically if endDate is edited back out past the window.
+  expiringNotifiedAt DateTime?
+  /// Set once the post-expiry notification/webhook has fired.
+  expiredNotifiedAt  DateTime?
   createdAt  DateTime        @default(now())
   updatedAt  DateTime        @updatedAt
   building   Building        @relation(fields: [buildingId], references: [id], onDelete: Cascade)

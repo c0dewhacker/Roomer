@@ -2,12 +2,13 @@ import { PgBoss, type Job } from 'pg-boss'
 import { env } from '../env.js'
 import { prisma } from './prisma.js'
 import { buildBookingIcs } from './ical.js'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingCancelledByAdmin, renderBookingNoShow, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, renderWeeklyReport, renderBookingTransferRequested, renderBookingTransferAccepted, renderBookingTransferDeclined, renderBookingTransferExpired, renderBookingSwapRequested, renderBookingSwapAccepted, renderBookingSwapDeclined, renderBookingSwapExpired, renderManagerRequestSubmitted, renderManagerRequestApproved, renderManagerRequestRejected, renderManagerRequestExpired, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingCancelledByAdmin, renderBookingNoShow, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, renderWeeklyReport, renderBookingTransferRequested, renderBookingTransferAccepted, renderBookingTransferDeclined, renderBookingTransferExpired, renderBookingSwapRequested, renderBookingSwapAccepted, renderBookingSwapDeclined, renderBookingSwapExpired, renderManagerRequestSubmitted, renderManagerRequestApproved, renderManagerRequestRejected, renderManagerRequestExpired, renderLeaseExpiring, renderLeaseExpired, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
 import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
 import { dispatchWebhook } from './webhook.js'
 import { lockAssetForQueue } from './booking.js'
+import { getBuildingAdminUserIds } from '../middleware/requireRole.js'
 import { sendPushNotification } from './push.js'
 
 // Types worth interrupting someone's phone for — the rest stay in-app/email
@@ -347,6 +348,8 @@ export interface NotificationJobData {
   swapId?: string
   /** FloorManagerRequest id — see the MANAGER_REQUEST_* branches below. */
   managerRequestId?: string
+  /** BuildingLease id — see the LEASE_* branches below. */
+  leaseId?: string
 }
 
 // ─── Worker: send-notification ────────────────────────────────────────────────
@@ -362,7 +365,7 @@ async function handleSendNotification(
 async function processSendNotification(
   job: Job<NotificationJobData>,
 ): Promise<void> {
-  const { type, userId, bookingId, queueEntryId, claimDeadline, floorId, zoneId, assetId, slotDate, transferId, swapId, managerRequestId } = job.data
+  const { type, userId, bookingId, queueEntryId, claimDeadline, floorId, zoneId, assetId, slotDate, transferId, swapId, managerRequestId, leaseId } = job.data
 
   const user = await prisma.user.findUnique({ where: { id: userId } })
   if (!user) {
@@ -875,6 +878,39 @@ async function processSendNotification(
         appUrl: env.APP_URL,
       }
     }
+  } else if (type === NotificationType.LEASE_EXPIRING && leaseId) {
+    const lease = await prisma.buildingLease.findUnique({
+      where: { id: leaseId },
+      include: { building: { select: { name: true } } },
+    })
+    if (lease && lease.endDate) {
+      const daysLeft = Math.max(0, Math.ceil((lease.endDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000)))
+      const leaseLabel = { name: lease.name, buildingName: lease.building.name, endDate: lease.endDate }
+      title = `Lease expiring in ${daysLeft} day${daysLeft === 1 ? '' : 's'} — ${lease.building.name}`
+      body = `The ${lease.name} lease for ${lease.building.name} expires ${formatDate(lease.endDate)}.`
+      emailPayload = renderLeaseExpiring(user, leaseLabel, daysLeft)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        leaseName: lease.name, buildingName: lease.building.name,
+        endDate: formatDate(lease.endDate), appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.LEASE_EXPIRED && leaseId) {
+    const lease = await prisma.buildingLease.findUnique({
+      where: { id: leaseId },
+      include: { building: { select: { name: true } } },
+    })
+    if (lease && lease.endDate) {
+      const leaseLabel = { name: lease.name, buildingName: lease.building.name, endDate: lease.endDate }
+      title = `Lease expired — ${lease.building.name}`
+      body = `The ${lease.name} lease for ${lease.building.name} expired ${formatDate(lease.endDate)}.`
+      emailPayload = renderLeaseExpired(user, leaseLabel)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        leaseName: lease.name, buildingName: lease.building.name,
+        endDate: formatDate(lease.endDate), appUrl: env.APP_URL,
+      }
+    }
   } else if (type === NotificationType.WELCOME) {
     title = 'Welcome to Roomer'
     body = 'Your account has been created.'
@@ -1117,6 +1153,64 @@ async function handleExpireManagerRequests(): Promise<void> {
   )
   for (const r of stillExpired) {
     dispatchWebhook('manager_request.expired', { id: r.id, userId: r.userId }).catch(() => {})
+  }
+}
+
+// ─── Worker: lease-expiry (cron daily) ────────────────────────────────────────
+// Notifies (in-app/email/webhook) once a lease enters the same 90-day
+// "expiring soon" window the admin UI's banner already uses (LeasesAdminPage
+// computes this client-side; this is the same threshold, just also driving a
+// real notification), and again once it actually expires. Each half is
+// tracked by its own *NotifiedAt timestamp so a lease isn't re-notified every
+// day it sits in the window — see #222.
+async function handleLeaseExpiry(): Promise<void> {
+  const now = new Date()
+  const ninetyDaysOut = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000)
+
+  const [expiringSoon, justExpired, superAdmins] = await Promise.all([
+    prisma.buildingLease.findMany({
+      where: { endDate: { gte: now, lte: ninetyDaysOut }, expiringNotifiedAt: null },
+      include: { building: { select: { id: true, name: true } } },
+    }),
+    prisma.buildingLease.findMany({
+      where: { endDate: { lt: now }, expiredNotifiedAt: null },
+      include: { building: { select: { id: true, name: true } } },
+    }),
+    prisma.user.findMany({ where: { globalRole: 'SUPER_ADMIN', accountStatus: 'ACTIVE' }, select: { id: true } }),
+  ])
+  if (expiringSoon.length === 0 && justExpired.length === 0) return
+
+  const superAdminIds = superAdmins.map((a) => a.id)
+  const boss = getBoss()
+
+  for (const lease of expiringSoon) {
+    const buildingAdminIds = await getBuildingAdminUserIds(lease.buildingId)
+    const recipientIds = [...new Set([...superAdminIds, ...buildingAdminIds])]
+    if (recipientIds.length > 0) {
+      await boss.insert(
+        'send-notification',
+        recipientIds.map((userId) => ({
+          data: { type: NotificationType.LEASE_EXPIRING, userId, leaseId: lease.id } satisfies NotificationJobData,
+        })),
+      )
+    }
+    dispatchWebhook('lease.expiring', { id: lease.id, buildingId: lease.buildingId, buildingName: lease.building.name, endDate: lease.endDate?.toISOString() }).catch(() => {})
+    await prisma.buildingLease.update({ where: { id: lease.id }, data: { expiringNotifiedAt: now } })
+  }
+
+  for (const lease of justExpired) {
+    const buildingAdminIds = await getBuildingAdminUserIds(lease.buildingId)
+    const recipientIds = [...new Set([...superAdminIds, ...buildingAdminIds])]
+    if (recipientIds.length > 0) {
+      await boss.insert(
+        'send-notification',
+        recipientIds.map((userId) => ({
+          data: { type: NotificationType.LEASE_EXPIRED, userId, leaseId: lease.id } satisfies NotificationJobData,
+        })),
+      )
+    }
+    dispatchWebhook('lease.expired', { id: lease.id, buildingId: lease.buildingId, buildingName: lease.building.name, endDate: lease.endDate?.toISOString() }).catch(() => {})
+    await prisma.buildingLease.update({ where: { id: lease.id }, data: { expiredNotifiedAt: now } })
   }
 }
 
@@ -1512,6 +1606,7 @@ export async function startQueue(): Promise<void> {
   await b.createQueue('send-weekly-report')
   await b.createQueue('expire-transfer-requests')
   await b.createQueue('expire-manager-requests')
+  await b.createQueue('lease-expiry')
 
   await b.work<NotificationJobData>('send-notification', handleSendNotification)
 
@@ -1576,6 +1671,12 @@ export async function startQueue(): Promise<void> {
     await handleSendWeeklyReport()
   })
   await b.schedule('send-weekly-report', '0 8 * * 1', {})
+
+  // Daily 08:00 UTC — a 90-day-out threshold doesn't need faster polling.
+  await b.work('lease-expiry', async () => {
+    await handleLeaseExpiry()
+  })
+  await b.schedule('lease-expiry', '0 8 * * *', {})
 
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] pg-boss started and workers registered' }) + '\n')
 }

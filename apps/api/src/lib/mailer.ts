@@ -871,3 +871,48 @@ export function renderManagerRequestExpired(
   const text = `Hi ${requester.displayName},\n\nNobody reviewed your floor manager access request for ${floor.name}, ${floor.buildingName} in time, so it's been automatically closed. You're welcome to request again.`
   return { subject, html, text }
 }
+
+// ─── LEASE_EXPIRING / LEASE_EXPIRED (see #222) ────────────────────────────────
+
+export function renderLeaseExpiring(
+  recipient: Pick<User, 'displayName'>,
+  lease: { name: string; buildingName: string; endDate: Date },
+  daysLeft: number,
+): { subject: string; html: string; text: string } {
+  const subject = `Lease expiring in ${daysLeft} day${daysLeft === 1 ? '' : 's'} — ${escapeHtml(lease.buildingName)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Lease expiring soon</h1>
+     <p>Hi ${escapeHtml(recipient.displayName)}, the <strong>${escapeHtml(lease.name)}</strong> lease for <strong>${escapeHtml(lease.buildingName)}</strong> expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'}.</p>
+     <div class="detail">
+       <dl>
+         <dt>Building</dt><dd>${escapeHtml(lease.buildingName)}</dd>
+         <dt>Expires</dt><dd>${formatDate(lease.endDate)}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/admin/leases" class="btn">View Leases</a>`,
+  )
+  const text = `Hi ${recipient.displayName},\n\nThe ${lease.name} lease for ${lease.buildingName} expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'} (${formatDate(lease.endDate)}).\n\nView: ${env.APP_URL}/admin/leases`
+  return { subject, html, text }
+}
+
+export function renderLeaseExpired(
+  recipient: Pick<User, 'displayName'>,
+  lease: { name: string; buildingName: string; endDate: Date },
+): { subject: string; html: string; text: string } {
+  const subject = `Lease expired — ${escapeHtml(lease.buildingName)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Lease expired</h1>
+     <p>Hi ${escapeHtml(recipient.displayName)}, the <strong>${escapeHtml(lease.name)}</strong> lease for <strong>${escapeHtml(lease.buildingName)}</strong> has expired.</p>
+     <div class="detail">
+       <dl>
+         <dt>Building</dt><dd>${escapeHtml(lease.buildingName)}</dd>
+         <dt>Expired</dt><dd>${formatDate(lease.endDate)}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/admin/leases" class="btn">View Leases</a>`,
+  )
+  const text = `Hi ${recipient.displayName},\n\nThe ${lease.name} lease for ${lease.buildingName} expired on ${formatDate(lease.endDate)}.\n\nView: ${env.APP_URL}/admin/leases`
+  return { subject, html, text }
+}

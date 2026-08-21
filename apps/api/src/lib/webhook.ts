@@ -40,6 +40,8 @@ export const WEBHOOK_EVENTS = [
   'manager_request.approved',
   'manager_request.rejected',
   'manager_request.expired',
+  'lease.expiring',
+  'lease.expired',
 ] as const
 
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number]

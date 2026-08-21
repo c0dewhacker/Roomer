@@ -194,6 +194,25 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(400).send({ error: { message: 'startDate must be before endDate', code: 'VALIDATION_ERROR' } })
     }
 
+    // If endDate is actually changing, clear whichever expiry-notification
+    // flag(s) no longer apply to the new date — otherwise a lease edited back
+    // out of the expiring-soon window (or renewed past its old expiry) would
+    // never re-notify if it later re-enters either state, since
+    // handleLeaseExpiry only ever looks at leases where the flag is still
+    // null. Only touched when endDate is part of this request; editing e.g.
+    // just the rent amount must not reset either flag.
+    let notifiedResets: { expiringNotifiedAt?: null; expiredNotifiedAt?: null } = {}
+    if (result.data.endDate !== undefined) {
+      const now = new Date()
+      const ninetyDaysOut = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000)
+      const inExpiringWindow = effectiveEndDate !== null && effectiveEndDate >= now && effectiveEndDate <= ninetyDaysOut
+      const isPast = effectiveEndDate !== null && effectiveEndDate < now
+      notifiedResets = {
+        ...(!inExpiringWindow && { expiringNotifiedAt: null }),
+        ...(!isPast && { expiredNotifiedAt: null }),
+      }
+    }
+
     try {
       const lease = await prisma.buildingLease.update({
         where: { id },
@@ -203,6 +222,7 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
           endDate: result.data.endDate !== undefined
             ? (result.data.endDate ? new Date(result.data.endDate) : null)
             : undefined,
+          ...notifiedResets,
         },
         include: {
           building: { select: { id: true, name: true } },
