@@ -474,7 +474,12 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
               asset: { select: { id: true, name: true, floor: { select: { name: true, building: { select: { name: true } } } } } },
             },
           })
-          return { kind: 'extend' as const, rule: updated }
+          // Identify exactly the occurrences this call just created (by the
+          // startsAt values computed above, before the update) so the caller
+          // can notify/webhook only the new ones, not the whole series.
+          const newStartsAtMs = new Set(slots.map((s) => s.startsAt.getTime()))
+          const newlyCreated = updated.bookings.filter((b) => newStartsAtMs.has(b.startsAt.getTime()))
+          return { kind: 'extend' as const, rule: updated, newlyCreated }
         }
 
         // Shortening — cancel occurrences that now fall after the new end date.
@@ -499,7 +504,23 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
         return { kind: 'shorten' as const, rule: updated, droppedBookings }
       })
 
-      if (outcome.kind === 'shorten') {
+      if (outcome.kind === 'extend') {
+        // Same shape as series creation: one confirmation notification for
+        // the operation, plus a booking.created webhook per newly-materialised
+        // occurrence (not per creation call) — this branch didn't exist at
+        // all previously, so extending a series created real CONFIRMED
+        // bookings with no notification and no webhook for any of them.
+        if (outcome.newlyCreated.length > 0) {
+          await enqueueNotification({
+            type: NotificationType.BOOKING_CONFIRMED,
+            userId: rule.userId,
+            bookingId: outcome.newlyCreated[0].id,
+          })
+          for (const b of outcome.newlyCreated) {
+            dispatchWebhook('booking.created', { id: b.id, userId: rule.userId, assetId: rule.assetId, startsAt: b.startsAt, endsAt: b.endsAt }).catch(() => {})
+          }
+        }
+      } else if (outcome.kind === 'shorten') {
         // A recurring rule is always for a single asset, so this is fetched
         // once rather than per dropped occurrence. Only used in the "nobody
         // was queued" branch below — same fan-out a single ad-hoc booking
