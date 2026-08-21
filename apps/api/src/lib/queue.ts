@@ -1021,19 +1021,29 @@ async function handleExpireTransferRequests(): Promise<void> {
     // moment this runs actually flip, so a transfer the recipient accepted/
     // declined (or the requester cancelled) in the race window between the
     // findMany above and here is left alone.
-    const { count } = await prisma.bookingTransfer.updateMany({
+    await prisma.bookingTransfer.updateMany({
       where: { id: { in: expiredTransfers.map((t) => t.id) }, status: 'PENDING' },
       data: { status: 'EXPIRED', respondedAt: now },
     })
-    if (count > 0) {
+    // `count` alone doesn't say *which* rows the conditional update actually
+    // matched — notifying/webhooking over the pre-recheck expiredTransfers
+    // list would tell someone their transfer expired even if it was accepted/
+    // declined/cancelled in the race window instead. Re-query for the subset
+    // that's actually EXPIRED now, same toRelease/toExpire idiom no-show
+    // release and queue-entry expiry use.
+    const stillExpiredTransfers = await prisma.bookingTransfer.findMany({
+      where: { id: { in: expiredTransfers.map((t) => t.id) }, status: 'EXPIRED' },
+      select: { id: true, fromUserId: true },
+    })
+    if (stillExpiredTransfers.length > 0) {
       const b = getBoss()
       await b.insert(
         'send-notification',
-        expiredTransfers.map((t) => ({
+        stillExpiredTransfers.map((t) => ({
           data: { type: NotificationType.BOOKING_TRANSFER_EXPIRED, userId: t.fromUserId, transferId: t.id } satisfies NotificationJobData,
         })),
       )
-      for (const t of expiredTransfers) {
+      for (const t of stillExpiredTransfers) {
         dispatchWebhook('booking.transfer_expired', { id: t.id }).catch(() => {})
       }
     }
@@ -1044,19 +1054,23 @@ async function handleExpireTransferRequests(): Promise<void> {
     select: { id: true, initiatorUserId: true },
   })
   if (expiredSwaps.length > 0) {
-    const { count } = await prisma.bookingSwap.updateMany({
+    await prisma.bookingSwap.updateMany({
       where: { id: { in: expiredSwaps.map((s) => s.id) }, status: 'PENDING' },
       data: { status: 'EXPIRED', respondedAt: now },
     })
-    if (count > 0) {
+    const stillExpiredSwaps = await prisma.bookingSwap.findMany({
+      where: { id: { in: expiredSwaps.map((s) => s.id) }, status: 'EXPIRED' },
+      select: { id: true, initiatorUserId: true },
+    })
+    if (stillExpiredSwaps.length > 0) {
       const b = getBoss()
       await b.insert(
         'send-notification',
-        expiredSwaps.map((s) => ({
+        stillExpiredSwaps.map((s) => ({
           data: { type: NotificationType.BOOKING_SWAP_EXPIRED, userId: s.initiatorUserId, swapId: s.id } satisfies NotificationJobData,
         })),
       )
-      for (const s of expiredSwaps) {
+      for (const s of stillExpiredSwaps) {
         dispatchWebhook('booking.swap_expired', { id: s.id }).catch(() => {})
       }
     }
@@ -1080,20 +1094,28 @@ async function handleExpireManagerRequests(): Promise<void> {
   // Atomic per-row conditional update — only rows still PENDING at the
   // moment this runs actually flip, so a request approved/rejected/withdrawn
   // in the race window between the findMany above and here is left alone.
-  const { count } = await prisma.floorManagerRequest.updateMany({
+  await prisma.floorManagerRequest.updateMany({
     where: { id: { in: expired.map((r) => r.id) }, status: 'PENDING' },
     data: { status: 'EXPIRED' },
   })
-  if (count === 0) return
+  // Re-query for the subset actually EXPIRED now — a bare update count
+  // doesn't say *which* rows flipped, and notifying over the pre-recheck
+  // `expired` list would tell someone their request expired even if it was
+  // approved/rejected/withdrawn in the race window instead.
+  const stillExpired = await prisma.floorManagerRequest.findMany({
+    where: { id: { in: expired.map((r) => r.id) }, status: 'EXPIRED' },
+    select: { id: true, userId: true },
+  })
+  if (stillExpired.length === 0) return
 
   const b = getBoss()
   await b.insert(
     'send-notification',
-    expired.map((r) => ({
+    stillExpired.map((r) => ({
       data: { type: NotificationType.MANAGER_REQUEST_EXPIRED, userId: r.userId, managerRequestId: r.id } satisfies NotificationJobData,
     })),
   )
-  for (const r of expired) {
+  for (const r of stillExpired) {
     dispatchWebhook('manager_request.expired', { id: r.id, userId: r.userId }).catch(() => {})
   }
 }
@@ -1246,9 +1268,22 @@ async function handleExpireClaimDeadlines(): Promise<void> {
 
   if (expiredPromoted.length === 0) return
 
-  // Expire all in one batch
+  // Conditional on status: 'PROMOTED' — without this, a claim that commits
+  // (routes/queue.ts POST /:id/claim-by-token, under lockAssetForBooking) in
+  // the gap between the findMany above and this update would get silently
+  // overwritten back to EXPIRED even though a real Booking now exists for
+  // that user. That route's own comment documents expecting exactly this
+  // guard on the cron side; only the count/rows this condition actually
+  // matches are safe to notify/promote from below — not the stale
+  // pre-recheck `expiredPromoted` list, which may include entries someone
+  // just legitimately claimed.
+  const stillExpired = await prisma.queueEntry.findMany({
+    where: { id: { in: expiredPromoted.map((e) => e.id) }, status: 'PROMOTED' },
+  })
+  if (stillExpired.length === 0) return
+
   await prisma.queueEntry.updateMany({
-    where: { id: { in: expiredPromoted.map((e) => e.id) } },
+    where: { id: { in: stillExpired.map((e) => e.id) }, status: 'PROMOTED' },
     data: { status: 'EXPIRED' },
   })
 
@@ -1258,7 +1293,7 @@ async function handleExpireClaimDeadlines(): Promise<void> {
   // lost their slot with no email or in-app notice at all.
   await getBoss().insert(
     'send-notification',
-    expiredPromoted.map((entry) => ({
+    stillExpired.map((entry) => ({
       data: {
         type: NotificationType.QUEUE_EXPIRED,
         userId: entry.userId,
@@ -1267,7 +1302,7 @@ async function handleExpireClaimDeadlines(): Promise<void> {
     })),
   )
 
-  for (const entry of expiredPromoted) {
+  for (const entry of stillExpired) {
     dispatchWebhook('queue.expired', { id: entry.id, userId: entry.userId, assetId: entry.assetId }).catch(() => {})
   }
 
@@ -1278,7 +1313,7 @@ async function handleExpireClaimDeadlines(): Promise<void> {
   // instead of both racing to promote the same "next" entry.
   const toPromote = (
     await Promise.all(
-      expiredPromoted.map((entry) => promoteNextQueueEntry(entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)),
+      stillExpired.map((entry) => promoteNextQueueEntry(entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)),
     )
   ).filter((e): e is NonNullable<typeof e> => e !== null)
 
