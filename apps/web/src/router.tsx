@@ -40,6 +40,7 @@ const OrgChartPage = lazy(() => import('./pages/admin/OrgChartPage'))
 const FloorAdminPage = lazy(() => import('./pages/admin/FloorAdminPage'))
 const ReportsAdminPage = lazy(() => import('./pages/admin/ReportsAdminPage'))
 const BookingsReportPage = lazy(() => import('./pages/admin/BookingsReportPage'))
+const AuditLogAdminPage = lazy(() => import('./pages/admin/AuditLogAdminPage'))
 
 function PageLoader() {
   return (
@@ -204,6 +205,7 @@ export function AppRouter() {
             <Route path="/admin/departments" element={<DepartmentsAdminPage />} />
             <Route path="/admin/org-chart" element={<Suspense fallback={<PageLoader />}><OrgChartPage /></Suspense>} />
             <Route path="/admin/webhooks" element={<WebhooksAdminPage />} />
+            <Route path="/admin/audit-log" element={<Suspense fallback={<PageLoader />}><AuditLogAdminPage /></Suspense>} />
           </Route>
 
           {/* SUPER_ADMIN, BUILDING_ADMIN, or FLOOR_MANAGER routes — backend has real floor-scoped support */}

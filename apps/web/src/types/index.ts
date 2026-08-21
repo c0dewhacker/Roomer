@@ -512,3 +512,16 @@ export interface FloorManagerRequest {
   floor?: { id: string; name: string; building: { id: string; name: string } }
   reviewedBy?: { id: string; displayName: string } | null
 }
+
+export interface AuditLogEntry {
+  id: string
+  actorId: string | null
+  action: string
+  resourceType: string
+  resourceId: string
+  before: unknown
+  after: unknown
+  ipAddress: string | null
+  createdAt: string
+  actor: { id: string; displayName: string; email: string } | null
+}

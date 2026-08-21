@@ -28,6 +28,7 @@ import { departmentRoutes } from './routes/departments.js'
 import { subscriptionRoutes } from './routes/subscriptions.js'
 import { pushRoutes } from './routes/push.js'
 import { ballotRoutes } from './routes/ballots.js'
+import { auditLogRoutes } from './routes/audit-log.js'
 import { recurringBookingRoutes } from './routes/recurring.js'
 import { webhookRoutes } from './routes/webhooks.js'
 import { directoryRoutes } from './routes/directory.js'
@@ -313,6 +314,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await fastify.register(webhookRoutes, { prefix: '/api/v1/webhooks' })
   await fastify.register(directoryRoutes, { prefix: '/api/v1/directory' })
   await fastify.register(ballotRoutes, { prefix: '/api/v1/ballots' })
+  await fastify.register(auditLogRoutes, { prefix: '/api/v1/audit-log' })
 
   // ─── Health checks ─────────────────────────────────────────────────────────
   // /health/live — process is running (Kubernetes liveness probe)

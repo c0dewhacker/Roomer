@@ -26,6 +26,7 @@ import type {
   Ballot,
   BallotRun,
   BallotEntry,
+  AuditLogEntry,
 } from '../types'
 
 const BASE = '/api/v1'
@@ -1085,4 +1086,25 @@ export const ballotsApi = {
   withdraw: (runId: string) => api.delete<{ data: { ok: true } }>(`/ballots/runs/${runId}/enter`),
   myEntries: () => api.get<{ data: BallotEntry[] }>('/ballots/my-entries'),
   decline: (entryId: string) => api.post<{ data: { ok: true } }>(`/ballots/entries/${entryId}/decline`, {}),
+}
+
+export const auditLogApi = {
+  list: (params: {
+    actorId?: string
+    resourceType?: string
+    resourceId?: string
+    action?: string
+    from?: string
+    to?: string
+    page?: number
+    limit?: number
+  }) => {
+    const qs = new URLSearchParams()
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== '') qs.set(k, String(v))
+    }
+    return api.get<{ data: AuditLogEntry[]; meta: { page: number; limit: number; total: number; totalPages: number } }>(
+      `/audit-log${qs.toString() ? `?${qs}` : ''}`,
+    )
+  },
 }

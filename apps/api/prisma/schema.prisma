@@ -1070,7 +1070,9 @@ model Notification {
 
 model AuditLog {
   id           String   @id @default(cuid())
-  actorId      String
+  /// Null = a system/cron/SCIM-driven change with no requesting human actor
+  /// (e.g. the no-show release sweep, a SCIM-provisioned user create/update).
+  actorId      String?
   action       String
   resourceType String
   resourceId   String
@@ -1078,7 +1080,11 @@ model AuditLog {
   after        Json?
   ipAddress    String?
   createdAt    DateTime @default(now())
-  actor        User     @relation("actor", fields: [actorId], references: [id])
+  /// onDelete: SetNull rather than the implicit Restrict a required relation
+  /// would carry — without it, a future user-hard-delete feature would be
+  /// silently blocked the moment it touches any user who ever appeared as
+  /// an audit actor.
+  actor        User?    @relation("actor", fields: [actorId], references: [id], onDelete: SetNull)
 
   @@index([actorId])
   @@index([resourceType, resourceId])

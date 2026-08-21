@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useAuthStore } from '@/stores/auth'
 import { useQuery } from '@tanstack/react-query'
 import { buildingsApi } from '@/lib/api'
-import { Calendar, Clock, Building2, Users, Settings, Package, BarChart3, FileText, Shield, Layers, Network, Workflow, Webhook, MapPin, Table, ShieldPlus, ClipboardCheck, Dices } from 'lucide-react'
+import { Calendar, Clock, Building2, Users, Settings, Package, BarChart3, FileText, Shield, Layers, Network, Workflow, Webhook, MapPin, Table, ShieldPlus, ClipboardCheck, Dices, History } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
 export interface NavItem {
@@ -116,6 +116,7 @@ export function useNavConfig() {
           items: [
             { to: '/admin/groups', icon: Shield, label: 'Access Groups' },
             { to: '/admin/webhooks', icon: Webhook, label: 'Webhooks' },
+            { to: '/admin/audit-log', icon: History, label: 'Audit Log' },
             { to: '/admin/settings', icon: Settings, label: 'Settings' },
           ],
         },
