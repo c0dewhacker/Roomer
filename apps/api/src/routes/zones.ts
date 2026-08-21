@@ -4,6 +4,7 @@ import { createZoneSchema, updateZoneSchema, createZoneGroupSchema, updateZoneGr
 import { requireAuth } from '../middleware/requireAuth.js'
 import { isFloorManagerForFloor } from '../middleware/requireRole.js'
 import { cancelFutureBookingsForAssets } from '../lib/queue.js'
+import { recordAuditLog } from '../lib/audit.js'
 
 export async function zoneRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Zones'], ...route.schema } })
@@ -49,6 +50,14 @@ export async function zoneRoutes(fastify: FastifyInstance): Promise<void> {
           zoneGroupId: result.data.zoneGroupId ?? null,
         },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'zone.created',
+        resourceType: 'Zone',
+        resourceId: zone.id,
+        after: { floorId: zone.floorId, name: zone.name, colour: zone.colour, zoneGroupId: zone.zoneGroupId },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(201).send({ data: zone })
     },
@@ -93,7 +102,17 @@ export async function zoneRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       try {
+        const before = await prisma.zone.findUnique({ where: { id }, select: { name: true, colour: true, zoneGroupId: true } })
         const zone = await prisma.zone.update({ where: { id }, data: result.data })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'zone.updated',
+          resourceType: 'Zone',
+          resourceId: id,
+          before,
+          after: { name: zone.name, colour: zone.colour, zoneGroupId: zone.zoneGroupId },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: zone })
       } catch {
         return reply.status(404).send({ error: { message: 'Zone not found', code: 'NOT_FOUND' } })
@@ -157,7 +176,15 @@ export async function zoneRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       try {
-        await prisma.zone.delete({ where: { id } })
+        const deleted = await prisma.zone.delete({ where: { id } })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'zone.deleted',
+          resourceType: 'Zone',
+          resourceId: id,
+          before: { floorId: deleted.floorId, name: deleted.name, colour: deleted.colour, zoneGroupId: deleted.zoneGroupId },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: { ok: true } })
       } catch {
         return reply.status(404).send({ error: { message: 'Zone not found', code: 'NOT_FOUND' } })
@@ -199,6 +226,14 @@ export async function zoneGroupRoutes(fastify: FastifyInstance): Promise<void> {
           name: result.data.name,
         },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'zone_group.created',
+        resourceType: 'ZoneGroup',
+        resourceId: group.id,
+        after: { floorId: group.floorId, name: group.name },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(201).send({ data: group })
     },
@@ -217,7 +252,7 @@ export async function zoneGroupRoutes(fastify: FastifyInstance): Promise<void> {
         })
       }
 
-      const existing = await prisma.zoneGroup.findUnique({ where: { id }, select: { floorId: true } })
+      const existing = await prisma.zoneGroup.findUnique({ where: { id }, select: { floorId: true, name: true } })
       if (!existing) {
         return reply.status(404).send({ error: { message: 'Zone group not found', code: 'NOT_FOUND' } })
       }
@@ -230,6 +265,15 @@ export async function zoneGroupRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       const group = await prisma.zoneGroup.update({ where: { id }, data: { name: result.data.name } })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'zone_group.updated',
+        resourceType: 'ZoneGroup',
+        resourceId: id,
+        before: { name: existing.name },
+        after: { name: group.name },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: group })
     },
   )
@@ -253,7 +297,15 @@ export async function zoneGroupRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       try {
-        await prisma.zoneGroup.delete({ where: { id } })
+        const deleted = await prisma.zoneGroup.delete({ where: { id } })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'zone_group.deleted',
+          resourceType: 'ZoneGroup',
+          resourceId: id,
+          before: { floorId: deleted.floorId, name: deleted.name },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: { ok: true } })
       } catch {
         return reply.status(404).send({ error: { message: 'Zone group not found', code: 'NOT_FOUND' } })

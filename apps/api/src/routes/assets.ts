@@ -12,6 +12,7 @@ import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { checkGroupAccess } from './groups.js'
 import { saveCategoryIcon, deleteFile, resolveStoragePath } from '../lib/storage.js'
+import { recordAuditLog } from '../lib/audit.js'
 
 class ZoneGroupConflictError extends Error {
   constructor(public readonly code: string, message: string) {
@@ -201,6 +202,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
+      // One summary row for the whole batch, not one per created asset — this
+      // can create up to 500 rows in a single call.
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset.bulk_imported',
+        resourceType: 'Asset',
+        resourceId: randomUUID(),
+        after: { floorId, createdCount: created.length, errorCount: errors.length, totalRows: assets.length },
+        ipAddress: request.ip,
+      }, request.log)
+
       return reply.status(200).send({ data: { created: created.length, errors } })
     },
   )
@@ -249,6 +261,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           }),
         ),
       )
+      // One summary row for the whole batch, not one per moved asset.
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset.positions_updated',
+        resourceType: 'Asset',
+        resourceId: randomUUID(),
+        after: { assetIds: result.data.assets.map((a) => a.id), count: updates.length },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(200).send({ data: updates })
     },
@@ -372,6 +393,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
       try {
         const category = await prisma.assetCategory.create({ data: result.data })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'asset_category.created',
+          resourceType: 'AssetCategory',
+          resourceId: category.id,
+          after: { name: category.name, defaultIsBookable: category.defaultIsBookable, colour: category.colour },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(201).send({ data: category })
       } catch {
         return reply.status(409).send({
@@ -398,7 +427,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(400).send({ error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() } })
       }
       try {
+        const before = await prisma.assetCategory.findUnique({ where: { id }, select: { name: true, description: true, defaultIsBookable: true, defaultIcon: true, colour: true } })
         const category = await prisma.assetCategory.update({ where: { id }, data: result.data })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'asset_category.updated',
+          resourceType: 'AssetCategory',
+          resourceId: id,
+          before,
+          after: { name: category.name, description: category.description, defaultIsBookable: category.defaultIsBookable, defaultIcon: category.defaultIcon, colour: category.colour },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: category })
       } catch {
         return reply.status(404).send({ error: { message: 'Category not found', code: 'NOT_FOUND' } })
@@ -443,6 +482,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       // genuinely need the old file cleaned up separately.)
       // Store the relative storage path — the serve URL is /assets/categories/:id/icon
       const category = await prisma.assetCategory.update({ where: { id }, data: { iconUrl: relPath } })
+      // Icon binary content is never logged — only that one was set/replaced.
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: existing.iconUrl ? 'asset_category.icon_replaced' : 'asset_category.icon_uploaded',
+        resourceType: 'AssetCategory',
+        resourceId: id,
+        ipAddress: request.ip,
+      }, request.log)
       // Return with the serve URL so the client can use it immediately
       return reply.status(200).send({ data: { ...category, iconUrl: `/api/v1/assets/categories/${id}/icon` } })
     },
@@ -492,7 +539,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       if (existing.iconUrl) await deleteFile(existing.iconUrl).catch(() => {})
-      await prisma.assetCategory.delete({ where: { id } })
+      const deleted = await prisma.assetCategory.delete({ where: { id } })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset_category.deleted',
+        resourceType: 'AssetCategory',
+        resourceId: id,
+        before: { name: deleted.name, description: deleted.description, colour: deleted.colour },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     },
   )
@@ -596,6 +651,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       create: { userId: request.user.id, assetId: id },
       update: {},
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'user_favourite_asset.added',
+      resourceType: 'UserFavouriteAsset',
+      resourceId: `${request.user.id}:${id}`,
+      after: { userId: request.user.id, assetId: id },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true, favourited: true } })
   })
 
@@ -603,6 +666,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.delete('/:id/favourite', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
     await prisma.userFavouriteAsset.deleteMany({ where: { userId: request.user.id, assetId: id } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'user_favourite_asset.removed',
+      resourceType: 'UserFavouriteAsset',
+      resourceId: `${request.user.id}:${id}`,
+      before: { userId: request.user.id, assetId: id },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true, favourited: false } })
   })
 
@@ -753,6 +824,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     const window = await prisma.assetAvailabilityWindow.create({
       data: { assetId: id, ownerId: request.user.id, startsAt, endsAt, note: body.note ?? null },
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'asset_availability_window.created',
+      resourceType: 'AssetAvailabilityWindow',
+      resourceId: window.id,
+      after: { assetId: id, startsAt: window.startsAt, endsAt: window.endsAt },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(201).send({ data: window })
   })
 
@@ -795,6 +874,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     await prisma.assetAvailabilityWindow.delete({ where: { id: windowId } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'asset_availability_window.deleted',
+      resourceType: 'AssetAvailabilityWindow',
+      resourceId: windowId,
+      before: { assetId: id, startsAt: window.startsAt, endsAt: window.endsAt },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 
@@ -831,12 +918,22 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
     }
 
+    const before = await prisma.assetAvailabilityRule.findMany({ where: { assetId: id }, select: { weekday: true } })
     await prisma.$transaction([
       prisma.assetAvailabilityRule.deleteMany({ where: { assetId: id } }),
       prisma.assetAvailabilityRule.createMany({
         data: weekdays.map((weekday) => ({ assetId: id, ownerId: request.user.id, weekday })),
       }),
     ])
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'asset_availability_rule.replaced',
+      resourceType: 'Asset',
+      resourceId: id,
+      before: { weekdays: before.map((r) => r.weekday).sort((a, b) => a - b) },
+      after: { weekdays: weekdays.sort((a, b) => a - b) },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { weekdays: weekdays.sort((a, b) => a - b) } })
   })
 
@@ -959,6 +1056,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         bookingId: booking.id,
       })
       dispatchWebhook('queue.claimed', { id: first.id, userId: first.userId, assetId: id, bookingId: booking.id }).catch(() => {})
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset.made_available',
+        resourceType: 'Booking',
+        resourceId: booking.id,
+        after: { assetId: id, userId: first.userId, startsAt: booking.startsAt, endsAt: booking.endsAt, outcome: 'auto_confirmed' },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(200).send({ data: { queued: 1, action: 'auto_confirmed', userId: first.userId } })
     }
@@ -1021,6 +1126,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       claimDeadline: promoted.claimDeadline.toISOString(),
     })
     dispatchWebhook('queue.promoted', { id: promoted.id, userId: promoted.userId, assetId: id, claimDeadline: promoted.claimDeadline.toISOString() }).catch(() => {})
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'asset.made_available',
+      resourceType: 'QueueEntry',
+      resourceId: promoted.id,
+      after: { assetId: id, userId: promoted.userId, outcome: 'promoted', claimDeadline: promoted.claimDeadline },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(200).send({ data: { queued: waiting.length, action: 'promoted', userId: promoted.userId, claimDeadline: promoted.claimDeadline } })
   })
@@ -1062,6 +1175,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           ),
         )
       }
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset_user_assignment.cleared_by_floor',
+        resourceType: 'AssetUserAssignment',
+        resourceId: floorId,
+        before: { floorId, assetIds },
+        after: { clearedCount: count },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { cleared: count } })
     },
   )
@@ -1182,6 +1304,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           errors.push({ row: i + 1, assetId, userEmail, error: 'Unexpected error' })
         }
       }
+
+      // One summary row for the whole batch, not one per assigned row — this
+      // can touch up to 5000 rows in a single call.
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset_user_assignment.bulk_assigned',
+        resourceType: 'AssetUserAssignment',
+        resourceId: randomUUID(),
+        after: { assignedCount: assigned, errorCount: errors.length, totalRows: rows.length },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(200).send({ data: { assigned, errors } })
     },
@@ -1331,6 +1464,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           include: { category: true },
         })
         dispatchWebhook('asset.created', { id: asset.id, name: asset.name, categoryId: asset.categoryId }).catch(() => {})
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'asset.created',
+          resourceType: 'Asset',
+          resourceId: asset.id,
+          after: { name: asset.name, categoryId: asset.categoryId, floorId: asset.floorId, primaryZoneId: asset.primaryZoneId, isBookable: asset.isBookable, bookingStatus: asset.bookingStatus },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(201).send({ data: asset })
       } catch (err) {
         // assetTag is the only unique constraint on Asset, so P2002 always
@@ -1365,7 +1506,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
       // Authorization: super admin can edit any asset; floor managers and building admins can edit assets on their floors
       const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
-      const existing = await prisma.asset.findUnique({ where: { id }, select: { floorId: true, primaryZoneId: true } })
+      const existing = await prisma.asset.findUnique({ where: { id }, select: { floorId: true, primaryZoneId: true, name: true, categoryId: true, status: true, bookingStatus: true, isBookable: true } })
       if (!existing) {
         return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
       }
@@ -1438,6 +1579,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         } else {
           dispatchWebhook('asset.updated', { id: asset.id, name: asset.name }).catch(() => {})
         }
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: statusChanged ? 'asset.status_changed' : 'asset.updated',
+          resourceType: 'Asset',
+          resourceId: id,
+          before: existing,
+          after: { name: asset.name, categoryId: asset.categoryId, floorId: asset.floorId, primaryZoneId: asset.primaryZoneId, status: asset.status, bookingStatus: asset.bookingStatus, isBookable: asset.isBookable },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: asset })
       } catch (err) {
         if ((err as { code?: string }).code === 'P2025') {
@@ -1474,12 +1624,21 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       // unplaced, so there's no slot left for anyone to be promoted into.
       await cancelFutureBookingsForAssets([id], { skipQueuePromotion: true })
 
+      const before = await prisma.asset.findUnique({ where: { id }, select: { name: true, categoryId: true, floorId: true, primaryZoneId: true } })
       try {
         await prisma.asset.delete({ where: { id } })
-        return reply.status(200).send({ data: { ok: true } })
       } catch {
         return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
       }
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset.deleted',
+        resourceType: 'Asset',
+        resourceId: id,
+        before,
+        ipAddress: request.ip,
+      }, request.log)
+      return reply.status(200).send({ data: { ok: true } })
     },
   )
 
@@ -1572,6 +1731,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       if (!wasAlreadyAssigned) {
         await enqueueNotification({ type: NotificationType.ASSET_ASSIGNED, userId: result.data.userId, assetId: id })
       }
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset_user_assignment.added',
+        resourceType: 'AssetUserAssignment',
+        resourceId: `${id}:${result.data.userId}`,
+        after: { assetId: id, userId: result.data.userId, isPrimary: assignment.isPrimary },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(201).send({ data: { ...assignment.user, isPrimary: assignment.isPrimary } })
     },
   )
@@ -1590,9 +1757,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
       try {
-        await prisma.assetUserAssignment.delete({
+        const deleted = await prisma.assetUserAssignment.delete({
           where: { assetId_userId: { assetId: id, userId } },
         })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'asset_user_assignment.removed',
+          resourceType: 'AssetUserAssignment',
+          resourceId: `${id}:${userId}`,
+          before: { assetId: id, userId, isPrimary: deleted.isPrimary },
+          ipAddress: request.ip,
+        }, request.log)
         const remaining = await prisma.assetUserAssignment.count({ where: { assetId: id } })
         if (remaining === 0) {
           // Restore whatever bookingStatus the desk had before it became
@@ -1643,6 +1818,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           data: { isPrimary: true },
         }),
       ])
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset_user_assignment.primary_set',
+        resourceType: 'AssetUserAssignment',
+        resourceId: `${id}:${userId}`,
+        after: { assetId: id, userId, isPrimary: true },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     },
   )
@@ -1679,6 +1862,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         const entry = await prisma.assetAllowList.create({
           data: { assetId: id, userId: result.data.userId },
         })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'asset_allow_list.added',
+          resourceType: 'AssetAllowList',
+          resourceId: `${id}:${result.data.userId}`,
+          after: { assetId: id, userId: result.data.userId },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(201).send({ data: entry })
       } catch {
         return reply.status(409).send({
@@ -1707,6 +1898,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         await prisma.assetAllowList.delete({
           where: { assetId_userId: { assetId: id, userId } },
         })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'asset_allow_list.removed',
+          resourceType: 'AssetAllowList',
+          resourceId: `${id}:${userId}`,
+          before: { assetId: id, userId },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: { ok: true } })
       } catch {
         return reply.status(404).send({
@@ -1807,6 +2006,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
       try {
         await prisma.assetZone.create({ data: { assetId: id, zoneId: result.data.zoneId } })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'asset_zone.added',
+          resourceType: 'AssetZone',
+          resourceId: `${id}:${result.data.zoneId}`,
+          after: { assetId: id, zoneId: result.data.zoneId },
+          ipAddress: request.ip,
+        }, request.log)
       } catch {
         return reply.status(409).send({ error: { message: 'Asset already in this zone', code: 'ALREADY_EXISTS' } })
       }
@@ -1837,6 +2044,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
       try {
         await prisma.assetZone.delete({ where: { assetId_zoneId: { assetId: id, zoneId } } })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'asset_zone.removed',
+          resourceType: 'AssetZone',
+          resourceId: `${id}:${zoneId}`,
+          before: { assetId: id, zoneId },
+          ipAddress: request.ip,
+        }, request.log)
       } catch {
         return reply.status(404).send({ error: { message: 'Zone membership not found', code: 'NOT_FOUND' } })
       }

@@ -5,6 +5,7 @@ import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { isBuildingManagerForBuilding, getManagedBuildingIds } from '../middleware/requireRole.js'
 import { resolveStoragePath, checkFileMagic } from '../lib/storage.js'
+import { recordAuditLog } from '../lib/audit.js'
 import path from 'path'
 import { z } from 'zod'
 
@@ -131,6 +132,14 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
         documents: true,
       },
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'building_lease.created',
+      resourceType: 'BuildingLease',
+      resourceId: lease.id,
+      after: { buildingId: lease.buildingId, name: lease.name, startDate: lease.startDate, endDate: lease.endDate, landlord: lease.landlord, rentAmount: lease.rentAmount, currency: lease.currency },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(201).send({ data: lease })
   })
@@ -171,7 +180,7 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    const existing = await prisma.buildingLease.findUnique({ where: { id }, select: { buildingId: true, startDate: true, endDate: true } })
+    const existing = await prisma.buildingLease.findUnique({ where: { id }, select: { buildingId: true, name: true, startDate: true, endDate: true, landlord: true, rentAmount: true, currency: true } })
     if (!existing) {
       return reply.status(404).send({ error: { message: 'Lease not found', code: 'NOT_FOUND' } })
     }
@@ -229,6 +238,15 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
           documents: { select: { id: true, filename: true, sizeBytes: true, mimeType: true, uploadedAt: true } },
         },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'building_lease.updated',
+        resourceType: 'BuildingLease',
+        resourceId: id,
+        before: existing,
+        after: { name: lease.name, startDate: lease.startDate, endDate: lease.endDate, landlord: lease.landlord, rentAmount: lease.rentAmount, currency: lease.currency },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: lease })
     } catch {
       return reply.status(404).send({ error: { message: 'Lease not found', code: 'NOT_FOUND' } })
@@ -266,6 +284,14 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     await prisma.buildingLease.delete({ where: { id } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'building_lease.deleted',
+      resourceType: 'BuildingLease',
+      resourceId: id,
+      before: { buildingId: lease.buildingId, name: lease.name, startDate: lease.startDate, endDate: lease.endDate, landlord: lease.landlord, rentAmount: lease.rentAmount, currency: lease.currency },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 
@@ -337,6 +363,14 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
         sizeBytes: buffer.length,
       },
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'lease_document.uploaded',
+      resourceType: 'LeaseDocument',
+      resourceId: doc.id,
+      after: { leaseId: id, filename: doc.filename, mimeType: doc.mimeType, sizeBytes: doc.sizeBytes },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(201).send({ data: doc })
   })
@@ -400,6 +434,14 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
     try { await fs.promises.unlink(absPath) } catch { /* ignore */ }
 
     await prisma.leaseDocument.delete({ where: { id: docId } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'lease_document.deleted',
+      resourceType: 'LeaseDocument',
+      resourceId: docId,
+      before: { leaseId: doc.leaseId, filename: doc.filename, mimeType: doc.mimeType, sizeBytes: doc.sizeBytes },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 }

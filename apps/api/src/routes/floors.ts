@@ -9,6 +9,7 @@ import { isFloorManagerForFloor, isBuildingManagerForBuilding, requireGlobalRole
 import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage.js'
 import { checkGroupAccess } from './groups.js'
 import { cancelFutureBookingsForFloors } from '../lib/queue.js'
+import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
 /**
@@ -253,6 +254,14 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       const role = await prisma.groupResourceRole.create({
         data: { groupId, role: 'FLOOR_MANAGER', scopeType: 'FLOOR', floorId: id },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'group_resource_role.granted',
+        resourceType: 'GroupResourceRole',
+        resourceId: role.id,
+        after: { groupId, role: 'FLOOR_MANAGER', scopeType: 'FLOOR', floorId: id },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(201).send({ data: { roleId: role.id, id: group.id, name: group.name } })
     },
@@ -279,6 +288,14 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       await prisma.groupResourceRole.delete({ where: { id: role.id } })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'group_resource_role.revoked',
+        resourceType: 'GroupResourceRole',
+        resourceId: role.id,
+        before: { groupId, role: 'FLOOR_MANAGER', scopeType: 'FLOOR', floorId: id },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     },
   )
@@ -312,6 +329,14 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           level: result.data.level ?? 0,
         },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'floor.created',
+        resourceType: 'Floor',
+        resourceId: floor.id,
+        after: { buildingId: floor.buildingId, name: floor.name, level: floor.level },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(201).send({ data: floor })
     },
@@ -339,7 +364,17 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       try {
+        const before = await prisma.floor.findUnique({ where: { id }, select: { name: true, level: true } })
         const floor = await prisma.floor.update({ where: { id }, data: result.data })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'floor.updated',
+          resourceType: 'Floor',
+          resourceId: id,
+          before,
+          after: { name: floor.name, level: floor.level },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: floor })
       } catch {
         return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
@@ -373,12 +408,21 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       // but its files on disk don't clean themselves up (same fix as the
       // existing "replace floor plan" upload path above).
       const floorPlan = await prisma.floorPlan.findUnique({ where: { floorId: id } })
+      const floorBefore = await prisma.floor.findUnique({ where: { id }, select: { buildingId: true, name: true, level: true } })
 
       try {
         await prisma.floor.delete({ where: { id } })
       } catch {
         return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
       }
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'floor.deleted',
+        resourceType: 'Floor',
+        resourceId: id,
+        before: floorBefore,
+        ipAddress: request.ip,
+      }, request.log)
 
       if (floorPlan) {
         await deleteFile(floorPlan.originalPath)
@@ -486,6 +530,15 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           height: saved.height,
         },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: existing ? 'floor_plan.replaced' : 'floor_plan.uploaded',
+        resourceType: 'FloorPlan',
+        resourceId: floorPlan.id,
+        before: existing ? { fileType: existing.fileType, width: existing.width, height: existing.height } : null,
+        after: { fileType: floorPlan.fileType, width: floorPlan.width, height: floorPlan.height },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(200).send({ data: floorPlan })
     },
@@ -595,6 +648,15 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         where: { floorId: id },
         data: { displayScale },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'floor_plan.transform_updated',
+        resourceType: 'FloorPlan',
+        resourceId: updated.id,
+        before: { displayScale: floorPlan.displayScale },
+        after: { displayScale: updated.displayScale },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.send({ data: updated })
     },

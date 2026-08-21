@@ -6,6 +6,7 @@ import { requireGlobalRole, getManagedBuildingIds } from '../middleware/requireR
 import { canUserAccessBuilding } from './groups.js'
 import { cancelFutureBookingsForFloors } from '../lib/queue.js'
 import { deleteFile } from '../lib/storage.js'
+import { recordAuditLog } from '../lib/audit.js'
 
 /**
  * Filter a building's floors down to the ones `userId` may access, matching
@@ -151,6 +152,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
         },
         include: { _count: { select: { floors: true } } },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'building.created',
+        resourceType: 'Building',
+        resourceId: building.id,
+        after: { name: building.name, address: building.address },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(201).send({ data: building })
     },
@@ -251,6 +260,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
 
       try {
         await prisma.groupBuildingAccess.create({ data: { groupId, buildingId: id } })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'group_building_access.granted',
+          resourceType: 'GroupBuildingAccess',
+          resourceId: `${groupId}:${id}`,
+          after: { groupId, buildingId: id },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(201).send({ data: { groupId, buildingId: id } })
       } catch {
         return reply.status(409).send({ error: { message: 'Access rule already exists', code: 'ALREADY_EXISTS' } })
@@ -269,6 +286,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
         await prisma.groupBuildingAccess.delete({
           where: { groupId_buildingId: { groupId, buildingId: id } },
         })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'group_building_access.revoked',
+          resourceType: 'GroupBuildingAccess',
+          resourceId: `${groupId}:${id}`,
+          before: { groupId, buildingId: id },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: { ok: true } })
       } catch {
         return reply.status(404).send({ error: { message: 'Access rule not found', code: 'NOT_FOUND' } })
@@ -333,6 +358,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       const role = await prisma.userResourceRole.create({
         data: { userId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user_resource_role.granted',
+        resourceType: 'UserResourceRole',
+        resourceId: role.id,
+        after: { userId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(201).send({ data: { roleId: role.id, id: user.id, displayName: user.displayName, email: user.email } })
     },
   )
@@ -354,6 +387,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       if (result.count === 0) {
         return reply.status(404).send({ error: { message: 'Manager role not found', code: 'NOT_FOUND' } })
       }
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user_resource_role.revoked',
+        resourceType: 'UserResourceRole',
+        resourceId: `${userId}:BUILDING:${id}`,
+        before: { userId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id, deletedCount: result.count },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     },
   )
@@ -414,6 +455,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       const role = await prisma.groupResourceRole.create({
         data: { groupId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'group_resource_role.granted',
+        resourceType: 'GroupResourceRole',
+        resourceId: role.id,
+        after: { groupId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(201).send({ data: { roleId: role.id, id: group.id, name: group.name, memberCount: 0 } })
     },
@@ -434,6 +483,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       await prisma.groupResourceRole.delete({ where: { id: role.id } })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'group_resource_role.revoked',
+        resourceType: 'GroupResourceRole',
+        resourceId: role.id,
+        before: { groupId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     },
   )
@@ -452,10 +509,20 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       try {
+        const before = await prisma.building.findUnique({ where: { id }, select: { name: true, address: true } })
         const building = await prisma.building.update({
           where: { id },
           data: result.data,
         })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'building.updated',
+          resourceType: 'Building',
+          resourceId: id,
+          before,
+          after: { name: building.name, address: building.address },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: building })
       } catch {
         return reply.status(404).send({
@@ -493,6 +560,7 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
         select: { storagePath: true },
       })
 
+      const buildingBefore = await prisma.building.findUnique({ where: { id }, select: { name: true, address: true } })
       try {
         await prisma.building.delete({ where: { id } })
       } catch {
@@ -500,6 +568,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
           error: { message: 'Building not found', code: 'NOT_FOUND' },
         })
       }
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'building.deleted',
+        resourceType: 'Building',
+        resourceId: id,
+        before: buildingBefore,
+        ipAddress: request.ip,
+      }, request.log)
 
       for (const plan of floorPlans) {
         await deleteFile(plan.originalPath)
