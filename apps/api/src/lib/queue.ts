@@ -1123,7 +1123,7 @@ async function handleAutoCompleteBookings(): Promise<void> {
 
 async function handleReleaseNoShows(): Promise<void> {
   const org = await prisma.organisation.findFirst({
-    select: { noShowReleaseEnabled: true, checkInGraceMinutes: true },
+    select: { noShowReleaseEnabled: true, checkInGraceMinutes: true, qrCheckInMode: true },
   })
   if (!org) return
   const orgDefault = org.noShowReleaseEnabled
@@ -1155,7 +1155,13 @@ async function handleReleaseNoShows(): Promise<void> {
       asset: {
         select: {
           userAssignments: { select: { userId: true } },
-          floor: { select: { noShowReleaseEnabled: true, building: { select: { noShowReleaseEnabled: true } } } },
+          floor: {
+            select: {
+              noShowReleaseEnabled: true,
+              qrCheckInMode: true,
+              building: { select: { noShowReleaseEnabled: true, qrCheckInMode: true } },
+            },
+          },
         },
       },
     },
@@ -1166,7 +1172,13 @@ async function handleReleaseNoShows(): Promise<void> {
     if (isAssignee) return false
     const floorOverride = b.asset.floor?.noShowReleaseEnabled
     const buildingOverride = b.asset.floor?.building?.noShowReleaseEnabled
-    return floorOverride ?? buildingOverride ?? orgDefault
+    const enabled = floorOverride ?? buildingOverride ?? orgDefault
+    // A mandatory QR check-in with no release enforcement behind it would do
+    // nothing — resolves the same floor → building → org order as
+    // noShowReleaseEnabled itself, and forces release regardless of that
+    // setting's own value once QR is mandatory for this booking's scope.
+    const qrMode = b.asset.floor?.qrCheckInMode ?? b.asset.floor?.building?.qrCheckInMode ?? org.qrCheckInMode
+    return enabled || qrMode === 'MANDATORY'
   })
   if (noShows.length === 0) return
 

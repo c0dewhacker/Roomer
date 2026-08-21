@@ -119,6 +119,12 @@ export enum NotificationType {
   MANAGER_REQUEST_EXPIRED = 'MANAGER_REQUEST_EXPIRED',
 }
 
+export enum QrCheckInMode {
+  DISABLED = 'DISABLED',
+  OPTIONAL = 'OPTIONAL',
+  MANDATORY = 'MANDATORY',
+}
+
 export enum FloorPlanFileType {
   IMAGE = 'IMAGE',
   PDF = 'PDF',

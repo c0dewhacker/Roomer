@@ -7,6 +7,7 @@ import { requireGlobalRole, getManagedFloorIds, getManagedBuildingIds, isFloorMa
 import { enqueueNotification, fanOutFloorAvailable, cancelFutureBookingsForAssets } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { lockAssetForBooking, lockAssetForQueue, lockUserForBookingQuota, hasConfirmedOverlap, checkZoneGroupOverlap, isOverlapConstraintViolation, assertBookable, assertUnderBookingQuota, isWithinAdvanceBookingWindow } from '../lib/booking.js'
+import { resolveQrCheckInMode } from '../lib/qr.js'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { checkGroupAccess } from './groups.js'
@@ -1837,5 +1838,75 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     })
 
     return reply.status(200).send({ data: bookings })
+  })
+
+  // GET /:id/qr-status — landing-page data for a scanned desk QR code.
+  // Read-only: the actual book/check-in actions reuse the existing POST
+  // /bookings and POST /bookings/:id/check-in endpoints (and their full
+  // validation) rather than duplicating that logic here.
+  fastify.get('/:id/qr-status', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+
+    const asset = await prisma.asset.findUnique({
+      where: { id },
+      select: { id: true, name: true, bookingLabel: true, floor: { select: { name: true, building: { select: { name: true } } } } },
+    })
+    if (!asset) {
+      return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+    }
+
+    const qrCheckInMode = await resolveQrCheckInMode(id)
+    const assetInfo = {
+      id: asset.id,
+      name: asset.name,
+      bookingLabel: asset.bookingLabel,
+      floorName: asset.floor?.name ?? null,
+      buildingName: asset.floor?.building?.name ?? null,
+    }
+    if (qrCheckInMode === 'DISABLED') {
+      return reply.status(200).send({ data: { qrCheckInMode, asset: assetInfo, canBookNow: false, currentBooking: null } })
+    }
+
+    const now = new Date()
+    const active = await prisma.booking.findFirst({
+      where: { assetId: id, status: 'CONFIRMED', startsAt: { lte: now }, endsAt: { gt: now } },
+      select: { id: true, userId: true, startsAt: true, endsAt: true, checkedInAt: true },
+    })
+
+    if (active) {
+      const isOwnBooking = active.userId === request.user.id
+      return reply.status(200).send({
+        data: {
+          qrCheckInMode,
+          asset: assetInfo,
+          canBookNow: false,
+          // Only the caller's own booking details are exposed — someone
+          // else's booking just reads as "occupied" (matches the existing
+          // "who's in" / colleague-visibility privacy posture elsewhere).
+          currentBooking: isOwnBooking
+            ? { id: active.id, isOwnBooking, startsAt: active.startsAt, endsAt: active.endsAt, checkedInAt: active.checkedInAt }
+            : { id: null, isOwnBooking, startsAt: active.startsAt, endsAt: active.endsAt, checkedInAt: null },
+        },
+      })
+    }
+
+    const org = await prisma.organisation.findFirst({ select: { defaultBookingDurationHours: true } })
+    const durationMs = (org?.defaultBookingDurationHours ?? 8) * 60 * 60 * 1000
+    const endOfDay = new Date(now)
+    endOfDay.setHours(23, 59, 59, 999)
+    const proposedEndsAt = new Date(Math.min(now.getTime() + durationMs, endOfDay.getTime()))
+
+    const gate = await assertBookable(prisma, request.user, id, now, proposedEndsAt)
+    return reply.status(200).send({
+      data: {
+        qrCheckInMode,
+        asset: assetInfo,
+        canBookNow: gate.ok,
+        deniedReason: gate.ok ? null : gate.message,
+        proposedStartsAt: now,
+        proposedEndsAt,
+        currentBooking: null,
+      },
+    })
   })
 }

@@ -147,7 +147,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       include: {
         asset: {
           include: {
-            floor: { include: { building: { select: { id: true, name: true } } } },
+            floor: { include: { building: { select: { id: true, name: true, qrCheckInMode: true } } } },
             primaryZone: { select: { id: true, name: true } },
           },
         },
@@ -155,7 +155,18 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       orderBy: { startsAt: 'asc' },
     })
 
-    return reply.status(200).send({ data: bookings, meta: { total: bookings.length } })
+    // Resolved (not raw) QR mode per booking — floor → building → org, same
+    // order as everywhere else this resolves. The frontend uses this purely
+    // to decide whether to show the manual "I'm here" check-in button
+    // (hidden under MANDATORY); it doesn't need to duplicate the resolution
+    // logic or fetch org/building/floor data separately to make that call.
+    const org = await prisma.organisation.findFirst({ select: { qrCheckInMode: true } })
+    const data = bookings.map((b) => ({
+      ...b,
+      qrCheckInMode: b.asset.floor?.qrCheckInMode ?? b.asset.floor?.building?.qrCheckInMode ?? org?.qrCheckInMode ?? 'DISABLED',
+    }))
+
+    return reply.status(200).send({ data, meta: { total: bookings.length } })
   })
 
   // POST /bookings — create booking

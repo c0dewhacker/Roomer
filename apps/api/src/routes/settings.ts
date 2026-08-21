@@ -1,6 +1,6 @@
 import fs from 'fs'
 import type { FastifyInstance } from 'fastify'
-import { GlobalRole } from '@roomer/shared'
+import { GlobalRole, QrCheckInMode } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole } from '../middleware/requireRole.js'
 import { env } from '../env.js'
@@ -96,6 +96,8 @@ const updateOrgSchema = z.object({
   // Check-in / no-show release (global default; buildings & floors can override).
   noShowReleaseEnabled: z.boolean().optional(),
   checkInGraceMinutes: z.number().int().min(5).max(240).optional(),
+  // QR desk check-in (global default; buildings & floors can override).
+  qrCheckInMode: z.nativeEnum(QrCheckInMode).optional(),
   weeklyReportEnabled: z.boolean().optional(),
 })
 
@@ -247,6 +249,7 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
     maxRecurringBookingWeeks: true,
     noShowReleaseEnabled: true,
     checkInGraceMinutes: true,
+    qrCheckInMode: true,
     weeklyReportEnabled: true,
     createdAt: true,
     updatedAt: true,

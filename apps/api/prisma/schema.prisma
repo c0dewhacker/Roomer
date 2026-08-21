@@ -118,6 +118,19 @@ enum NotificationType {
   MANAGER_REQUEST_EXPIRED
 }
 
+/// DISABLED: no QR functionality shown/generated for the scope.
+/// OPTIONAL: QR scan-to-book/check-in is available alongside the existing
+/// manual "I'm here" check-in button — no change to no-show enforcement.
+/// MANDATORY: same QR functionality, but the manual check-in button is
+/// hidden (QR becomes the only way to check in) and no-show release is
+/// treated as active for the scope regardless of noShowReleaseEnabled —
+/// a "mandatory" check-in with no enforcement behind it would do nothing.
+enum QrCheckInMode {
+  DISABLED
+  OPTIONAL
+  MANDATORY
+}
+
 /// PENDING → ACCEPTED/DECLINED/EXPIRED (recipient-driven) or CANCELLED
 /// (requester withdraws before the recipient responds). Shared by
 /// BookingTransfer and BookingSwap — same lifecycle shape for both.
@@ -166,6 +179,9 @@ model Organisation {
   /// is promoted, freeing ghost desks.
   noShowReleaseEnabled        Boolean      @default(false)
   checkInGraceMinutes         Int          @default(30)
+  /// Org-wide default for QR-code desk check-in/instant-booking. Overridable
+  /// per building/floor (see Building.qrCheckInMode / Floor.qrCheckInMode).
+  qrCheckInMode                QrCheckInMode @default(DISABLED)
   /// Weekly utilisation-summary email sent to every active SUPER_ADMIN.
   /// Opt-in (default off) — shipping this on by default would start emailing
   /// every existing org's admins with no action on their part.
@@ -184,6 +200,8 @@ model Building {
   address              String?
   /// Per-building override for no-show release. null = inherit the org default.
   noShowReleaseEnabled Boolean?
+  /// Per-building override for QR check-in mode. null = inherit the org default.
+  qrCheckInMode        QrCheckInMode?
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   organisation         Organisation          @relation(fields: [organisationId], references: [id], onDelete: Cascade)
@@ -232,6 +250,8 @@ model Floor {
   level                Int                 @default(0)
   /// Per-floor override for no-show release. null = inherit (floor → building → org).
   noShowReleaseEnabled Boolean?
+  /// Per-floor override for QR check-in mode. null = inherit (floor → building → org).
+  qrCheckInMode        QrCheckInMode?
   createdAt            DateTime            @default(now())
   updatedAt            DateTime            @updatedAt
   building             Building            @relation(fields: [buildingId], references: [id], onDelete: Cascade)

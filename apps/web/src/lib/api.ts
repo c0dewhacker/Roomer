@@ -22,6 +22,7 @@ import type {
   BookingSwap,
   FloorManagerRequest,
   ManagerRequestStatus,
+  QrCheckInMode,
 } from '../types'
 
 const BASE = '/api/v1'
@@ -111,7 +112,7 @@ export const buildingsApi = {
   get: (id: string) => api.get<{ data: Building & { floors: Floor[] } }>(`/buildings/${id}`),
   create: (body: { name: string; address?: string }) =>
     api.post<{ data: Building }>('/buildings', body),
-  update: (id: string, body: Partial<{ name: string; address: string; noShowReleaseEnabled: boolean | null }>) =>
+  update: (id: string, body: Partial<{ name: string; address: string; noShowReleaseEnabled: boolean | null; qrCheckInMode: QrCheckInMode | null }>) =>
     api.put<{ data: Building }>(`/buildings/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/buildings/${id}`),
   getAccessGroups: (id: string) =>
@@ -155,7 +156,7 @@ export const floorsApi = {
     ),
   create: (body: { buildingId: string; name: string; level?: number }) =>
     api.post<{ data: Floor }>('/floors', body),
-  update: (id: string, body: Partial<{ name: string; level: number; noShowReleaseEnabled: boolean | null }>) =>
+  update: (id: string, body: Partial<{ name: string; level: number; noShowReleaseEnabled: boolean | null; qrCheckInMode: QrCheckInMode | null }>) =>
     api.put<{ data: Floor }>(`/floors/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/floors/${id}`),
   uploadFloorPlan: (id: string, file: File) => {
@@ -374,6 +375,19 @@ export const assetsApi = {
     api.get<{ data: { weekdays: number[] } }>(`/assets/${id}/availability-rules`),
   setAvailabilityRules: (id: string, weekdays: number[]) =>
     api.put<{ data: { weekdays: number[] } }>(`/assets/${id}/availability-rules`, { weekdays }),
+  // QR-scan landing data — see routes/assets.ts's GET /:id/qr-status
+  qrStatus: (id: string) =>
+    api.get<{
+      data: {
+        qrCheckInMode: QrCheckInMode
+        asset: { id: string; name: string; bookingLabel: string | null; floorName: string | null; buildingName: string | null }
+        canBookNow: boolean
+        deniedReason?: string | null
+        proposedStartsAt?: string
+        proposedEndsAt?: string
+        currentBooking: { id: string | null; isOwnBooking: boolean; startsAt: string; endsAt: string; checkedInAt: string | null } | null
+      }
+    }>(`/assets/${id}/qr-status`),
 }
 
 // --- Bookings ---
@@ -561,6 +575,7 @@ type OrgSettings = {
   dateFormat: string
   noShowReleaseEnabled?: boolean
   checkInGraceMinutes?: number
+  qrCheckInMode?: QrCheckInMode
   weeklyReportEnabled?: boolean
 }
 

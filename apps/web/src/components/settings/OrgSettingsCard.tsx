@@ -27,6 +27,7 @@ const orgSchema = z.object({
   dateFormat: z.string().min(1),
   noShowReleaseEnabled: z.boolean(),
   checkInGraceMinutes: z.coerce.number().int().min(5).max(240),
+  qrCheckInMode: z.enum(['DISABLED', 'OPTIONAL', 'MANDATORY']),
   weeklyReportEnabled: z.boolean(),
 })
 type OrgForm = z.infer<typeof orgSchema>
@@ -44,6 +45,7 @@ export function OrgSettingsCard() {
       dateFormat: 'dd/MM/yyyy',
       noShowReleaseEnabled: false,
       checkInGraceMinutes: 30,
+      qrCheckInMode: 'DISABLED',
       weeklyReportEnabled: false,
     },
   })
@@ -65,6 +67,7 @@ export function OrgSettingsCard() {
         dateFormat: orgData.dateFormat ?? 'dd/MM/yyyy',
         noShowReleaseEnabled: orgData.noShowReleaseEnabled ?? false,
         checkInGraceMinutes: orgData.checkInGraceMinutes ?? 30,
+        qrCheckInMode: orgData.qrCheckInMode ?? 'DISABLED',
         weeklyReportEnabled: orgData.weeklyReportEnabled ?? false,
       })
     }
@@ -74,7 +77,7 @@ export function OrgSettingsCard() {
     mutationFn: (data: OrgForm) => settingsApi.updateOrg(data),
     onSuccess: (res) => {
       toast.success('Settings saved')
-      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4, dateFormat: res.data.dateFormat ?? 'dd/MM/yyyy', noShowReleaseEnabled: res.data.noShowReleaseEnabled ?? false, checkInGraceMinutes: res.data.checkInGraceMinutes ?? 30, weeklyReportEnabled: res.data.weeklyReportEnabled ?? false })
+      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4, dateFormat: res.data.dateFormat ?? 'dd/MM/yyyy', noShowReleaseEnabled: res.data.noShowReleaseEnabled ?? false, checkInGraceMinutes: res.data.checkInGraceMinutes ?? 30, qrCheckInMode: res.data.qrCheckInMode ?? 'DISABLED', weeklyReportEnabled: res.data.weeklyReportEnabled ?? false })
       qc.invalidateQueries({ queryKey: ['settings', 'organisation'] })
       qc.invalidateQueries({ queryKey: ['settings', 'public'] })
     },
@@ -142,6 +145,20 @@ export function OrgSettingsCard() {
               <p className="text-xs text-destructive mt-1">{errors.checkInGraceMinutes.message}</p>
             )}
           </div>
+        </div>
+        <div className="rounded-md border p-3">
+          <Label htmlFor="qrCheckInMode" className="text-sm font-medium">QR desk check-in</Label>
+          <p className="text-xs text-muted-foreground mb-2">
+            Scan-to-book / check-in via a QR code on desks. Optional lets QR sit alongside the "I'm here" button; mandatory hides that button and always applies no-show release, whether or not it's enabled above. Buildings and floors can override this default.
+          </p>
+          <Select value={watch('qrCheckInMode')} onValueChange={(v) => setValue('qrCheckInMode', v as OrgForm['qrCheckInMode'], { shouldDirty: true })}>
+            <SelectTrigger id="qrCheckInMode" className="w-56"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="DISABLED">Disabled</SelectItem>
+              <SelectItem value="OPTIONAL">Optional</SelectItem>
+              <SelectItem value="MANDATORY">Mandatory</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
         <div className="rounded-md border p-3">
           <label className="flex items-start gap-2 cursor-pointer">

@@ -54,6 +54,8 @@ export interface User {
   groupMemberships?: UserGroupMembership[]
 }
 
+export type QrCheckInMode = 'DISABLED' | 'OPTIONAL' | 'MANDATORY'
+
 export interface Building {
   id: string
   name: string
@@ -61,6 +63,8 @@ export interface Building {
   organisationId: string
   /** null = inherit org default; true/false = explicit override */
   noShowReleaseEnabled?: boolean | null
+  /** null = inherit org default; explicit override otherwise */
+  qrCheckInMode?: QrCheckInMode | null
 }
 
 export interface Floor {
@@ -73,6 +77,8 @@ export interface Floor {
   zones?: Zone[]
   /** null = inherit (floor → building → org) */
   noShowReleaseEnabled?: boolean | null
+  /** null = inherit (floor → building → org) */
+  qrCheckInMode?: QrCheckInMode | null
 }
 
 export interface FloorPlan {
@@ -208,6 +214,8 @@ export interface Booking {
       }
     }
   }
+  /** Resolved (floor → building → org), only present on the GET /bookings list response. */
+  qrCheckInMode?: QrCheckInMode
 }
 
 export type TransferRequestStatus = 'PENDING' | 'ACCEPTED' | 'DECLINED' | 'CANCELLED' | 'EXPIRED'

@@ -26,6 +26,7 @@ import GroupsAdminPage from './pages/admin/GroupsAdminPage'
 import DepartmentsAdminPage from './pages/admin/DepartmentsAdminPage'
 import WebhooksAdminPage from './pages/admin/WebhooksAdminPage'
 import ManagerRequestsAdminPage from './pages/admin/ManagerRequestsAdminPage'
+import QrScanPage from './pages/QrScanPage'
 import { Loader2 } from 'lucide-react'
 
 // Lazy-load pages that pull in large dependencies (pdfjs-dist, react-konva, recharts)
@@ -168,6 +169,9 @@ export function AppRouter() {
       <Route path="/queue/claim" element={<QueueClaimPage />} />
 
       <Route element={<ProtectedRoute />}>
+        {/* No <Layout /> chrome — a scanned desk QR code should land on a
+            focused, single-purpose page, not the full app shell. */}
+        <Route path="/qr/:assetId" element={<QrScanPage />} />
         <Route element={<Layout />}>
           <Route path="/floors/:floorId" element={<Suspense fallback={<PageLoader />}><FloorPage /></Suspense>} />
           <Route path="/bookings" element={<BookingsPage />} />

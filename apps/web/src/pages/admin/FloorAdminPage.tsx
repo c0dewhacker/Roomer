@@ -11,6 +11,8 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { floorsApi, assetsApi, zonesApi, usersApi, groupsApi } from '@/lib/api'
 import { NoShowOverrideControl } from '@/components/admin/NoShowOverrideControl'
+import { QrCheckInModeControl } from '@/components/admin/QrCheckInModeControl'
+import type { QrCheckInMode } from '@/types'
 import { toast } from 'sonner'
 import { FloorPlanCanvas } from '@/components/floor-plan/FloorPlanCanvas'
 import { Button } from '@/components/ui/button'
@@ -1019,6 +1021,12 @@ export default function FloorAdminPage() {
     onError: (err: Error) => toast.error(err.message),
   })
 
+  const saveQrMode = useMutation({
+    mutationFn: (v: QrCheckInMode | null) => floorsApi.update(floorId!, { qrCheckInMode: v }),
+    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['floors', floorId] }) },
+    onError: (err: Error) => toast.error(err.message),
+  })
+
   const upload = useMutation({
     mutationFn: (file: File) => floorsApi.uploadFloorPlan(floorId!, file),
     onSuccess: () => {
@@ -1138,8 +1146,9 @@ export default function FloorAdminPage() {
       <div className="flex-1 overflow-hidden">
         {view === 'managers' ? (
           <div className="h-full overflow-y-auto">
-            <div className="p-4 max-w-sm">
+            <div className="p-4 max-w-sm space-y-3">
               <NoShowOverrideControl scope="floor" value={floor?.noShowReleaseEnabled} onChange={(v) => saveNoShow.mutate(v)} disabled={saveNoShow.isPending} />
+              <QrCheckInModeControl scope="floor" value={floor?.qrCheckInMode} onChange={(v) => saveQrMode.mutate(v)} disabled={saveQrMode.isPending} />
             </div>
             <FloorManagersPanel floorId={floorId!} floorName={floor?.name} />
           </div>

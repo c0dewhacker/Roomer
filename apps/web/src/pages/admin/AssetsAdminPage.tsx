@@ -2,10 +2,12 @@ import { useState, useEffect } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Package, Plus, Pencil, Trash2, UserCheck, UserX, X, Users } from 'lucide-react'
+import { Package, Plus, Pencil, Trash2, UserCheck, UserX, X, Users, QrCode } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { assetsApi, usersApi } from '@/lib/api'
 import AssignmentImportDialog from '@/components/admin/AssignmentImportDialog'
+import { AssetQrDialog } from '@/components/admin/AssetQrDialog'
+import { BulkQrDialog } from '@/components/admin/BulkQrDialog'
 import { toast } from 'sonner'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -625,6 +627,8 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
   const [editTarget, setEditTarget] = useState<Asset | undefined>()
   const [assignTarget, setAssignTarget] = useState<string | null>(null)
   const [bulkAssignOpen, setBulkAssignOpen] = useState(false)
+  const [qrTarget, setQrTarget] = useState<Asset | null>(null)
+  const [bulkQrOpen, setBulkQrOpen] = useState(false)
 
   const { data: assets, isLoading } = useQuery({
     queryKey: ['assets'],
@@ -668,6 +672,9 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
           <>
             <Button variant="outline" onClick={() => setBulkAssignOpen(true)}>
               <Users className="mr-2 h-4 w-4" /> Bulk assign users
+            </Button>
+            <Button variant="outline" onClick={() => setBulkQrOpen(true)}>
+              <QrCode className="mr-2 h-4 w-4" /> Bulk QR codes
             </Button>
             <Button onClick={() => { setEditTarget(undefined); setDialogOpen(true) }}>
               <Plus className="mr-2 h-4 w-4" /> Add Asset
@@ -766,6 +773,17 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
                         >
                           <Pencil className="h-4 w-4" />
                         </Button>
+                        {asset.isBookable && asset.floorId && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            title="QR code"
+                            onClick={() => setQrTarget(asset)}
+                          >
+                            <QrCode className="h-4 w-4" />
+                          </Button>
+                        )}
                         {isSuperAdmin && (
                           hasPermUsers ? (
                             <Button
@@ -838,6 +856,21 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
           open={!!assignTarget}
           onClose={() => setAssignTarget(null)}
           assetId={assignTarget}
+        />
+      )}
+      {qrTarget && (
+        <AssetQrDialog
+          open={!!qrTarget}
+          onClose={() => setQrTarget(null)}
+          assetId={qrTarget.id}
+          assetName={qrTarget.name}
+        />
+      )}
+      {bulkQrOpen && (
+        <BulkQrDialog
+          open={bulkQrOpen}
+          onClose={() => setBulkQrOpen(false)}
+          assets={assets ?? []}
         />
       )}
       <AssignmentImportDialog

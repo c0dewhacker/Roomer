@@ -469,7 +469,12 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
   // booking actually started produced a guaranteed "Check-in failed" toast.
   const now = new Date()
   const inCheckInWindow = new Date(booking.startsAt) <= now && now <= new Date(booking.endsAt)
-  const canCheckIn = inCheckInWindow && booking.status === 'CONFIRMED' && !booking.checkedInAt
+  // Mandatory QR check-in hides the manual button entirely — scanning the
+  // desk's QR code becomes the only way to check in for that scope (see
+  // #76 phase 3; the backend still treats no-show release as active
+  // regardless of the org/building/floor noShowReleaseEnabled value once
+  // QR is mandatory, so this isn't just cosmetic).
+  const canCheckIn = inCheckInWindow && booking.status === 'CONFIRMED' && !booking.checkedInAt && booking.qrCheckInMode !== 'MANDATORY'
 
   const checkIn = useMutation({
     mutationFn: () => bookingsApi.checkIn(booking.id),
@@ -509,6 +514,9 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
                   >
                     <Check className="h-3 w-3" /> I'm here
                   </Button>
+                )}
+                {inCheckInWindow && booking.status === 'CONFIRMED' && !booking.checkedInAt && booking.qrCheckInMode === 'MANDATORY' && (
+                  <span className="text-xs text-muted-foreground">Scan the desk's QR code to check in</span>
                 )}
               </div>
               <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
