@@ -54,8 +54,14 @@ export async function lockUserForBookingQuota(tx: Prisma.TransactionClient, user
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(${USER_BOOKING_QUOTA_LOCK_CLASS}, hashtext(${userId}))`
 }
 
-/** True when a CONFIRMED booking already overlaps [startsAt, endsAt) for the asset. */
-export async function hasConfirmedOverlap(
+/**
+ * True when a CONFIRMED or PENDING_APPROVAL booking already overlaps
+ * [startsAt, endsAt) for the asset. PENDING_APPROVAL reserves the slot the
+ * same as CONFIRMED (approval workflow, #74) — an approver may still reject
+ * it, but until they do, it blocks the same as a confirmed booking so a
+ * second person can't book over a request that's simply awaiting sign-off.
+ */
+export async function hasBlockingOverlap(
   client: Prisma.TransactionClient,
   assetId: string,
   startsAt: Date,
@@ -65,7 +71,7 @@ export async function hasConfirmedOverlap(
   const conflict = await client.booking.findFirst({
     where: {
       assetId,
-      status: 'CONFIRMED',
+      status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] },
       id: excludeBookingId ? { not: excludeBookingId } : undefined,
       startsAt: { lt: endsAt },
       endsAt: { gt: startsAt },
@@ -109,7 +115,7 @@ export async function checkZoneGroupOverlap(
   const conflict = await tx.booking.findFirst({
     where: {
       userId,
-      status: 'CONFIRMED',
+      status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] },
       id: excludeBookingId ? { not: excludeBookingId } : undefined,
       startsAt: { lt: endsAt },
       endsAt: { gt: startsAt },
@@ -132,6 +138,39 @@ export function isOverlapConstraintViolation(err: unknown): boolean {
   if (e?.code === '23P01' || e?.meta?.code === '23P01') return true
   const msg = e?.message ?? e?.meta?.message
   return typeof msg === 'string' && msg.includes('booking_no_overlap')
+}
+
+/**
+ * Resolve whether a new booking on this asset requires approval before it's
+ * confirmed: zone override → building override → org default. Zone is the
+ * most granular level here (unlike QR check-in mode or no-show release,
+ * which stop at floor) since approval is naturally a per-team/per-room
+ * policy rather than a per-floor one — see #74's feasibility assessment.
+ */
+export async function resolveRequiresApproval(client: Prisma.TransactionClient, assetId: string): Promise<boolean> {
+  const asset = await client.asset.findUnique({
+    where: { id: assetId },
+    select: {
+      primaryZone: { select: { requiresApproval: true } },
+      floor: {
+        select: {
+          building: {
+            select: {
+              requiresApproval: true,
+              organisation: { select: { requiresApproval: true } },
+            },
+          },
+        },
+      },
+    },
+  })
+  if (!asset) return false
+  return (
+    asset.primaryZone?.requiresApproval ??
+    asset.floor?.building?.requiresApproval ??
+    asset.floor?.building?.organisation?.requiresApproval ??
+    false
+  )
 }
 
 export type BookabilityResult =
@@ -187,7 +226,7 @@ export async function assertUnderBookingQuota(
   const org = await client.organisation.findFirst({ select: { maxBookingsPerUser: true } })
   if (!org?.maxBookingsPerUser) return { ok: true }
   const activeCount = await client.booking.count({
-    where: { userId, status: 'CONFIRMED', endsAt: { gt: new Date() } },
+    where: { userId, status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, endsAt: { gt: new Date() } },
   })
   if (activeCount >= org.maxBookingsPerUser) {
     return deny(409, 'MAX_BOOKINGS_EXCEEDED', `You already have ${org.maxBookingsPerUser} active bookings, the maximum allowed`)
@@ -203,7 +242,7 @@ export async function assertUnderBookingQuota(
  * and had drifted — notably the queue path skipped the restricted/assigned gates
  * entirely, letting users obtain bookings they were not permitted to make.
  *
- * Note: this does NOT check time-slot overlap (use hasConfirmedOverlap for that)
+ * Note: this does NOT check time-slot overlap (use hasBlockingOverlap for that)
  * because the queue-join path intentionally targets currently-booked slots.
  */
 /**
@@ -223,7 +262,7 @@ async function isCoveredByAvailabilityRules(
 
   // Walk each calendar day from the start day up to (but not past) the end instant.
   // Strict `<` matches the half-open [startsAt, endsAt) semantics used everywhere
-  // else in this file (see hasConfirmedOverlap) — a booking whose endsAt lands
+  // else in this file (see hasBlockingOverlap) — a booking whose endsAt lands
   // exactly on a day's UTC midnight boundary uses none of that day's time, so it
   // must not require that day to be in the owner's allowed-weekday set too.
   const cursor = new Date(Date.UTC(startsAt.getUTCFullYear(), startsAt.getUTCMonth(), startsAt.getUTCDate()))

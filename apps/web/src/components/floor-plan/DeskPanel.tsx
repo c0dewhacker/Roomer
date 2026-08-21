@@ -769,6 +769,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   const statusLabel: Record<string, string> = {
     available: 'Available',
     mine: 'Your booking',
+    mine_pending: 'Pending approval',
     booked: 'Booked',
     assigned: 'Assigned',
     restricted: 'Restricted',
@@ -781,6 +782,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   const statusVariant: Record<string, 'default' | 'secondary' | 'destructive' | 'outline'> = {
     available: 'default',
     mine: 'secondary',
+    mine_pending: 'outline',
     booked: 'destructive',
     assigned: 'secondary',
     restricted: 'outline',
@@ -1051,6 +1053,12 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                   )}
                 </div>
 
+                {desk.requiresApproval && (
+                  <p className="text-xs text-amber-600 bg-amber-50 rounded-md p-2">
+                    This booking will need approval from a Super Admin, building admin, or floor manager before it's confirmed. The slot is reserved for you while you wait.
+                  </p>
+                )}
+
                 <Button
                   onClick={isRecurring ? () => createRecurring.mutate() : handleBook}
                   disabled={
@@ -1062,28 +1070,37 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                 >
                   <CheckCircle className="mr-2 h-4 w-4" />
                   {(isRecurring ? createRecurring : createBooking).isPending
-                    ? 'Booking…'
-                    : isRecurring
-                      ? `Book recurring ${categoryName}`
-                      : `Book ${categoryName}`
+                    ? (desk.requiresApproval ? 'Requesting…' : 'Booking…')
+                    : desk.requiresApproval
+                      ? (isRecurring ? `Request recurring ${categoryName}` : `Request ${categoryName}`)
+                      : isRecurring
+                        ? `Book recurring ${categoryName}`
+                        : `Book ${categoryName}`
                   }
                 </Button>
               </div>
             )}
 
-            {/* Mine: show booking details + cancel */}
-            {desk.bookingStatus === 'mine' && desk.currentBooking && (
+            {/* Mine / mine_pending: show booking details + cancel/withdraw */}
+            {(desk.bookingStatus === 'mine' || desk.bookingStatus === 'mine_pending') && desk.currentBooking && (
               <div className="space-y-3">
-                <div className="rounded-md bg-blue-50 p-3">
-                  <p className="text-sm font-medium text-blue-800">Your booking</p>
-                  <p className="text-xs text-blue-600 mt-1">
+                <div className={desk.bookingStatus === 'mine_pending' ? 'rounded-md bg-amber-50 p-3' : 'rounded-md bg-blue-50 p-3'}>
+                  <p className={desk.bookingStatus === 'mine_pending' ? 'text-sm font-medium text-amber-800' : 'text-sm font-medium text-blue-800'}>
+                    {desk.bookingStatus === 'mine_pending' ? 'Awaiting approval' : 'Your booking'}
+                  </p>
+                  <p className={desk.bookingStatus === 'mine_pending' ? 'text-xs text-amber-600 mt-1' : 'text-xs text-blue-600 mt-1'}>
                     {formatDateRange(desk.currentBooking.startsAt, desk.currentBooking.endsAt)}
                   </p>
+                  {desk.bookingStatus === 'mine_pending' && (
+                    <p className="text-xs text-amber-600 mt-1">
+                      This slot is reserved while a manager reviews your request. You'll be notified once it's approved or declined.
+                    </p>
+                  )}
                   {desk.currentBooking.notes && (
-                    <p className="text-xs text-blue-600 mt-1">{desk.currentBooking.notes}</p>
+                    <p className={desk.bookingStatus === 'mine_pending' ? 'text-xs text-amber-600 mt-1' : 'text-xs text-blue-600 mt-1'}>{desk.currentBooking.notes}</p>
                   )}
                   {!!desk.currentBooking.attendeeCount && (
-                    <p className="text-xs text-blue-600 mt-1 flex items-center gap-1">
+                    <p className={desk.bookingStatus === 'mine_pending' ? 'text-xs text-amber-600 mt-1 flex items-center gap-1' : 'text-xs text-blue-600 mt-1 flex items-center gap-1'}>
                       <Users className="h-3 w-3" />
                       {desk.currentBooking.attendeeCount} attendee{desk.currentBooking.attendeeCount === 1 ? '' : 's'}
                     </p>
@@ -1097,24 +1114,27 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                       className="w-full"
                     >
                       <XCircle className="mr-2 h-4 w-4" />
-                      {cancelBooking.isPending ? 'Cancelling…' : 'Cancel Booking'}
+                      {cancelBooking.isPending
+                        ? (desk.bookingStatus === 'mine_pending' ? 'Withdrawing…' : 'Cancelling…')
+                        : (desk.bookingStatus === 'mine_pending' ? 'Withdraw Request' : 'Cancel Booking')}
                     </Button>
                   </AlertDialogTrigger>
                   <AlertDialogContent>
                     <AlertDialogHeader>
-                      <AlertDialogTitle>Cancel booking?</AlertDialogTitle>
+                      <AlertDialogTitle>{desk.bookingStatus === 'mine_pending' ? 'Withdraw booking request?' : 'Cancel booking?'}</AlertDialogTitle>
                       <AlertDialogDescription>
-                        Cancel your booking for <strong>{desk.name}</strong>? This action cannot
-                        be undone. Anyone in the queue will be notified.
+                        {desk.bookingStatus === 'mine_pending'
+                          ? <>Withdraw your pending request for <strong>{desk.name}</strong>? This action cannot be undone.</>
+                          : <>Cancel your booking for <strong>{desk.name}</strong>? This action cannot be undone. Anyone in the queue will be notified.</>}
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
-                      <AlertDialogCancel>Keep booking</AlertDialogCancel>
+                      <AlertDialogCancel>{desk.bookingStatus === 'mine_pending' ? 'Keep request' : 'Keep booking'}</AlertDialogCancel>
                       <AlertDialogAction
                         onClick={() => cancelBooking.mutate(desk.currentBooking!.id)}
                         className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                       >
-                        Cancel booking
+                        {desk.bookingStatus === 'mine_pending' ? 'Withdraw request' : 'Cancel booking'}
                       </AlertDialogAction>
                     </AlertDialogFooter>
                   </AlertDialogContent>

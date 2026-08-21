@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { floorsApi, assetsApi, zonesApi, zoneGroupsApi, usersApi, groupsApi } from '@/lib/api'
-import { NoShowOverrideControl } from '@/components/admin/NoShowOverrideControl'
+import { NoShowOverrideControl, ApprovalOverrideControl } from '@/components/admin/NoShowOverrideControl'
 import { QrCheckInModeControl } from '@/components/admin/QrCheckInModeControl'
 import type { QrCheckInMode } from '@/types'
 import { toast } from 'sonner'
@@ -35,7 +35,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type ZoneData = { id: string; name: string; colour: string; zoneGroupId: string | null; assets: AssetData[] }
+type ZoneData = { id: string; name: string; colour: string; zoneGroupId: string | null; requiresApproval: boolean | null; assets: AssetData[] }
 type ZoneGroupData = { id: string; name: string; floorId: string }
 type AssetData = { id: string; name: string; status: string; amenities: string[]; isBookable?: boolean }
 /** @deprecated use AssetData */
@@ -55,6 +55,7 @@ const zoneSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   colour: z.string().min(4, 'Colour required'),
   zoneGroupId: z.string().nullable(),
+  requiresApproval: z.boolean().nullable(),
 })
 type ZoneForm = z.infer<typeof zoneSchema>
 
@@ -64,10 +65,14 @@ function ZoneDialog({
   const qc = useQueryClient()
   const { register, handleSubmit, formState: { errors }, watch, setValue } = useForm<ZoneForm>({
     resolver: zodResolver(zoneSchema),
-    defaultValues: { name: existing?.name ?? '', colour: existing?.colour ?? '#6366f1', zoneGroupId: existing?.zoneGroupId ?? null },
+    defaultValues: {
+      name: existing?.name ?? '', colour: existing?.colour ?? '#6366f1',
+      zoneGroupId: existing?.zoneGroupId ?? null, requiresApproval: existing?.requiresApproval ?? null,
+    },
   })
   const colour = watch('colour')
   const zoneGroupId = watch('zoneGroupId')
+  const requiresApproval = watch('requiresApproval')
 
   const create = useMutation({
     mutationFn: (d: ZoneForm) => zonesApi.create({ floorId, name: d.name, colour: d.colour, zoneGroupId: d.zoneGroupId ?? undefined }),
@@ -124,6 +129,18 @@ function ZoneDialog({
               </SelectContent>
             </Select>
           </div>
+          {existing && (
+            // Only shown when editing — creation doesn't accept an approval
+            // override yet (createZoneSchema has no requiresApproval field),
+            // so surfacing this control before the zone exists would silently
+            // no-op the choice with no error, which is worse than not
+            // offering it until the zone can actually be edited.
+            <ApprovalOverrideControl
+              scope="zone"
+              value={requiresApproval}
+              onChange={(v) => setValue('requiresApproval', v)}
+            />
+          )}
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
             <Button type="submit" disabled={isPending}>

@@ -13,6 +13,8 @@ export const updateBuildingSchema = z.object({
   noShowReleaseEnabled: z.boolean().nullable().optional(),
   // Per-building QR check-in mode override. null = inherit the org default.
   qrCheckInMode: z.nativeEnum(QrCheckInMode).nullable().optional(),
+  // Per-building booking-approval override. null = inherit the org default.
+  requiresApproval: z.boolean().nullable().optional(),
 })
 
 export type CreateBuildingInput = z.infer<typeof createBuildingSchema>

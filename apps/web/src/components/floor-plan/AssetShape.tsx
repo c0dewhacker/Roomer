@@ -22,6 +22,7 @@ const CATEGORY_ICONS: Record<string, string> = {
 const STATUS_COLOURS: Record<string, string> = {
   available: '#22c55e',
   mine: '#3b82f6',
+  mine_pending: '#f59e0b',
   booked: '#f87171',
   restricted: '#fb923c',
   assigned: '#8b5cf6',
@@ -34,6 +35,7 @@ const STATUS_COLOURS: Record<string, string> = {
 const STATUS_HOVER: Record<string, string> = {
   available: '#16a34a',
   mine: '#2563eb',
+  mine_pending: '#d97706',
   booked: '#ef4444',
   restricted: '#ea580c',
   assigned: '#7c3aed',
@@ -47,6 +49,7 @@ const STATUS_HOVER: Record<string, string> = {
 const STATUS_LIGHT: Record<string, string> = {
   available: '#4ade80',
   mine: '#60a5fa',
+  mine_pending: '#fbbf24',
   booked: '#fca5a5',
   restricted: '#fdba74',
   assigned: '#c4b5fd',

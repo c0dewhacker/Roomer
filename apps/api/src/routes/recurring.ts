@@ -5,7 +5,8 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { z } from 'zod'
 import { enqueueNotification, promoteNextQueueEntry, fanOutFloorAvailable } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
-import { assertBookable, isWithinAdvanceBookingWindow, lockAssetForBooking, lockUserForBookingQuota, checkZoneGroupOverlap, isOverlapConstraintViolation } from '../lib/booking.js'
+import { assertBookable, isWithinAdvanceBookingWindow, lockAssetForBooking, lockUserForBookingQuota, checkZoneGroupOverlap, isOverlapConstraintViolation, resolveRequiresApproval } from '../lib/booking.js'
+import { getBuildingAdminUserIds, getFloorManagerUserIds } from '../middleware/requireRole.js'
 
 const createRecurringSchema = z.object({
   assetId: z.string().min(1),
@@ -148,6 +149,14 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       }
     }
 
+    // Asset-scoped (not per-occurrence) — a series is one approval decision,
+    // not one per occurrence, so there's exactly one flag to resolve here.
+    const requiresApproval = await resolveRequiresApproval(prisma, assetId)
+    const approvalWindowHours = requiresApproval
+      ? (await prisma.organisation.findFirst({ select: { approvalWindowHours: true } }))?.approvalWindowHours ?? 24
+      : 0
+    const approvalExpiresAt = requiresApproval ? new Date(Date.now() + approvalWindowHours * 60 * 60 * 1000) : null
+
     try {
       const rule = await prisma.$transaction(async (tx) => {
         // Serialise booking creation for this asset against all other paths
@@ -163,7 +172,7 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
           const conflict = await tx.booking.findFirst({
             where: {
               assetId,
-              status: 'CONFIRMED',
+              status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] },
               startsAt: { lt: slot.endsAt },
               endsAt: { gt: slot.startsAt },
             },
@@ -204,7 +213,8 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
                 assetId,
                 startsAt: s.startsAt,
                 endsAt: s.endsAt,
-                status: 'CONFIRMED',
+                status: requiresApproval ? 'PENDING_APPROVAL' : 'CONFIRMED',
+                approvalExpiresAt,
                 attendeeCount,
               })),
             },
@@ -213,8 +223,13 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
             // Explicit order, not relying on nested-create return order — the
             // occurrence that actually gets the ICS invite below must be the
             // chronologically earliest one, deterministically.
-            bookings: { select: { id: true, startsAt: true, endsAt: true }, orderBy: { startsAt: 'asc' } },
-            asset: { select: { id: true, name: true, floor: { select: { name: true, building: { select: { name: true } } } } } },
+            bookings: { select: { id: true, startsAt: true, endsAt: true, status: true }, orderBy: { startsAt: 'asc' } },
+            asset: {
+              select: {
+                id: true, name: true,
+                floor: { select: { id: true, buildingId: true, name: true, building: { select: { name: true } } } },
+              },
+            },
           },
         })
 
@@ -232,20 +247,44 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
         return { ...createdRule, firstInvitedBookingId: createdRule.bookings[0].id }
       })
 
-      // Single confirmation notification for the first booking in the series
-      await enqueueNotification({
-        type: NotificationType.BOOKING_CONFIRMED,
-        userId: request.user.id,
-        bookingId: rule.bookings[0].id,
-      })
+      if (requiresApproval) {
+        // One BOOKING_PENDING_APPROVAL per approver, referencing the first
+        // occurrence — mirrors the single-booking POST /bookings gate.
+        // Approving/rejecting acts on the whole rule at once (see POST
+        // /bookings/:id/approve|reject), so no BOOKING_CONFIRMED or
+        // booking.created fires until that happens.
+        const floorId = rule.asset.floor?.id
+        const buildingId = rule.asset.floor?.buildingId
+        const [superAdmins, buildingAdminIds, floorManagerIds] = await Promise.all([
+          prisma.user.findMany({ where: { globalRole: 'SUPER_ADMIN', accountStatus: 'ACTIVE' }, select: { id: true } }),
+          buildingId ? getBuildingAdminUserIds(buildingId) : Promise.resolve([]),
+          floorId ? getFloorManagerUserIds(floorId) : Promise.resolve([]),
+        ])
+        const approverIds = [...new Set([...superAdmins.map((a) => a.id), ...buildingAdminIds, ...floorManagerIds])]
+          .filter((uid) => uid !== request.user.id)
+        for (const userId of approverIds) {
+          await enqueueNotification({
+            type: NotificationType.BOOKING_PENDING_APPROVAL,
+            userId,
+            bookingId: rule.bookings[0].id,
+          })
+        }
+      } else {
+        // Single confirmation notification for the first booking in the series
+        await enqueueNotification({
+          type: NotificationType.BOOKING_CONFIRMED,
+          userId: request.user.id,
+          bookingId: rule.bookings[0].id,
+        })
 
-      // One booking.created per materialised occurrence — same event a direct
-      // POST /bookings fires, unlike the notification above (deliberately
-      // deduplicated to one per series so the user isn't emailed N times).
-      // An integration reconciling desk occupancy off booking.created
-      // previously never learned about any recurring booking at all.
-      for (const b of rule.bookings) {
-        dispatchWebhook('booking.created', { id: b.id, userId: request.user.id, assetId, startsAt: b.startsAt, endsAt: b.endsAt }).catch(() => {})
+        // One booking.created per materialised occurrence — same event a direct
+        // POST /bookings fires, unlike the notification above (deliberately
+        // deduplicated to one per series so the user isn't emailed N times).
+        // An integration reconciling desk occupancy off booking.created
+        // previously never learned about any recurring booking at all.
+        for (const b of rule.bookings) {
+          dispatchWebhook('booking.created', { id: b.id, userId: request.user.id, assetId, startsAt: b.startsAt, endsAt: b.endsAt }).catch(() => {})
+        }
       }
 
       return reply.status(201).send({ data: rule })
@@ -284,8 +323,8 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       include: {
         asset: { select: { id: true, name: true, bookingLabel: true, floor: { select: { name: true, building: { select: { name: true } } } } } },
         bookings: {
-          where: { status: 'CONFIRMED', startsAt: { gte: new Date() } },
-          select: { id: true, startsAt: true, endsAt: true },
+          where: { status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { gte: new Date() } },
+          select: { id: true, startsAt: true, endsAt: true, status: true },
           orderBy: { startsAt: 'asc' },
         },
         _count: { select: { bookings: true } },

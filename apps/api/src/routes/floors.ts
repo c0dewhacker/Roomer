@@ -646,7 +646,11 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       },
       bookings: {
         where: {
-          status: 'CONFIRMED',
+          // PENDING_APPROVAL reserves the slot exactly like CONFIRMED (#74),
+          // so it must show as occupied here too — otherwise the floor plan
+          // shows a slot as available when booking it would immediately hit
+          // the booking_no_overlap exclusion constraint / hasBlockingOverlap.
+          status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] },
           startsAt: { lt: dayEnd },
           endsAt: { gt: dayStart },
         },
@@ -656,6 +660,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           startsAt: true,
           endsAt: true,
           attendeeCount: true,
+          status: true,
           user: { select: { displayName: true } },
         },
       },
@@ -678,25 +683,29 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       availabilityRules: { select: { weekday: true } },
     } satisfies Prisma.AssetInclude
 
-    const floor = await prisma.floor.findUnique({
-      where: { id },
-      include: {
-        zones: {
-          orderBy: { name: 'asc' },
-          include: {
-            assets: {
-              where: { isBookable: true },
-              orderBy: { name: 'asc' },
-              include: assetInclude,
-            },
-            assetZones: {
-              where: { asset: { isBookable: true } },
-              include: { asset: { include: assetInclude } },
+    const [floor, org] = await Promise.all([
+      prisma.floor.findUnique({
+        where: { id },
+        include: {
+          building: { select: { requiresApproval: true } },
+          zones: {
+            orderBy: { name: 'asc' },
+            include: {
+              assets: {
+                where: { isBookable: true },
+                orderBy: { name: 'asc' },
+                include: assetInclude,
+              },
+              assetZones: {
+                where: { asset: { isBookable: true } },
+                include: { asset: { include: assetInclude } },
+              },
             },
           },
         },
-      },
-    })
+      }),
+      prisma.organisation.findFirst({ select: { requiresApproval: true } }),
+    ])
 
     if (!floor) {
       return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
@@ -727,7 +736,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
-    type AvailabilityStatus = 'available' | 'mine' | 'booked' | 'restricted' | 'assigned' | 'disabled' | 'queued' | 'promoted' | 'zone_conflict'
+    type AvailabilityStatus = 'available' | 'mine' | 'mine_pending' | 'booked' | 'restricted' | 'assigned' | 'disabled' | 'queued' | 'promoted' | 'zone_conflict'
 
     // Build a map of assetId → count of WAITING queue entries for the requested period
     const allAssetIds = mergedZones.flatMap((z) => z.assets.map((a) => a.id))
@@ -774,7 +783,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         if (asset.bookingStatus === 'DISABLED') {
           bookingStatus = 'disabled'
         } else if (myBooking) {
-          bookingStatus = 'mine'
+          bookingStatus = myBooking.status === 'PENDING_APPROVAL' ? 'mine_pending' : 'mine'
         } else if (othersBookings.length > 0) {
           if (myQueueEntry?.status === 'PROMOTED') {
             bookingStatus = 'promoted'
@@ -848,8 +857,12 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           rawBookingStatus: asset.bookingStatus,
           amenities: asset.amenities,
           availabilityStatus: bookingStatus,
+          // Zone → building → org override chain (#74) — lets the booking
+          // form warn "this needs approval" before the user submits, rather
+          // than only finding out from the PENDING_APPROVAL response after.
+          requiresApproval: zone.requiresApproval ?? floor.building?.requiresApproval ?? org?.requiresApproval ?? false,
           currentBooking: myBooking
-            ? { id: myBooking.id, userId: myBooking.userId, startsAt: myBooking.startsAt, endsAt: myBooking.endsAt, attendeeCount: myBooking.attendeeCount }
+            ? { id: myBooking.id, userId: myBooking.userId, startsAt: myBooking.startsAt, endsAt: myBooking.endsAt, attendeeCount: myBooking.attendeeCount, status: myBooking.status }
             : othersBookings[0]
             ? { id: othersBookings[0].id, userId: othersBookings[0].userId, startsAt: othersBookings[0].startsAt, endsAt: othersBookings[0].endsAt, attendeeCount: othersBookings[0].attendeeCount, bookerName: othersBookings[0].user?.displayName }
             : null,

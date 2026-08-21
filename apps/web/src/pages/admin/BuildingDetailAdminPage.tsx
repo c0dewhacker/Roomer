@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { Layers, Plus, ChevronRight, Pencil, Trash2, Shield, Users, UserMinus, UserPlus, UserX } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { buildingsApi, floorsApi, groupsApi, usersApi, assetsApi, ApiError } from '@/lib/api'
-import { NoShowOverrideControl } from '@/components/admin/NoShowOverrideControl'
+import { NoShowOverrideControl, ApprovalOverrideControl } from '@/components/admin/NoShowOverrideControl'
 import { QrCheckInModeControl } from '@/components/admin/QrCheckInModeControl'
 import AssignmentImportDialog from '@/components/admin/AssignmentImportDialog'
 import { toast } from 'sonner'
@@ -796,6 +796,12 @@ export default function BuildingDetailAdminPage() {
     onError: (err: Error) => toast.error(err.message),
   })
 
+  const saveRequiresApproval = useMutation({
+    mutationFn: (v: boolean | null) => buildingsApi.update(buildingId!, { requiresApproval: v }),
+    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['buildings', buildingId] }) },
+    onError: (err: Error) => toast.error(err.message),
+  })
+
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <div className="flex items-center gap-2 text-sm text-muted-foreground mb-4">
@@ -831,6 +837,7 @@ export default function BuildingDetailAdminPage() {
       <div className="mb-6 max-w-sm space-y-3">
         <NoShowOverrideControl scope="building" value={building?.noShowReleaseEnabled} onChange={(v) => saveNoShow.mutate(v)} disabled={saveNoShow.isPending} />
         <QrCheckInModeControl scope="building" value={building?.qrCheckInMode} onChange={(v) => saveQrMode.mutate(v)} disabled={saveQrMode.isPending} />
+        <ApprovalOverrideControl scope="building" value={building?.requiresApproval} onChange={(v) => saveRequiresApproval.mutate(v)} disabled={saveRequiresApproval.isPending} />
       </div>
 
       <BuildingManagersPanel buildingId={buildingId!} buildingName={building?.name} />

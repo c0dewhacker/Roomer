@@ -112,7 +112,7 @@ export const buildingsApi = {
   get: (id: string) => api.get<{ data: Building & { floors: Floor[] } }>(`/buildings/${id}`),
   create: (body: { name: string; address?: string }) =>
     api.post<{ data: Building }>('/buildings', body),
-  update: (id: string, body: Partial<{ name: string; address: string; noShowReleaseEnabled: boolean | null; qrCheckInMode: QrCheckInMode | null }>) =>
+  update: (id: string, body: Partial<{ name: string; address: string; noShowReleaseEnabled: boolean | null; qrCheckInMode: QrCheckInMode | null; requiresApproval: boolean | null }>) =>
     api.put<{ data: Building }>(`/buildings/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/buildings/${id}`),
   getAccessGroups: (id: string) =>
@@ -151,7 +151,7 @@ export const buildingsApi = {
 // --- Floors ---
 export const floorsApi = {
   get: (id: string) =>
-    api.get<{ data: Omit<Floor, 'zones'> & { zones: Array<{ id: string; name: string; colour: string; zoneGroupId: string | null; assets: Array<Asset & { isPrimaryZone?: boolean }> }>; zoneGroups: Array<{ id: string; name: string; floorId: string }>; floorPlan: { id: string; floorId: string; fileType: 'IMAGE' | 'PDF' | 'DXF'; renderedPath: string; thumbnailPath?: string; width: number; height: number; displayScale: number; updatedAt: string } | null } }>(
+    api.get<{ data: Omit<Floor, 'zones'> & { zones: Array<{ id: string; name: string; colour: string; zoneGroupId: string | null; requiresApproval: boolean | null; assets: Array<Asset & { isPrimaryZone?: boolean }> }>; zoneGroups: Array<{ id: string; name: string; floorId: string }>; floorPlan: { id: string; floorId: string; fileType: 'IMAGE' | 'PDF' | 'DXF'; renderedPath: string; thumbnailPath?: string; width: number; height: number; displayScale: number; updatedAt: string } | null } }>(
       `/floors/${id}`,
     ),
   create: (body: { buildingId: string; name: string; level?: number }) =>
@@ -193,7 +193,7 @@ export const floorsApi = {
 export const zonesApi = {
   create: (body: { floorId: string; name: string; colour: string; zoneGroupId?: string }) =>
     api.post<{ data: { id: string; floorId: string; name: string; colour: string } }>('/zones', body),
-  update: (id: string, body: Partial<{ name: string; colour: string; zoneGroupId: string | null }>) =>
+  update: (id: string, body: Partial<{ name: string; colour: string; zoneGroupId: string | null; requiresApproval: boolean | null }>) =>
     api.put<{ data: { id: string; floorId: string; name: string; colour: string } }>(`/zones/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/zones/${id}`),
 }
@@ -405,6 +405,12 @@ export const bookingsApi = {
     api.patch<{ data: Booking }>(`/bookings/${id}`, body),
   cancel: (id: string) => api.delete<{ data: { ok: true } }>(`/bookings/${id}`),
   checkIn: (id: string) => api.post<{ data: { id: string; checkedInAt: string } }>(`/bookings/${id}/check-in`),
+  pendingApprovals: () =>
+    api.get<{ data: Array<Booking & { user: { id: string; displayName: string; email: string }; asset: { id: string; name: string; floor?: { id: string; name: string; building: { id: string; name: string } } } }> }>(
+      '/bookings/pending-approvals',
+    ),
+  approve: (id: string) => api.post<{ data: { ok: true; approvedCount: number } }>(`/bookings/${id}/approve`),
+  reject: (id: string, note?: string) => api.post<{ data: { ok: true; rejectedCount: number } }>(`/bookings/${id}/reject`, { note }),
   report: (params: {
     from?: string
     to?: string
@@ -579,6 +585,8 @@ type OrgSettings = {
   checkInGraceMinutes?: number
   qrCheckInMode?: QrCheckInMode
   weeklyReportEnabled?: boolean
+  requiresApproval?: boolean
+  approvalWindowHours?: number
 }
 
 export interface BrandingBanner {

@@ -6,7 +6,7 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole, getManagedFloorIds, getManagedBuildingIds, isFloorManagerForFloor } from '../middleware/requireRole.js'
 import { enqueueNotification, fanOutFloorAvailable, cancelFutureBookingsForAssets } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
-import { lockAssetForBooking, lockAssetForQueue, lockUserForBookingQuota, hasConfirmedOverlap, checkZoneGroupOverlap, isOverlapConstraintViolation, assertBookable, assertUnderBookingQuota, isWithinAdvanceBookingWindow } from '../lib/booking.js'
+import { lockAssetForBooking, lockAssetForQueue, lockUserForBookingQuota, hasBlockingOverlap, checkZoneGroupOverlap, isOverlapConstraintViolation, assertBookable, assertUnderBookingQuota, isWithinAdvanceBookingWindow } from '../lib/booking.js'
 import { resolveQrCheckInMode } from '../lib/qr.js'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
@@ -920,7 +920,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       try {
         booking = await prisma.$transaction(async (tx) => {
           await lockAssetForBooking(tx, id)
-          if (await hasConfirmedOverlap(tx, id, first.wantedStartsAt, first.wantedEndsAt)) return null
+          if (await hasBlockingOverlap(tx, id, first.wantedStartsAt, first.wantedEndsAt)) return null
 
           // ZoneGroup conflicts are scoped per-user, not per-asset, so they
           // need this lock too — same rule every other booking-creating path

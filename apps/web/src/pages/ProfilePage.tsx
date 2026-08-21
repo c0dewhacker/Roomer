@@ -128,6 +128,14 @@ const NOTIFICATION_GROUPS: Array<{ label: string; types: Array<{ key: string; la
     ],
   },
   {
+    label: 'Booking approvals',
+    types: [
+      { key: 'BOOKING_PENDING_APPROVAL', label: 'Someone requested a booking that needs your approval' },
+      { key: 'BOOKING_APPROVED', label: 'Your booking request was approved' },
+      { key: 'BOOKING_REJECTED', label: 'Your booking request was declined' },
+    ],
+  },
+  {
     label: 'Other',
     types: [
       { key: 'WELCOME', label: 'Welcome email' },

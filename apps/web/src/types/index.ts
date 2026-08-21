@@ -2,9 +2,9 @@ export type GlobalRole = 'SUPER_ADMIN' | 'USER'
 export type BookableStatus = 'OPEN' | 'RESTRICTED' | 'ASSIGNED' | 'DISABLED'
 /** @deprecated Use BookableStatus instead */
 export type DeskStatus = BookableStatus
-export type BookingStatus = 'CONFIRMED' | 'CANCELLED' | 'COMPLETED'
+export type BookingStatus = 'CONFIRMED' | 'CANCELLED' | 'COMPLETED' | 'PENDING_APPROVAL'
 export type QueueEntryStatus = 'WAITING' | 'PROMOTED' | 'CLAIMED' | 'EXPIRED' | 'CANCELLED'
-export type AssetBookingStatus = 'available' | 'mine' | 'booked' | 'restricted' | 'assigned' | 'disabled' | 'queued' | 'promoted' | 'zone_conflict'
+export type AssetBookingStatus = 'available' | 'mine' | 'mine_pending' | 'booked' | 'restricted' | 'assigned' | 'disabled' | 'queued' | 'promoted' | 'zone_conflict'
 /** @deprecated Use AssetBookingStatus instead */
 export type DeskBookingStatus = AssetBookingStatus
 export type ResourceRoleType = 'FLOOR_MANAGER' | 'BUILDING_ADMIN'
@@ -65,6 +65,8 @@ export interface Building {
   noShowReleaseEnabled?: boolean | null
   /** null = inherit org default; explicit override otherwise */
   qrCheckInMode?: QrCheckInMode | null
+  /** null = inherit org default; true/false = explicit override */
+  requiresApproval?: boolean | null
 }
 
 export interface Floor {
@@ -97,6 +99,9 @@ export interface Zone {
   name: string
   colour: string
   assets: Asset[]
+  zoneGroupId?: string | null
+  /** null = inherit (zone → building → org) */
+  requiresApproval?: boolean | null
 }
 
 export interface AssetAssignedUser {
@@ -152,6 +157,8 @@ export interface AssetWithStatus extends Omit<Asset, 'bookingStatus'> {
   isPrimaryZone?: boolean
   assignedUsers?: AssetAssignedUser[]
   queueDepth?: number
+  /** Resolved zone → building → org override chain — see #74. */
+  requiresApproval?: boolean
 }
 /** @deprecated Use AssetWithStatus instead */
 export type DeskWithStatus = AssetWithStatus
@@ -194,6 +201,9 @@ export interface Booking {
   attendeeCount?: number | null
   checkedInAt?: string | null
   recurringRuleId?: string | null
+  approvalExpiresAt?: string | null
+  approvedAt?: string | null
+  rejectionNote?: string | null
   user?: User
   asset?: Asset & {
     floor?: Floor & { building?: Building }

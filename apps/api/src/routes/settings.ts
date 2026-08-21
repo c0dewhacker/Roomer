@@ -99,6 +99,11 @@ const updateOrgSchema = z.object({
   // QR desk check-in (global default; buildings & floors can override).
   qrCheckInMode: z.nativeEnum(QrCheckInMode).optional(),
   weeklyReportEnabled: z.boolean().optional(),
+  // Booking approval workflow (global default; buildings & zones can
+  // override — see #74). Zone is the most granular override level, unlike
+  // noShowReleaseEnabled/qrCheckInMode which stop at floor.
+  requiresApproval: z.boolean().optional(),
+  approvalWindowHours: z.number().int().min(1).max(168).optional(),
 })
 
 // The "Direct role" grant option in GroupMappingsEditor sends
@@ -251,6 +256,8 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
     checkInGraceMinutes: true,
     qrCheckInMode: true,
     weeklyReportEnabled: true,
+    requiresApproval: true,
+    approvalWindowHours: true,
     createdAt: true,
     updatedAt: true,
   } satisfies Prisma.OrganisationSelect

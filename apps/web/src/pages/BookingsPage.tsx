@@ -43,6 +43,14 @@ const statusVariant: Record<string, 'default' | 'secondary' | 'destructive' | 'o
   CONFIRMED: 'default',
   CANCELLED: 'destructive',
   COMPLETED: 'secondary',
+  PENDING_APPROVAL: 'outline',
+}
+
+const statusLabel: Record<string, string> = {
+  CONFIRMED: 'CONFIRMED',
+  CANCELLED: 'CANCELLED',
+  COMPLETED: 'COMPLETED',
+  PENDING_APPROVAL: 'Pending approval',
 }
 
 function toLocalDatetimeValue(iso: string): string {
@@ -462,6 +470,11 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
   const [transferOpen, setTransferOpen] = useState(false)
   const [swapOpen, setSwapOpen] = useState(false)
   const canModify = showCancel && booking.status === 'CONFIRMED'
+  // A PENDING_APPROVAL booking can only be withdrawn (DELETE /bookings/:id
+  // allows it — see #74), not edited/transferred/swapped: those all require
+  // an already-CONFIRMED booking, and rescheduling is explicitly blocked
+  // server-side while approval is pending.
+  const canWithdraw = showCancel && booking.status === 'PENDING_APPROVAL'
   // Mirrors the backend's actual check-in window (bookings.ts POST
   // /:id/check-in: rejects with BOOKING_NOT_STARTED while startsAt > now,
   // BOOKING_ENDED once endsAt < now) — todayBooking alone enabled the button
@@ -496,8 +509,11 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
                 {todayBooking && (
                   <Badge variant="outline" className="shrink-0 text-xs border-green-500 text-green-600">Today</Badge>
                 )}
-                <Badge variant={statusVariant[booking.status] ?? 'secondary'} className="shrink-0 text-xs">
-                  {booking.status}
+                <Badge
+                  variant={statusVariant[booking.status] ?? 'secondary'}
+                  className={`shrink-0 text-xs ${booking.status === 'PENDING_APPROVAL' ? 'border-amber-500 text-amber-600' : ''}`}
+                >
+                  {statusLabel[booking.status] ?? booking.status}
                 </Badge>
                 {booking.checkedInAt && (
                   <Badge variant="outline" className="shrink-0 text-xs border-green-500 text-green-600">
@@ -595,6 +611,35 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
                         className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                       >
                         Cancel booking
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
+            )}
+            {canWithdraw && (
+              <div className="flex items-center gap-1 shrink-0">
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" title="Withdraw request">
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Withdraw booking request?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Withdraw your pending request for <strong>{(booking.asset ?? booking.desk)?.name}</strong> on{' '}
+                        {formatDate(booking.startsAt)}? This action cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep request</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => cancel.mutate(booking.id)}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      >
+                        Withdraw request
                       </AlertDialogAction>
                     </AlertDialogFooter>
                   </AlertDialogContent>

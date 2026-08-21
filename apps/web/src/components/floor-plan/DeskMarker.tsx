@@ -20,6 +20,7 @@ const CATEGORY_ICONS: Record<string, string> = {
 const STATUS_BG: Record<string, string> = {
   available:    'bg-green-500 hover:bg-green-600',
   mine:         'bg-blue-500 hover:bg-blue-600',
+  mine_pending: 'bg-amber-500 hover:bg-amber-600',
   booked:       'bg-red-400 hover:bg-red-500',
   assigned:     'bg-slate-400 hover:bg-slate-500',
   restricted:   'bg-orange-400 hover:bg-orange-500',
@@ -32,6 +33,7 @@ const STATUS_BG: Record<string, string> = {
 const STATUS_DOT: Record<string, string> = {
   available:    'bg-green-500',
   mine:         'bg-blue-500',
+  mine_pending: 'bg-amber-500',
   booked:       'bg-red-400',
   assigned:     'bg-slate-400',
   restricted:   'bg-orange-400',
@@ -44,6 +46,7 @@ const STATUS_DOT: Record<string, string> = {
 const STATUS_LABEL: Record<string, string> = {
   available:    'Available',
   mine:         'Your booking',
+  mine_pending: 'Pending approval',
   booked:       'Booked',
   assigned:     'Assigned',
   restricted:   'Restricted',

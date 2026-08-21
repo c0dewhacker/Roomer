@@ -135,6 +135,33 @@ export async function isFloorManagerForFloor(userId: string, floorId: string): P
 }
 
 /**
+ * Returns the userIds of everyone who holds FLOOR_MANAGER access on the given
+ * floor — the inverse of isFloorManagerForFloor. Deliberately does NOT also
+ * include inherited building admins (unlike isFloorManagerForFloor's access
+ * check) — callers that want the full approver audience combine this with
+ * getBuildingAdminUserIds separately, so inheriting here would just produce
+ * duplicate ids that get deduped anyway, at the cost of an extra building
+ * lookup this function doesn't otherwise need.
+ */
+export async function getFloorManagerUserIds(floorId: string): Promise<string[]> {
+  const [direct, via] = await Promise.all([
+    prisma.userResourceRole.findMany({
+      where: { scopeType: 'FLOOR', floorId, role: 'FLOOR_MANAGER' },
+      select: { userId: true },
+    }),
+    prisma.groupResourceRole.findMany({
+      where: { scopeType: 'FLOOR', floorId, role: 'FLOOR_MANAGER' },
+      select: { group: { select: { members: { select: { userId: true } } } } },
+    }),
+  ])
+  const ids = [
+    ...direct.map((r) => r.userId),
+    ...via.flatMap((r) => r.group.members.map((m) => m.userId)),
+  ]
+  return [...new Set(ids)]
+}
+
+/**
  * Returns all floorIds on which the user has FLOOR_MANAGER access,
  * combining direct UserResourceRole rows, GroupResourceRole memberships,
  * and inherited access from BUILDING_ADMIN roles.

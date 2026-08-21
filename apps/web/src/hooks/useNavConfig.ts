@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useAuthStore } from '@/stores/auth'
 import { useQuery } from '@tanstack/react-query'
 import { buildingsApi } from '@/lib/api'
-import { Calendar, Clock, Building2, Users, Settings, Package, BarChart3, FileText, Shield, Layers, Network, Workflow, Webhook, MapPin, Table, ShieldPlus } from 'lucide-react'
+import { Calendar, Clock, Building2, Users, Settings, Package, BarChart3, FileText, Shield, Layers, Network, Workflow, Webhook, MapPin, Table, ShieldPlus, ClipboardCheck } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
 export interface NavItem {
@@ -88,6 +88,7 @@ export function useNavConfig() {
             { to: '/admin/departments', icon: Network, label: 'Departments' },
             { to: '/admin/org-chart', icon: Workflow, label: 'Org Chart' },
             { to: '/admin/manager-requests', icon: ShieldPlus, label: 'Manager Requests' },
+            { to: '/admin/approvals', icon: ClipboardCheck, label: 'Booking Approvals' },
           ],
         },
         {
@@ -128,6 +129,7 @@ export function useNavConfig() {
           { to: '/admin/reports', icon: BarChart3, label: 'Reports' },
           { to: '/admin/bookings-report', icon: Table, label: 'Bookings Report' },
           { to: '/admin/manager-requests', icon: ShieldPlus, label: 'Manager Requests' },
+          { to: '/admin/approvals', icon: ClipboardCheck, label: 'Booking Approvals' },
         ],
       })
     } else if (isFloorManager) {
@@ -136,6 +138,7 @@ export function useNavConfig() {
         label: 'Floor Manager',
         items: [
           { to: '/admin/assets', icon: Package, label: 'Assets' },
+          { to: '/admin/approvals', icon: ClipboardCheck, label: 'Booking Approvals' },
           ...managedFloors.map((f) => ({ to: `/admin/floors/${f.id}`, icon: Layers, label: f.name })),
         ],
       })

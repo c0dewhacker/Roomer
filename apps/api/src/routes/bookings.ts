@@ -1,13 +1,14 @@
 import type { FastifyInstance } from 'fastify'
+import type { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { createBookingSchema, updateBookingSchema, GlobalRole, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { isFloorManagerForFloor, getManagedBuildingIds } from '../middleware/requireRole.js'
+import { isFloorManagerForFloor, isBuildingManagerForBuilding, getManagedBuildingIds, getManagedFloorIds, getBuildingAdminUserIds, getFloorManagerUserIds } from '../middleware/requireRole.js'
 import { enqueueNotification, fanOutFloorAvailable, promoteNextQueueEntry } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { buildBookingIcs } from '../lib/ical.js'
 import { checkGroupAccess } from './groups.js'
-import { assertBookable, assertUnderBookingQuota, hasConfirmedOverlap, checkZoneGroupOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, lockUserForBookingQuota, isOverlapConstraintViolation } from '../lib/booking.js'
+import { assertBookable, assertUnderBookingQuota, hasBlockingOverlap, checkZoneGroupOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, lockUserForBookingQuota, isOverlapConstraintViolation, resolveRequiresApproval } from '../lib/booking.js'
 import { z } from 'zod'
 
 class BookingConflictError extends Error {
@@ -114,6 +115,44 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
+  // GET /bookings/pending-approvals — bookings awaiting approval that the
+  // caller can act on (SUPER_ADMIN sees all; otherwise scoped to buildings/
+  // floors they manage — see #74's approver audience). Must be registered
+  // before GET /:id so "pending-approvals" doesn't get parsed as a booking id.
+  fastify.get('/pending-approvals', { preHandler: [requireAuth] }, async (request, reply) => {
+    const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+    const where: Prisma.BookingWhereInput = { status: 'PENDING_APPROVAL' }
+
+    if (!isSuperAdmin) {
+      const [managedBuildingIds, managedFloorIds] = await Promise.all([
+        getManagedBuildingIds(request.user.id),
+        getManagedFloorIds(request.user.id),
+      ])
+      if (managedBuildingIds.length === 0 && managedFloorIds.length === 0) {
+        return reply.status(200).send({ data: [] })
+      }
+      where.asset = {
+        floor: {
+          OR: [
+            { buildingId: { in: managedBuildingIds } },
+            { id: { in: managedFloorIds } },
+          ],
+        },
+      }
+    }
+
+    const bookings = await prisma.booking.findMany({
+      where,
+      include: {
+        user: { select: { id: true, displayName: true, email: true } },
+        asset: { select: { id: true, name: true, floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } } } },
+      },
+      orderBy: { createdAt: 'asc' },
+    })
+
+    return reply.status(200).send({ data: bookings })
+  })
+
   // GET /bookings — current user's bookings
   fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
     const queryResult = z.object({ status: z.enum(['past', 'all', 'upcoming']).optional() }).safeParse(request.query)
@@ -137,9 +176,12 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     } else if (status === 'all') {
       // No filter
     } else {
-      // Default: upcoming — include all of today regardless of time
+      // Default: upcoming — include all of today regardless of time.
+      // PENDING_APPROVAL is included alongside CONFIRMED (see #74) — it's
+      // reserving the same slot and the requester still needs to see it
+      // (and be able to withdraw it) here, not just once it's approved.
       where['endsAt'] = { gte: startOfToday }
-      where['status'] = 'CONFIRMED'
+      where['status'] = { in: ['CONFIRMED', 'PENDING_APPROVAL'] }
     }
 
     const bookings = await prisma.booking.findMany({
@@ -208,13 +250,33 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(quota.status).send({ error: { message: quota.message, code: quota.code } })
     }
 
-    let booking: Awaited<ReturnType<typeof prisma.booking.create>>
+    // Zone → building → org override chain (see #74's feasibility
+    // assessment). A PENDING_APPROVAL booking reserves the slot exactly like
+    // CONFIRMED (hasBlockingOverlap, checkZoneGroupOverlap, the booking quota
+    // count, and the booking_no_overlap DB constraint all treat the two
+    // statuses identically) — approval only gates whether it starts life
+    // confirmed or waiting on a reviewer, not whether the slot is held.
+    const requiresApproval = await resolveRequiresApproval(prisma, assetId)
+    const approvalWindowHours = requiresApproval
+      ? (await prisma.organisation.findFirst({ select: { approvalWindowHours: true } }))?.approvalWindowHours ?? 24
+      : 0
+
+    let booking: Prisma.BookingGetPayload<{
+      include: {
+        asset: {
+          include: {
+            floor: { include: { building: { select: { id: true; name: true } } } }
+            primaryZone: { select: { id: true; name: true } }
+          }
+        }
+      }
+    }>
     try {
       booking = await prisma.$transaction(async (tx) => {
         // Serialize concurrent bookings for the same asset using the shared advisory lock
         await lockAssetForBooking(tx, assetId)
 
-        if (await hasConfirmedOverlap(tx, assetId, startsAt, endsAt)) {
+        if (await hasBlockingOverlap(tx, assetId, startsAt, endsAt)) {
           throw new BookingConflictError('ASSET_CONFLICT', 'Asset is already booked for this time')
         }
 
@@ -248,7 +310,8 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
             endsAt,
             notes: notes ?? null,
             attendeeCount,
-            status: 'CONFIRMED',
+            status: requiresApproval ? 'PENDING_APPROVAL' : 'CONFIRMED',
+            approvalExpiresAt: requiresApproval ? new Date(Date.now() + approvalWindowHours * 60 * 60 * 1000) : null,
           },
           include: {
             asset: {
@@ -271,13 +334,38 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       throw err
     }
 
-    await enqueueNotification({
-      type: NotificationType.BOOKING_CONFIRMED,
-      userId: request.user.id,
-      bookingId: booking.id,
-    })
+    if (booking.status === 'PENDING_APPROVAL') {
+      // Notified once per approver (SUPER_ADMIN + building admins + floor
+      // managers) rather than a BOOKING_CONFIRMED to the requester — nothing
+      // is confirmed yet. booking.created is deliberately withheld until an
+      // approve actually confirms it (see POST /:id/approve), so an
+      // integration reconciling desk occupancy off that webhook never sees a
+      // slot as occupied before a human has actually signed off on it.
+      const floorId = booking.asset.floor?.id
+      const buildingId = booking.asset.floor?.buildingId
+      const [superAdmins, buildingAdminIds, floorManagerIds] = await Promise.all([
+        prisma.user.findMany({ where: { globalRole: 'SUPER_ADMIN', accountStatus: 'ACTIVE' }, select: { id: true } }),
+        buildingId ? getBuildingAdminUserIds(buildingId) : Promise.resolve([]),
+        floorId ? getFloorManagerUserIds(floorId) : Promise.resolve([]),
+      ])
+      const approverIds = [...new Set([...superAdmins.map((a) => a.id), ...buildingAdminIds, ...floorManagerIds])]
+        .filter((id) => id !== request.user.id)
+      for (const userId of approverIds) {
+        await enqueueNotification({
+          type: NotificationType.BOOKING_PENDING_APPROVAL,
+          userId,
+          bookingId: booking.id,
+        })
+      }
+    } else {
+      await enqueueNotification({
+        type: NotificationType.BOOKING_CONFIRMED,
+        userId: request.user.id,
+        bookingId: booking.id,
+      })
 
-    dispatchWebhook('booking.created', { id: booking.id, userId: booking.userId, assetId: booking.assetId, startsAt: booking.startsAt, endsAt: booking.endsAt }).catch(() => {})
+      dispatchWebhook('booking.created', { id: booking.id, userId: booking.userId, assetId: booking.assetId, startsAt: booking.startsAt, endsAt: booking.endsAt }).catch(() => {})
+    }
 
     return reply.status(201).send({ data: booking })
   })
@@ -462,7 +550,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       updated = await prisma.$transaction(async (tx) => {
         await lockAssetForBooking(tx, booking.assetId)
 
-        if (await hasConfirmedOverlap(tx, booking.assetId, newStartsAt, newEndsAt, id)) {
+        if (await hasBlockingOverlap(tx, booking.assetId, newStartsAt, newEndsAt, id)) {
           throw new BookingConflictError('ASSET_CONFLICT', 'Asset is already booked for this time')
         }
 
@@ -570,7 +658,13 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
-    if (booking.status !== 'CONFIRMED') {
+    // PENDING_APPROVAL is included so the requester (or an admin/floor
+    // manager) can withdraw a booking that's still awaiting sign-off — see
+    // #74. It still reserves the slot, so withdrawing it must free that slot
+    // for the queue the same way cancelling a CONFIRMED booking does, hence
+    // no separate branch below: the promote/fan-out logic already applies
+    // uniformly regardless of which status was cancelled.
+    if (booking.status !== 'CONFIRMED' && booking.status !== 'PENDING_APPROVAL') {
       return reply.status(409).send({ error: { message: 'Booking is not active', code: 'BOOKING_NOT_ACTIVE' } })
     }
 
@@ -621,6 +715,151 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     return reply.status(200).send({ data: { ok: true } })
+  })
+
+  // Releases a slot freed by rejecting/withdrawing a PENDING_APPROVAL booking:
+  // promotes the next queue entry for that asset/time (if any) and fans out
+  // the newly-available slot to floor subscribers. Same two steps DELETE
+  // /:id already does for a CONFIRMED cancellation — factored out here since
+  // reject needs it per-occurrence for both a single booking and every
+  // occurrence in a rejected recurring series.
+  async function releaseRejectedSlot(assetId: string, startsAt: Date, endsAt: Date, requesterUserId: string): Promise<void> {
+    const nextQueued = await promoteNextQueueEntry(assetId, startsAt, endsAt)
+    if (nextQueued) {
+      await enqueueNotification({
+        type: NotificationType.QUEUE_PROMOTED,
+        userId: nextQueued.userId,
+        queueEntryId: nextQueued.id,
+        claimDeadline: nextQueued.claimDeadline.toISOString(),
+      })
+      dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+    }
+    const asset = await prisma.asset.findUnique({ where: { id: assetId }, select: { floorId: true, primaryZoneId: true } })
+    if (asset?.floorId) {
+      const slotDate = startsAt.toISOString().slice(0, 10)
+      await fanOutFloorAvailable(assetId, asset.floorId, asset.primaryZoneId, slotDate, requesterUserId)
+        .catch((err) => fastify.log.warn({ err }, '[bookings] floor fan-out error'))
+    }
+  }
+
+  // True when the caller may approve/reject a PENDING_APPROVAL booking on
+  // this asset: SUPER_ADMIN, a building admin for the asset's building, or a
+  // floor manager for the asset's floor — the same approver audience that
+  // was notified when the booking was first requested (see POST / above).
+  async function canReviewApproval(userId: string, isSuperAdmin: boolean, floorId: string | null | undefined, buildingId: string | null | undefined): Promise<boolean> {
+    if (isSuperAdmin) return true
+    if (buildingId && (await isBuildingManagerForBuilding(userId, buildingId))) return true
+    if (floorId && (await isFloorManagerForFloor(userId, floorId))) return true
+    return false
+  }
+
+  // POST /bookings/:id/approve — confirm a PENDING_APPROVAL booking. If the
+  // booking belongs to a recurring series, approves every PENDING_APPROVAL
+  // occurrence in that rule together (a series is one approval decision, not
+  // one per occurrence — see #74's feasibility assessment).
+  fastify.post('/:id/approve', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const booking = await prisma.booking.findUnique({
+      where: { id },
+      include: { asset: { select: { floorId: true, floor: { select: { buildingId: true } } } } },
+    })
+    if (!booking) {
+      return reply.status(404).send({ error: { message: 'Booking not found', code: 'NOT_FOUND' } })
+    }
+    const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+    if (!(await canReviewApproval(request.user.id, isSuperAdmin, booking.asset.floorId, booking.asset.floor?.buildingId))) {
+      return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+    }
+    if (booking.status !== 'PENDING_APPROVAL') {
+      return reply.status(409).send({ error: { message: 'Booking is not pending approval', code: 'BOOKING_NOT_PENDING' } })
+    }
+
+    const now = new Date()
+    const affected = booking.recurringRuleId
+      ? await prisma.booking.findMany({
+          where: { recurringRuleId: booking.recurringRuleId, status: 'PENDING_APPROVAL' },
+          select: { id: true, assetId: true, startsAt: true, endsAt: true },
+          orderBy: { startsAt: 'asc' },
+        })
+      : [{ id: booking.id, assetId: booking.assetId, startsAt: booking.startsAt, endsAt: booking.endsAt }]
+
+    await prisma.booking.updateMany({
+      where: { id: { in: affected.map((b) => b.id) } },
+      data: { status: 'CONFIRMED', approvedAt: now, approvedByUserId: request.user.id, approvalExpiresAt: null },
+    })
+
+    for (const b of affected) {
+      dispatchWebhook('booking.created', { id: b.id, userId: booking.userId, assetId: b.assetId, startsAt: b.startsAt, endsAt: b.endsAt }).catch(() => {})
+    }
+    // One notification for the whole approval decision, referencing the
+    // earliest occurrence — same dedup reasoning as recurring creation's
+    // single BOOKING_CONFIRMED (see POST /recurring-bookings).
+    await enqueueNotification({
+      type: NotificationType.BOOKING_APPROVED,
+      userId: booking.userId,
+      bookingId: affected[0].id,
+    })
+
+    return reply.status(200).send({ data: { ok: true, approvedCount: affected.length } })
+  })
+
+  const rejectBookingSchema = z.object({ note: z.string().max(1000).optional() })
+
+  // POST /bookings/:id/reject — decline a PENDING_APPROVAL booking, freeing
+  // its slot. Recurring series are rejected as a whole, same as approve.
+  fastify.post('/:id/reject', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const result = rejectBookingSchema.safeParse(request.body ?? {})
+    if (!result.success) {
+      return reply.status(400).send({ error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() } })
+    }
+    const booking = await prisma.booking.findUnique({
+      where: { id },
+      include: { asset: { select: { floorId: true, floor: { select: { buildingId: true } } } } },
+    })
+    if (!booking) {
+      return reply.status(404).send({ error: { message: 'Booking not found', code: 'NOT_FOUND' } })
+    }
+    const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+    if (!(await canReviewApproval(request.user.id, isSuperAdmin, booking.asset.floorId, booking.asset.floor?.buildingId))) {
+      return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+    }
+    if (booking.status !== 'PENDING_APPROVAL') {
+      return reply.status(409).send({ error: { message: 'Booking is not pending approval', code: 'BOOKING_NOT_PENDING' } })
+    }
+
+    const note = result.data.note ?? null
+    const affected = booking.recurringRuleId
+      ? await prisma.booking.findMany({
+          where: { recurringRuleId: booking.recurringRuleId, status: 'PENDING_APPROVAL' },
+          select: { id: true, assetId: true, startsAt: true, endsAt: true },
+          orderBy: { startsAt: 'asc' },
+        })
+      : [{ id: booking.id, assetId: booking.assetId, startsAt: booking.startsAt, endsAt: booking.endsAt }]
+
+    await prisma.$transaction([
+      prisma.booking.updateMany({
+        where: { id: { in: affected.map((b) => b.id) } },
+        data: { status: 'CANCELLED', rejectionNote: note, approvedByUserId: request.user.id, approvalExpiresAt: null },
+      }),
+      // A rejected series never had a single CONFIRMED occurrence — same as
+      // the full-cancel path (DELETE /recurring-bookings/:id), the rule
+      // itself moves to CANCELLED rather than sitting ACTIVE with zero
+      // bookings and no obvious way to tell it was rejected wholesale.
+      ...(booking.recurringRuleId ? [prisma.recurringBookingRule.update({ where: { id: booking.recurringRuleId }, data: { status: 'CANCELLED' } })] : []),
+    ])
+
+    for (const b of affected) {
+      dispatchWebhook('booking.cancelled', { id: b.id, userId: booking.userId, assetId: b.assetId }).catch(() => {})
+      await releaseRejectedSlot(b.assetId, b.startsAt, b.endsAt, booking.userId)
+    }
+    await enqueueNotification({
+      type: NotificationType.BOOKING_REJECTED,
+      userId: booking.userId,
+      bookingId: affected[0].id,
+    })
+
+    return reply.status(200).send({ data: { ok: true, rejectedCount: affected.length } })
   })
 
   // ─── Booking transfer ──────────────────────────────────────────────────────

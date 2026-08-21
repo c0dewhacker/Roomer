@@ -29,6 +29,8 @@ const orgSchema = z.object({
   checkInGraceMinutes: z.coerce.number().int().min(5).max(240),
   qrCheckInMode: z.enum(['DISABLED', 'OPTIONAL', 'MANDATORY']),
   weeklyReportEnabled: z.boolean(),
+  requiresApproval: z.boolean(),
+  approvalWindowHours: z.coerce.number().int().min(1).max(168),
 })
 type OrgForm = z.infer<typeof orgSchema>
 
@@ -47,6 +49,8 @@ export function OrgSettingsCard() {
       checkInGraceMinutes: 30,
       qrCheckInMode: 'DISABLED',
       weeklyReportEnabled: false,
+      requiresApproval: false,
+      approvalWindowHours: 24,
     },
   })
 
@@ -69,6 +73,8 @@ export function OrgSettingsCard() {
         checkInGraceMinutes: orgData.checkInGraceMinutes ?? 30,
         qrCheckInMode: orgData.qrCheckInMode ?? 'DISABLED',
         weeklyReportEnabled: orgData.weeklyReportEnabled ?? false,
+        requiresApproval: orgData.requiresApproval ?? false,
+        approvalWindowHours: orgData.approvalWindowHours ?? 24,
       })
     }
   }, [orgData, reset])
@@ -77,7 +83,7 @@ export function OrgSettingsCard() {
     mutationFn: (data: OrgForm) => settingsApi.updateOrg(data),
     onSuccess: (res) => {
       toast.success('Settings saved')
-      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4, dateFormat: res.data.dateFormat ?? 'dd/MM/yyyy', noShowReleaseEnabled: res.data.noShowReleaseEnabled ?? false, checkInGraceMinutes: res.data.checkInGraceMinutes ?? 30, qrCheckInMode: res.data.qrCheckInMode ?? 'DISABLED', weeklyReportEnabled: res.data.weeklyReportEnabled ?? false })
+      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4, dateFormat: res.data.dateFormat ?? 'dd/MM/yyyy', noShowReleaseEnabled: res.data.noShowReleaseEnabled ?? false, checkInGraceMinutes: res.data.checkInGraceMinutes ?? 30, qrCheckInMode: res.data.qrCheckInMode ?? 'DISABLED', weeklyReportEnabled: res.data.weeklyReportEnabled ?? false, requiresApproval: res.data.requiresApproval ?? false, approvalWindowHours: res.data.approvalWindowHours ?? 24 })
       qc.invalidateQueries({ queryKey: ['settings', 'organisation'] })
       qc.invalidateQueries({ queryKey: ['settings', 'public'] })
     },
@@ -159,6 +165,29 @@ export function OrgSettingsCard() {
               <SelectItem value="MANDATORY">Mandatory</SelectItem>
             </SelectContent>
           </Select>
+        </div>
+        <div className="rounded-md border p-3 space-y-3">
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4"
+              checked={watch('requiresApproval')}
+              onChange={(e) => setValue('requiresApproval', e.target.checked, { shouldDirty: true })}
+            />
+            <span>
+              <span className="text-sm font-medium">Require booking approval</span>
+              <span className="block text-xs text-muted-foreground">
+                New bookings need sign-off from a Super Admin, building admin, or floor manager before they're confirmed. The slot is reserved immediately while pending. Buildings and zones can override this default.
+              </span>
+            </span>
+          </label>
+          <div className="max-w-[200px]">
+            <Label htmlFor="approvalWindow" className="text-xs">Auto-reject after (hours)</Label>
+            <Input id="approvalWindow" type="number" min={1} max={168} {...register('approvalWindowHours')} className="mt-1.5" disabled={!watch('requiresApproval')} />
+            {errors.approvalWindowHours && (
+              <p className="text-xs text-destructive mt-1">{errors.approvalWindowHours.message}</p>
+            )}
+          </div>
         </div>
         <div className="rounded-md border p-3">
           <label className="flex items-start gap-2 cursor-pointer">

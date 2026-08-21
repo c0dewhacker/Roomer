@@ -916,3 +916,68 @@ export function renderLeaseExpired(
   const text = `Hi ${recipient.displayName},\n\nThe ${lease.name} lease for ${lease.buildingName} expired on ${formatDate(lease.endDate)}.\n\nView: ${env.APP_URL}/admin/leases`
   return { subject, html, text }
 }
+
+// ─── BOOKING_PENDING_APPROVAL / BOOKING_APPROVED / BOOKING_REJECTED (see #74) ─
+
+export function renderBookingPendingApproval(
+  approver: Pick<User, 'displayName'>,
+  requester: Pick<User, 'displayName' | 'email'>,
+  booking: Pick<Booking, 'startsAt' | 'endsAt'>,
+  asset: Pick<Asset, 'name'>,
+): { subject: string; html: string; text: string } {
+  const subject = `Booking approval requested — ${escapeHtml(asset.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Booking approval requested</h1>
+     <p>Hi ${escapeHtml(approver.displayName)}, ${escapeHtml(requester.displayName)} (${escapeHtml(requester.email)}) has requested a booking that needs your approval.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
+         <dt>When</dt><dd>${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/admin/approvals" class="btn">Review Request</a>`,
+  )
+  const text = `Hi ${approver.displayName},\n\n${requester.displayName} (${requester.email}) has requested a booking for ${asset.name} (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}) that needs your approval.\n\nReview it at ${env.APP_URL}/admin/approvals`
+  return { subject, html, text }
+}
+
+export function renderBookingApproved(
+  requester: Pick<User, 'displayName'>,
+  booking: Pick<Booking, 'startsAt' | 'endsAt'>,
+  asset: Pick<Asset, 'name'>,
+): { subject: string; html: string; text: string } {
+  const subject = `Booking approved — ${escapeHtml(asset.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Booking approved</h1>
+     <p>Hi ${escapeHtml(requester.displayName)}, your booking for ${escapeHtml(asset.name)} has been approved.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
+         <dt>When</dt><dd>${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}</dd>
+       </dl>
+     </div>
+     <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
+  )
+  const text = `Hi ${requester.displayName},\n\nYour booking for ${asset.name} (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}) has been approved.`
+  return { subject, html, text }
+}
+
+export function renderBookingRejected(
+  requester: Pick<User, 'displayName'>,
+  booking: Pick<Booking, 'startsAt' | 'endsAt'>,
+  asset: Pick<Asset, 'name'>,
+  rejectionNote: string | null,
+): { subject: string; html: string; text: string } {
+  const subject = `Booking request declined — ${escapeHtml(asset.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>Booking request declined</h1>
+     <p>Hi ${escapeHtml(requester.displayName)}, your booking request for ${escapeHtml(asset.name)} (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}) was declined.</p>
+     ${rejectionNote ? `<div class="detail"><dl><dt>Note</dt><dd>${escapeHtml(rejectionNote)}</dd></dl></div>` : ''}
+     <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
+  )
+  const text = `Hi ${requester.displayName},\n\nYour booking request for ${asset.name} (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}) was declined.${rejectionNote ? `\n\nNote: ${rejectionNote}` : ''}`
+  return { subject, html, text }
+}

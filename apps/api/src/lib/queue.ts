@@ -2,7 +2,7 @@ import { PgBoss, type Job } from 'pg-boss'
 import { env } from '../env.js'
 import { prisma } from './prisma.js'
 import { buildBookingIcs } from './ical.js'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingCancelledByAdmin, renderBookingNoShow, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, renderWeeklyReport, renderBookingTransferRequested, renderBookingTransferAccepted, renderBookingTransferDeclined, renderBookingTransferExpired, renderBookingSwapRequested, renderBookingSwapAccepted, renderBookingSwapDeclined, renderBookingSwapExpired, renderManagerRequestSubmitted, renderManagerRequestApproved, renderManagerRequestRejected, renderManagerRequestExpired, renderLeaseExpiring, renderLeaseExpired, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingCancelledByAdmin, renderBookingNoShow, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, renderWeeklyReport, renderBookingTransferRequested, renderBookingTransferAccepted, renderBookingTransferDeclined, renderBookingTransferExpired, renderBookingSwapRequested, renderBookingSwapAccepted, renderBookingSwapDeclined, renderBookingSwapExpired, renderManagerRequestSubmitted, renderManagerRequestApproved, renderManagerRequestRejected, renderManagerRequestExpired, renderLeaseExpiring, renderLeaseExpired, renderBookingPendingApproval, renderBookingApproved, renderBookingRejected, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
 import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
@@ -25,6 +25,7 @@ const PUSH_ELIGIBLE_TYPES = new Set<NotificationType>([
   NotificationType.BOOKING_TRANSFER_REQUESTED,
   NotificationType.BOOKING_SWAP_REQUESTED,
   NotificationType.QUEUE_CLAIM_EXPIRING,
+  NotificationType.BOOKING_PENDING_APPROVAL,
 ])
 
 // Priority order for picking a push notification's click-through target from
@@ -911,6 +912,69 @@ async function processSendNotification(
         endDate: formatDate(lease.endDate), appUrl: env.APP_URL,
       }
     }
+  } else if (type === NotificationType.BOOKING_PENDING_APPROVAL && bookingId) {
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { asset: true, user: true },
+    })
+    if (booking) {
+      title = `Booking approval requested — ${booking.asset.name}`
+      body = `${booking.user.displayName} has requested a booking for ${booking.asset.name} that needs your approval.`
+      emailPayload = renderBookingPendingApproval(user, booking.user, booking, booking.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        requesterName: booking.user.displayName, requesterEmail: booking.user.email,
+        assetName: booking.asset.name,
+        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        bookingUrl: `${env.APP_URL}/admin/approvals`,
+        appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_APPROVED && bookingId) {
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true, building: { select: { name: true } } } } } } },
+    })
+    if (booking) {
+      title = `Booking approved — ${booking.asset.name}`
+      body = `Your booking for ${booking.asset.name} has been approved.`
+      emailPayload = renderBookingApproved(user, booking, booking.asset)
+      icalEvent = {
+        method: 'REQUEST',
+        content: buildBookingIcs({
+          id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
+          assetName: booking.asset.name,
+          zoneName: booking.asset.primaryZone?.name,
+          floorName: booking.asset.floor?.name,
+          buildingName: booking.asset.floor?.building?.name,
+          sequence: booking.icsSequence,
+        }, 'REQUEST'),
+      }
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: booking.asset.name,
+        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        bookingUrl: `${env.APP_URL}/bookings/${booking.id}`,
+        appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_REJECTED && bookingId) {
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { asset: true },
+    })
+    if (booking) {
+      title = `Booking request declined — ${booking.asset.name}`
+      body = `Your booking request for ${booking.asset.name} was declined.`
+      emailPayload = renderBookingRejected(user, booking, booking.asset, booking.rejectionNote)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: booking.asset.name,
+        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        reviewNote: booking.rejectionNote ?? '',
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
   } else if (type === NotificationType.WELCOME) {
     title = 'Welcome to Roomer'
     body = 'Your account has been created.'
@@ -1432,6 +1496,102 @@ async function handleExpireClaimDeadlines(): Promise<void> {
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Processed expired claim deadlines', count: expiredPromoted.length }) + '\n')
 }
 
+// ─── Worker: auto-reject-pending-approvals (cron every 15 min, see #74) ──────
+
+/**
+ * Auto-rejects any PENDING_APPROVAL booking whose approvalExpiresAt has
+ * passed — nobody reviewed it in time, so the requester shouldn't be left
+ * holding an indefinitely-pending slot. Mirrors handleExpireClaimDeadlines's
+ * TOCTOU-safe re-check: a booking can be approved/rejected by a human (POST
+ * /bookings/:id/approve|reject) in the gap between the findMany below and
+ * the update, so only rows still PENDING_APPROVAL at update time are
+ * touched — an unconditional updateMany could otherwise stomp a booking a
+ * reviewer just approved back to CANCELLED.
+ */
+async function handleAutoRejectPendingApprovals(): Promise<void> {
+  const now = new Date()
+
+  const expired = await prisma.booking.findMany({
+    where: { status: 'PENDING_APPROVAL', approvalExpiresAt: { lt: now } },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
+  })
+  if (expired.length === 0) return
+
+  const stillPending = await prisma.booking.findMany({
+    where: { id: { in: expired.map((b) => b.id) }, status: 'PENDING_APPROVAL' },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
+  })
+  if (stillPending.length === 0) return
+
+  const AUTO_REJECT_NOTE = 'Auto-rejected: no response within the approval window'
+
+  await prisma.booking.updateMany({
+    where: { id: { in: stillPending.map((b) => b.id) }, status: 'PENDING_APPROVAL' },
+    data: { status: 'CANCELLED', rejectionNote: AUTO_REJECT_NOTE, approvalExpiresAt: null },
+  })
+
+  // A recurring series' occurrences all share the same approvalExpiresAt (set
+  // once at creation — see POST /recurring-bookings), so a whole rule expires
+  // together in the same sweep. Mark it CANCELLED the same way a manual
+  // reject does (POST /bookings/:id/reject), rather than leaving it ACTIVE
+  // with zero bookings and no obvious reason why.
+  const ruleIds = [...new Set(stillPending.map((b) => b.recurringRuleId).filter((v): v is string => !!v))]
+  if (ruleIds.length > 0) {
+    await prisma.recurringBookingRule.updateMany({
+      where: { id: { in: ruleIds }, status: { not: 'CANCELLED' } },
+      data: { status: 'CANCELLED' },
+    })
+  }
+
+  for (const b of stillPending) {
+    dispatchWebhook('booking.cancelled', { id: b.id, userId: b.userId, assetId: b.assetId }).catch(() => {})
+  }
+
+  // One BOOKING_REJECTED per requester per series (not per occurrence) —
+  // same dedup reasoning as the manual reject endpoint. A single sweep can
+  // catch several independent series/standalone bookings at once, so group
+  // by recurringRuleId (falling back to the booking's own id when standalone)
+  // and notify once per group, referencing its earliest occurrence.
+  const groups = new Map<string, typeof stillPending>()
+  for (const b of stillPending) {
+    const key = b.recurringRuleId ?? `single:${b.id}`
+    const group = groups.get(key)
+    if (group) group.push(b)
+    else groups.set(key, [b])
+  }
+  for (const group of groups.values()) {
+    group.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
+    await enqueueNotification({
+      type: NotificationType.BOOKING_REJECTED,
+      userId: group[0].userId,
+      bookingId: group[0].id,
+    })
+  }
+
+  // Release each freed slot — promote the next queued entry and fan out to
+  // floor subscribers, same as any other booking cancellation.
+  for (const b of stillPending) {
+    const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
+    if (nextQueued) {
+      await enqueueNotification({
+        type: NotificationType.QUEUE_PROMOTED,
+        userId: nextQueued.userId,
+        queueEntryId: nextQueued.id,
+        claimDeadline: nextQueued.claimDeadline.toISOString(),
+      })
+      dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+    }
+    const asset = await prisma.asset.findUnique({ where: { id: b.assetId }, select: { floorId: true, primaryZoneId: true } })
+    if (asset?.floorId) {
+      const slotDate = b.startsAt.toISOString().slice(0, 10)
+      await fanOutFloorAvailable(b.assetId, asset.floorId, asset.primaryZoneId, slotDate, b.userId)
+        .catch((err) => process.stderr.write(JSON.stringify({ level: 'warn', msg: '[queue] floor fan-out error', err: String(err) }) + '\n'))
+    }
+  }
+
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Auto-rejected expired pending-approval bookings', count: stillPending.length }) + '\n')
+}
+
 // ─── Worker: send-booking-reminders (cron every 15 min) ──────────────────────
 
 async function handleSendBookingReminders(): Promise<void> {
@@ -1607,6 +1767,7 @@ export async function startQueue(): Promise<void> {
   await b.createQueue('expire-transfer-requests')
   await b.createQueue('expire-manager-requests')
   await b.createQueue('lease-expiry')
+  await b.createQueue('auto-reject-pending-approvals')
 
   await b.work<NotificationJobData>('send-notification', handleSendNotification)
 
@@ -1677,6 +1838,11 @@ export async function startQueue(): Promise<void> {
     await handleLeaseExpiry()
   })
   await b.schedule('lease-expiry', '0 8 * * *', {})
+
+  await b.work('auto-reject-pending-approvals', async () => {
+    await handleAutoRejectPendingApprovals()
+  })
+  await b.schedule('auto-reject-pending-approvals', '*/15 * * * *', {})
 
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] pg-boss started and workers registered' }) + '\n')
 }

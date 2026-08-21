@@ -7,7 +7,7 @@ import { dispatchWebhook } from '../lib/webhook.js'
 import {
   assertBookable,
   assertUnderBookingQuota,
-  hasConfirmedOverlap,
+  hasBlockingOverlap,
   checkZoneGroupOverlap,
   lockAssetForBooking,
   lockAssetForQueue,
@@ -255,7 +255,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
         // below it writes, and returning null from an interactive transaction
         // does NOT roll back writes already made in this callback (only a
         // throw does) — so nothing may be written before this point.
-        if (await hasConfirmedOverlap(tx, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)) return null
+        if (await hasBlockingOverlap(tx, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)) return null
 
         // The pre-transaction PROMOTED/deadline checks above are TOCTOU-prone:
         // the claim-expiry sweep (a separate cron, its own transaction, a
@@ -396,7 +396,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
         // below it writes, and returning null from an interactive transaction
         // does NOT roll back writes already made in this callback (only a
         // throw does) — so nothing may be written before this point.
-        if (await hasConfirmedOverlap(tx, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)) return null
+        if (await hasBlockingOverlap(tx, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)) return null
 
         // The pre-transaction PROMOTED/deadline checks above are TOCTOU-prone:
         // the claim-expiry sweep (a separate cron, its own transaction, a
