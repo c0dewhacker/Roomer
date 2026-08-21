@@ -66,14 +66,27 @@ function escapeHtml(s: string): string {
 }
 
 export function formatDate(date: Date | string): string {
-  return new Date(date).toLocaleString('en-GB', {
+  // Pinned to an explicit, labelled UTC rather than left to default to
+  // whatever OS/ICU timezone the API process happens to be running under
+  // (toLocaleString with no `timeZone` uses the host's ambient TZ) — that
+  // made an email's rendered time depend on deployment configuration having
+  // nothing to do with the booking itself, and silently diverge from the
+  // same booking's time as shown in the web app (which renders in the
+  // *browser's* local timezone via date-fns). Neither side can correctly
+  // show the recipient's own local time without a stored timezone concept
+  // (see #72 — multi-timezone support), so this only fixes the
+  // non-determinism/silent-mismatch: an explicit, always-the-same,
+  // clearly-labelled UTC beats an unlabelled time that could be anything
+  // depending on the server's environment.
+  return `${new Date(date).toLocaleString('en-GB', {
     weekday: 'short',
     year: 'numeric',
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
-  })
+    timeZone: 'UTC',
+  })} UTC`
 }
 
 function baseHtml(title: string, body: string): string {
