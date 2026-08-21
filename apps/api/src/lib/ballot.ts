@@ -316,17 +316,27 @@ function computeSlotDates(ballot: { slotLeadDays: number; slotDurationDays: numb
 /**
  * Creates the immediate single run for a ONCE ballot, or (called from the
  * ballot-open-registration cron) the next run for a recurring one, if it's
- * time to open registration and no run for that cycle exists yet.
+ * time to open registration and no run for that cycle exists yet. Returns
+ * whether a run was actually created, so callers that need to distinguish
+ * "created" from "nothing to do" (the manual admin trigger — see
+ * routes/ballots.ts) don't have to re-derive it themselves.
+ *
+ * `force` (only ever passed true by the manual admin trigger, never by the
+ * cron) bypasses the registration-open-time gate for a recurring ballot,
+ * opening registration immediately regardless of the configured schedule —
+ * without it, the gate meant the admin "open run now" action silently
+ * no-op'd whenever it wasn't yet the scheduled time, while still reporting
+ * success back to the caller.
  */
-export async function ensureNextBallotRun(ballotId: string): Promise<void> {
+export async function ensureNextBallotRun(ballotId: string, options: { force?: boolean } = {}): Promise<boolean> {
   const ballot = await prisma.ballot.findUnique({ where: { id: ballotId } })
-  if (!ballot || ballot.status !== 'ACTIVE') return
+  if (!ballot || ballot.status !== 'ACTIVE') return false
 
   const now = new Date()
 
   if (ballot.frequency === 'ONCE') {
     const existing = await prisma.ballotRun.findFirst({ where: { ballotId } })
-    if (existing) return
+    if (existing) return false
     // ONCE ballots draw as soon as their registration window elapses from
     // creation — no weekday/day-of-month schedule involved.
     const registrationClosesAt = new Date(now.getTime() + ballot.registrationWindowHours * 60 * 60 * 1000)
@@ -341,17 +351,17 @@ export async function ensureNextBallotRun(ballotId: string): Promise<void> {
         slotEndsAt,
       },
     })
-    return
+    return true
   }
 
   const nextDrawDate = computeNextRunDate(ballot.frequency, ballot.dayOfWeek, ballot.dayOfMonth, now)
   const registrationOpensAt = new Date(nextDrawDate.getTime() - ballot.registrationWindowHours * 60 * 60 * 1000)
-  if (registrationOpensAt > now) return // not yet time to open this cycle's registration
+  if (!options.force && registrationOpensAt > now) return false // not yet time to open this cycle's registration
 
   const alreadyExists = await prisma.ballotRun.findFirst({
     where: { ballotId, registrationClosesAt: nextDrawDate, status: { not: 'CANCELLED' } },
   })
-  if (alreadyExists) return
+  if (alreadyExists) return false
 
   const { slotStartsAt, slotEndsAt } = computeSlotDates(ballot, nextDrawDate)
   await prisma.ballotRun.create({
@@ -363,13 +373,16 @@ export async function ensureNextBallotRun(ballotId: string): Promise<void> {
       // cycle is due until sometime after the window was actually meant to
       // open. Recording the intended open time here keeps the run's stated
       // window honest even though the hourly cron granularity means
-      // entrants might see it announced a bit later than that.
-      registrationOpensAt,
+      // entrants might see it announced a bit later than that. When forced
+      // open early by an admin, `now` IS the actual open time — there's no
+      // "intended" time to honour instead, the admin's action is the intent.
+      registrationOpensAt: options.force && registrationOpensAt > now ? now : registrationOpensAt,
       registrationClosesAt: nextDrawDate,
       slotStartsAt,
       slotEndsAt,
     },
   })
+  return true
 }
 
 /** Cron: for every ACTIVE ballot, spawn its next run if one isn't already open/pending. */

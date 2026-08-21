@@ -167,7 +167,14 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
     if (ballot.status !== 'ACTIVE') {
       return reply.status(409).send({ error: { message: 'Ballot is not active', code: 'BALLOT_NOT_ACTIVE' } })
     }
-    await ensureNextBallotRun(id)
+    const created = await ensureNextBallotRun(id, { force: true })
+    if (!created) {
+      // `force: true` bypasses the schedule gate, so this can only mean a
+      // run already exists — either a ONCE ballot's one-and-only run, or a
+      // recurring ballot's current cycle (already opened by an earlier
+      // trigger or by the cron beating this request to it).
+      return reply.status(409).send({ error: { message: 'A run for this ballot is already open', code: 'RUN_ALREADY_EXISTS' } })
+    }
     return reply.status(200).send({ data: { ok: true } })
   })
 
