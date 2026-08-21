@@ -471,6 +471,16 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
             endsAt: buildSlotDatetime(d, freshRule.endTime, extendTimeZone),
           }))
 
+          // Same gate as creation (line ~170) — an extension re-materialises
+          // occurrences against the asset's CURRENT approval requirement, not
+          // whatever was true when the series was first created, so this has
+          // to be re-resolved here rather than carried over from the rule.
+          const requiresApproval = await resolveRequiresApproval(tx, freshRule.assetId)
+          const approvalWindowHours = requiresApproval
+            ? (await tx.organisation.findFirst({ select: { approvalWindowHours: true } }))?.approvalWindowHours ?? 24
+            : 0
+          const approvalExpiresAt = requiresApproval ? new Date(Date.now() + approvalWindowHours * 60 * 60 * 1000) : null
+
           // Same centralised gate as creation, checked per-occurrence for the
           // same reason (an ASSIGNED-desk allowed-weekday check spanning the
           // whole range would incorrectly require every day between occurrences
@@ -492,7 +502,7 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
             const conflict = await tx.booking.findFirst({
               where: {
                 assetId: freshRule.assetId,
-                status: 'CONFIRMED',
+                status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] },
                 startsAt: { lt: slot.endsAt },
                 endsAt: { gt: slot.startsAt },
               },
@@ -522,13 +532,19 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
                   assetId: freshRule.assetId,
                   startsAt: s.startsAt,
                   endsAt: s.endsAt,
-                  status: 'CONFIRMED',
+                  status: requiresApproval ? 'PENDING_APPROVAL' : 'CONFIRMED',
+                  approvalExpiresAt,
                 })),
               },
             },
             include: {
               bookings: { select: { id: true, startsAt: true, endsAt: true, status: true }, orderBy: { startsAt: 'asc' } },
-              asset: { select: { id: true, name: true, floor: { select: { name: true, building: { select: { name: true } } } } } },
+              asset: {
+                select: {
+                  id: true, name: true,
+                  floor: { select: { id: true, buildingId: true, name: true, building: { select: { name: true } } } },
+                },
+              },
             },
           })
           // Identify exactly the occurrences this call just created (by the
@@ -536,7 +552,7 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
           // can notify/webhook only the new ones, not the whole series.
           const newStartsAtMs = new Set(slots.map((s) => s.startsAt.getTime()))
           const newlyCreated = updated.bookings.filter((b) => newStartsAtMs.has(b.startsAt.getTime()))
-          return { kind: 'extend' as const, rule: updated, newlyCreated }
+          return { kind: 'extend' as const, rule: updated, newlyCreated, requiresApproval }
         }
 
         // Shortening — cancel occurrences that now fall after the new end date.
@@ -568,13 +584,37 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
         // all previously, so extending a series created real CONFIRMED
         // bookings with no notification and no webhook for any of them.
         if (outcome.newlyCreated.length > 0) {
-          await enqueueNotification({
-            type: NotificationType.BOOKING_CONFIRMED,
-            userId: rule.userId,
-            bookingId: outcome.newlyCreated[0].id,
-          })
-          for (const b of outcome.newlyCreated) {
-            dispatchWebhook('booking.created', { id: b.id, userId: rule.userId, assetId: rule.assetId, startsAt: b.startsAt, endsAt: b.endsAt }).catch(() => {})
+          if (outcome.requiresApproval) {
+            // Mirrors series creation's approver fan-out (line ~266) — an
+            // extension re-resolves and can newly require approval even for
+            // a series that was originally CONFIRMED-only, so the newly
+            // created occurrences must go through the same queue, not
+            // straight to BOOKING_CONFIRMED + webhook.
+            const floorId = outcome.rule.asset.floor?.id
+            const buildingId = outcome.rule.asset.floor?.buildingId
+            const [superAdmins, buildingAdminIds, floorManagerIds] = await Promise.all([
+              prisma.user.findMany({ where: { globalRole: 'SUPER_ADMIN', accountStatus: 'ACTIVE' }, select: { id: true } }),
+              buildingId ? getBuildingAdminUserIds(buildingId) : Promise.resolve([]),
+              floorId ? getFloorManagerUserIds(floorId) : Promise.resolve([]),
+            ])
+            const approverIds = [...new Set([...superAdmins.map((a) => a.id), ...buildingAdminIds, ...floorManagerIds])]
+              .filter((uid) => uid !== request.user.id)
+            for (const userId of approverIds) {
+              await enqueueNotification({
+                type: NotificationType.BOOKING_PENDING_APPROVAL,
+                userId,
+                bookingId: outcome.newlyCreated[0].id,
+              })
+            }
+          } else {
+            await enqueueNotification({
+              type: NotificationType.BOOKING_CONFIRMED,
+              userId: rule.userId,
+              bookingId: outcome.newlyCreated[0].id,
+            })
+            for (const b of outcome.newlyCreated) {
+              dispatchWebhook('booking.created', { id: b.id, userId: rule.userId, assetId: rule.assetId, startsAt: b.startsAt, endsAt: b.endsAt }).catch(() => {})
+            }
           }
         }
       } else if (outcome.kind === 'shorten') {
