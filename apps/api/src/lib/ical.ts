@@ -7,13 +7,22 @@ function toIcsUtc(d: Date): string {
   return d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
 }
 
-/** Escape a text value per RFC 5545 (commas, semicolons, backslashes, newlines). */
+/**
+ * Escape a text value per RFC 5545 (commas, semicolons, backslashes,
+ * newlines). Matches `\r\n`, a lone `\n`, AND a lone `\r` — a bare
+ * carriage return with no trailing `\n` previously passed through
+ * unescaped, and some calendar clients treat a lone CR as a line
+ * terminator while unfolding, which would let a crafted field (an asset/
+ * zone/floor/building name — none of the corresponding schemas restrict
+ * these to newline-free strings) inject an extra property line into the
+ * generated invite.
+ */
 function escapeText(s: string): string {
   return s
     .replace(/\\/g, '\\\\')
     .replace(/;/g, '\\;')
     .replace(/,/g, '\\,')
-    .replace(/\r?\n/g, '\\n')
+    .replace(/\r\n|\r|\n/g, '\\n')
 }
 
 /** Fold a content line to <=75 octets per RFC 5545 (continuation lines start with a space). */
