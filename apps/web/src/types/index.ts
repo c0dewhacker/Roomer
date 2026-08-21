@@ -148,6 +148,8 @@ export interface AssetWithStatus extends Omit<Asset, 'bookingStatus'> {
   bookedBy?: Array<{ userId: string; displayName: string }>
   zoneColour: string
   zoneName: string
+  /** False when this entry came from a secondary (AssetZone) membership rather than the asset's primary zone. */
+  isPrimaryZone?: boolean
   assignedUsers?: AssetAssignedUser[]
   queueDepth?: number
 }

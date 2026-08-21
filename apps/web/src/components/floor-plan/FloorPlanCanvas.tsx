@@ -160,7 +160,7 @@ export function FloorPlanCanvas({
   const assets: AssetWithStatus[] = (() => {
     if (availabilityData) return availabilityData
     if (!floorData) return []
-    return floorData.zones.flatMap((zone) =>
+    const flat = floorData.zones.flatMap((zone) =>
       zone.assets.map((a) => ({
         ...a,
         bookingStatus: 'available' as const,
@@ -168,6 +168,15 @@ export function FloorPlanCanvas({
         zoneName: zone.name,
       })),
     )
+    // A shared asset (AssetZone secondary membership) appears once per zone
+    // it belongs to — keep only one marker per asset id, preferring its
+    // primary-zone entry (matches the same dedup useFloorAvailability does).
+    const byId = new Map<string, (typeof flat)[number]>()
+    for (const a of flat) {
+      const existing = byId.get(a.id)
+      if (!existing || a.isPrimaryZone) byId.set(a.id, a)
+    }
+    return [...byId.values()]
   })()
 
   // Display scale: how large the floor plan image is rendered in the coordinate

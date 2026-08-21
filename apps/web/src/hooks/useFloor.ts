@@ -18,7 +18,21 @@ export function useFloorAvailability(floorId: string, date: Date) {
     queryKey: ['floors', floorId, 'availability', dateStr],
     queryFn: () => floorsApi.getAvailability(floorId, dateStr),
     enabled: !!floorId,
-    select: (res) => res.data.zones?.flatMap((z) => z.assets) ?? [],
+    // A shared asset (an AssetZone secondary membership) appears once per
+    // zone it belongs to in the nested response — the floor plan renders one
+    // marker per asset at its single x/y, so the flattened list must keep
+    // only one entry per asset id. Always keep the primary-zone entry: it's
+    // the canonical one (its zoneColour/zoneId match the asset's actual
+    // placement), and every placed asset has exactly one.
+    select: (res) => {
+      const flat = res.data.zones?.flatMap((z) => z.assets) ?? []
+      const byId = new Map<string, (typeof flat)[number]>()
+      for (const asset of flat) {
+        const existing = byId.get(asset.id)
+        if (!existing || asset.isPrimaryZone) byId.set(asset.id, asset)
+      }
+      return [...byId.values()]
+    },
     staleTime: 10 * 1000,
   })
 }

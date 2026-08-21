@@ -151,7 +151,7 @@ export const buildingsApi = {
 // --- Floors ---
 export const floorsApi = {
   get: (id: string) =>
-    api.get<{ data: Floor & { zones: Array<{ id: string; name: string; colour: string; zoneGroupId: string | null; assets: Asset[] }>; zoneGroups: Array<{ id: string; name: string; floorId: string }>; floorPlan: { id: string; floorId: string; fileType: 'IMAGE' | 'PDF' | 'DXF'; renderedPath: string; thumbnailPath?: string; width: number; height: number; displayScale: number; updatedAt: string } | null } }>(
+    api.get<{ data: Omit<Floor, 'zones'> & { zones: Array<{ id: string; name: string; colour: string; zoneGroupId: string | null; assets: Array<Asset & { isPrimaryZone?: boolean }> }>; zoneGroups: Array<{ id: string; name: string; floorId: string }>; floorPlan: { id: string; floorId: string; fileType: 'IMAGE' | 'PDF' | 'DXF'; renderedPath: string; thumbnailPath?: string; width: number; height: number; displayScale: number; updatedAt: string } | null } }>(
       `/floors/${id}`,
     ),
   create: (body: { buildingId: string; name: string; level?: number }) =>

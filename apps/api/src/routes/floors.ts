@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import type { FastifyInstance } from 'fastify'
+import type { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { createFloorSchema, updateFloorSchema, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
@@ -9,6 +10,30 @@ import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage.js
 import { checkGroupAccess } from './groups.js'
 import { cancelFutureBookingsForFloors } from '../lib/queue.js'
 import { z } from 'zod'
+
+/**
+ * Merge a zone's primary-membership assets with its secondary (AssetZone)
+ * memberships into one per-zone list, tagging each with isPrimaryZone so the
+ * frontend canvas — which renders one marker per asset at its single x/y —
+ * can de-duplicate an asset appearing under more than one zone rather than
+ * drawing it twice. Previously only `zone.assets` (the primary-zone
+ * relation) was ever read anywhere; AssetZone rows had a full CRUD API and
+ * an admin UI (DeskPanel.tsx) but zero effect on the floor plan or
+ * availability (see #224) — a shared asset (e.g. a meeting room spanning two
+ * team zones) never appeared in the second zone's list at all.
+ */
+function mergeZoneAssets<T extends { id: string }>(
+  primaryAssets: T[],
+  secondaryMemberships: Array<{ asset: T }>,
+): Array<T & { isPrimaryZone: boolean }> {
+  const primaryIds = new Set(primaryAssets.map((a) => a.id))
+  const merged: Array<T & { isPrimaryZone: boolean }> = primaryAssets.map((a) => ({ ...a, isPrimaryZone: true }))
+  for (const { asset } of secondaryMemberships) {
+    if (primaryIds.has(asset.id)) continue // create already rejects primary-as-secondary; defensive only
+    merged.push({ ...asset, isPrimaryZone: false })
+  }
+  return merged
+}
 
 export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Floors'], ...route.schema } })
@@ -77,6 +102,16 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
                 category: { select: { id: true, name: true, defaultIcon: true, colour: true, iconUrl: true } },
               },
             },
+            assetZones: {
+              where: { asset: { isBookable: true } },
+              include: {
+                asset: {
+                  include: {
+                    category: { select: { id: true, name: true, defaultIcon: true, colour: true, iconUrl: true } },
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -96,20 +131,23 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     // Transform category iconUrl storage paths to serve URLs
     const floorWithServeUrls = {
       ...floor,
-      zones: floor.zones.map((zone) => ({
-        ...zone,
-        assets: zone.assets.map((asset) => ({
-          ...asset,
-          category: asset.category
-            ? {
-                ...asset.category,
-                iconUrl: asset.category.iconUrl
-                  ? `/api/v1/assets/categories/${asset.category.id}/icon`
-                  : null,
-              }
-            : null,
-        })),
-      })),
+      zones: floor.zones.map((zone) => {
+        const { assetZones: _assetZones, ...zoneRest } = zone
+        return {
+          ...zoneRest,
+          assets: mergeZoneAssets(zone.assets, zone.assetZones).map((asset) => ({
+            ...asset,
+            category: asset.category
+              ? {
+                  ...asset.category,
+                  iconUrl: asset.category.iconUrl
+                    ? `/api/v1/assets/categories/${asset.category.id}/icon`
+                    : null,
+                }
+              : null,
+          })),
+        }
+      }),
     }
 
     return reply.status(200).send({ data: floorWithServeUrls })
@@ -593,6 +631,53 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     const dayStart = new Date(`${date}T00:00:00.000Z`)
     const dayEnd = new Date(`${date}T23:59:59.999Z`)
 
+    // Shared per-asset include shape — reused for both primary-zone assets
+    // (zone.assets) and secondary-zone memberships (zone.assetZones.asset) so
+    // a shared asset carries the exact same booking/queue/availability data
+    // regardless of which zone's list it's read from.
+    const assetInclude = {
+      category: { select: { id: true, name: true, defaultIcon: true, colour: true, iconUrl: true } },
+      allowList: { select: { userId: true } },
+      userAssignments: {
+        select: {
+          isPrimary: true,
+          user: { select: { id: true, displayName: true, email: true } },
+        },
+      },
+      bookings: {
+        where: {
+          status: 'CONFIRMED',
+          startsAt: { lt: dayEnd },
+          endsAt: { gt: dayStart },
+        },
+        select: {
+          id: true,
+          userId: true,
+          startsAt: true,
+          endsAt: true,
+          attendeeCount: true,
+          user: { select: { displayName: true } },
+        },
+      },
+      queueEntries: {
+        where: {
+          userId: currentUserId,
+          status: { in: ['WAITING', 'PROMOTED'] as const },
+          wantedStartsAt: { lt: dayEnd },
+          wantedEndsAt: { gt: dayStart },
+        },
+        select: { id: true, status: true, position: true, claimDeadline: true, expiresAt: true, wantedStartsAt: true, wantedEndsAt: true },
+      },
+      availabilityWindows: {
+        where: {
+          startsAt: { lte: dayEnd },
+          endsAt: { gte: dayStart },
+        },
+        select: { id: true, startsAt: true, endsAt: true, ownerId: true },
+      },
+      availabilityRules: { select: { weekday: true } },
+    } satisfies Prisma.AssetInclude
+
     const floor = await prisma.floor.findUnique({
       where: { id },
       include: {
@@ -602,48 +687,11 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
             assets: {
               where: { isBookable: true },
               orderBy: { name: 'asc' },
-              include: {
-                category: { select: { id: true, name: true, defaultIcon: true, colour: true, iconUrl: true } },
-                allowList: { select: { userId: true } },
-                userAssignments: {
-                  select: {
-                    isPrimary: true,
-                    user: { select: { id: true, displayName: true, email: true } },
-                  },
-                },
-                bookings: {
-                  where: {
-                    status: 'CONFIRMED',
-                    startsAt: { lt: dayEnd },
-                    endsAt: { gt: dayStart },
-                  },
-                  select: {
-                    id: true,
-                    userId: true,
-                    startsAt: true,
-                    endsAt: true,
-                    attendeeCount: true,
-                    user: { select: { displayName: true } },
-                  },
-                },
-                queueEntries: {
-                  where: {
-                    userId: currentUserId,
-                    status: { in: ['WAITING', 'PROMOTED'] },
-                    wantedStartsAt: { lt: dayEnd },
-                    wantedEndsAt: { gt: dayStart },
-                  },
-                  select: { id: true, status: true, position: true, claimDeadline: true, expiresAt: true, wantedStartsAt: true, wantedEndsAt: true },
-                },
-                availabilityWindows: {
-                  where: {
-                    startsAt: { lte: dayEnd },
-                    endsAt: { gte: dayStart },
-                  },
-                  select: { id: true, startsAt: true, endsAt: true, ownerId: true },
-                },
-                availabilityRules: { select: { weekday: true } },
-              },
+              include: assetInclude,
+            },
+            assetZones: {
+              where: { asset: { isBookable: true } },
+              include: { asset: { include: assetInclude } },
             },
           },
         },
@@ -654,8 +702,17 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
     }
 
+    // Fold secondary (AssetZone) memberships into each zone's asset list —
+    // done once here so every computation below (amenity filter, queue-depth
+    // lookup, zone-group booked-set, the final per-zone response) already
+    // sees the full membership without needing its own merge step.
+    const mergedZones = floor.zones.map((zone) => ({
+      ...zone,
+      assets: mergeZoneAssets(zone.assets, zone.assetZones),
+    }))
+
     if (amenityFilterLower.length) {
-      for (const zone of floor.zones) {
+      for (const zone of mergedZones) {
         zone.assets = zone.assets.filter((a) => {
           const assetAmenitiesLower = a.amenities.map((am) => am.toLowerCase())
           return amenityFilterLower.every((wanted) => assetAmenitiesLower.includes(wanted))
@@ -673,7 +730,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     type AvailabilityStatus = 'available' | 'mine' | 'booked' | 'restricted' | 'assigned' | 'disabled' | 'queued' | 'promoted' | 'zone_conflict'
 
     // Build a map of assetId → count of WAITING queue entries for the requested period
-    const allAssetIds = floor.zones.flatMap((z) => z.assets.map((a) => a.id))
+    const allAssetIds = mergedZones.flatMap((z) => z.assets.map((a) => a.id))
     const queueDepthRows = await prisma.queueEntry.groupBy({
       by: ['assetId'],
       where: {
@@ -688,7 +745,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
 
     // Collect zone group IDs where the current user has a booking today
     const userBookedZoneGroupIds = new Set<string>()
-    for (const zone of floor.zones) {
+    for (const zone of mergedZones) {
       if (!zone.zoneGroupId) continue
       for (const asset of zone.assets) {
         if (asset.bookings.some((b) => b.userId === currentUserId)) {
@@ -697,7 +754,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
-    const zones = floor.zones.map((zone) => {
+    const zones = mergedZones.map((zone) => {
       const assets = zone.assets.map((asset) => {
         const myBooking = asset.bookings.find((b) => b.userId === currentUserId)
         const othersBookings = asset.bookings.filter((b) => b.userId !== currentUserId)
@@ -764,6 +821,12 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           zoneId: zone.id,
           zoneName: zone.name,
           zoneColour: zone.colour,
+          // A shared asset (AssetZone secondary membership) appears once per
+          // zone it belongs to in this nested response — isPrimaryZone lets
+          // the frontend's flattened canvas view keep only one marker per
+          // asset (at its actual x/y) while still surfacing it under every
+          // zone it belongs to for any zone-scoped list/filter.
+          isPrimaryZone: asset.isPrimaryZone,
           name: asset.name,
           bookingLabel: asset.bookingLabel,
           isBookable: asset.isBookable,
