@@ -1301,8 +1301,16 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         if (!floor) return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
       }
       if (result.data.primaryZoneId) {
-        const zone = await prisma.zone.findUnique({ where: { id: result.data.primaryZoneId }, select: { id: true } })
+        const zone = await prisma.zone.findUnique({ where: { id: result.data.primaryZoneId }, select: { id: true, floorId: true } })
         if (!zone) return reply.status(404).send({ error: { message: 'Zone not found', code: 'NOT_FOUND' } })
+        // A zone belongs to exactly one floor — an asset placed in a zone
+        // from a different floor than its own `floorId` would show up on
+        // the wrong floor plan (or neither) with no way to notice from the
+        // response alone. The admin UI always derives primaryZoneId from
+        // the chosen floor's own zones, but nothing server-side enforced it.
+        if (result.data.floorId && zone.floorId !== result.data.floorId) {
+          return reply.status(400).send({ error: { message: 'That zone does not belong to the selected floor', code: 'VALIDATION_ERROR' } })
+        }
       }
 
       try {
@@ -1357,17 +1365,55 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
       // Authorization: super admin can edit any asset; floor managers and building admins can edit assets on their floors
       const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      const existing = await prisma.asset.findUnique({ where: { id }, select: { floorId: true, primaryZoneId: true } })
+      if (!existing) {
+        return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+      }
       if (!isAdmin) {
-        const existing = await prisma.asset.findUnique({ where: { id }, select: { floorId: true } })
-        if (!existing) {
-          return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
-        }
         if (!existing.floorId) {
           return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
         }
         const canManage = await isFloorManagerForFloor(request.user.id, existing.floorId)
         if (!canManage) {
           return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+        }
+        // A caller is only ever checked against the asset's CURRENT floor
+        // above — reassigning `floorId` to a DIFFERENT floor otherwise moves
+        // the asset with zero authorization check on the destination, and a
+        // floor manager for Floor A could relocate any of their assets onto
+        // Floor B (or beyond) regardless of whether they manage Floor B at
+        // all. Mirrors the same-caller-must-manage-both-ends check
+        // POST /:id/zones already applies to secondary zone assignment.
+        if (result.data.floorId !== undefined && result.data.floorId !== null && result.data.floorId !== existing.floorId) {
+          const canManageTarget = await isFloorManagerForFloor(request.user.id, result.data.floorId)
+          if (!canManageTarget) {
+            return reply.status(403).send({ error: { message: 'You do not manage the destination floor', code: 'FORBIDDEN' } })
+          }
+        }
+      }
+
+      // Existence + cross-consistency checks — POST / already does the
+      // equivalent for asset creation; PATCH previously did neither, so a
+      // bogus id either silently no-oped (Prisma ignores an unknown
+      // relation-id assignment target down to an FK violation surfacing as
+      // an opaque 500) or, for primaryZoneId, could point at a zone on a
+      // completely different floor with nothing to catch it.
+      if (result.data.categoryId !== undefined) {
+        const category = await prisma.assetCategory.findUnique({ where: { id: result.data.categoryId }, select: { id: true } })
+        if (!category) return reply.status(404).send({ error: { message: 'Category not found', code: 'NOT_FOUND' } })
+      }
+      if (result.data.floorId !== undefined && result.data.floorId !== null) {
+        const floor = await prisma.floor.findUnique({ where: { id: result.data.floorId }, select: { id: true } })
+        if (!floor) return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+      }
+      if (result.data.primaryZoneId !== undefined && result.data.primaryZoneId !== null) {
+        const zone = await prisma.zone.findUnique({ where: { id: result.data.primaryZoneId }, select: { id: true, floorId: true } })
+        if (!zone) return reply.status(404).send({ error: { message: 'Zone not found', code: 'NOT_FOUND' } })
+        // The effective floor after this update: the new one if it's being
+        // changed in the same request, otherwise the asset's current floor.
+        const effectiveFloorId = result.data.floorId !== undefined ? result.data.floorId : existing.floorId
+        if (effectiveFloorId && zone.floorId !== effectiveFloorId) {
+          return reply.status(400).send({ error: { message: 'That zone does not belong to this asset\'s floor', code: 'VALIDATION_ERROR' } })
         }
       }
 
