@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { User, Mail, Shield, Building2, Layers, Users, KeyRound, Bell, BellOff, MapPin, EyeOff } from 'lucide-react'
+import { User, Mail, Shield, Building2, Layers, Users, KeyRound, Bell, BellOff, MapPin, EyeOff, Smartphone } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { usersApi } from '@/lib/api'
@@ -16,7 +16,20 @@ import { Separator } from '@/components/ui/separator'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { useFloorSubscriptions, useUnsubscribeFromFloor } from '@/hooks/useSubscriptions'
 import { useMyManagerRequests, useWithdrawManagerRequest } from '@/hooks/useManagerRequests'
+import { usePushSubscription } from '@/hooks/usePushSubscription'
 import type { ManagerRequestStatus } from '@/types'
+
+// Kept in sync with PUSH_ELIGIBLE_TYPES in apps/api/src/lib/queue.ts — the
+// backend silently ignores a push preference for any type outside this set,
+// so there's no point offering a toggle for the other 18.
+const PUSH_ELIGIBLE_TYPES: Array<{ key: string; label: string }> = [
+  { key: 'QUEUE_PROMOTED', label: 'Promoted from waitlist' },
+  { key: 'BOOKING_REMINDER', label: 'Booking reminder' },
+  { key: 'FLOOR_AVAILABLE', label: 'Floor availability alert' },
+  { key: 'BOOKING_TRANSFER_REQUESTED', label: 'Someone wants to transfer you a booking' },
+  { key: 'BOOKING_SWAP_REQUESTED', label: 'Someone wants to swap desks with you' },
+  { key: 'QUEUE_CLAIM_EXPIRING', label: 'Claim expiring soon' },
+]
 
 const profileSchema = z.object({
   displayName: z.string().min(2, 'Name must be at least 2 characters'),
@@ -47,7 +60,7 @@ const PROVIDER_COLOURS: Record<string, string> = {
   SAML: 'bg-violet-100 text-violet-700',
 }
 
-type NotifPref = { email?: boolean; inApp?: boolean }
+type NotifPref = { email?: boolean; inApp?: boolean; push?: boolean }
 
 const NOTIFICATION_GROUPS: Array<{ label: string; types: Array<{ key: string; label: string }> }> = [
   {
@@ -208,7 +221,7 @@ export default function ProfilePage() {
     onError: (err: Error) => toast.error(err.message),
   })
 
-  const handleToggle = (key: string, channel: 'email' | 'inApp', value: boolean) => {
+  const handleToggle = (key: string, channel: 'email' | 'inApp' | 'push', value: boolean) => {
     const next = { ...prefs, [key]: { ...prefs[key], [channel]: value } }
     setLocalPrefs(next)
   }
@@ -217,6 +230,7 @@ export default function ProfilePage() {
   const { data: managerRequests } = useMyManagerRequests()
   const withdrawManagerRequest = useWithdrawManagerRequest()
   const unsubscribe = useUnsubscribeFromFloor()
+  const push = usePushSubscription()
 
   if (!user) return null
 
@@ -518,6 +532,79 @@ export default function ProfilePage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Push notifications — hidden entirely when unsupported by this
+          browser or not configured on this deployment (no VAPID keys set),
+          rather than showing a toggle that can never do anything. */}
+      {push.status !== 'unsupported' && push.status !== 'unconfigured' && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <Smartphone className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-base">Push notifications</CardTitle>
+            </div>
+            <CardDescription>Get time-sensitive alerts on this device, even when Roomer isn't open</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">This device</p>
+                <p className="text-xs text-muted-foreground">
+                  {push.status === 'subscribed' ? 'Enabled' : push.status === 'checking' ? 'Checking…' : 'Not enabled'}
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant={push.status === 'subscribed' ? 'outline' : 'default'}
+                disabled={push.busy || push.status === 'checking'}
+                onClick={() => (push.status === 'subscribed' ? push.unsubscribe() : push.subscribe())}
+              >
+                {push.status === 'subscribed' ? 'Disable' : 'Enable'}
+              </Button>
+            </div>
+
+            {push.status === 'subscribed' && (
+              <>
+                <Separator />
+                <div className="grid grid-cols-[1fr_56px] gap-2 pb-1 border-b">
+                  <span className="text-xs font-medium text-muted-foreground">Push for</span>
+                  <span className="text-xs font-medium text-muted-foreground text-center">On</span>
+                </div>
+                {PUSH_ELIGIBLE_TYPES.map(({ key, label }) => {
+                  const pushOn = (prefs[key] ?? {}).push !== false
+                  return (
+                    <div key={key} className="grid grid-cols-[1fr_56px] items-center gap-2">
+                      <span className="text-sm">{label}</span>
+                      <div className="flex justify-center">
+                        <Toggle checked={pushOn} onChange={(v) => handleToggle(key, 'push', v)} />
+                      </div>
+                    </div>
+                  )
+                })}
+                {localPrefs && (
+                  <div className="flex gap-2 pt-2">
+                    <Button
+                      size="sm"
+                      onClick={() => updatePreferences.mutate(localPrefs)}
+                      disabled={updatePreferences.isPending}
+                    >
+                      {updatePreferences.isPending ? 'Saving…' : 'Save preferences'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setLocalPrefs(null)}
+                      disabled={updatePreferences.isPending}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                )}
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Floor notification subscriptions */}
       {subscriptions && subscriptions.length > 0 && (

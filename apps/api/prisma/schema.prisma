@@ -539,6 +539,7 @@ model User {
   swapsReceived         BookingSwap[]             @relation("BookingSwapRecipient")
   managerRequestsMade     FloorManagerRequest[] @relation("FloorManagerRequestUser")
   managerRequestsReviewed FloorManagerRequest[] @relation("FloorManagerRequestReviewer")
+  pushSubscriptions       PushSubscription[]
 
   @@index([email])
   @@index([provider, externalId])
@@ -892,6 +893,24 @@ model FloorSubscriptionZone {
 
   @@id([subscriptionId, zoneId])
   @@index([zoneId])
+}
+
+/// A browser's Web Push subscription (one row per browser/device a user has
+/// enabled push on — a user can have several). `endpoint` is unique because
+/// it's the push service's own identity for this subscription; re-subscribing
+/// the same browser (e.g. after clearing permission and re-granting) yields a
+/// new endpoint, so this is an upsert-by-endpoint model, not upsert-by-user.
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model RevokedToken {

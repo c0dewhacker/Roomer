@@ -8,6 +8,27 @@ import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
 import { dispatchWebhook } from './webhook.js'
 import { lockAssetForQueue } from './booking.js'
+import { sendPushNotification } from './push.js'
+
+// Types worth interrupting someone's phone for — the rest stay in-app/email
+// only. Scoped per the #76 phase-2 design discussion: the 3 originally named
+// (queue promotion, reminders, floor availability) plus transfer/swap
+// *requested* (needs a timely response from the recipient) and the
+// claim-expiring nudge. Deliberately excludes the *outcome* notifications
+// (accepted/declined/expired, confirmed/cancelled, etc.) — those aren't
+// time-sensitive enough to justify a push.
+const PUSH_ELIGIBLE_TYPES = new Set<NotificationType>([
+  NotificationType.QUEUE_PROMOTED,
+  NotificationType.BOOKING_REMINDER,
+  NotificationType.FLOOR_AVAILABLE,
+  NotificationType.BOOKING_TRANSFER_REQUESTED,
+  NotificationType.BOOKING_SWAP_REQUESTED,
+  NotificationType.QUEUE_CLAIM_EXPIRING,
+])
+
+// Priority order for picking a push notification's click-through target from
+// whichever URL each branch happened to put in templateVars.
+const PUSH_URL_KEYS = ['claimUrl', 'bookingUrl', 'floorUrl', 'queueUrl', 'bookingsUrl'] as const
 
 let boss: PgBoss | null = null
 
@@ -881,11 +902,12 @@ async function processSendNotification(
   }
 
   // Respect per-user notification preferences. Missing key = both channels enabled.
-  type NotifPref = { email?: boolean; inApp?: boolean }
+  type NotifPref = { email?: boolean; inApp?: boolean; push?: boolean }
   const prefs = (user as unknown as { notificationPreferences: Record<string, NotifPref> }).notificationPreferences ?? {}
   const pref: NotifPref = prefs[type] ?? {}
   const sendInApp = pref.inApp !== false
   const sendEmailNotif = pref.email !== false
+  const sendPush = pref.push !== false && PUSH_ELIGIBLE_TYPES.has(type)
 
   // Persist in-app notification (if not opted out)
   if (sendInApp) {
@@ -918,6 +940,15 @@ async function processSendNotification(
       process.stderr.write(JSON.stringify({ level: 'error', msg: '[queue] Failed to send email', to: user.email, err: String(err) }) + '\n')
       // Don't re-throw — notification is persisted, email failure is non-fatal
     }
+  }
+
+  // Push (if this type is push-eligible, user hasn't opted out, and VAPID is
+  // configured — sendPushNotification no-ops otherwise). No try/catch here:
+  // sendPushNotification already handles per-subscription failures
+  // internally and never rejects.
+  if (sendPush) {
+    const url = PUSH_URL_KEYS.map((k) => templateVars[k]).find(Boolean) ?? env.APP_URL
+    await sendPushNotification(userId, { title, body, url })
   }
 }
 

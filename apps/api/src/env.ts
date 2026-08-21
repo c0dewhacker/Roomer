@@ -91,6 +91,16 @@ const envSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   EMAIL_FROM: z.string().default('noreply@roomer.local'),
+  // Web Push (RFC 8030) VAPID keypair — identifies this deployment to push
+  // services (FCM, Mozilla autopush, etc.) so they'll accept its pushes.
+  // Optional: push notifications are a no-op (see lib/push.ts) until both
+  // are set. Generate with: npx web-push generate-vapid-keys
+  VAPID_PUBLIC_KEY: z.string().optional(),
+  VAPID_PRIVATE_KEY: z.string().optional(),
+  // Contact URI push services may use to reach the deployment operator if a
+  // subscription is misbehaving — RFC 8292 requires either a mailto: or
+  // https: URI, not an arbitrary string.
+  VAPID_SUBJECT: z.string().default('mailto:admin@roomer.local'),
   APP_URL: z.string().default('http://localhost:5173'),
   // Public-facing base URL for the API itself (used for SCIM endpoint URLs shown in the admin UI).
   // Defaults to localhost in development; set to e.g. https://api.example.com in production.
@@ -125,6 +135,9 @@ const parsed = envSchema.safeParse({
   SMTP_USER:              r('SMTP_USER'),
   SMTP_PASS:              r('SMTP_PASS'),
   EMAIL_FROM:             r('EMAIL_FROM'),
+  VAPID_PUBLIC_KEY:       r('VAPID_PUBLIC_KEY'),
+  VAPID_PRIVATE_KEY:      r('VAPID_PRIVATE_KEY'),
+  VAPID_SUBJECT:          r('VAPID_SUBJECT'),
   APP_URL:                r('APP_URL'),
   API_PUBLIC_URL:         r('API_PUBLIC_URL'),
   SEED_ADMIN_EMAIL:       r('SEED_ADMIN_EMAIL'),

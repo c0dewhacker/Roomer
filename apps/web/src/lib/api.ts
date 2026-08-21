@@ -494,10 +494,10 @@ export const usersApi = {
       { rows },
     ),
   getNotificationPreferences: () =>
-    api.get<{ data: { preferences: Record<string, { email?: boolean; inApp?: boolean }> } }>(
+    api.get<{ data: { preferences: Record<string, { email?: boolean; inApp?: boolean; push?: boolean }> } }>(
       '/users/me/notification-preferences',
     ),
-  updateNotificationPreferences: (preferences: Record<string, { email?: boolean; inApp?: boolean }>) =>
+  updateNotificationPreferences: (preferences: Record<string, { email?: boolean; inApp?: boolean; push?: boolean }>) =>
     api.patch<{ data: { ok: boolean } }>('/users/me/notification-preferences', { preferences }),
   changePassword: (body: { currentPassword: string; newPassword: string }) =>
     api.post<{ data: { ok: boolean } }>('/users/me/password', body),
@@ -505,6 +505,15 @@ export const usersApi = {
     api.post<{ data: { ok: boolean } }>(`/users/${id}/password/reset`, body),
   effectiveAccess: (id: string) =>
     api.get<{ data: EffectiveAccess }>(`/users/${id}/effective-access`),
+}
+
+// --- Web Push ---
+export const pushApi = {
+  vapidPublicKey: () => api.get<{ data: { publicKey: string | null } }>('/push/vapid-public-key'),
+  subscribe: (subscription: { endpoint: string; keys: { p256dh: string; auth: string } }) =>
+    api.post<{ data: { ok: true } }>('/push/subscribe', subscription),
+  unsubscribe: (endpoint: string) =>
+    api.post<{ data: { ok: true } }>('/push/unsubscribe', { endpoint }),
 }
 
 // --- RBAC inspection types ---

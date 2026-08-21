@@ -26,6 +26,7 @@ import { importRoutes } from './routes/import.js'
 import { scimRoutes } from './routes/scim.js'
 import { departmentRoutes } from './routes/departments.js'
 import { subscriptionRoutes } from './routes/subscriptions.js'
+import { pushRoutes } from './routes/push.js'
 import { recurringBookingRoutes } from './routes/recurring.js'
 import { webhookRoutes } from './routes/webhooks.js'
 import { directoryRoutes } from './routes/directory.js'
@@ -302,6 +303,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await fastify.register(settingsRoutes, { prefix: '/api/v1/settings' })
   await fastify.register(importRoutes, { prefix: '/api/v1/import' })
   await fastify.register(subscriptionRoutes, { prefix: '/api/v1/subscriptions' })
+  await fastify.register(pushRoutes, { prefix: '/api/v1/push' })
   await fastify.register(recurringBookingRoutes, { prefix: '/api/v1/recurring-bookings' })
   await fastify.register(managerRequestRoutes, { prefix: '/api/v1/manager-requests' })
   await fastify.register(scimRoutes, { prefix: '/scim/v2' })

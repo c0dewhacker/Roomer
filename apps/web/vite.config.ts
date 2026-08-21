@@ -13,6 +13,12 @@ export default defineConfig({
       // a client refresh landing mid-session.
       registerType: 'autoUpdate',
       injectRegister: 'auto',
+      // Hand-written service worker (src/sw.ts) instead of the default
+      // auto-generated one — phase 2 needs push/notificationclick event
+      // listeners, which generateSW's workbox config has no hook for.
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.ts',
       manifest: {
         name: 'Roomer',
         short_name: 'Roomer',
@@ -27,14 +33,10 @@ export default defineConfig({
           { src: '/icons/icon-512-maskable.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
-      workbox: {
-        // App-shell caching only (per #76's scope) — booking/availability
-        // data must never be served stale, so /api/** is deliberately left
-        // out of both the precache glob (default: build output only) and
-        // runtimeCaching below, meaning API requests always hit the network
-        // exactly as they do today. Only the built JS/CSS/HTML/icons are
-        // cached, so the app shell still loads offline; live data does not.
-        navigateFallbackDenylist: [/^\/api\//],
+      injectManifest: {
+        // Same app-shell-only precache scope as phase 1 — src/sw.ts's own
+        // NavigationRoute denylist keeps /api/** out of the SPA fallback too.
+        globPatterns: ['**/*.{js,css,html,png,svg,webmanifest}'],
       },
       devOptions: {
         // Keep the SW out of `vite dev` entirely — this session's dev-proxy
