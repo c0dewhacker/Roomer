@@ -299,6 +299,17 @@ The REST API runs on port `3001` by default.
 | `/health/ready` | Readiness probe — 200 when the DB is reachable, 503 otherwise |
 | `/metrics` | Prometheus metrics (enabled via `ROOMER_METRICS_ENABLED=true`) |
 
+### Programmatic / BI tool access
+
+There's no separate API-key subsystem — the existing session auth already covers headless/automated access:
+
+1. Create a dedicated **local** user for the integration (Settings → Users), not a real person's account, with a strong generated password.
+2. `POST /api/v1/auth/login` with that user's email/password. The response sets the session JWT as an `httpOnly` cookie — any HTTP client library (Power BI's Web connector, Python `requests`, Postman, etc.) can still read it off the raw `Set-Cookie` response header even though browser JavaScript can't.
+3. Reuse that cookie on subsequent requests (most HTTP client libraries handle cookie jars automatically), or extract the JWT from it and send `Authorization: Bearer <token>` instead if the tool doesn't manage cookies — set `ALLOW_BEARER_AUTH=true` for this (defaults to `true` in development, must be explicitly enabled in production).
+4. The token expires after a fixed session ceiling — a scheduled BI refresh just re-runs step 2 each run rather than needing a long-lived credential, which is how most scheduled BI refreshes already work.
+
+Scope the service-account user's role/resource-roles the same way you would for a real admin — there's no separate read-only surface, so grant the least privilege the integration actually needs (e.g. a `BUILDING_ADMIN` resource role scoped to one building for a single-building reporting dashboard, rather than `SUPER_ADMIN`).
+
 ---
 
 ## Configuration Reference
