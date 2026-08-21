@@ -36,7 +36,7 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/', { preHandler: adminGuard }, async (_req, reply) => {
     const endpoints = await prisma.webhookEndpoint.findMany({
       orderBy: { createdAt: 'asc' },
-      select: { id: true, url: true, events: true, enabled: true, createdAt: true, updatedAt: true },
+      select: { id: true, url: true, events: true, enabled: true, consecutiveFailures: true, lastSuccessAt: true, createdAt: true, updatedAt: true },
     })
     return reply.send({ data: endpoints })
   })
@@ -61,7 +61,7 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
         events: result.data.events,
         enabled: result.data.enabled ?? true,
       },
-      select: { id: true, url: true, events: true, enabled: true, createdAt: true, updatedAt: true },
+      select: { id: true, url: true, events: true, enabled: true, consecutiveFailures: true, lastSuccessAt: true, createdAt: true, updatedAt: true },
     })
     // Return the plaintext secret exactly once so the admin can configure the receiver.
     return reply.status(201).send({ data: { ...endpoint, secret } })
@@ -90,7 +90,7 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
     const endpoint = await prisma.webhookEndpoint.update({
       where: { id },
       data: { ...rest, ...(secret !== undefined ? { secret: encrypt(secret) } : {}) },
-      select: { id: true, url: true, events: true, enabled: true, createdAt: true, updatedAt: true },
+      select: { id: true, url: true, events: true, enabled: true, consecutiveFailures: true, lastSuccessAt: true, createdAt: true, updatedAt: true },
     })
     return reply.send({ data: endpoint })
   })

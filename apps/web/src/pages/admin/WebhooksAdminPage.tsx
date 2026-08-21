@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Plus, Trash2, Send, Eye, CheckCircle2, XCircle, Pencil, Copy, Check } from 'lucide-react'
+import { formatDistanceToNow } from 'date-fns'
+import { Plus, Trash2, Send, Eye, CheckCircle2, XCircle, Pencil, Copy, Check, AlertTriangle } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { webhooksApi, ApiError, type WebhookEndpoint, type WebhookDelivery } from '@/lib/api'
 import { toast } from 'sonner'
@@ -363,6 +364,7 @@ export default function WebhooksAdminPage() {
                   <TableHead>URL</TableHead>
                   <TableHead>Events</TableHead>
                   <TableHead>Enabled</TableHead>
+                  <TableHead>Health</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -385,6 +387,23 @@ export default function WebhooksAdminPage() {
                         checked={ep.enabled}
                         onChange={(v) => toggleEnabled.mutate({ id: ep.id, enabled: v })}
                       />
+                    </TableCell>
+                    <TableCell>
+                      {ep.consecutiveFailures > 0 ? (
+                        <Badge
+                          variant="destructive"
+                          className="text-xs gap-1"
+                          title={ep.lastSuccessAt ? `Last succeeded ${formatDistanceToNow(new Date(ep.lastSuccessAt), { addSuffix: true })}` : 'Never succeeded'}
+                        >
+                          <AlertTriangle className="h-3 w-3" /> {ep.consecutiveFailures} failing
+                        </Badge>
+                      ) : ep.lastSuccessAt ? (
+                        <span className="text-xs text-muted-foreground">
+                          OK · {formatDistanceToNow(new Date(ep.lastSuccessAt), { addSuffix: true })}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">No deliveries yet</span>
+                      )}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">

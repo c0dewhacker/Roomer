@@ -962,6 +962,12 @@ model WebhookEndpoint {
   secret     String
   events     String[]
   enabled    Boolean           @default(true)
+  /// Reset to 0 on any successful delivery; incremented on each failed
+  /// delivery attempt. A permanently-broken endpoint otherwise fails 100% of
+  /// its deliveries indefinitely with nothing to surface that in the admin
+  /// UI short of manually opening its delivery history.
+  consecutiveFailures Int      @default(0)
+  lastSuccessAt       DateTime?
   createdAt  DateTime          @default(now())
   updatedAt  DateTime          @updatedAt
   deliveries WebhookDelivery[]

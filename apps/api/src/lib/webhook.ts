@@ -2,7 +2,7 @@ import crypto from 'crypto'
 import { randomUUID } from 'crypto'
 import dnsPromises from 'dns/promises'
 import net from 'net'
-import { Agent } from 'undici'
+import { Agent, fetch as undiciFetch } from 'undici'
 import { prisma } from './prisma.js'
 import { getBoss } from './queue.js'
 import { env } from '../env.js'
@@ -125,7 +125,15 @@ async function resolveValidatedHost(rawUrl: string): Promise<ValidatedWebhookHos
     return { address: host, family: literalFamily as 4 | 6 }
   }
 
-  const records = await dnsPromises.lookup(host, { all: true })
+  // A hung/slow DNS resolver for the target host would otherwise block this
+  // lookup indefinitely — it runs before the 10s AbortSignal on the actual
+  // fetch() even exists, so that timeout can't cover it. The only other
+  // backstop is pg-boss's expireInSeconds, which is a 24h per-attempt
+  // watchdog — far too generous to be the real defense here.
+  const records = await Promise.race([
+    dnsPromises.lookup(host, { all: true }),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('DNS lookup for webhook URL timed out')), 5000)),
+  ])
   if (records.length === 0) throw new Error('Webhook URL host could not be resolved')
   for (const { address } of records) {
     if (ipIsBlocked(address)) throw new Error('Webhook URL resolves to a disallowed address')
@@ -327,7 +335,16 @@ async function deliverOne({ endpointId, deliveryId, url, event, payload }: Webho
 
     const signature = sign(secret, payload)
     try {
-      const res = await fetch(url, {
+      // Must use undici's own fetch, not the global one — global fetch() is
+      // bound to whatever undici ships *inside* the running Node version,
+      // which is not necessarily the same major version as the `undici`
+      // npm dependency `pinnedAgent` above is constructed from (Node 24
+      // bundles undici 7.x; this repo pins undici ^8). Passing an Agent
+      // from one major version as the `dispatcher` for the other's fetch
+      // throws "invalid onRequestStart method" — every real delivery to a
+      // reachable external endpoint failed with a bare "fetch failed" until
+      // this was pinned to the matching fetch implementation.
+      const res = await undiciFetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -358,6 +375,20 @@ async function deliverOne({ endpointId, deliveryId, url, event, payload }: Webho
     create: { id: deliveryId, endpointId, ...record },
     update: record,
   })
+
+  // Health tracking so a permanently-broken endpoint is visible in the admin
+  // UI without having to open its delivery history — a single atomic UPDATE
+  // (increment/reset), safe under the worker's concurrency. Excludes 'ping':
+  // that's a deliberate one-off test, not a real subscriber delivery, and
+  // shouldn't move the needle on whether the endpoint looks healthy.
+  if (event !== 'ping') {
+    await prisma.webhookEndpoint.update({
+      where: { id: endpointId },
+      data: success
+        ? { consecutiveFailures: 0, lastSuccessAt: new Date() }
+        : { consecutiveFailures: { increment: 1 } },
+    }).catch(() => {})
+  }
 
   if (!success) throw new Error(error ?? 'Delivery failed')
 }

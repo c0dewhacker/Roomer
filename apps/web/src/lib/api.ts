@@ -899,6 +899,8 @@ export interface WebhookEndpoint {
   url: string
   events: string[]
   enabled: boolean
+  consecutiveFailures: number
+  lastSuccessAt: string | null
   createdAt: string
   updatedAt: string
 }

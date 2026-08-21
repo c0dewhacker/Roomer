@@ -1517,7 +1517,12 @@ export async function startQueue(): Promise<void> {
 
   const { deliverWebhookJob } = await import('./webhook.js')
   // includeMetadata exposes retryCount on each job so delivery attempts are logged accurately.
-  await b.work('webhook-delivery', { includeMetadata: true }, deliverWebhookJob)
+  // batchSize/localConcurrency default to 1 — a single slow-but-not-hanging
+  // endpoint would otherwise serialize delivery to every OTHER endpoint's
+  // events behind it in the same queue. 5 lets a handful of deliveries run
+  // concurrently (this is I/O-bound outbound HTTP, not CPU work) without
+  // needing per-tenant queue partitioning.
+  await b.work('webhook-delivery', { includeMetadata: true, batchSize: 5, localConcurrency: 5 }, deliverWebhookJob)
 
   await b.work('expire-queue-entries', async () => {
     await handleExpireQueueEntries()
