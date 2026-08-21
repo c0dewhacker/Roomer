@@ -136,6 +136,13 @@ const NOTIFICATION_GROUPS: Array<{ label: string; types: Array<{ key: string; la
     ],
   },
   {
+    label: 'Ballots',
+    types: [
+      { key: 'BALLOT_WON', label: 'You won a ballot' },
+      { key: 'BALLOT_LOST', label: 'Ballot results (not selected)' },
+    ],
+  },
+  {
     label: 'Other',
     types: [
       { key: 'WELCOME', label: 'Welcome email' },

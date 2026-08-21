@@ -80,6 +80,34 @@ enum RecurringFrequency {
   MONTHLY
 }
 
+/// See #159 — a Ballot's recurrence. ONCE materialises exactly one BallotRun
+/// at creation; WEEKLY/MONTHLY spawn a new run each cycle (ballot-open-
+/// registration cron).
+enum BallotFrequency {
+  ONCE
+  WEEKLY
+  MONTHLY
+}
+
+enum BallotStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
+enum BallotRunStatus {
+  OPEN
+  DRAWN
+  CANCELLED
+}
+
+enum BallotEntryStatus {
+  ENTERED
+  WON
+  DECLINED
+  LOST
+}
+
 enum QueueEntryStatus {
   WAITING
   PROMOTED
@@ -126,6 +154,8 @@ enum NotificationType {
   BOOKING_PENDING_APPROVAL
   BOOKING_APPROVED
   BOOKING_REJECTED
+  BALLOT_WON
+  BALLOT_LOST
 }
 
 /// DISABLED: no QR functionality shown/generated for the scope.
@@ -473,6 +503,7 @@ model Asset {
   queueEntries          QueueEntry[]
   recurringBookingRules RecurringBookingRule[]
   favouritedBy          UserFavouriteAsset[]
+  ballotEntries         BallotEntry[]
 
   @@index([floorId])
   @@index([primaryZoneId])
@@ -618,6 +649,8 @@ model User {
   managerRequestsReviewed FloorManagerRequest[] @relation("FloorManagerRequestReviewer")
   pushSubscriptions       PushSubscription[]
   bookingsApproved        Booking[]             @relation("BookingApprover")
+  ballotsCreated          Ballot[]              @relation("BallotCreatedBy")
+  ballotEntries           BallotEntry[]
 
   @@index([email])
   @@index([provider, externalId])
@@ -798,6 +831,7 @@ model Booking {
   transfers       BookingTransfer[]
   swapsAsA        BookingSwap[]         @relation("SwapBookingA")
   swapsAsB        BookingSwap[]         @relation("SwapBookingB")
+  ballotEntry     BallotEntry?
 
   @@index([assetId, startsAt, endsAt])
   @@index([userId, startsAt])
@@ -890,6 +924,106 @@ model RecurringBookingRule {
   asset     Asset               @relation(fields: [assetId], references: [id], onDelete: Cascade)
   bookings  Booking[]
 
+  @@index([userId])
+  @@index([assetId])
+}
+
+/// A recurring or one-off random-allocation draw for scarce assets (e.g. a
+/// weekly car-park ballot) — see #159. Distinct from ordinary first-come-
+/// first-served booking/queueing: eligible users opt in during a
+/// registration window, then winners are drawn uniformly at random (no
+/// history weighting) and materialised as normal CONFIRMED bookings,
+/// bypassing the approval workflow (#74) and queue entirely for that slot
+/// — the draw itself IS the decision. Assets stay normally bookable
+/// outside of the specific slot(s) a ballot claims for its winners.
+model Ballot {
+  id              String          @id @default(cuid())
+  name            String
+  createdByUserId String
+  /// Scope: the asset pool is the union of every bookable asset on any of
+  /// these floors, plus every floor of any of these buildings. Plain
+  /// Postgres arrays (like User.lastIdpGroups) rather than a join table —
+  /// no per-row metadata needed, and referential integrity here is
+  /// best-effort (a deleted building/floor just drops out of the
+  /// intersection at draw time, it doesn't need active cleanup).
+  buildingIds     String[]        @default([])
+  floorIds        String[]        @default([])
+  /// Optional category filter — empty means every bookable asset in scope.
+  assetCategoryIds String[]       @default([])
+  frequency       BallotFrequency @default(WEEKLY)
+  /// Required for WEEKLY — ISO day of week (0=Sunday) registration closes/the draw happens.
+  dayOfWeek       Int?
+  /// Required for MONTHLY — day-of-month registration closes/the draw happens.
+  dayOfMonth      Int?
+  /// How long before the draw registration opens.
+  registrationWindowHours Int     @default(72)
+  /// Wall-clock time-of-day the assigned slot covers, resolved against the
+  /// asset's building timezone like any other booking (see #72).
+  slotStartTime   String          @default("00:00")
+  slotEndTime     String          @default("23:59")
+  /// Days between the draw and the assigned slot's start (1 = "the day after the draw").
+  slotLeadDays    Int             @default(1)
+  /// How many consecutive days the assignment covers (e.g. 5 for "the working week").
+  slotDurationDays Int            @default(1)
+  status          BallotStatus    @default(ACTIVE)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  createdBy User        @relation("BallotCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  runs      BallotRun[]
+}
+
+/// One concrete occurrence of a Ballot — its own registration window, draw,
+/// and results. A ONCE ballot has exactly one run, created immediately
+/// alongside it; a recurring ballot gets a new run materialised each cycle
+/// by the ballot-open-registration cron.
+model BallotRun {
+  id                   String          @id @default(cuid())
+  ballotId             String
+  registrationOpensAt  DateTime
+  registrationClosesAt DateTime
+  /// Calendar date only (stored at UTC midnight, like RecurringBookingRule.
+  /// firstDate/lastDate) — the first/last day the slot covers, NOT a real
+  /// instant. Each winner's actual booking instant is computed per-asset at
+  /// draw time via zonedWallClockToUtc(this date, Ballot.slotStartTime/
+  /// EndTime, that asset's building timezone) — necessary because a single
+  /// ballot can span buildings in different timezones, so there is no one
+  /// "the" instant until an asset (and therefore a building) is assigned.
+  slotStartsAt         DateTime
+  slotEndsAt           DateTime
+  status               BallotRunStatus @default(OPEN)
+  drawnAt              DateTime?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  ballot  Ballot        @relation(fields: [ballotId], references: [id], onDelete: Cascade)
+  entries BallotEntry[]
+
+  @@index([ballotId])
+  @@index([status, registrationClosesAt])
+}
+
+/// One user's opt-in entry for one BallotRun. WON/assetId/bookingId are set
+/// by the draw; a declined WON entry moves to DECLINED and (per #159's
+/// confirmed design) triggers a mini re-draw among that run's LOST entries
+/// for the freed asset, rather than reopening registration or leaving the
+/// slot unfilled.
+model BallotEntry {
+  id        String            @id @default(cuid())
+  runId     String
+  userId    String
+  status    BallotEntryStatus @default(ENTERED)
+  assetId   String?
+  bookingId String?           @unique
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  run     BallotRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  user    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  asset   Asset?    @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  booking Booking?  @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  @@unique([runId, userId])
   @@index([userId])
   @@index([assetId])
 }

@@ -23,6 +23,9 @@ import type {
   FloorManagerRequest,
   ManagerRequestStatus,
   QrCheckInMode,
+  Ballot,
+  BallotRun,
+  BallotEntry,
 } from '../types'
 
 const BASE = '/api/v1'
@@ -1043,4 +1046,41 @@ export const managerRequestsApi = {
   reject: (id: string, reviewNote?: string) =>
     api.post<{ data: { ok: true } }>(`/manager-requests/${id}/reject`, { reviewNote }),
   withdraw: (id: string) => api.delete<{ data: { ok: true } }>(`/manager-requests/${id}`),
+}
+
+// --- Booking ballots (see #159) ---
+export interface CreateBallotBody {
+  name: string
+  buildingIds: string[]
+  floorIds: string[]
+  assetCategoryIds: string[]
+  frequency: BallotFrequency
+  dayOfWeek?: number
+  dayOfMonth?: number
+  registrationWindowHours: number
+  slotStartTime: string
+  slotEndTime: string
+  slotLeadDays: number
+  slotDurationDays: number
+}
+type BallotFrequency = 'ONCE' | 'WEEKLY' | 'MONTHLY'
+
+export const ballotsApi = {
+  // Admin: template CRUD
+  create: (body: CreateBallotBody) => api.post<{ data: Ballot }>('/ballots', body),
+  list: () => api.get<{ data: Ballot[] }>('/ballots'),
+  get: (id: string) => api.get<{ data: Ballot }>(`/ballots/${id}`),
+  update: (id: string, body: Partial<CreateBallotBody & { status: 'ACTIVE' | 'PAUSED' | 'CANCELLED' }>) =>
+    api.patch<{ data: Ballot }>(`/ballots/${id}`, body),
+  remove: (id: string) => api.delete<{ data: { ok: true } }>(`/ballots/${id}`),
+  runs: (id: string) => api.get<{ data: BallotRun[] }>(`/ballots/${id}/runs`),
+  triggerRun: (id: string) => api.post<{ data: { ok: true } }>(`/ballots/${id}/runs/trigger`, {}),
+  runDetail: (runId: string) => api.get<{ data: BallotRun }>(`/ballots/runs/${runId}`),
+  forceDraw: (runId: string) => api.post<{ data: { ok: true } }>(`/ballots/runs/${runId}/draw`, {}),
+  // User-facing
+  available: () => api.get<{ data: BallotRun[] }>('/ballots/available'),
+  enter: (runId: string) => api.post<{ data: BallotEntry }>(`/ballots/runs/${runId}/enter`, {}),
+  withdraw: (runId: string) => api.delete<{ data: { ok: true } }>(`/ballots/runs/${runId}/enter`),
+  myEntries: () => api.get<{ data: BallotEntry[] }>('/ballots/my-entries'),
+  decline: (entryId: string) => api.post<{ data: { ok: true } }>(`/ballots/entries/${entryId}/decline`, {}),
 }

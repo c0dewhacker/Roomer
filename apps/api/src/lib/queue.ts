@@ -2,7 +2,7 @@ import { PgBoss, type Job } from 'pg-boss'
 import { env } from '../env.js'
 import { prisma } from './prisma.js'
 import { buildBookingIcs } from './ical.js'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingCancelledByAdmin, renderBookingNoShow, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, renderWeeklyReport, renderBookingTransferRequested, renderBookingTransferAccepted, renderBookingTransferDeclined, renderBookingTransferExpired, renderBookingSwapRequested, renderBookingSwapAccepted, renderBookingSwapDeclined, renderBookingSwapExpired, renderManagerRequestSubmitted, renderManagerRequestApproved, renderManagerRequestRejected, renderManagerRequestExpired, renderLeaseExpiring, renderLeaseExpired, renderBookingPendingApproval, renderBookingApproved, renderBookingRejected, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingCancelledByAdmin, renderBookingNoShow, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, renderWeeklyReport, renderBookingTransferRequested, renderBookingTransferAccepted, renderBookingTransferDeclined, renderBookingTransferExpired, renderBookingSwapRequested, renderBookingSwapAccepted, renderBookingSwapDeclined, renderBookingSwapExpired, renderManagerRequestSubmitted, renderManagerRequestApproved, renderManagerRequestRejected, renderManagerRequestExpired, renderLeaseExpiring, renderLeaseExpired, renderBookingPendingApproval, renderBookingApproved, renderBookingRejected, renderBallotWon, renderBallotLost, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
 import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
@@ -351,6 +351,8 @@ export interface NotificationJobData {
   managerRequestId?: string
   /** BuildingLease id — see the LEASE_* branches below. */
   leaseId?: string
+  /** BallotEntry id — see the BALLOT_* branches below (#159). */
+  ballotEntryId?: string
 }
 
 // ─── Worker: send-notification ────────────────────────────────────────────────
@@ -366,7 +368,7 @@ async function handleSendNotification(
 async function processSendNotification(
   job: Job<NotificationJobData>,
 ): Promise<void> {
-  const { type, userId, bookingId, queueEntryId, claimDeadline, floorId, zoneId, assetId, slotDate, transferId, swapId, managerRequestId, leaseId } = job.data
+  const { type, userId, bookingId, queueEntryId, claimDeadline, floorId, zoneId, assetId, slotDate, transferId, swapId, managerRequestId, leaseId, ballotEntryId } = job.data
 
   const user = await prisma.user.findUnique({ where: { id: userId } })
   if (!user) {
@@ -977,6 +979,36 @@ async function processSendNotification(
         startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
         reviewNote: booking.rejectionNote ?? '',
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BALLOT_WON && ballotEntryId) {
+    const entry = await prisma.ballotEntry.findUnique({
+      where: { id: ballotEntryId },
+      include: { run: { include: { ballot: { select: { name: true } } } }, asset: true, booking: true },
+    })
+    if (entry?.asset && entry.booking) {
+      title = `You won the ${entry.run.ballot.name} ballot — ${entry.asset.name}`
+      body = `You've been randomly assigned ${entry.asset.name} from the ${entry.run.ballot.name} ballot.`
+      emailPayload = renderBallotWon(user, entry.run.ballot.name, entry.asset, entry.booking)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        ballotName: entry.run.ballot.name, assetName: entry.asset.name,
+        startsAt: formatDate(entry.booking.startsAt), endsAt: formatDate(entry.booking.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BALLOT_LOST && ballotEntryId) {
+    const entry = await prisma.ballotEntry.findUnique({
+      where: { id: ballotEntryId },
+      include: { run: { include: { ballot: { select: { name: true } } } } },
+    })
+    if (entry) {
+      title = `${entry.run.ballot.name} ballot results`
+      body = `You weren't assigned an asset in this round of the ${entry.run.ballot.name} ballot.`
+      emailPayload = renderBallotLost(user, entry.run.ballot.name)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        ballotName: entry.run.ballot.name, appUrl: env.APP_URL,
       }
     }
   } else if (type === NotificationType.WELCOME) {
@@ -1772,6 +1804,8 @@ export async function startQueue(): Promise<void> {
   await b.createQueue('expire-manager-requests')
   await b.createQueue('lease-expiry')
   await b.createQueue('auto-reject-pending-approvals')
+  await b.createQueue('ballot-open-registration')
+  await b.createQueue('ballot-draw')
 
   await b.work<NotificationJobData>('send-notification', handleSendNotification)
 
@@ -1847,6 +1881,20 @@ export async function startQueue(): Promise<void> {
     await handleAutoRejectPendingApprovals()
   })
   await b.schedule('auto-reject-pending-approvals', '*/15 * * * *', {})
+
+  // See #159. Hourly is plenty for spawning a run days/weeks ahead of its
+  // draw; the draw itself runs on the tighter 15-min cadence shared with
+  // the other time-sensitive crons above.
+  const { handleBallotOpenRegistration, handleBallotDraw } = await import('./ballot.js')
+  await b.work('ballot-open-registration', async () => {
+    await handleBallotOpenRegistration()
+  })
+  await b.schedule('ballot-open-registration', '0 * * * *', {})
+
+  await b.work('ballot-draw', async () => {
+    await handleBallotDraw()
+  })
+  await b.schedule('ballot-draw', '*/15 * * * *', {})
 
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] pg-boss started and workers registered' }) + '\n')
 }

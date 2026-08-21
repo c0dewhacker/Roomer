@@ -193,6 +193,66 @@ export interface RecurringBookingRule {
   _count?: { bookings: number }
 }
 
+export type BallotFrequency = 'ONCE' | 'WEEKLY' | 'MONTHLY'
+export type BallotStatus = 'ACTIVE' | 'PAUSED' | 'CANCELLED'
+export type BallotRunStatus = 'OPEN' | 'DRAWN' | 'CANCELLED'
+export type BallotEntryStatus = 'ENTERED' | 'WON' | 'DECLINED' | 'LOST'
+
+/** A recurring or one-off random-allocation draw for scarce assets — see #159. */
+export interface Ballot {
+  id: string
+  name: string
+  createdByUserId: string
+  buildingIds: string[]
+  floorIds: string[]
+  assetCategoryIds: string[]
+  frequency: BallotFrequency
+  dayOfWeek: number | null
+  dayOfMonth: number | null
+  registrationWindowHours: number
+  slotStartTime: string
+  slotEndTime: string
+  slotLeadDays: number
+  slotDurationDays: number
+  status: BallotStatus
+  createdAt: string
+  updatedAt: string
+  _count?: { runs: number }
+}
+
+/** One concrete occurrence of a Ballot — its own registration window, draw, and results. */
+export interface BallotRun {
+  id: string
+  ballotId: string
+  registrationOpensAt: string
+  registrationClosesAt: string
+  slotStartsAt: string
+  slotEndsAt: string
+  status: BallotRunStatus
+  drawnAt: string | null
+  createdAt: string
+  ballot?: Ballot
+  myEntry?: BallotEntry | null
+  _count?: { entries: number }
+  poolSize?: number
+  entries?: BallotEntry[]
+}
+
+/** One user's opt-in entry for one BallotRun. */
+export interface BallotEntry {
+  id: string
+  runId: string
+  userId: string
+  status: BallotEntryStatus
+  assetId: string | null
+  bookingId: string | null
+  createdAt: string
+  run?: BallotRun & { ballot: { id: string; name: string } }
+  user?: { id: string; displayName: string; email: string }
+  asset?: { id: string; name: string } | null
+  booking?: { id: string; startsAt: string; endsAt: string; status: BookingStatus } | null
+}
+
 export interface Booking {
   id: string
   userId: string

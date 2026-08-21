@@ -1034,3 +1034,45 @@ export function renderGuestBookingInvite(
   const text = `Hi ${guestName},\n\n${host.displayName} has booked ${asset.name}${location ? ` (${location})` : ''} for your visit.\nFrom: ${formatDate(booking.startsAt)}\nTo: ${formatDate(booking.endsAt)}\n\nCheck in when you arrive: ${checkInUrl}`
   return { subject, html, text }
 }
+
+// ─── BALLOT_WON / BALLOT_LOST (see #159) ──────────────────────────────────────
+
+export function renderBallotWon(
+  user: Pick<User, 'displayName'>,
+  ballotName: string,
+  asset: Pick<Asset, 'name'>,
+  slot: Pick<Booking, 'startsAt' | 'endsAt'>,
+): { subject: string; html: string; text: string } {
+  const subject = `You won the ${escapeHtml(ballotName)} ballot — ${escapeHtml(asset.name)}`
+  const html = baseHtml(
+    subject,
+    `<h1>You won!</h1>
+     <p>Hi ${escapeHtml(user.displayName)}, you've been randomly assigned <strong>${escapeHtml(asset.name)}</strong> from the <strong>${escapeHtml(ballotName)}</strong> ballot.</p>
+     <div class="detail">
+       <dl>
+         <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
+         <dt>From</dt><dd>${formatDate(slot.startsAt)}</dd>
+         <dt>To</dt><dd>${formatDate(slot.endsAt)}</dd>
+       </dl>
+     </div>
+     <p>This is now a confirmed booking on your account — if you don't want it, you can decline it from the Ballots page, which gives it to someone else who entered.</p>
+     <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
+  )
+  const text = `Hi ${user.displayName},\n\nYou've been randomly assigned ${asset.name} from the ${ballotName} ballot.\nFrom: ${formatDate(slot.startsAt)}\nTo: ${formatDate(slot.endsAt)}\n\nThis is now a confirmed booking — if you don't want it, decline it from the Ballots page.\n\nView: ${env.APP_URL}/bookings`
+  return { subject, html, text }
+}
+
+export function renderBallotLost(
+  user: Pick<User, 'displayName'>,
+  ballotName: string,
+): { subject: string; html: string; text: string } {
+  const subject = `${escapeHtml(ballotName)} ballot results`
+  const html = baseHtml(
+    subject,
+    `<h1>Ballot results</h1>
+     <p>Hi ${escapeHtml(user.displayName)}, you weren't assigned an asset in this round of the <strong>${escapeHtml(ballotName)}</strong> ballot — there were more entrants than available spots.</p>
+     <a href="${env.APP_URL}/ballots" class="btn">View Ballots</a>`,
+  )
+  const text = `Hi ${user.displayName},\n\nYou weren't assigned an asset in this round of the ${ballotName} ballot — there were more entrants than available spots.\n\nView: ${env.APP_URL}/ballots`
+  return { subject, html, text }
+}

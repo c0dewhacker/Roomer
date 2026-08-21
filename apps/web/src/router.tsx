@@ -9,6 +9,7 @@ import QueueClaimPage from './pages/QueueClaimPage'
 import GuestCheckInPage from './pages/GuestCheckInPage'
 import ProfilePage from './pages/ProfilePage'
 import WhosInPage from './pages/WhosInPage'
+import BallotsPage from './pages/BallotsPage'
 import BuildingsAdminPage from './pages/admin/BuildingsAdminPage'
 import BuildingDetailAdminPage from './pages/admin/BuildingDetailAdminPage'
 import UsersAdminPage from './pages/admin/UsersAdminPage'
@@ -28,6 +29,7 @@ import DepartmentsAdminPage from './pages/admin/DepartmentsAdminPage'
 import WebhooksAdminPage from './pages/admin/WebhooksAdminPage'
 import ManagerRequestsAdminPage from './pages/admin/ManagerRequestsAdminPage'
 import ApprovalsAdminPage from './pages/admin/ApprovalsAdminPage'
+import BallotsAdminPage from './pages/admin/BallotsAdminPage'
 import QrScanPage from './pages/QrScanPage'
 import { Loader2 } from 'lucide-react'
 
@@ -179,6 +181,7 @@ export function AppRouter() {
           <Route path="/floors/:floorId" element={<Suspense fallback={<PageLoader />}><FloorPage /></Suspense>} />
           <Route path="/bookings" element={<BookingsPage />} />
           <Route path="/whos-in" element={<WhosInPage />} />
+          <Route path="/ballots" element={<BallotsPage />} />
           <Route path="/queue" element={<QueuePage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/assets" element={<AssetsPage />} />
@@ -210,6 +213,7 @@ export function AppRouter() {
             <Route path="/admin/assets" element={<AssetsAdminPage />} />
             <Route path="/admin/manager-requests" element={<ManagerRequestsAdminPage />} />
             <Route path="/admin/approvals" element={<ApprovalsAdminPage />} />
+            <Route path="/admin/ballots" element={<BallotsAdminPage />} />
           </Route>
 
           {/* SUPER_ADMIN or BUILDING_ADMIN only — no floor-scoped backend support exists for these */}

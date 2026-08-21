@@ -1,0 +1,374 @@
+import { prisma } from './prisma.js'
+import { NotificationType } from '@roomer/shared'
+import { lockAssetForBooking, hasBlockingOverlap } from './booking.js'
+import { resolveBuildingTimezone, zonedWallClockToUtc } from './timezone.js'
+import { checkGroupAccess } from '../routes/groups.js'
+import { enqueueNotification, promoteNextQueueEntry, fanOutFloorAvailable, getBoss } from './queue.js'
+import { dispatchWebhook } from './webhook.js'
+
+/**
+ * The asset pool a Ballot draws from: every bookable, currently-open asset
+ * on any of its scoped floors, plus every floor of any of its scoped
+ * buildings, optionally narrowed by assetCategoryIds. Deliberately scoped to
+ * bookingStatus 'OPEN' only — RESTRICTED (allow-list gated) and ASSIGNED
+ * assets are excluded outright rather than trying to respect their
+ * per-user rules in a blind random draw, and DISABLED is never bookable
+ * anyway. This is exactly the "assets that can't be assigned in the ballot"
+ * exclusion the feature was asked for.
+ */
+export async function resolveBallotAssetPool(ballot: {
+  buildingIds: string[]
+  floorIds: string[]
+  assetCategoryIds: string[]
+}): Promise<Array<{ id: string; floorId: string; buildingId: string }>> {
+  if (ballot.buildingIds.length === 0 && ballot.floorIds.length === 0) return []
+
+  const assets = await prisma.asset.findMany({
+    where: {
+      isBookable: true,
+      bookingStatus: 'OPEN',
+      ...(ballot.assetCategoryIds.length > 0 ? { categoryId: { in: ballot.assetCategoryIds } } : {}),
+      floor: {
+        OR: [
+          ...(ballot.floorIds.length > 0 ? [{ id: { in: ballot.floorIds } }] : []),
+          ...(ballot.buildingIds.length > 0 ? [{ buildingId: { in: ballot.buildingIds } }] : []),
+        ],
+      },
+    },
+    select: { id: true, floorId: true, floor: { select: { buildingId: true } } },
+  })
+
+  return assets
+    .filter((a): a is typeof a & { floorId: string } => !!a.floorId)
+    .map((a) => ({ id: a.id, floorId: a.floorId!, buildingId: a.floor!.buildingId }))
+}
+
+/** Fisher-Yates shuffle — not cryptographically secure, which a fairness lottery doesn't need. */
+function shuffle<T>(items: T[]): T[] {
+  const arr = [...items]
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[arr[i], arr[j]] = [arr[j], arr[i]]
+  }
+  return arr
+}
+
+/** Extracts the UTC calendar-date components stored in a "date-only" DateTime column (see BallotRun.slotStartsAt/EndsAt). */
+function dateParts(d: Date): { year: number; month: number; day: number } {
+  return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() }
+}
+
+/** Resolves a BallotRun's slot into the real UTC instant for one specific asset, timezone-aware (see #72). */
+async function resolveSlotInstants(
+  run: { slotStartsAt: Date; slotEndsAt: Date },
+  ballot: { slotStartTime: string; slotEndTime: string },
+  buildingId: string,
+): Promise<{ startsAt: Date; endsAt: Date }> {
+  const timeZone = await resolveBuildingTimezone(prisma, buildingId)
+  const [startH, startM] = ballot.slotStartTime.split(':').map(Number)
+  const [endH, endM] = ballot.slotEndTime.split(':').map(Number)
+  const startParts = dateParts(run.slotStartsAt)
+  const endParts = dateParts(run.slotEndsAt)
+  return {
+    startsAt: zonedWallClockToUtc(startParts.year, startParts.month, startParts.day, startH, startM, timeZone),
+    endsAt: zonedWallClockToUtc(endParts.year, endParts.month, endParts.day, endH, endM, timeZone),
+  }
+}
+
+/**
+ * Attempts to assign `userId` the given asset for the run's slot, creating a
+ * real CONFIRMED booking through the same advisory-locked, overlap-checked
+ * path every other booking-creating flow uses — a ballot can never
+ * double-book. Bypasses the approval workflow (#74), booking quota, and
+ * working-hours enforcement entirely: the draw itself is the decision, not
+ * a request subject to further gating (see #159's confirmed design).
+ * Returns the created booking id, or null if the asset turned out to
+ * already be taken (a real race against ordinary booking activity — the
+ * caller should try the next asset in the pool for this user).
+ */
+async function tryAssign(
+  userId: string,
+  asset: { id: string; floorId: string; buildingId: string },
+  run: { slotStartsAt: Date; slotEndsAt: Date },
+  ballot: { slotStartTime: string; slotEndTime: string },
+): Promise<{ bookingId: string; startsAt: Date; endsAt: Date } | null> {
+  const { startsAt, endsAt } = await resolveSlotInstants(run, ballot, asset.buildingId)
+
+  try {
+    const booking = await prisma.$transaction(async (tx) => {
+      await lockAssetForBooking(tx, asset.id)
+      if (await hasBlockingOverlap(tx, asset.id, startsAt, endsAt)) return null
+      return tx.booking.create({
+        data: { userId, assetId: asset.id, startsAt, endsAt, status: 'CONFIRMED' },
+      })
+    })
+    if (!booking) return null
+    return { bookingId: booking.id, startsAt, endsAt }
+  } catch {
+    // Database-level backstop (booking_no_overlap) — same as any other
+    // booking-creating path, treat as "this asset just became unavailable".
+    return null
+  }
+}
+
+/**
+ * Runs the draw for one BallotRun: every ENTERED entry is matched, in
+ * random order, against the ballot's asset pool (also access-rechecked —
+ * time may have passed since the user entered). Winners get a real
+ * CONFIRMED booking + BALLOT_WON notification; everyone left over is marked
+ * LOST and notified so they know to fall back to normal booking/queueing.
+ * Safe to call more than once for the same run (only OPEN runs are drawn;
+ * calling it again on an already-DRAWN run is a no-op).
+ */
+export async function runDrawForRun(runId: string): Promise<void> {
+  const run = await prisma.ballotRun.findUnique({
+    where: { id: runId },
+    include: { ballot: true, entries: { where: { status: 'ENTERED' } } },
+  })
+  if (!run || run.status !== 'OPEN') return
+
+  // Mark DRAWN up front (not at the end) so a slow draw with many entrants
+  // can't be picked up by a second concurrent cron tick — findMany-then-
+  // updateMany would leave a window where both ticks see status: 'OPEN'.
+  const claimed = await prisma.ballotRun.updateMany({
+    where: { id: runId, status: 'OPEN' },
+    data: { status: 'DRAWN', drawnAt: new Date() },
+  })
+  if (claimed.count === 0) return
+
+  const pool = await resolveBallotAssetPool(run.ballot)
+  const availableAssets = shuffle(pool)
+  const shuffledEntries = shuffle(run.entries)
+
+  let assetCursor = 0
+  for (const entry of shuffledEntries) {
+    // Re-check access — the user's group/role access may have changed
+    // between entering and the draw closing.
+    let assigned: { bookingId: string; startsAt: Date; endsAt: Date } | null = null
+    while (assetCursor < availableAssets.length) {
+      const candidate = availableAssets[assetCursor]
+      assetCursor += 1
+      const hasAccess = await checkGroupAccess(entry.userId, candidate.buildingId, candidate.floorId)
+      if (!hasAccess) continue
+      const result = await tryAssign(entry.userId, candidate, run, run.ballot)
+      if (result) {
+        assigned = result
+        await prisma.ballotEntry.update({
+          where: { id: entry.id },
+          data: { status: 'WON', assetId: candidate.id, bookingId: result.bookingId },
+        })
+        dispatchWebhook('booking.created', { id: result.bookingId, userId: entry.userId, assetId: candidate.id, startsAt: result.startsAt, endsAt: result.endsAt }).catch(() => {})
+        await enqueueNotification({ type: NotificationType.BALLOT_WON, userId: entry.userId, ballotEntryId: entry.id })
+        break
+      }
+      // Asset was taken by something else in the meantime — move on, but
+      // don't reuse it for a later entrant either (it's genuinely gone).
+    }
+    if (!assigned) {
+      await prisma.ballotEntry.update({ where: { id: entry.id }, data: { status: 'LOST' } })
+      await enqueueNotification({ type: NotificationType.BALLOT_LOST, userId: entry.userId, ballotEntryId: entry.id })
+    }
+  }
+
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[ballot] Drew run', runId, entrants: shuffledEntries.length }) + '\n')
+}
+
+/**
+ * Declines a WON entry: releases its booking (same cancel + queue-promote +
+ * floor-fanout steps as any other booking cancellation) and, per #159's
+ * confirmed design, re-draws the freed asset among that run's LOST entries
+ * rather than just releasing it — a mini re-draw scoped to the existing
+ * entrant pool, not a fresh registration window. If no LOST entries remain
+ * (or none can actually take it), the asset is simply released to normal
+ * booking/queueing, same as any other cancellation.
+ */
+export async function declineBallotEntry(entryId: string, userId: string): Promise<
+  | { ok: true }
+  | { ok: false; status: number; code: string; message: string }
+> {
+  const entry = await prisma.ballotEntry.findUnique({
+    where: { id: entryId },
+    include: { booking: true, run: { include: { ballot: true } } },
+  })
+  if (!entry) return { ok: false, status: 404, code: 'NOT_FOUND', message: 'Entry not found' }
+  if (entry.userId !== userId) return { ok: false, status: 403, code: 'FORBIDDEN', message: 'Not your entry' }
+  if (entry.status !== 'WON' || !entry.booking || !entry.assetId) {
+    return { ok: false, status: 409, code: 'NOT_WON', message: 'This entry has no active assignment to decline' }
+  }
+
+  const booking = entry.booking
+  const assetId = entry.assetId
+
+  await prisma.$transaction([
+    prisma.booking.update({ where: { id: booking.id }, data: { status: 'CANCELLED' } }),
+    prisma.ballotEntry.update({ where: { id: entry.id }, data: { status: 'DECLINED' } }),
+  ])
+  dispatchWebhook('booking.cancelled', { id: booking.id, userId: entry.userId, assetId }).catch(() => {})
+
+  // Re-draw among this run's LOST entries for the freed asset.
+  const losers = shuffle(
+    await prisma.ballotEntry.findMany({ where: { runId: entry.runId, status: 'LOST' } }),
+  )
+  const asset = await prisma.asset.findUnique({ where: { id: assetId }, select: { id: true, floorId: true, floor: { select: { buildingId: true } } } })
+
+  let redrawn = false
+  if (asset?.floorId && asset.floor) {
+    for (const loser of losers) {
+      const hasAccess = await checkGroupAccess(loser.userId, asset.floor.buildingId, asset.floorId)
+      if (!hasAccess) continue
+      const result = await tryAssign(
+        loser.userId,
+        { id: asset.id, floorId: asset.floorId, buildingId: asset.floor.buildingId },
+        entry.run,
+        entry.run.ballot,
+      )
+      if (result) {
+        await prisma.ballotEntry.update({
+          where: { id: loser.id },
+          data: { status: 'WON', assetId: asset.id, bookingId: result.bookingId },
+        })
+        dispatchWebhook('booking.created', { id: result.bookingId, userId: loser.userId, assetId: asset.id, startsAt: result.startsAt, endsAt: result.endsAt }).catch(() => {})
+        await enqueueNotification({ type: NotificationType.BALLOT_WON, userId: loser.userId, ballotEntryId: loser.id })
+        redrawn = true
+        break
+      }
+    }
+  }
+
+  if (!redrawn) {
+    // Nobody left to re-draw to (or the asset genuinely can't be
+    // reassigned) — release it the same way any other cancellation does.
+    const nextQueued = await promoteNextQueueEntry(assetId, booking.startsAt, booking.endsAt)
+    if (nextQueued) {
+      await enqueueNotification({
+        type: NotificationType.QUEUE_PROMOTED,
+        userId: nextQueued.userId,
+        queueEntryId: nextQueued.id,
+        claimDeadline: nextQueued.claimDeadline.toISOString(),
+      })
+      dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+    }
+    if (asset?.floorId) {
+      const slotDate = booking.startsAt.toISOString().slice(0, 10)
+      await fanOutFloorAvailable(assetId, asset.floorId, null, slotDate, entry.userId).catch(() => {})
+    }
+  }
+
+  return { ok: true }
+}
+
+/**
+ * Computes the next scheduled draw date (UTC midnight, calendar-only — see
+ * BallotRun.slotStartsAt's convention) for a recurring ballot, strictly
+ * after `after`. Interpreted in the org's default timezone (see #72) —
+ * a ballot can span multiple buildings with different timezones, so there
+ * is no single "the" building to anchor the schedule itself to; only each
+ * winner's actual booking instant is building-timezone-specific.
+ */
+function computeNextRunDate(
+  frequency: 'WEEKLY' | 'MONTHLY',
+  dayOfWeek: number | null,
+  dayOfMonth: number | null,
+  after: Date,
+): Date {
+  const cursor = new Date(Date.UTC(after.getUTCFullYear(), after.getUTCMonth(), after.getUTCDate()))
+  cursor.setUTCDate(cursor.getUTCDate() + 1)
+  if (frequency === 'WEEKLY') {
+    while (cursor.getUTCDay() !== dayOfWeek) cursor.setUTCDate(cursor.getUTCDate() + 1)
+    return cursor
+  }
+  // MONTHLY — dayOfMonth is capped at 28 (see createBallotSchema) so it
+  // always exists in every month, no clamping needed.
+  if (cursor.getUTCDate() > (dayOfMonth ?? 1)) {
+    cursor.setUTCMonth(cursor.getUTCMonth() + 1)
+  }
+  cursor.setUTCDate(dayOfMonth ?? 1)
+  return cursor
+}
+
+/** Builds the slotStartsAt/slotEndsAt (date-only) pair for a run whose draw lands on `drawDate`. */
+function computeSlotDates(ballot: { slotLeadDays: number; slotDurationDays: number }, drawDate: Date): { slotStartsAt: Date; slotEndsAt: Date } {
+  const slotStartsAt = new Date(drawDate)
+  slotStartsAt.setUTCDate(slotStartsAt.getUTCDate() + ballot.slotLeadDays)
+  const slotEndsAt = new Date(slotStartsAt)
+  slotEndsAt.setUTCDate(slotEndsAt.getUTCDate() + ballot.slotDurationDays - 1)
+  return { slotStartsAt, slotEndsAt }
+}
+
+/**
+ * Creates the immediate single run for a ONCE ballot, or (called from the
+ * ballot-open-registration cron) the next run for a recurring one, if it's
+ * time to open registration and no run for that cycle exists yet.
+ */
+export async function ensureNextBallotRun(ballotId: string): Promise<void> {
+  const ballot = await prisma.ballot.findUnique({ where: { id: ballotId } })
+  if (!ballot || ballot.status !== 'ACTIVE') return
+
+  const now = new Date()
+
+  if (ballot.frequency === 'ONCE') {
+    const existing = await prisma.ballotRun.findFirst({ where: { ballotId } })
+    if (existing) return
+    // ONCE ballots draw as soon as their registration window elapses from
+    // creation — no weekday/day-of-month schedule involved.
+    const registrationClosesAt = new Date(now.getTime() + ballot.registrationWindowHours * 60 * 60 * 1000)
+    const drawDateOnly = new Date(Date.UTC(registrationClosesAt.getUTCFullYear(), registrationClosesAt.getUTCMonth(), registrationClosesAt.getUTCDate()))
+    const { slotStartsAt, slotEndsAt } = computeSlotDates(ballot, drawDateOnly)
+    await prisma.ballotRun.create({
+      data: {
+        ballotId,
+        registrationOpensAt: now,
+        registrationClosesAt,
+        slotStartsAt,
+        slotEndsAt,
+      },
+    })
+    return
+  }
+
+  const nextDrawDate = computeNextRunDate(ballot.frequency, ballot.dayOfWeek, ballot.dayOfMonth, now)
+  const registrationOpensAt = new Date(nextDrawDate.getTime() - ballot.registrationWindowHours * 60 * 60 * 1000)
+  if (registrationOpensAt > now) return // not yet time to open this cycle's registration
+
+  const alreadyExists = await prisma.ballotRun.findFirst({
+    where: { ballotId, registrationClosesAt: nextDrawDate, status: { not: 'CANCELLED' } },
+  })
+  if (alreadyExists) return
+
+  const { slotStartsAt, slotEndsAt } = computeSlotDates(ballot, nextDrawDate)
+  await prisma.ballotRun.create({
+    data: {
+      ballotId,
+      registrationOpensAt: now,
+      registrationClosesAt: nextDrawDate,
+      slotStartsAt,
+      slotEndsAt,
+    },
+  })
+}
+
+/** Cron: for every ACTIVE ballot, spawn its next run if one isn't already open/pending. */
+export async function handleBallotOpenRegistration(): Promise<void> {
+  const ballots = await prisma.ballot.findMany({ where: { status: 'ACTIVE' }, select: { id: true } })
+  for (const b of ballots) {
+    await ensureNextBallotRun(b.id).catch((err) => {
+      process.stderr.write(JSON.stringify({ level: 'error', msg: '[ballot] Failed to ensure next run', ballotId: b.id, err: String(err) }) + '\n')
+    })
+  }
+}
+
+/** Cron: draw every run whose registration has closed. */
+export async function handleBallotDraw(): Promise<void> {
+  const dueRuns = await prisma.ballotRun.findMany({
+    where: { status: 'OPEN', registrationClosesAt: { lte: new Date() } },
+    select: { id: true },
+  })
+  for (const run of dueRuns) {
+    await runDrawForRun(run.id).catch((err) => {
+      process.stderr.write(JSON.stringify({ level: 'error', msg: '[ballot] Failed to draw run', runId: run.id, err: String(err) }) + '\n')
+    })
+  }
+}
+
+// Re-exported so routes/ballots.ts doesn't need its own pg-boss handle for the manual-trigger endpoints.
+export { getBoss }
