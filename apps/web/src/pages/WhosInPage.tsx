@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { format } from 'date-fns'
+import { toZonedTime } from 'date-fns-tz'
 import { Search, MapPin, Home, Calendar, Users } from 'lucide-react'
 import { directoryApi, type WhereaboutsLocation, type WhereaboutsPerson } from '@/lib/api'
-import { toISODateString } from '@/lib/utils'
+import { toISODateString, zoneQualifier } from '@/lib/utils'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -61,15 +62,26 @@ function PersonCard({ person, date }: { person: WhereaboutsPerson; date: string 
           <p className="font-medium text-sm">{person.user.displayName}</p>
           <p className="text-xs text-muted-foreground truncate">{person.user.email}</p>
           <div className="mt-2 flex flex-col gap-1.5">
-            {person.today.map((l, i) => (
-              <LocationLink
-                key={`b-${l.assetId}-${i}`}
-                l={l}
-                date={date}
-                kind="today"
-                time={`${format(new Date(l.startsAt), 'HH:mm')}–${format(new Date(l.endsAt), 'HH:mm')}`}
-              />
-            ))}
+            {person.today.map((l, i) => {
+              // Rendered in the booking's own building timezone (see #72),
+              // not the viewer's browser timezone — "who's in the office
+              // right now" is meaningless if a remote admin sees a time
+              // shifted by their own offset from that office. A qualifier
+              // (e.g. "AEST") only appears when it actually differs from
+              // the viewer's own timezone, so the common same-timezone case
+              // stays uncluttered.
+              const zoned = (iso: string) => format(toZonedTime(new Date(iso), l.resolvedTimezone), 'HH:mm')
+              const qualifier = zoneQualifier(l.resolvedTimezone, l.startsAt)
+              return (
+                <LocationLink
+                  key={`b-${l.assetId}-${i}`}
+                  l={l}
+                  date={date}
+                  kind="today"
+                  time={`${zoned(l.startsAt)}–${zoned(l.endsAt)}${qualifier ? ` ${qualifier}` : ''}`}
+                />
+              )
+            })}
             {person.assignedDesks.map((l) => (
               <div key={`a-${l.assetId}`} className="flex items-center gap-2">
                 <LocationLink l={l} date={date} kind="home" />

@@ -575,6 +575,10 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     const [bookings, total] = await Promise.all([
       prisma.booking.findMany({
         where: { userId: id },
+        // guestCheckInToken is a bare, unauthenticated credential — never
+        // surfaced outside the invite email actually sent to the guest,
+        // not even to an admin looking up this user's own booking history.
+        omit: { guestCheckInToken: true },
         include: {
           asset: {
             include: {

@@ -163,6 +163,8 @@ export interface AssetWithStatus extends Omit<Asset, 'bookingStatus'> {
   queueDepth?: number
   /** Resolved zone → building → org override chain — see #74. */
   requiresApproval?: boolean
+  /** Resolved building IANA timezone (building → org, see #72) — every asset on a floor shares one value. */
+  resolvedTimezone?: string
 }
 /** @deprecated Use AssetWithStatus instead */
 export type DeskWithStatus = AssetWithStatus
@@ -295,6 +297,8 @@ export interface Booking {
   }
   /** Resolved (floor → building → org), only present on the GET /bookings list response. */
   qrCheckInMode?: QrCheckInMode
+  /** Resolved building IANA timezone (floor → building → org, see #72), only present on the GET /bookings list response. */
+  resolvedTimezone?: string
 }
 
 export type TransferRequestStatus = 'PENDING' | 'ACCEPTED' | 'DECLINED' | 'CANCELLED' | 'EXPIRED'

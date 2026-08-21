@@ -687,7 +687,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       prisma.floor.findUnique({
         where: { id },
         include: {
-          building: { select: { requiresApproval: true } },
+          building: { select: { requiresApproval: true, timezone: true } },
           zones: {
             orderBy: { name: 'asc' },
             include: {
@@ -704,12 +704,18 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           },
         },
       }),
-      prisma.organisation.findFirst({ select: { requiresApproval: true } }),
+      prisma.organisation.findFirst({ select: { requiresApproval: true, defaultTimezone: true } }),
     ])
 
     if (!floor) {
       return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
     }
+
+    // Resolved once for the whole floor (every asset on it shares the same
+    // building — see #72), not per-asset: the frontend uses this to render
+    // every booking time on this floor's plan in the building's own
+    // timezone rather than the viewer's browser timezone.
+    const resolvedTimezone = floor.building?.timezone ?? org?.defaultTimezone ?? 'UTC'
 
     // Fold secondary (AssetZone) memberships into each zone's asset list —
     // done once here so every computation below (amenity filter, queue-depth
@@ -881,7 +887,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       }
     })
 
-    return reply.status(200).send({ data: { floorId: floor.id, date, zones } })
+    return reply.status(200).send({ data: { floorId: floor.id, date, zones, resolvedTimezone } })
   })
 }
 

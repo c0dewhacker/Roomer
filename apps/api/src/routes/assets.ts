@@ -1833,6 +1833,10 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
     const bookings = await prisma.booking.findMany({
       where,
+      // Any user with floor access can view an asset's booking history —
+      // guestCheckInToken (a bare, unauthenticated credential) must not
+      // leak here even though guestName/guestEmail are fine to show.
+      omit: { guestCheckInToken: true },
       include: { user: { select: { id: true, displayName: true, email: true } } },
       orderBy: { startsAt: 'asc' },
     })

@@ -31,7 +31,11 @@ export function useFloorAvailability(floorId: string, date: Date) {
         const existing = byId.get(asset.id)
         if (!existing || asset.isPrimaryZone) byId.set(asset.id, asset)
       }
-      return [...byId.values()]
+      // Every asset on a floor shares the same building (see #72) — attached
+      // per-asset here (rather than returned as a separate top-level value)
+      // so DeskPanel, which only receives one `desk` object, can read it
+      // directly without a second hook/response to thread through.
+      return [...byId.values()].map((asset) => ({ ...asset, resolvedTimezone: res.data.resolvedTimezone }))
     },
     staleTime: 10 * 1000,
   })

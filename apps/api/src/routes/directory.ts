@@ -87,14 +87,14 @@ const assetLocationSelect = {
   id: true,
   name: true,
   primaryZone: { select: { id: true, name: true } },
-  floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
+  floor: { select: { id: true, name: true, building: { select: { id: true, name: true, timezone: true } } } },
 } as const
 
 type AssetLocation = {
   id: string
   name: string
   primaryZone: { id: string; name: string } | null
-  floor: { id: string; name: string; building: { id: string; name: string } } | null
+  floor: { id: string; name: string; building: { id: string; name: string; timezone: string | null } } | null
 }
 
 function locationOf(asset: AssetLocation) {
@@ -107,6 +107,7 @@ function locationOf(asset: AssetLocation) {
     floorName: asset.floor?.name ?? null,
     buildingId: asset.floor?.building?.id ?? null,
     buildingName: asset.floor?.building?.name ?? null,
+    buildingTimezone: asset.floor?.building?.timezone ?? null,
   }
 }
 
@@ -184,6 +185,11 @@ export async function directoryRoutes(fastify: FastifyInstance): Promise<void> {
     })
 
     const bookedUserIds = [...new Set(bookings.map((b) => b.user.id))]
+    // Resolved once, reused for every entry with no building-level override
+    // (see #72) — the frontend needs this to render each "who's in" time in
+    // its actual building-local time rather than the viewer's own browser
+    // timezone.
+    const orgDefaultTimezone = (await prisma.organisation.findFirst({ select: { defaultTimezone: true } }))?.defaultTimezone ?? 'UTC'
 
     // Assignments: when searching, return all matched users' home desks (even if
     // they have no booking). Otherwise only the booked users' desks, as context.
@@ -211,7 +217,7 @@ export async function directoryRoutes(fastify: FastifyInstance): Promise<void> {
       // an afternoon meeting room; the app supports AM/PM/custom time-slot
       // bookings) rendered as two identical, unlabelled "Booked" rows with no
       // way to tell which one is current.
-      today: (ReturnType<typeof locationOf> & { startsAt: Date; endsAt: Date })[]
+      today: (ReturnType<typeof locationOf> & { resolvedTimezone: string; startsAt: Date; endsAt: Date })[]
       assignedDesks: (ReturnType<typeof locationOf> & { isPrimary: boolean })[]
     }
     const people = new Map<string, Person>()
@@ -222,7 +228,13 @@ export async function directoryRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     for (const b of bookings) {
-      ensure(b.user).today.push({ ...locationOf(b.asset), startsAt: b.startsAt, endsAt: b.endsAt })
+      const location = locationOf(b.asset)
+      ensure(b.user).today.push({
+        ...location,
+        resolvedTimezone: location.buildingTimezone ?? orgDefaultTimezone,
+        startsAt: b.startsAt,
+        endsAt: b.endsAt,
+      })
     }
     for (const a of assignments) {
       ensure(a.user).assignedDesks.push({ ...locationOf(a.asset), isPrimary: a.isPrimary })

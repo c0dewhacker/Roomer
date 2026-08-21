@@ -171,7 +171,7 @@ export const floorsApi = {
     )
   },
   getAvailability: (id: string, date: string) =>
-    api.get<{ data: { floorId: string; date: string; zones: Array<{ id: string; name: string; colour: string; assets: AssetWithStatus[] }> } }>(`/floors/${id}/availability?date=${date}`),
+    api.get<{ data: { floorId: string; date: string; zones: Array<{ id: string; name: string; colour: string; assets: AssetWithStatus[] }>; resolvedTimezone: string } }>(`/floors/${id}/availability?date=${date}`),
   getManagers: (id: string) =>
     api.get<{ data: Array<{ roleId: string; id: string; displayName: string; email: string }> }>(
       `/floors/${id}/managers`,
@@ -1015,10 +1015,12 @@ export interface WhereaboutsLocation {
   floorName: string | null
   buildingId: string | null
   buildingName: string | null
+  buildingTimezone: string | null
 }
 export interface WhereaboutsPerson {
   user: { id: string; displayName: string; email: string }
-  today: (WhereaboutsLocation & { startsAt: string; endsAt: string })[]
+  /** resolvedTimezone (see #72) — the building's own timezone, falling back to the org default. */
+  today: (WhereaboutsLocation & { resolvedTimezone: string; startsAt: string; endsAt: string })[]
   assignedDesks: (WhereaboutsLocation & { isPrimary: boolean })[]
 }
 export const directoryApi = {

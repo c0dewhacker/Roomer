@@ -31,7 +31,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog'
-import { formatDateRange, formatDate, formatCalendarDate } from '@/lib/utils'
+import { formatDateRange, formatDate, formatCalendarDate, zoneQualifier } from '@/lib/utils'
 import { DateTimeLocalInput } from '@/components/ui/date-time-input'
 import { assetsApi, recurringBookingsApi, bookingsApi, usersApi } from '@/lib/api'
 import type { Booking, RecurringBookingRule, BookingTransfer, BookingSwap } from '@/types'
@@ -550,7 +550,10 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
               </p>
               <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
                 <Clock className="h-3 w-3 shrink-0" />
-                {formatDateRange(booking.startsAt, booking.endsAt)}
+                {formatDateRange(booking.startsAt, booking.endsAt, booking.resolvedTimezone)}
+                {zoneQualifier(booking.resolvedTimezone, booking.startsAt) && (
+                  <span className="text-[10px] uppercase tracking-wide">({zoneQualifier(booking.resolvedTimezone, booking.startsAt)})</span>
+                )}
               </p>
               {booking.notes && (
                 <p className="text-xs text-muted-foreground mt-1 italic">{booking.notes}</p>

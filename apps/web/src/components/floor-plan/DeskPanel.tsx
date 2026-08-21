@@ -1130,7 +1130,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                     {desk.bookingStatus === 'mine_pending' ? 'Awaiting approval' : 'Your booking'}
                   </p>
                   <p className={desk.bookingStatus === 'mine_pending' ? 'text-xs text-amber-600 mt-1' : 'text-xs text-blue-600 mt-1'}>
-                    {formatDateRange(desk.currentBooking.startsAt, desk.currentBooking.endsAt)}
+                    {formatDateRange(desk.currentBooking.startsAt, desk.currentBooking.endsAt, desk.resolvedTimezone)}
                   </p>
                   {desk.bookingStatus === 'mine_pending' && (
                     <p className="text-xs text-amber-600 mt-1">

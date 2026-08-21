@@ -8,6 +8,7 @@ import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
 import { dispatchWebhook } from './webhook.js'
 import { lockAssetForQueue } from './booking.js'
+import { resolveBuildingTimezone } from './timezone.js'
 import { getBuildingAdminUserIds } from '../middleware/requireRole.js'
 import { sendPushNotification } from './push.js'
 
@@ -385,20 +386,21 @@ async function processSendNotification(
   if (type === NotificationType.BOOKING_CONFIRMED && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true, building: { select: { name: true } } } } } } },
+      include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true, buildingId: true, building: { select: { name: true } } } } } } },
     })
     if (booking) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
       // A guest booking (see #79) is still confirmed to the host, not the
       // guest (who gets their own separate invite email) — naming the guest
       // here just distinguishes it from the host's own bookings at a glance.
       const guestSuffix = booking.guestName ? ` for ${booking.guestName}` : ''
       title = `Booking confirmed${guestSuffix} — ${booking.asset.name}`
-      body = `Your booking${guestSuffix} for ${booking.asset.name} is confirmed from ${formatDate(booking.startsAt)} to ${formatDate(booking.endsAt)}`
+      body = `Your booking${guestSuffix} for ${booking.asset.name} is confirmed from ${formatDate(booking.startsAt, tz)} to ${formatDate(booking.endsAt, tz)}`
       emailPayload = renderBookingConfirmed(booking, user, {
         name: booking.asset.name,
         zoneName: booking.asset.primaryZone?.name ?? '',
         floorName: booking.asset.floor?.name ?? '',
-      })
+      }, tz)
       icalEvent = {
         method: 'REQUEST',
         content: buildBookingIcs({
@@ -415,7 +417,7 @@ async function processSendNotification(
         assetName: booking.asset.name,
         zoneName: booking.asset.primaryZone?.name ?? '',
         floorName: booking.asset.floor?.name ?? '',
-        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        startsAt: formatDate(booking.startsAt, tz), endsAt: formatDate(booking.endsAt, tz),
         notes: booking.notes ?? '',
         bookingUrl: `${env.APP_URL}/bookings/${booking.id}`,
         appUrl: env.APP_URL,
@@ -424,12 +426,13 @@ async function processSendNotification(
   } else if (type === NotificationType.BOOKING_CANCELLED && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { asset: true },
+      include: { asset: { include: { floor: { select: { buildingId: true } } } } },
     })
     if (booking) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
       title = `Booking cancelled — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} has been cancelled.`
-      emailPayload = renderBookingCancelled(booking, user, booking.asset)
+      emailPayload = renderBookingCancelled(booking, user, booking.asset, tz)
       icalEvent = {
         method: 'CANCEL',
         content: buildBookingIcs({
@@ -441,19 +444,20 @@ async function processSendNotification(
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
-        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        startsAt: formatDate(booking.startsAt, tz), endsAt: formatDate(booking.endsAt, tz),
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }
   } else if (type === NotificationType.BOOKING_NO_SHOW && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { asset: true },
+      include: { asset: { include: { floor: { select: { buildingId: true } } } } },
     })
     if (booking) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
       title = `Booking released — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} was released because you didn't check in.`
-      emailPayload = renderBookingNoShow(booking, user, booking.asset)
+      emailPayload = renderBookingNoShow(booking, user, booking.asset, tz)
       // Same as any other cancellation path — without a CANCEL, the invite
       // this booking's confirmation originally sent stays "confirmed" in the
       // booker's calendar forever, even though the desk was released.
@@ -468,19 +472,20 @@ async function processSendNotification(
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
-        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        startsAt: formatDate(booking.startsAt, tz), endsAt: formatDate(booking.endsAt, tz),
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }
   } else if (type === NotificationType.BOOKING_CANCELLED_BY_ADMIN && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { asset: true },
+      include: { asset: { include: { floor: { select: { buildingId: true } } } } },
     })
     if (booking) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
       title = `Booking cancelled by admin — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} has been cancelled by an administrator.`
-      emailPayload = renderBookingCancelledByAdmin(booking, user, booking.asset)
+      emailPayload = renderBookingCancelledByAdmin(booking, user, booking.asset, tz)
       icalEvent = {
         method: 'CANCEL',
         content: buildBookingIcs({
@@ -492,7 +497,7 @@ async function processSendNotification(
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
-        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        startsAt: formatDate(booking.startsAt, tz), endsAt: formatDate(booking.endsAt, tz),
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     } else if (job.data.cancelledAssetName && job.data.cancelledStartsAt && job.data.cancelledEndsAt) {
@@ -522,22 +527,23 @@ async function processSendNotification(
   } else if (type === NotificationType.BOOKING_REMINDER && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true } } } } },
+      include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true, buildingId: true } } } } },
     })
     if (booking) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
       title = `Reminder — ${booking.asset.name} booking coming up`
-      body = `Your booking starts at ${formatDate(booking.startsAt)}.`
+      body = `Your booking starts at ${formatDate(booking.startsAt, tz)}.`
       emailPayload = renderBookingReminder(booking, user, {
         name: booking.asset.name,
         zoneName: booking.asset.primaryZone?.name ?? '',
         floorName: booking.asset.floor?.name ?? '',
-      })
+      }, tz)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
         zoneName: booking.asset.primaryZone?.name ?? '',
         floorName: booking.asset.floor?.name ?? '',
-        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        startsAt: formatDate(booking.startsAt, tz), endsAt: formatDate(booking.endsAt, tz),
         bookingUrl: `${env.APP_URL}/bookings/${booking.id}`,
         appUrl: env.APP_URL,
       }
@@ -921,17 +927,18 @@ async function processSendNotification(
   } else if (type === NotificationType.BOOKING_PENDING_APPROVAL && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { asset: true, user: true },
+      include: { asset: { include: { floor: { select: { buildingId: true } } } }, user: true },
     })
     if (booking) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
       title = `Booking approval requested — ${booking.asset.name}`
       body = `${booking.user.displayName} has requested a booking for ${booking.asset.name} that needs your approval.`
-      emailPayload = renderBookingPendingApproval(user, booking.user, booking, booking.asset)
+      emailPayload = renderBookingPendingApproval(user, booking.user, booking, booking.asset, tz)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         requesterName: booking.user.displayName, requesterEmail: booking.user.email,
         assetName: booking.asset.name,
-        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        startsAt: formatDate(booking.startsAt, tz), endsAt: formatDate(booking.endsAt, tz),
         bookingUrl: `${env.APP_URL}/admin/approvals`,
         appUrl: env.APP_URL,
       }
@@ -939,12 +946,13 @@ async function processSendNotification(
   } else if (type === NotificationType.BOOKING_APPROVED && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true, building: { select: { name: true } } } } } } },
+      include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true, buildingId: true, building: { select: { name: true } } } } } } },
     })
     if (booking) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
       title = `Booking approved — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} has been approved.`
-      emailPayload = renderBookingApproved(user, booking, booking.asset)
+      emailPayload = renderBookingApproved(user, booking, booking.asset, tz)
       icalEvent = {
         method: 'REQUEST',
         content: buildBookingIcs({
@@ -959,7 +967,7 @@ async function processSendNotification(
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
-        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        startsAt: formatDate(booking.startsAt, tz), endsAt: formatDate(booking.endsAt, tz),
         bookingUrl: `${env.APP_URL}/bookings/${booking.id}`,
         appUrl: env.APP_URL,
       }
@@ -967,16 +975,17 @@ async function processSendNotification(
   } else if (type === NotificationType.BOOKING_REJECTED && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { asset: true },
+      include: { asset: { include: { floor: { select: { buildingId: true } } } } },
     })
     if (booking) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
       title = `Booking request declined — ${booking.asset.name}`
       body = `Your booking request for ${booking.asset.name} was declined.`
-      emailPayload = renderBookingRejected(user, booking, booking.asset, booking.rejectionNote)
+      emailPayload = renderBookingRejected(user, booking, booking.asset, booking.rejectionNote, tz)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
-        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        startsAt: formatDate(booking.startsAt, tz), endsAt: formatDate(booking.endsAt, tz),
         reviewNote: booking.rejectionNote ?? '',
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
@@ -984,16 +993,17 @@ async function processSendNotification(
   } else if (type === NotificationType.BALLOT_WON && ballotEntryId) {
     const entry = await prisma.ballotEntry.findUnique({
       where: { id: ballotEntryId },
-      include: { run: { include: { ballot: { select: { name: true } } } }, asset: true, booking: true },
+      include: { run: { include: { ballot: { select: { name: true } } } }, asset: { include: { floor: { select: { buildingId: true } } } }, booking: true },
     })
     if (entry?.asset && entry.booking) {
+      const tz = await resolveBuildingTimezone(prisma, entry.asset.floor?.buildingId)
       title = `You won the ${entry.run.ballot.name} ballot — ${entry.asset.name}`
       body = `You've been randomly assigned ${entry.asset.name} from the ${entry.run.ballot.name} ballot.`
-      emailPayload = renderBallotWon(user, entry.run.ballot.name, entry.asset, entry.booking)
+      emailPayload = renderBallotWon(user, entry.run.ballot.name, entry.asset, entry.booking, tz)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         ballotName: entry.run.ballot.name, assetName: entry.asset.name,
-        startsAt: formatDate(entry.booking.startsAt), endsAt: formatDate(entry.booking.endsAt),
+        startsAt: formatDate(entry.booking.startsAt, tz), endsAt: formatDate(entry.booking.endsAt, tz),
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }

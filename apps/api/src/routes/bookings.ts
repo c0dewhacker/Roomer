@@ -12,6 +12,7 @@ import { buildBookingIcs } from '../lib/ical.js'
 import { sendEmail, renderGuestBookingInvite } from '../lib/mailer.js'
 import { checkGroupAccess } from './groups.js'
 import { assertBookable, assertUnderBookingQuota, hasBlockingOverlap, checkZoneGroupOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, lockUserForBookingQuota, isOverlapConstraintViolation, resolveRequiresApproval } from '../lib/booking.js'
+import { resolveBuildingTimezone } from '../lib/timezone.js'
 import { z } from 'zod'
 
 class BookingConflictError extends Error {
@@ -34,7 +35,7 @@ async function sendGuestBookingInvite(booking: {
   guestName: string
   guestEmail: string
   guestCheckInToken: string
-}, hostDisplayName: string, asset: { name: string; primaryZone?: { name: string } | null; floor?: { name: string; building?: { name: string } | null } | null }): Promise<void> {
+}, hostDisplayName: string, asset: { name: string; primaryZone?: { name: string } | null; floor?: { name: string; building?: { name: string } | null } | null }, timeZone = 'UTC'): Promise<void> {
   const checkInUrl = `${env.APP_URL}/guest-check-in?token=${encodeURIComponent(booking.guestCheckInToken)}`
   const payload = renderGuestBookingInvite(
     booking.guestName,
@@ -42,6 +43,7 @@ async function sendGuestBookingInvite(booking: {
     booking,
     { name: asset.name, zoneName: asset.primaryZone?.name, floorName: asset.floor?.name, buildingName: asset.floor?.building?.name },
     checkInUrl,
+    timeZone,
   )
   await sendEmail({ to: booking.guestEmail, ...payload }).catch(() => {})
 }
@@ -122,6 +124,11 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
           where,
           skip,
           take: limit,
+          // guestCheckInToken is a bare, unauthenticated credential (see
+          // POST /guest-check-in-by-token) — it must never appear in a
+          // response any admin/building-manager can read, only in the
+          // invite email actually sent to the guest.
+          omit: { guestCheckInToken: true },
           include: {
             user: { select: { id: true, displayName: true, email: true } },
             asset: {
@@ -171,6 +178,10 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     const bookings = await prisma.booking.findMany({
       where,
+      // Same reasoning as GET /report — an approver reviewing a guest
+      // booking has no legitimate reason to read the guest's own
+      // check-in credential.
+      omit: { guestCheckInToken: true },
       include: {
         user: { select: { id: true, displayName: true, email: true } },
         asset: { select: { id: true, name: true, floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } } } },
@@ -214,10 +225,11 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     const bookings = await prisma.booking.findMany({
       where,
+      omit: { guestCheckInToken: true },
       include: {
         asset: {
           include: {
-            floor: { include: { building: { select: { id: true, name: true, qrCheckInMode: true } } } },
+            floor: { include: { building: { select: { id: true, name: true, qrCheckInMode: true, timezone: true } } } },
             primaryZone: { select: { id: true, name: true } },
           },
         },
@@ -225,15 +237,19 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       orderBy: { startsAt: 'asc' },
     })
 
-    // Resolved (not raw) QR mode per booking — floor → building → org, same
-    // order as everywhere else this resolves. The frontend uses this purely
-    // to decide whether to show the manual "I'm here" check-in button
-    // (hidden under MANDATORY); it doesn't need to duplicate the resolution
-    // logic or fetch org/building/floor data separately to make that call.
-    const org = await prisma.organisation.findFirst({ select: { qrCheckInMode: true } })
+    // Resolved (not raw) QR mode + timezone per booking — floor → building →
+    // org, same order as everywhere else this resolves. The frontend uses
+    // qrCheckInMode purely to decide whether to show the manual "I'm here"
+    // check-in button (hidden under MANDATORY), and resolvedTimezone (see
+    // #72) to render this booking's time in its actual building-local time
+    // rather than the viewer's own browser timezone — neither needs to
+    // duplicate the resolution logic or fetch org/building/floor data
+    // separately to make that call.
+    const org = await prisma.organisation.findFirst({ select: { qrCheckInMode: true, defaultTimezone: true } })
     const data = bookings.map((b) => ({
       ...b,
       qrCheckInMode: b.asset.floor?.qrCheckInMode ?? b.asset.floor?.building?.qrCheckInMode ?? org?.qrCheckInMode ?? 'DISABLED',
+      resolvedTimezone: b.asset.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC',
     }))
 
     return reply.status(200).send({ data, meta: { total: bookings.length } })
@@ -289,7 +305,13 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       ? (await prisma.organisation.findFirst({ select: { approvalWindowHours: true } }))?.approvalWindowHours ?? 24
       : 0
 
+    // Minted here (not read back off the created row) because the create
+    // response omits guestCheckInToken from the client-facing object below —
+    // this local value is the only copy needed to actually send the invite.
+    const guestCheckInToken = guestName && guestEmail ? randomUUID() : null
+
     let booking: Prisma.BookingGetPayload<{
+      omit: { guestCheckInToken: true }
       include: {
         asset: {
           include: {
@@ -342,10 +364,13 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
             approvalExpiresAt: requiresApproval ? new Date(Date.now() + approvalWindowHours * 60 * 60 * 1000) : null,
             guestName: guestName ?? null,
             guestEmail: guestEmail ?? null,
-            // Only a guest with an email gets a check-in link — no email, no
-            // way to deliver it, so no point minting a token nobody can use.
-            guestCheckInToken: guestEmail ? randomUUID() : null,
+            guestCheckInToken,
           },
+          // Never echo the minted check-in credential back in the create
+          // response — the host doesn't need it (they didn't need to see it
+          // to create the booking) and it should only ever exist in the
+          // one invite email actually sent to the guest.
+          omit: { guestCheckInToken: true },
           include: {
             asset: {
               include: {
@@ -399,11 +424,13 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
       dispatchWebhook('booking.created', { id: booking.id, userId: booking.userId, assetId: booking.assetId, startsAt: booking.startsAt, endsAt: booking.endsAt }).catch(() => {})
 
-      if (booking.guestName && booking.guestEmail && booking.guestCheckInToken) {
+      if (booking.guestName && booking.guestEmail && guestCheckInToken) {
+        const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.building?.id)
         await sendGuestBookingInvite(
-          { startsAt: booking.startsAt, endsAt: booking.endsAt, guestName: booking.guestName, guestEmail: booking.guestEmail, guestCheckInToken: booking.guestCheckInToken },
+          { startsAt: booking.startsAt, endsAt: booking.endsAt, guestName: booking.guestName, guestEmail: booking.guestEmail, guestCheckInToken },
           request.user.displayName,
           booking.asset,
+          tz,
         )
       }
     }
@@ -417,6 +444,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     const booking = await prisma.booking.findUnique({
       where: { id },
+      omit: { guestCheckInToken: true },
       include: {
         user: { select: { id: true, displayName: true, email: true } },
         asset: {
@@ -623,7 +651,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
-    let updated: Awaited<ReturnType<typeof prisma.booking.update>>
+    let updated: Prisma.BookingGetPayload<{ omit: { guestCheckInToken: true } }>
     try {
       updated = await prisma.$transaction(async (tx) => {
         await lockAssetForBooking(tx, booking.assetId)
@@ -645,6 +673,10 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
         return tx.booking.update({
           where: { id },
+          // Never echo the guest check-in credential back to the client —
+          // same reasoning as every other client-facing booking response
+          // in this file.
+          omit: { guestCheckInToken: true },
           data: {
             startsAt: newStartsAt,
             endsAt: newEndsAt,
@@ -892,10 +924,12 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     // confirmed. Guest bookings are never recurring, so `booking` itself
     // (not `affected`) always has the right dates here.
     if (booking.guestName && booking.guestEmail && booking.guestCheckInToken) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
       await sendGuestBookingInvite(
         { startsAt: booking.startsAt, endsAt: booking.endsAt, guestName: booking.guestName, guestEmail: booking.guestEmail, guestCheckInToken: booking.guestCheckInToken },
         booking.user.displayName,
         booking.asset,
+        tz,
       )
     }
 

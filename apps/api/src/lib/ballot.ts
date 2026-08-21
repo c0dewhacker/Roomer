@@ -223,10 +223,28 @@ export async function declineBallotEntry(entryId: string, userId: string): Promi
         entry.run.ballot,
       )
       if (result) {
-        await prisma.ballotEntry.update({
-          where: { id: loser.id },
+        // Atomically claim this loser's entry (LOST -> WON) rather than an
+        // unconditional update — two declines on the same run racing to
+        // re-draw could otherwise both pick the same LOST user for their
+        // own (different) freed asset, since ballotEntry is unique per
+        // (runId, userId): the second update would silently overwrite the
+        // first, leaving that user with two real overlapping bookings but
+        // only one of them reflected in their ballot entry. The `count`
+        // check below means only the decline that gets here first for this
+        // specific loser actually wins the claim; the other continues to
+        // its next candidate.
+        const claimed = await prisma.ballotEntry.updateMany({
+          where: { id: loser.id, status: 'LOST' },
           data: { status: 'WON', assetId: asset.id, bookingId: result.bookingId },
         })
+        if (claimed.count === 0) {
+          // Lost the race for this candidate — the booking we just created
+          // for them is now orphaned from ballot bookkeeping; cancel it
+          // and fall through to try the next loser instead of leaving a
+          // stray confirmed booking nobody's entry points to.
+          await prisma.booking.update({ where: { id: result.bookingId }, data: { status: 'CANCELLED' } })
+          continue
+        }
         dispatchWebhook('booking.created', { id: result.bookingId, userId: loser.userId, assetId: asset.id, startsAt: result.startsAt, endsAt: result.endsAt }).catch(() => {})
         await enqueueNotification({ type: NotificationType.BALLOT_WON, userId: loser.userId, ballotEntryId: loser.id })
         redrawn = true
@@ -339,7 +357,14 @@ export async function ensureNextBallotRun(ballotId: string): Promise<void> {
   await prisma.ballotRun.create({
     data: {
       ballotId,
-      registrationOpensAt: now,
+      // The computed value, not `now` — when registrationWindowHours is
+      // longer than the gap between recurrence cycles (e.g. a 10-day
+      // window on a weekly ballot), this cron (hourly) may not notice the
+      // cycle is due until sometime after the window was actually meant to
+      // open. Recording the intended open time here keeps the run's stated
+      // window honest even though the hourly cron granularity means
+      // entrants might see it announced a bit later than that.
+      registrationOpensAt,
       registrationClosesAt: nextDrawDate,
       slotStartsAt,
       slotEndsAt,
