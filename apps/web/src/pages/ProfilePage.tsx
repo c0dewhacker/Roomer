@@ -75,6 +75,38 @@ const NOTIFICATION_GROUPS: Array<{ label: string; types: Array<{ key: string; la
       { key: 'ASSET_ASSIGNED', label: 'Asset assigned to you' },
     ],
   },
+  // Transfers/swaps/manager-requests were added to NotificationType well
+  // after this list was first written and never got their own groups —
+  // the backend (queue.ts's processSendNotification) has always respected
+  // a per-user preference for all 24 types uniformly, but 12 of them had no
+  // toggle anywhere in the product, so they were silently non-optional.
+  {
+    label: 'Booking transfers',
+    types: [
+      { key: 'BOOKING_TRANSFER_REQUESTED', label: 'Someone wants to transfer you a booking' },
+      { key: 'BOOKING_TRANSFER_ACCEPTED', label: 'Your transfer was accepted' },
+      { key: 'BOOKING_TRANSFER_DECLINED', label: 'Your transfer was declined' },
+      { key: 'BOOKING_TRANSFER_EXPIRED', label: 'Your transfer request expired' },
+    ],
+  },
+  {
+    label: 'Desk swaps',
+    types: [
+      { key: 'BOOKING_SWAP_REQUESTED', label: 'Someone wants to swap desks with you' },
+      { key: 'BOOKING_SWAP_ACCEPTED', label: 'Your swap was accepted' },
+      { key: 'BOOKING_SWAP_DECLINED', label: 'Your swap was declined' },
+      { key: 'BOOKING_SWAP_EXPIRED', label: 'Your swap request expired' },
+    ],
+  },
+  {
+    label: 'Manager requests',
+    types: [
+      { key: 'MANAGER_REQUEST_SUBMITTED', label: 'Someone requested floor manager access' },
+      { key: 'MANAGER_REQUEST_APPROVED', label: 'Your access request was approved' },
+      { key: 'MANAGER_REQUEST_REJECTED', label: 'Your access request was declined' },
+      { key: 'MANAGER_REQUEST_EXPIRED', label: 'Your access request expired' },
+    ],
+  },
   {
     label: 'Other',
     types: [
