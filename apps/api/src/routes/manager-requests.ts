@@ -13,6 +13,15 @@ import { z } from 'zod'
 // be added later if anyone actually needs to tune it.
 export const MANAGER_REQUEST_EXPIRY_DAYS = 14
 
+// Serialises the check-then-insert below per (userId, floorId) so two
+// near-simultaneous submits (a double-click, a retried request) can't both
+// pass the "no existing PENDING request" check before either commits —
+// FloorManagerRequest has no unique constraint to catch this at the DB
+// level. Distinct integer from every other pg_advisory_xact_lock class in
+// this codebase (4242-4246 are taken — see lib/booking.ts, lib/queue.ts,
+// lib/group-mapping.ts).
+const MANAGER_REQUEST_LOCK_CLASS = 4247
+
 const createRequestSchema = z.object({
   floorId: z.string().min(1),
   note: z.string().max(1000).optional(),
@@ -51,17 +60,27 @@ export async function managerRequestRoutes(fastify: FastifyInstance): Promise<vo
       return reply.status(409).send({ error: { message: 'You are already a floor manager for this floor', code: 'ALREADY_MANAGER' } })
     }
 
-    const existing = await prisma.floorManagerRequest.findFirst({
-      where: { userId: request.user.id, floorId, status: 'PENDING' },
+    const expiresAt = new Date(Date.now() + MANAGER_REQUEST_EXPIRY_DAYS * 24 * 3600 * 1000)
+    const created = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${MANAGER_REQUEST_LOCK_CLASS}, hashtext(${request.user.id} || ':' || ${floorId}))`
+
+      const existing = await tx.floorManagerRequest.findFirst({
+        where: { userId: request.user.id, floorId, status: 'PENDING' },
+      })
+      if (existing) {
+        throw Object.assign(new Error('ALREADY_PENDING'), { code: 'ALREADY_PENDING' })
+      }
+
+      return tx.floorManagerRequest.create({
+        data: { userId: request.user.id, floorId, note: note ?? null, expiresAt },
+      })
+    }).catch((err) => {
+      if ((err as { code?: string }).code === 'ALREADY_PENDING') return null
+      throw err
     })
-    if (existing) {
+    if (!created) {
       return reply.status(409).send({ error: { message: 'You already have a pending request for this floor', code: 'ALREADY_PENDING' } })
     }
-
-    const expiresAt = new Date(Date.now() + MANAGER_REQUEST_EXPIRY_DAYS * 24 * 3600 * 1000)
-    const created = await prisma.floorManagerRequest.create({
-      data: { userId: request.user.id, floorId, note: note ?? null, expiresAt },
-    })
 
     const approverIds = new Set<string>(await getBuildingAdminUserIds(floor.building.id))
     const superAdmins = await prisma.user.findMany({

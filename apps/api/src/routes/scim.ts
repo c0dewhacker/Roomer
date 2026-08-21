@@ -283,6 +283,23 @@ function registerUsers(fastify: FastifyInstance): void {
       return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
         .send(scimError(400, 'userName must be a valid email address'))
     }
+    if (email) {
+      // email's DB unique constraint is case-sensitive, but every lookup that
+      // matters (login, SSO, this same SCIM upsert path) matches
+      // case-insensitively — a same-case collision would otherwise surface as
+      // a raw P2002 that the generic catch below mislabels as 404 "not
+      // found", and a different-case collision (e.g. "Bob@x.com" vs
+      // "bob@x.com") would pass the DB constraint entirely, leaving two
+      // accounts those case-insensitive lookups can no longer tell apart.
+      const collision = await prisma.user.findFirst({
+        where: { email: { equals: email, mode: 'insensitive' }, id: { not: id } },
+        select: { id: true },
+      })
+      if (collision) {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, `userName ${email} is already in use`))
+      }
+    }
 
     let departmentId: string | null | undefined
     if (incomingDeptName) {
@@ -364,6 +381,18 @@ function registerUsers(fastify: FastifyInstance): void {
     if (userPatch.email && !isValidScimEmail(userPatch.email)) {
       return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
         .send(scimError(400, 'userName must be a valid email address'))
+    }
+    if (userPatch.email) {
+      // Same case-insensitive collision check PUT above applies, for the same
+      // reason — the DB constraint alone won't catch a different-case collision.
+      const collision = await prisma.user.findFirst({
+        where: { email: { equals: userPatch.email, mode: 'insensitive' }, id: { not: id } },
+        select: { id: true },
+      })
+      if (collision) {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, `userName ${userPatch.email} is already in use`))
+      }
     }
 
     let departmentId: string | undefined

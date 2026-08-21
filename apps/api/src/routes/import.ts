@@ -17,6 +17,18 @@ function paletteColour(index: number): string {
   return ZONE_COLOUR_PALETTE[index % ZONE_COLOUR_PALETTE.length]
 }
 
+// Building/Floor/Zone have no unique constraint on name (unlike AssetCategory,
+// see the comment above categoryCache below), so two concurrent /bulk imports
+// (e.g. a double-submitted request, or two admins importing overlapping data)
+// could each pass their own find-then-create check for the same
+// building/floor/zone name before either commits, silently creating
+// duplicate rows instead of erroring. A bulk import is a rare, deliberate
+// admin action — fully serialising concurrent imports for the same org via
+// one advisory lock is simpler and just as effective as fine-grained
+// per-entity locking. Distinct integer from every other pg_advisory_xact_lock
+// class in this codebase (4242-4247 are taken).
+const BULK_IMPORT_LOCK_CLASS = 4248
+
 // ─── Validation ───────────────────────────────────────────────────────────────
 
 const rowSchema = z.object({
@@ -193,6 +205,8 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${BULK_IMPORT_LOCK_CLASS}, hashtext(${org.id}))`
+
         for (const { row } of validRows) {
           // ── Building ───────────────────────────────────────────────────────
           const buildingKey = row.building_name.trim()

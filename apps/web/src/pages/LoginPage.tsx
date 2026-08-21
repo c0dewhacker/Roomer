@@ -23,12 +23,17 @@ type LoginFormData = z.infer<typeof loginSchema>
 const SSO_ERROR_MESSAGES: Record<string, string> = {
   oidc_not_configured: 'OIDC SSO is not configured',
   oidc_no_email: 'SSO provider did not return an email address',
+  oidc_email_unverified: 'Your identity provider reported this email as unverified — ask your admin to verify it',
   oidc_callback_failed: 'SSO sign-in failed — please try again',
+  oidc_local_password_conflict: 'This email already has a password-based account — sign in with your password, or ask an admin to enable SSO for it',
+  oidc_identity_mismatch: 'This email is linked to a different identity — contact your admin',
   saml_not_configured: 'SAML SSO is not configured',
   saml_no_profile: 'SAML provider returned no profile',
   saml_no_email: 'SAML provider did not return an email address',
   saml_callback_failed: 'SAML sign-in failed — please try again',
   saml_authorize_failed: 'Could not initiate SAML sign-in',
+  saml_local_password_conflict: 'This email already has a password-based account — sign in with your password, or ask an admin to enable SSO for it',
+  saml_identity_mismatch: 'This email is linked to a different identity — contact your admin',
   account_blocked: 'Your account has been suspended',
 }
 
