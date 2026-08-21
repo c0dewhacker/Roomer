@@ -87,26 +87,26 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
     }
 
-    // Check duplicate
-    const existing = await prisma.queueEntry.findFirst({
-      where: {
-        userId: request.user.id,
-        assetId,
-        status: { in: ['WAITING', 'PROMOTED'] },
-        wantedStartsAt: { lt: wantedEndsAt },
-        wantedEndsAt: { gt: wantedStartsAt },
-      },
-    })
-
-    if (existing) {
-      return reply.status(409).send({
-        error: { message: 'You already have a queue entry for this asset and period', code: 'ALREADY_QUEUED' },
-      })
-    }
-
-    // Count + create in one transaction with advisory lock to prevent position race
+    // Count + create in one transaction with advisory lock to prevent position race.
+    // The duplicate check must run INSIDE this same lock, not before it — two
+    // near-simultaneous joins for the same user/asset/period would otherwise
+    // both read "no existing entry" before either commits, letting a user hold
+    // multiple queue positions for the same slot (queue-stuffing).
     const entry = await prisma.$transaction(async (tx) => {
       await lockAssetForQueue(tx, assetId)
+
+      const existing = await tx.queueEntry.findFirst({
+        where: {
+          userId: request.user.id,
+          assetId,
+          status: { in: ['WAITING', 'PROMOTED'] },
+          wantedStartsAt: { lt: wantedEndsAt },
+          wantedEndsAt: { gt: wantedStartsAt },
+        },
+      })
+      if (existing) {
+        throw Object.assign(new Error('ALREADY_QUEUED'), { code: 'ALREADY_QUEUED' })
+      }
 
       const position = await tx.queueEntry.count({
         where: {
@@ -138,7 +138,16 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
           },
         },
       })
+    }).catch((err) => {
+      if ((err as { code?: string }).code === 'ALREADY_QUEUED') return null
+      throw err
     })
+
+    if (!entry) {
+      return reply.status(409).send({
+        error: { message: 'You already have a queue entry for this asset and period', code: 'ALREADY_QUEUED' },
+      })
+    }
 
     await enqueueNotification({
       type: NotificationType.QUEUE_JOINED,
@@ -170,24 +179,33 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    await prisma.queueEntry.update({
-      where: { id },
-      data: { status: 'CANCELLED' },
+    // Cancel + position compaction under the same advisory lock every other
+    // queue-position mutation in this codebase takes (see lockAssetForQueue's
+    // uses in POST / above and promoteNextQueueEntry) — without it, this could
+    // interleave with a concurrent join's position count() or a concurrent
+    // promotion and leave duplicate/skewed position numbers for the asset.
+    await prisma.$transaction(async (tx) => {
+      await lockAssetForQueue(tx, entry.assetId)
+
+      await tx.queueEntry.update({
+        where: { id },
+        data: { status: 'CANCELLED' },
+      })
+
+      // Compact positions: decrement all WAITING entries for the same asset/period that were behind the cancelled one
+      await tx.queueEntry.updateMany({
+        where: {
+          assetId: entry.assetId,
+          status: 'WAITING',
+          position: { gt: entry.position },
+          wantedStartsAt: { lt: entry.wantedEndsAt },
+          wantedEndsAt: { gt: entry.wantedStartsAt },
+        },
+        data: { position: { decrement: 1 } },
+      })
     })
 
     dispatchWebhook('queue.cancelled', { id: entry.id, userId: entry.userId, assetId: entry.assetId }).catch(() => {})
-
-    // Compact positions: decrement all WAITING entries for the same asset/period that were behind the cancelled one
-    await prisma.queueEntry.updateMany({
-      where: {
-        assetId: entry.assetId,
-        status: 'WAITING',
-        position: { gt: entry.position },
-        wantedStartsAt: { lt: entry.wantedEndsAt },
-        wantedEndsAt: { gt: entry.wantedStartsAt },
-      },
-      data: { position: { decrement: 1 } },
-    })
 
     return reply.status(200).send({ data: { ok: true } })
   })
@@ -201,7 +219,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
 
     const entry = await prisma.queueEntry.findUnique({
       where: { claimToken: token },
-      include: { asset: true, user: { select: { id: true, globalRole: true } } },
+      include: { asset: true, user: { select: { id: true, globalRole: true, accountStatus: true } } },
     })
 
     if (!entry) {
@@ -210,6 +228,16 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
 
     if (entry.status !== 'PROMOTED') {
       return reply.status(409).send({ error: { message: 'This booking has already been claimed or expired', code: 'ALREADY_CLAIMED' } })
+    }
+
+    // This is the one write path in the app that creates a real booking with
+    // no requireAuth preHandler (it's an unauthenticated email-link claim), so
+    // requireAuth's accountStatus === 'BLOCKED' check never runs for it. A
+    // blocked user's queue entries are normally already cancelled by the same
+    // action that blocked them (see cancelQueueEntriesForUser), but that's a
+    // side effect of an unrelated code path, not a guarantee — check directly.
+    if (entry.user.accountStatus === 'BLOCKED') {
+      return reply.status(403).send({ error: { message: 'This account has been suspended', code: 'ACCOUNT_BLOCKED' } })
     }
 
     if (!entry.claimDeadline || entry.claimDeadline < new Date()) {
