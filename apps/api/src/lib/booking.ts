@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client'
 import type { User } from '@prisma/client'
 import { GlobalRole } from '@roomer/shared'
 import { checkGroupAccess } from '../routes/groups.js'
+import { resolveBuildingTimezone, resolveWorkingHours, isWithinWorkingHours } from './timezone.js'
 
 /**
  * Single advisory-lock class shared by EVERY code path that creates a CONFIRMED
@@ -328,6 +329,20 @@ export async function assertBookable(
     const allowed = await checkGroupAccess(user.id, asset.floor.buildingId, asset.floor.id)
     if (!allowed) {
       return deny(403, 'GROUP_ACCESS_DENIED', 'Your group does not have access to this building or floor')
+    }
+  }
+
+  // Working-hours enforcement is an org-wide on/off switch (see #72) — the
+  // window itself may be configured even while enforcement is off, so this
+  // only blocks anything once an admin has actually turned it on.
+  // SUPER_ADMIN is exempt, same as every other bookability gate above.
+  if (!isSuperAdmin && asset.floor) {
+    const hours = await resolveWorkingHours(client, asset.floor.buildingId)
+    if (hours.enforce) {
+      const timeZone = await resolveBuildingTimezone(client, asset.floor.buildingId)
+      if (!isWithinWorkingHours(startsAt, endsAt, timeZone, hours.start, hours.end)) {
+        return deny(400, 'OUTSIDE_WORKING_HOURS', `This booking falls outside the configured working hours (${hours.start}–${hours.end})`)
+      }
     }
   }
 

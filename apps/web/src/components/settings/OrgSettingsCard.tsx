@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { settingsApi } from '@/lib/api'
 import { DATE_FORMAT_OPTIONS } from '@/lib/dateFormat'
+import { IANA_TIMEZONES } from '@/lib/timezones'
 import {
   Select,
   SelectContent,
@@ -31,6 +32,10 @@ const orgSchema = z.object({
   weeklyReportEnabled: z.boolean(),
   requiresApproval: z.boolean(),
   approvalWindowHours: z.coerce.number().int().min(1).max(168),
+  defaultTimezone: z.string().min(1),
+  workingHoursStart: z.string().regex(/^\d{2}:\d{2}$/),
+  workingHoursEnd: z.string().regex(/^\d{2}:\d{2}$/),
+  enforceWorkingHours: z.boolean(),
 })
 type OrgForm = z.infer<typeof orgSchema>
 
@@ -51,6 +56,10 @@ export function OrgSettingsCard() {
       weeklyReportEnabled: false,
       requiresApproval: false,
       approvalWindowHours: 24,
+      defaultTimezone: 'UTC',
+      workingHoursStart: '07:00',
+      workingHoursEnd: '19:00',
+      enforceWorkingHours: false,
     },
   })
 
@@ -75,6 +84,10 @@ export function OrgSettingsCard() {
         weeklyReportEnabled: orgData.weeklyReportEnabled ?? false,
         requiresApproval: orgData.requiresApproval ?? false,
         approvalWindowHours: orgData.approvalWindowHours ?? 24,
+        defaultTimezone: orgData.defaultTimezone ?? 'UTC',
+        workingHoursStart: orgData.workingHoursStart ?? '07:00',
+        workingHoursEnd: orgData.workingHoursEnd ?? '19:00',
+        enforceWorkingHours: orgData.enforceWorkingHours ?? false,
       })
     }
   }, [orgData, reset])
@@ -83,7 +96,7 @@ export function OrgSettingsCard() {
     mutationFn: (data: OrgForm) => settingsApi.updateOrg(data),
     onSuccess: (res) => {
       toast.success('Settings saved')
-      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4, dateFormat: res.data.dateFormat ?? 'dd/MM/yyyy', noShowReleaseEnabled: res.data.noShowReleaseEnabled ?? false, checkInGraceMinutes: res.data.checkInGraceMinutes ?? 30, qrCheckInMode: res.data.qrCheckInMode ?? 'DISABLED', weeklyReportEnabled: res.data.weeklyReportEnabled ?? false, requiresApproval: res.data.requiresApproval ?? false, approvalWindowHours: res.data.approvalWindowHours ?? 24 })
+      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4, dateFormat: res.data.dateFormat ?? 'dd/MM/yyyy', noShowReleaseEnabled: res.data.noShowReleaseEnabled ?? false, checkInGraceMinutes: res.data.checkInGraceMinutes ?? 30, qrCheckInMode: res.data.qrCheckInMode ?? 'DISABLED', weeklyReportEnabled: res.data.weeklyReportEnabled ?? false, requiresApproval: res.data.requiresApproval ?? false, approvalWindowHours: res.data.approvalWindowHours ?? 24, defaultTimezone: res.data.defaultTimezone ?? 'UTC', workingHoursStart: res.data.workingHoursStart ?? '07:00', workingHoursEnd: res.data.workingHoursEnd ?? '19:00', enforceWorkingHours: res.data.enforceWorkingHours ?? false })
       qc.invalidateQueries({ queryKey: ['settings', 'organisation'] })
       qc.invalidateQueries({ queryKey: ['settings', 'public'] })
     },
@@ -201,6 +214,46 @@ export function OrgSettingsCard() {
               <span className="text-sm font-medium">Weekly utilisation email</span>
               <span className="block text-xs text-muted-foreground">
                 Send a weekly desk-utilisation summary to every active Super Admin, every Monday.
+              </span>
+            </span>
+          </label>
+        </div>
+        <div className="rounded-md border p-3 space-y-3">
+          <div>
+            <Label htmlFor="defaultTimezone" className="text-sm font-medium">Default timezone</Label>
+            <p className="text-xs text-muted-foreground mb-2">
+              Used to render and validate booking times for any building without its own timezone override. Bookings are always stored in UTC — changing this only affects display and working-hours validation, never reinterprets existing bookings.
+            </p>
+            <Select value={watch('defaultTimezone')} onValueChange={(v) => setValue('defaultTimezone', v, { shouldDirty: true })}>
+              <SelectTrigger id="defaultTimezone" className="w-72"><SelectValue /></SelectTrigger>
+              <SelectContent className="max-h-72">
+                {IANA_TIMEZONES.map((tz) => (
+                  <SelectItem key={tz} value={tz}>{tz}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-4 max-w-sm">
+            <div>
+              <Label htmlFor="workingHoursStart" className="text-xs">Working hours start</Label>
+              <Input id="workingHoursStart" type="time" {...register('workingHoursStart')} className="mt-1.5" />
+            </div>
+            <div>
+              <Label htmlFor="workingHoursEnd" className="text-xs">Working hours end</Label>
+              <Input id="workingHoursEnd" type="time" {...register('workingHoursEnd')} className="mt-1.5" />
+            </div>
+          </div>
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4"
+              checked={watch('enforceWorkingHours')}
+              onChange={(e) => setValue('enforceWorkingHours', e.target.checked, { shouldDirty: true })}
+            />
+            <span>
+              <span className="text-sm font-medium">Enforce working hours</span>
+              <span className="block text-xs text-muted-foreground">
+                Block bookings outside the hours above. Off by default — the hours can be configured ahead of turning this on. Buildings can override the hours themselves, but this on/off switch is org-wide.
               </span>
             </span>
           </label>

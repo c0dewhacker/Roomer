@@ -112,7 +112,7 @@ export const buildingsApi = {
   get: (id: string) => api.get<{ data: Building & { floors: Floor[] } }>(`/buildings/${id}`),
   create: (body: { name: string; address?: string }) =>
     api.post<{ data: Building }>('/buildings', body),
-  update: (id: string, body: Partial<{ name: string; address: string; noShowReleaseEnabled: boolean | null; qrCheckInMode: QrCheckInMode | null; requiresApproval: boolean | null }>) =>
+  update: (id: string, body: Partial<{ name: string; address: string; noShowReleaseEnabled: boolean | null; qrCheckInMode: QrCheckInMode | null; requiresApproval: boolean | null; timezone: string | null; workingHoursStart: string | null; workingHoursEnd: string | null }>) =>
     api.put<{ data: Building }>(`/buildings/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/buildings/${id}`),
   getAccessGroups: (id: string) =>
@@ -589,6 +589,10 @@ type OrgSettings = {
   weeklyReportEnabled?: boolean
   requiresApproval?: boolean
   approvalWindowHours?: number
+  defaultTimezone?: string
+  workingHoursStart?: string
+  workingHoursEnd?: string
+  enforceWorkingHours?: boolean
 }
 
 export interface BrandingBanner {

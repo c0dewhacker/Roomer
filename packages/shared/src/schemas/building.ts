@@ -15,6 +15,12 @@ export const updateBuildingSchema = z.object({
   qrCheckInMode: z.nativeEnum(QrCheckInMode).nullable().optional(),
   // Per-building booking-approval override. null = inherit the org default.
   requiresApproval: z.boolean().nullable().optional(),
+  // Per-building timezone/working-hours overrides. null = inherit the org
+  // default (see #72). enforceWorkingHours itself is an org-only switch,
+  // not overridable per building.
+  timezone: z.string().refine((v) => Intl.supportedValuesOf('timeZone').includes(v), 'Not a recognised IANA timezone').nullable().optional(),
+  workingHoursStart: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
+  workingHoursEnd: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
 })
 
 export type CreateBuildingInput = z.infer<typeof createBuildingSchema>

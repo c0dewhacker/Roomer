@@ -7,6 +7,7 @@ import { Layers, Plus, ChevronRight, Pencil, Trash2, Shield, Users, UserMinus, U
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { buildingsApi, floorsApi, groupsApi, usersApi, assetsApi, ApiError } from '@/lib/api'
 import { NoShowOverrideControl, ApprovalOverrideControl } from '@/components/admin/NoShowOverrideControl'
+import { TimezoneOverrideControl } from '@/components/admin/TimezoneOverrideControl'
 import { QrCheckInModeControl } from '@/components/admin/QrCheckInModeControl'
 import AssignmentImportDialog from '@/components/admin/AssignmentImportDialog'
 import { toast } from 'sonner'
@@ -802,6 +803,19 @@ export default function BuildingDetailAdminPage() {
     onError: (err: Error) => toast.error(err.message),
   })
 
+  const saveTimezone = useMutation({
+    mutationFn: (v: string | null) => buildingsApi.update(buildingId!, { timezone: v }),
+    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['buildings', buildingId] }) },
+    onError: (err: Error) => toast.error(err.message),
+  })
+
+  const saveWorkingHours = useMutation({
+    mutationFn: (v: { start: string; end: string } | null) =>
+      buildingsApi.update(buildingId!, { workingHoursStart: v?.start ?? null, workingHoursEnd: v?.end ?? null }),
+    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['buildings', buildingId] }) },
+    onError: (err: Error) => toast.error(err.message),
+  })
+
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <div className="flex items-center gap-2 text-sm text-muted-foreground mb-4">
@@ -838,6 +852,14 @@ export default function BuildingDetailAdminPage() {
         <NoShowOverrideControl scope="building" value={building?.noShowReleaseEnabled} onChange={(v) => saveNoShow.mutate(v)} disabled={saveNoShow.isPending} />
         <QrCheckInModeControl scope="building" value={building?.qrCheckInMode} onChange={(v) => saveQrMode.mutate(v)} disabled={saveQrMode.isPending} />
         <ApprovalOverrideControl scope="building" value={building?.requiresApproval} onChange={(v) => saveRequiresApproval.mutate(v)} disabled={saveRequiresApproval.isPending} />
+        <TimezoneOverrideControl
+          timezone={building?.timezone}
+          workingHoursStart={building?.workingHoursStart}
+          workingHoursEnd={building?.workingHoursEnd}
+          onChangeTimezone={(v) => saveTimezone.mutate(v)}
+          onChangeWorkingHours={(v) => saveWorkingHours.mutate(v)}
+          disabled={saveTimezone.isPending || saveWorkingHours.isPending}
+        />
       </div>
 
       <BuildingManagersPanel buildingId={buildingId!} buildingName={building?.name} />

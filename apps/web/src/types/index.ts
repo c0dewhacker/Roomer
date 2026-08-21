@@ -67,6 +67,10 @@ export interface Building {
   qrCheckInMode?: QrCheckInMode | null
   /** null = inherit org default; true/false = explicit override */
   requiresApproval?: boolean | null
+  /** null = inherit org default (see #72) */
+  timezone?: string | null
+  workingHoursStart?: string | null
+  workingHoursEnd?: string | null
 }
 
 export interface Floor {

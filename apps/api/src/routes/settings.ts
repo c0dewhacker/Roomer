@@ -104,6 +104,13 @@ const updateOrgSchema = z.object({
   // noShowReleaseEnabled/qrCheckInMode which stop at floor.
   requiresApproval: z.boolean().optional(),
   approvalWindowHours: z.number().int().min(1).max(168).optional(),
+  // Org-wide fallback timezone + working hours (buildings can override —
+  // see #72). enforceWorkingHours is a single org-wide on/off switch: the
+  // hours themselves can be configured ahead of actually enforcing them.
+  defaultTimezone: z.string().refine((v) => Intl.supportedValuesOf('timeZone').includes(v), 'Not a recognised IANA timezone').optional(),
+  workingHoursStart: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  workingHoursEnd: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  enforceWorkingHours: z.boolean().optional(),
 })
 
 // The "Direct role" grant option in GroupMappingsEditor sends
@@ -258,6 +265,10 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
     weeklyReportEnabled: true,
     requiresApproval: true,
     approvalWindowHours: true,
+    defaultTimezone: true,
+    workingHoursStart: true,
+    workingHoursEnd: true,
+    enforceWorkingHours: true,
     createdAt: true,
     updatedAt: true,
   } satisfies Prisma.OrganisationSelect

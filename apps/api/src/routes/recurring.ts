@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { enqueueNotification, promoteNextQueueEntry, fanOutFloorAvailable } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { assertBookable, isWithinAdvanceBookingWindow, lockAssetForBooking, lockUserForBookingQuota, checkZoneGroupOverlap, isOverlapConstraintViolation, resolveRequiresApproval } from '../lib/booking.js'
+import { resolveBuildingTimezone, zonedWallClockToUtc } from '../lib/timezone.js'
 import { getBuildingAdminUserIds, getFloorManagerUserIds } from '../middleware/requireRole.js'
 
 const createRecurringSchema = z.object({
@@ -27,11 +28,20 @@ function parseTimeToMinutes(time: string): number {
   return h * 60 + m
 }
 
-function buildSlotDatetime(dateUtcMidnight: Date, timeHHMM: string): Date {
+/**
+ * Combines a calendar date with a wall-clock HH:MM time, interpreted as
+ * local time in `timeZone` (the asset's building — see #72), into the
+ * correct UTC instant. DST-aware: "9am every Monday" stays 9am local
+ * through a DST transition (the UTC instant shifts), matching how a real
+ * recurring meeting behaves — not a fixed UTC offset baked in once.
+ *
+ * `dateUtcMidnight` only ever carries calendar-date information (see
+ * getOccurrenceDates) — its UTC getters are used purely to read back
+ * year/month/day, never as a real instant.
+ */
+function buildSlotDatetime(dateUtcMidnight: Date, timeHHMM: string, timeZone: string): Date {
   const [h, m] = timeHHMM.split(':').map(Number)
-  const dt = new Date(dateUtcMidnight)
-  dt.setUTCHours(h, m, 0, 0)
-  return dt
+  return zonedWallClockToUtc(dateUtcMidnight.getUTCFullYear(), dateUtcMidnight.getUTCMonth() + 1, dateUtcMidnight.getUTCDate(), h, m, timeZone)
 }
 
 function getOccurrenceDates(
@@ -129,9 +139,15 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       return reply.status(400).send({ error: { message: 'No occurrences found for the given day and date range', code: 'NO_OCCURRENCES' } })
     }
 
+    // startTime/endTime are wall-clock in the asset's building's timezone
+    // (see #72), not UTC — resolved once per series, not per occurrence,
+    // since a series is scoped to a single asset/building throughout.
+    const assetForTz = await prisma.asset.findUnique({ where: { id: assetId }, select: { floor: { select: { buildingId: true } } } })
+    const timeZone = await resolveBuildingTimezone(prisma, assetForTz?.floor?.buildingId)
+
     const slots = occurrenceDates.map((d) => ({
-      startsAt: buildSlotDatetime(d, startTime),
-      endsAt: buildSlotDatetime(d, endTime),
+      startsAt: buildSlotDatetime(d, startTime, timeZone),
+      endsAt: buildSlotDatetime(d, endTime, timeZone),
     }))
 
     // Centralised bookability gate (bookable / disabled / restricted / assigned / group access),
@@ -448,9 +464,11 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
           if (newDates.length === 0) {
             throw Object.assign(new Error('NO_OCCURRENCES'), { code: 'NO_OCCURRENCES' })
           }
+          const extendAsset = await tx.asset.findUnique({ where: { id: freshRule.assetId }, select: { floor: { select: { buildingId: true } } } })
+          const extendTimeZone = await resolveBuildingTimezone(tx, extendAsset?.floor?.buildingId)
           const slots = newDates.map((d) => ({
-            startsAt: buildSlotDatetime(d, freshRule.startTime),
-            endsAt: buildSlotDatetime(d, freshRule.endTime),
+            startsAt: buildSlotDatetime(d, freshRule.startTime, extendTimeZone),
+            endsAt: buildSlotDatetime(d, freshRule.endTime, extendTimeZone),
           }))
 
           // Same centralised gate as creation, checked per-occurrence for the

@@ -203,6 +203,23 @@ model Organisation {
   /// Opt-in (default off) — shipping this on by default would start emailing
   /// every existing org's admins with no action on their part.
   weeklyReportEnabled         Boolean      @default(false)
+  /// Org-wide fallback IANA timezone (e.g. "Australia/Sydney"), used to render
+  /// and validate booking times for any building without its own override
+  /// (Building.timezone — see #72). Bookings themselves are always stored in
+  /// UTC; this only affects display and working-hours validation, never
+  /// reinterprets already-stored data.
+  defaultTimezone             String       @default("UTC")
+  /// Org-wide default working-hours window (HH:MM, local to whichever
+  /// timezone applies) — overridable per building (Building.workingHours*).
+  /// Purely informational unless enforceWorkingHours is also on.
+  workingHoursStart           String       @default("07:00")
+  workingHoursEnd             String       @default("19:00")
+  /// Single org-wide on/off switch for whether the working-hours window
+  /// above actually blocks out-of-hours bookings, or is just configured
+  /// for display/future use. Lets an admin set up hours ahead of actually
+  /// enforcing them. Default off — enabling this changes booking behaviour
+  /// org-wide with no per-building opt-out.
+  enforceWorkingHours          Boolean      @default(false)
   createdAt                   DateTime     @default(now())
   updatedAt                   DateTime     @updatedAt
   buildings                   Building[]
@@ -222,6 +239,15 @@ model Building {
   /// Per-building override for whether a booking needs approval. null = inherit
   /// the org default; a zone's own override (Zone.requiresApproval) wins over this.
   requiresApproval     Boolean?
+  /// Per-building IANA timezone override (e.g. "Europe/London"). null = inherit
+  /// Organisation.defaultTimezone (see #72). Determines how this building's
+  /// booking times display and how recurring-series slots/working hours are
+  /// computed — never reinterprets already-stored UTC data.
+  timezone             String?
+  /// Per-building working-hours override (HH:MM, local to this building's
+  /// timezone). null = inherit the org default.
+  workingHoursStart    String?
+  workingHoursEnd      String?
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   organisation         Organisation          @relation(fields: [organisationId], references: [id], onDelete: Cascade)
