@@ -785,6 +785,16 @@ export type DepartmentAnalyticsPoint = {
   departmentId: string; departmentName: string
   bookingCount: number; deskDays: number; memberCount: number
 }
+export type CapacityPlanningPoint = {
+  buildingId: string; buildingName: string
+  currentDeskCount: number; peakDailyAttendance: number; averageDailyAttendance: number
+  recommendedDeskCount: number; spareCapacity: number
+}
+export type UtilisationTrendPoint = { month: string; bookingCount: number; utilisationPct: number }
+export type CostPerSeatPoint = {
+  buildingId: string; buildingName: string
+  monthlyRent: number; currency: string; deskCount: number; costPerSeatPerDay: number
+}
 
 export const analyticsApi = {
   summary: (params?: AnalyticsParams) =>
@@ -808,6 +818,12 @@ export const analyticsApi = {
     const sep = qs ? '&' : '?'
     return api.get<{ data: ManagerRollup }>(`/analytics/manager-rollup${qs}${sep}userId=${encodeURIComponent(userId)}`)
   },
+  capacityPlanning: (params?: AnalyticsParams) =>
+    api.get<{ data: CapacityPlanningPoint[] }>(`/analytics/capacity-planning${analyticsQs(params)}`),
+  utilisationTrend: (params?: AnalyticsParams) =>
+    api.get<{ data: UtilisationTrendPoint[] }>(`/analytics/utilisation-trend${analyticsQs(params)}`),
+  costPerSeat: (params?: AnalyticsParams) =>
+    api.get<{ data: CostPerSeatPoint[] }>(`/analytics/cost-per-seat${analyticsQs(params)}`),
 }
 
 export type ManagerRollupBranch = { rootId: string; rootName: string; peopleCount: number; bookingCount: number; deskDays: number }

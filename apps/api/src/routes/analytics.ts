@@ -856,4 +856,272 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       })
     },
   )
+
+  // GET /capacity-planning — peak vs average daily attendance against
+  // current desk capacity, per building (SUPER_ADMIN or building admin).
+  // "Recommended desk count" is deliberately the observed peak-day count,
+  // not the peak plus an arbitrary buffer — an invented buffer percentage
+  // would be a made-up number this endpoint has no basis to pick; showing
+  // the actual peak day lets an admin apply their own judgement/margin.
+  fastify.get(
+    '/capacity-planning',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      const result = analyticsQuerySchema.safeParse(request.query)
+      if (!result.success) return reply.status(400).send({ error: { message: 'Invalid query', code: 'VALIDATION_ERROR' } })
+
+      const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      let managedBuildingIds: string[] = []
+      if (!isSuperAdmin) {
+        managedBuildingIds = await getManagedBuildingIds(request.user.id)
+        if (managedBuildingIds.length === 0) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        if (result.data.buildingId && !managedBuildingIds.includes(result.data.buildingId)) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+
+      const defaults = defaultDateRange()
+      const startDate = parseDateParam(result.data.startDate, 'T00:00:00.000Z', defaults.startDate)
+      const endDate = parseDateParam(result.data.endDate, 'T23:59:59.999Z', defaults.endDate)
+
+      const buildingIdFilter = result.data.buildingId
+        ? [result.data.buildingId]
+        : !isSuperAdmin ? managedBuildingIds : null
+
+      type DailyRow = { buildingId: string; buildingName: string; day: string; count: bigint }
+      const dailyRows = buildingIdFilter
+        ? await prisma.$queryRaw<DailyRow[]>`
+            SELECT f."buildingId" AS "buildingId", bld.name AS "buildingName", DATE(b."startsAt") AS day, COUNT(*)::bigint AS count
+            FROM "Booking" b
+            JOIN "Asset" a ON a.id = b."assetId"
+            JOIN "Floor" f ON f.id = a."floorId"
+            JOIN "Building" bld ON bld.id = f."buildingId"
+            WHERE b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate}
+              AND b.status = 'CONFIRMED' AND f."buildingId" = ANY(${buildingIdFilter})
+            GROUP BY f."buildingId", bld.name, DATE(b."startsAt")
+          `
+        : await prisma.$queryRaw<DailyRow[]>`
+            SELECT f."buildingId" AS "buildingId", bld.name AS "buildingName", DATE(b."startsAt") AS day, COUNT(*)::bigint AS count
+            FROM "Booking" b
+            JOIN "Asset" a ON a.id = b."assetId"
+            JOIN "Floor" f ON f.id = a."floorId"
+            JOIN "Building" bld ON bld.id = f."buildingId"
+            WHERE b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate} AND b.status = 'CONFIRMED'
+            GROUP BY f."buildingId", bld.name, DATE(b."startsAt")
+          `
+
+      const byBuilding = new Map<string, { buildingName: string; days: number[] }>()
+      for (const row of dailyRows) {
+        const entry = byBuilding.get(row.buildingId) ?? { buildingName: row.buildingName, days: [] }
+        entry.days.push(Number(row.count))
+        byBuilding.set(row.buildingId, entry)
+      }
+
+      const deskCounts = await prisma.asset.groupBy({
+        by: ['floorId'],
+        where: {
+          isBookable: true,
+          bookingStatus: { in: ['OPEN', 'RESTRICTED', 'ASSIGNED'] },
+          floor: buildingIdFilter ? { buildingId: { in: buildingIdFilter } } : undefined,
+        },
+        _count: { id: true },
+      })
+      const floorsToBuildings = await prisma.floor.findMany({
+        where: { id: { in: deskCounts.map((d) => d.floorId).filter((id): id is string => id !== null) } },
+        select: { id: true, buildingId: true },
+      })
+      const floorToBuilding = new Map(floorsToBuildings.map((f) => [f.id, f.buildingId]))
+      const deskCountByBuilding = new Map<string, number>()
+      for (const d of deskCounts) {
+        if (!d.floorId) continue
+        const buildingId = floorToBuilding.get(d.floorId)
+        if (!buildingId) continue
+        deskCountByBuilding.set(buildingId, (deskCountByBuilding.get(buildingId) ?? 0) + d._count.id)
+      }
+
+      const data = [...byBuilding.entries()].map(([buildingId, { buildingName, days }]) => {
+        const peak = days.length > 0 ? Math.max(...days) : 0
+        const average = days.length > 0 ? Math.round((days.reduce((s, d) => s + d, 0) / days.length) * 10) / 10 : 0
+        const currentDeskCount = deskCountByBuilding.get(buildingId) ?? 0
+        return {
+          buildingId,
+          buildingName,
+          currentDeskCount,
+          peakDailyAttendance: peak,
+          averageDailyAttendance: average,
+          recommendedDeskCount: peak,
+          spareCapacity: Math.max(0, currentDeskCount - peak),
+        }
+      })
+
+      if (wantsCsv(request)) {
+        return sendCsv(reply, 'capacity-planning.csv',
+          ['Building', 'Current Desks', 'Peak Daily Attendance', 'Average Daily Attendance', 'Recommended Desks', 'Spare Capacity'],
+          data.map((d) => [d.buildingName, d.currentDeskCount, d.peakDailyAttendance, d.averageDailyAttendance, d.recommendedDeskCount, d.spareCapacity]),
+        )
+      }
+      return reply.status(200).send({ data })
+    },
+  )
+
+  // GET /utilisation-trend — month-over-month overall utilisation
+  // (SUPER_ADMIN or building admin). Defaults to the last 6 months, unlike
+  // every other endpoint's 30-day default — a single month of history
+  // doesn't show a trend.
+  fastify.get(
+    '/utilisation-trend',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      const result = analyticsQuerySchema.safeParse(request.query)
+      if (!result.success) return reply.status(400).send({ error: { message: 'Invalid query', code: 'VALIDATION_ERROR' } })
+
+      const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      let managedBuildingIds: string[] = []
+      if (!isSuperAdmin) {
+        managedBuildingIds = await getManagedBuildingIds(request.user.id)
+        if (managedBuildingIds.length === 0) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        if (result.data.buildingId && !managedBuildingIds.includes(result.data.buildingId)) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+
+      const endDate = result.data.endDate ? new Date(result.data.endDate + 'T23:59:59.999Z') : new Date()
+      const startDate = result.data.startDate
+        ? new Date(result.data.startDate + 'T00:00:00.000Z')
+        : new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() - 5, 1))
+
+      const buildingIdFilter = result.data.buildingId
+        ? [result.data.buildingId]
+        : !isSuperAdmin ? managedBuildingIds : null
+
+      type MonthRow = { month: Date; count: bigint }
+      const monthRows = buildingIdFilter
+        ? await prisma.$queryRaw<MonthRow[]>`
+            SELECT DATE_TRUNC('month', b."startsAt") AS month, COUNT(*)::bigint AS count
+            FROM "Booking" b
+            JOIN "Asset" a ON a.id = b."assetId"
+            JOIN "Floor" f ON f.id = a."floorId"
+            WHERE b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate}
+              AND b.status = 'CONFIRMED' AND f."buildingId" = ANY(${buildingIdFilter})
+            GROUP BY DATE_TRUNC('month', b."startsAt")
+            ORDER BY month ASC
+          `
+        : await prisma.$queryRaw<MonthRow[]>`
+            SELECT DATE_TRUNC('month', "startsAt") AS month, COUNT(*)::bigint AS count
+            FROM "Booking"
+            WHERE "startsAt" >= ${startDate} AND "startsAt" <= ${endDate} AND status = 'CONFIRMED'
+            GROUP BY DATE_TRUNC('month', "startsAt")
+            ORDER BY month ASC
+          `
+
+      const assetBuildingFilter = buildingIdFilter ? { floor: { buildingId: { in: buildingIdFilter } } } : {}
+      const [bookableDesks, assignedDesks] = await Promise.all([
+        prisma.asset.count({ where: { isBookable: true, bookingStatus: { in: ['OPEN', 'RESTRICTED'] }, ...assetBuildingFilter } }),
+        prisma.asset.count({ where: { isBookable: true, bookingStatus: 'ASSIGNED', ...assetBuildingFilter } }),
+      ])
+      const activeDesks = bookableDesks + assignedDesks
+
+      const data = monthRows.map((row) => {
+        const monthStart = new Date(row.month)
+        const monthEnd = new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 0, 23, 59, 59, 999))
+        const workingDays = countWorkingDays(monthStart, monthEnd)
+        const capacity = activeDesks * workingDays
+        const bookingCount = Number(row.count)
+        return {
+          month: monthStart.toISOString().slice(0, 7),
+          bookingCount,
+          utilisationPct: capacity > 0 ? Math.round((bookingCount / capacity) * 100) : 0,
+        }
+      })
+
+      if (wantsCsv(request)) {
+        return sendCsv(reply, 'utilisation-trend.csv', ['Month', 'Bookings', 'Utilisation %'], data.map((d) => [d.month, d.bookingCount, d.utilisationPct]))
+      }
+      return reply.status(200).send({ data })
+    },
+  )
+
+  // GET /cost-per-seat — lease cost per desk per day (SUPER_ADMIN or building
+  // admin). Only meaningful for buildings with lease data — BuildingLease is
+  // optional and admin-entered, so buildings without one are simply omitted
+  // rather than shown with a misleading $0. rentAmount is treated as a
+  // MONTHLY figure (the only assumption this can make — the schema doesn't
+  // record a period) and divided by ~30 days; a building with several leases
+  // uses the currently-active one (or the most recently started, if none is
+  // currently active) rather than summing every lease it's ever had.
+  fastify.get(
+    '/cost-per-seat',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      const result = analyticsQuerySchema.safeParse(request.query)
+      if (!result.success) return reply.status(400).send({ error: { message: 'Invalid query', code: 'VALIDATION_ERROR' } })
+
+      const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      let managedBuildingIds: string[] = []
+      if (!isSuperAdmin) {
+        managedBuildingIds = await getManagedBuildingIds(request.user.id)
+        if (managedBuildingIds.length === 0) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+        if (result.data.buildingId && !managedBuildingIds.includes(result.data.buildingId)) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+
+      const buildingWhere: Record<string, unknown> = {}
+      if (result.data.buildingId) buildingWhere.id = result.data.buildingId
+      else if (!isSuperAdmin) buildingWhere.id = { in: managedBuildingIds }
+
+      const buildings = await prisma.building.findMany({
+        where: buildingWhere,
+        select: {
+          id: true,
+          name: true,
+          leases: {
+            where: { rentAmount: { not: null } },
+            orderBy: { startDate: 'desc' },
+            select: { rentAmount: true, currency: true, startDate: true, endDate: true },
+          },
+          floors: {
+            select: {
+              assets: {
+                where: { isBookable: true, bookingStatus: { in: ['OPEN', 'RESTRICTED', 'ASSIGNED'] } },
+                select: { id: true },
+              },
+            },
+          },
+        },
+      })
+
+      const now = new Date()
+      const data = buildings
+        .map((b) => {
+          const active = b.leases.find((l) => l.startDate <= now && (!l.endDate || l.endDate >= now)) ?? b.leases[0]
+          const deskCount = b.floors.reduce((sum, f) => sum + f.assets.length, 0)
+          if (!active || !active.rentAmount || deskCount === 0) return null
+          const costPerSeatPerDay = Math.round((active.rentAmount / 30 / deskCount) * 100) / 100
+          return {
+            buildingId: b.id,
+            buildingName: b.name,
+            monthlyRent: active.rentAmount,
+            currency: active.currency,
+            deskCount,
+            costPerSeatPerDay,
+          }
+        })
+        .filter((d): d is NonNullable<typeof d> => d !== null)
+
+      if (wantsCsv(request)) {
+        return sendCsv(reply, 'cost-per-seat.csv',
+          ['Building', 'Monthly Rent', 'Currency', 'Desks', 'Cost Per Seat Per Day'],
+          data.map((d) => [d.buildingName, d.monthlyRent, d.currency, d.deskCount, d.costPerSeatPerDay]),
+        )
+      }
+      return reply.status(200).send({ data })
+    },
+  )
 }
