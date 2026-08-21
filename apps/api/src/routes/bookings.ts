@@ -730,6 +730,10 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (!quota.ok) {
       return reply.status(quota.status).send({ error: { message: quota.message, code: quota.code } })
     }
+    // No isWithinAdvanceBookingWindow re-check here, unlike every path that
+    // sets a new startsAt (create, reschedule, queue claims) — a transfer
+    // doesn't move the booking's time, so the org's maxAdvanceBookingDays cap
+    // was already satisfied whenever the booking was originally made.
 
     try {
       await prisma.$transaction(async (tx) => {
@@ -992,6 +996,10 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (!gateForRecipientOnA.ok) {
       return reply.status(gateForRecipientOnA.status).send({ error: { message: gateForRecipientOnA.message, code: gateForRecipientOnA.code } })
     }
+    // No isWithinAdvanceBookingWindow re-check for either side, same
+    // reasoning as transfer accept — a swap trades ownership of two existing
+    // slots, it doesn't move either booking's time, so both were already
+    // within the org's maxAdvanceBookingDays cap when originally made.
 
     // Lock both assets and both users in a fixed, globally consistent order
     // (sorted ids) — otherwise two concurrent swap-accepts touching an
