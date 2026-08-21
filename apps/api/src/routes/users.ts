@@ -11,6 +11,7 @@ import { dispatchWebhook } from '../lib/webhook.js'
 import { NotificationType } from '@roomer/shared'
 import { signAccessToken, verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE } from '../lib/jwt.js'
 import { blockToken } from '../lib/token-blocklist.js'
+import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
 const createUserSchema = z.object({
@@ -131,6 +132,14 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       )
 
       dispatchWebhook('user.created', { id: user.id, email: user.email, displayName: user.displayName, globalRole: user.globalRole }).catch(() => {})
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user.created',
+        resourceType: 'User',
+        resourceId: user.id,
+        after: { email: user.email, displayName: user.displayName, globalRole: user.globalRole },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(201).send({ data: user })
     },
@@ -298,7 +307,11 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
             throw Object.assign(new Error('LAST_SUPER_ADMIN'), { code: 'LAST_SUPER_ADMIN' })
           }
         }
-        return tx.user.update({
+        const before = await tx.user.findUnique({
+          where: { id },
+          select: { displayName: true, accountStatus: true, globalRole: true, visibleInColleagueSearch: true },
+        })
+        const updated = await tx.user.update({
           where: { id },
           data: {
             ...result.data,
@@ -318,6 +331,16 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
             updatedAt: true,
           },
         })
+        await recordAuditLog(tx, {
+          actorId: request.user.id,
+          action: result.data.accountStatus === 'BLOCKED' ? 'user.suspended' : 'user.updated',
+          resourceType: 'User',
+          resourceId: id,
+          before,
+          after: { displayName: updated.displayName, accountStatus: updated.accountStatus, globalRole: updated.globalRole, visibleInColleagueSearch: updated.visibleInColleagueSearch },
+          ipAddress: request.ip,
+        }, request.log)
+        return updated
       })
 
       if (result.data.accountStatus === 'BLOCKED') {
@@ -363,10 +386,20 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
+    const before = await prisma.user.findUnique({ where: { id: request.user.id }, select: { notificationPreferences: true } })
     await prisma.user.update({
       where: { id: request.user.id },
       data: { notificationPreferences: result.data.preferences },
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'user.notification_preferences_updated',
+      resourceType: 'User',
+      resourceId: request.user.id,
+      before: before?.notificationPreferences ?? null,
+      after: result.data.preferences,
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(200).send({ data: { ok: true } })
   })
@@ -402,6 +435,14 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       where: { id: request.user.id },
       data: { passwordHash: newHash, passwordChangedAt: new Date() },
     })
+    // Never log password hashes — only the fact that a change happened.
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'user.password_changed',
+      resourceType: 'User',
+      resourceId: request.user.id,
+      ipAddress: request.ip,
+    }, request.log)
 
     // requireAuth now rejects any token issued before passwordChangedAt, which
     // would otherwise also log the caller out of the session they just used to
@@ -457,6 +498,14 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
         where: { id },
         data: { passwordHash: newHash, passwordChangedAt: new Date() },
       })
+      // Never log password hashes — only that an admin reset this user's password.
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user.password_reset_by_admin',
+        resourceType: 'User',
+        resourceId: id,
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     },
   )
@@ -638,6 +687,14 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
             floorId: result.data.floorId ?? null,
           },
         })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'user_resource_role.granted',
+          resourceType: 'UserResourceRole',
+          resourceId: role.id,
+          after: { userId: id, role: role.role, scopeType: role.scopeType, buildingId: role.buildingId, floorId: role.floorId },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(201).send({ data: role })
       } catch {
         return reply.status(409).send({
@@ -655,9 +712,17 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       const { id, roleId } = request.params as { id: string; roleId: string }
 
       try {
-        await prisma.userResourceRole.delete({
+        const deleted = await prisma.userResourceRole.delete({
           where: { id: roleId, userId: id },
         })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'user_resource_role.revoked',
+          resourceType: 'UserResourceRole',
+          resourceId: roleId,
+          before: { userId: deleted.userId, role: deleted.role, scopeType: deleted.scopeType, buildingId: deleted.buildingId, floorId: deleted.floorId },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: { ok: true } })
       } catch {
         return reply.status(404).send({ error: { message: 'Role not found', code: 'NOT_FOUND' } })
@@ -794,6 +859,17 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
           errors.push({ row: index + 2, message: err instanceof Error ? err.message : 'Unknown error' })
         }
       }
+
+      // One summary row for the whole batch, not one per imported user — this
+      // can create/update hundreds of rows in a single call.
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user.bulk_imported',
+        resourceType: 'User',
+        resourceId: crypto.randomUUID(),
+        after: { createdCount: created, updatedCount: updated, errorCount: errors.length, totalRows: validRows.length },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(200).send({ data: { created, updated, errors } })
     },

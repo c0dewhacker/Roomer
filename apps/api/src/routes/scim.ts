@@ -6,6 +6,7 @@ import { cancelFutureBookingsForUser, cancelQueueEntriesForUser, releaseAssetAss
 import { lockSuperAdminGuard, wouldRemoveLastActiveSuperAdmin } from '../lib/group-mapping.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { recordManagerRef, resolveManagerForUser } from '../lib/manager.js'
+import { recordAuditLog } from '../lib/audit.js'
 import {
   userToScim, groupToScim, scimError, listResponse, parseScimFilter,
   applyUserPatchOps, applyGroupPatchOps, hashScimToken,
@@ -252,6 +253,17 @@ function registerUsers(fastify: FastifyInstance): void {
     // users always start at the schema default, GlobalRole.USER, same as the
     // admin-console create route this mirrors (users.ts POST /).
     dispatchWebhook('user.created', { id: user.id, email: user.email, displayName: user.displayName, globalRole: GlobalRole.USER }).catch(() => {})
+    // actorId: null and a scim_-prefixed action distinguish IdP-driven
+    // provisioning from a human admin using the console (users.ts POST /) —
+    // both create a User row, but the provenance matters to a reviewer.
+    await recordAuditLog(prisma, {
+      actorId: null,
+      action: 'user.scim_created',
+      resourceType: 'User',
+      resourceId: user.id,
+      after: { email: user.email, displayName: user.displayName, externalId: user.externalId },
+      ipAddress: request.ip,
+    }, request.log)
 
     reply.status(201).header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
   })
@@ -324,7 +336,8 @@ function registerUsers(fastify: FastifyInstance): void {
             throw Object.assign(new Error('LAST_SUPER_ADMIN'), { code: 'LAST_SUPER_ADMIN' })
           }
         }
-        return tx.user.update({
+        const before = await tx.user.findUnique({ where: { id }, select: userSelect })
+        const updated = await tx.user.update({
           where: { id },
           data: {
             ...(email ? { email } : {}),
@@ -335,6 +348,16 @@ function registerUsers(fastify: FastifyInstance): void {
           },
           select: userSelect,
         })
+        await recordAuditLog(tx, {
+          actorId: null,
+          action: active === false ? 'user.scim_suspended' : 'user.scim_updated',
+          resourceType: 'User',
+          resourceId: id,
+          before,
+          after: { email: updated.email, displayName: updated.displayName, externalId: updated.externalId, accountStatus: updated.accountStatus },
+          ipAddress: request.ip,
+        }, request.log)
+        return updated
       })
       // Same cleanup PATCH and DELETE below already do on this exact transition
       // — without it, a user deactivated via PUT (some SCIM clients send a
@@ -416,11 +439,22 @@ function registerUsers(fastify: FastifyInstance): void {
             throw Object.assign(new Error('LAST_SUPER_ADMIN'), { code: 'LAST_SUPER_ADMIN' })
           }
         }
-        return tx.user.update({
+        const before = await tx.user.findUnique({ where: { id }, select: userSelect })
+        const updated = await tx.user.update({
           where: { id },
           data: { ...userPatch, ...(departmentId !== undefined ? { departmentId } : {}) },
           select: userSelect,
         })
+        await recordAuditLog(tx, {
+          actorId: null,
+          action: userPatch.accountStatus === 'BLOCKED' ? 'user.scim_suspended' : 'user.scim_updated',
+          resourceType: 'User',
+          resourceId: id,
+          before,
+          after: { email: updated.email, displayName: updated.displayName, externalId: updated.externalId, accountStatus: updated.accountStatus },
+          ipAddress: request.ip,
+        }, request.log)
+        return updated
       })
       if (userPatch.accountStatus === 'BLOCKED') {
         await cancelFutureBookingsForUser(user.id)
@@ -455,7 +489,18 @@ function registerUsers(fastify: FastifyInstance): void {
         if (await wouldRemoveLastActiveSuperAdmin(tx, id)) {
           throw Object.assign(new Error('LAST_SUPER_ADMIN'), { code: 'LAST_SUPER_ADMIN' })
         }
-        return tx.user.update({ where: { id }, data: { accountStatus: 'BLOCKED' }, select: { id: true, email: true } })
+        const before = await tx.user.findUnique({ where: { id }, select: { accountStatus: true } })
+        const updated = await tx.user.update({ where: { id }, data: { accountStatus: 'BLOCKED' }, select: { id: true, email: true } })
+        await recordAuditLog(tx, {
+          actorId: null,
+          action: 'user.scim_deprovisioned',
+          resourceType: 'User',
+          resourceId: id,
+          before,
+          after: { accountStatus: 'BLOCKED' },
+          ipAddress: request.ip,
+        }, request.log)
+        return updated
       })
       await cancelFutureBookingsForUser(id)
       await cancelQueueEntriesForUser(id)
@@ -539,6 +584,14 @@ function registerGroups(fastify: FastifyInstance): void {
         data: { name: body.displayName, organisationId: org.id },
         select: groupSelect,
       })
+      await recordAuditLog(prisma, {
+        actorId: null,
+        action: 'user_group.scim_created',
+        resourceType: 'UserGroup',
+        resourceId: group.id,
+        after: { name: group.name },
+        ipAddress: request.ip,
+      }, request.log)
       reply.status(201).header('Content-Type', SCIM_CONTENT_TYPE).send(groupToScim(group, []))
     } catch {
       reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(409, `Group ${body.displayName} already exists`))
@@ -585,16 +638,45 @@ function registerGroups(fastify: FastifyInstance): void {
 
     if (patch.displayName) {
       await prisma.userGroup.update({ where: { id }, data: { name: patch.displayName } })
+      await recordAuditLog(prisma, {
+        actorId: null,
+        action: 'user_group.scim_updated',
+        resourceType: 'UserGroup',
+        resourceId: id,
+        before: { name: group.name },
+        after: { name: patch.displayName },
+        ipAddress: request.ip,
+      }, request.log)
     }
     for (const userId of patch.addMemberIds) {
-      await prisma.userGroupMember.upsert({
+      const added = await prisma.userGroupMember.upsert({
         where: { groupId_userId: { groupId: id, userId } },
         create: { groupId: id, userId },
         update: {},
-      }).catch(() => { /* user may not exist */ })
+      }).catch(() => null) // user may not exist
+      if (added) {
+        await recordAuditLog(prisma, {
+          actorId: null,
+          action: 'user_group_member.scim_added',
+          resourceType: 'UserGroupMember',
+          resourceId: `${id}:${userId}`,
+          after: { groupId: id, userId },
+          ipAddress: request.ip,
+        }, request.log)
+      }
     }
     for (const userId of patch.removeMemberIds) {
-      await prisma.userGroupMember.deleteMany({ where: { groupId: id, userId } })
+      const removed = await prisma.userGroupMember.deleteMany({ where: { groupId: id, userId } })
+      if (removed.count > 0) {
+        await recordAuditLog(prisma, {
+          actorId: null,
+          action: 'user_group_member.scim_removed',
+          resourceType: 'UserGroupMember',
+          resourceId: `${id}:${userId}`,
+          before: { groupId: id, userId },
+          ipAddress: request.ip,
+        }, request.log)
+      }
     }
 
     reply.status(204).send()
@@ -608,7 +690,15 @@ function registerGroups(fastify: FastifyInstance): void {
         .send(scimError(403, 'SCIM cannot delete a group that grants admin or manager privileges'))
     }
     try {
-      await prisma.userGroup.delete({ where: { id } })
+      const deleted = await prisma.userGroup.delete({ where: { id } })
+      await recordAuditLog(prisma, {
+        actorId: null,
+        action: 'user_group.scim_deleted',
+        resourceType: 'UserGroup',
+        resourceId: id,
+        before: { name: deleted.name },
+        ipAddress: request.ip,
+      }, request.log)
       reply.status(204).send()
     } catch {
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `Group ${id} not found`))
