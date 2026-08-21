@@ -1,12 +1,11 @@
 import crypto from 'crypto'
 import { randomUUID } from 'crypto'
-import dnsPromises from 'dns/promises'
-import net from 'net'
 import { Agent, fetch as undiciFetch } from 'undici'
 import { prisma } from './prisma.js'
 import { getBoss } from './queue.js'
 import { env } from '../env.js'
 import { decryptStringMaybe } from './encryption.js'
+import { resolveValidatedHost as resolveValidatedHostShared } from './url-safety.js'
 import type { Job } from 'pg-boss'
 
 export const WEBHOOK_EVENTS = [
@@ -61,86 +60,16 @@ function sign(secret: string, body: string): string {
   return `sha256=${crypto.createHmac('sha256', secret).update(body).digest('hex')}`
 }
 
-/** True for loopback / link-local / unspecified addresses — always blocked. */
-function isAlwaysBlockedIp(ip: string): boolean {
-  const v = ip.startsWith('::ffff:') ? ip.slice(7) : ip // unwrap IPv4-mapped IPv6
-  if (net.isIPv4(v)) {
-    const o = v.split('.').map(Number)
-    if (o[0] === 127) return true                    // 127.0.0.0/8 loopback
-    if (o[0] === 169 && o[1] === 254) return true    // 169.254.0.0/16 link-local (cloud metadata)
-    if (o[0] === 0) return true                      // 0.0.0.0/8
-    return false
-  }
-  const lower = ip.toLowerCase()
-  if (lower === '::1' || lower === '::') return true  // loopback / unspecified
-  if (lower.startsWith('fe80')) return true           // link-local
-  return false
-}
-
-/** True for RFC1918 / ULA / CGNAT ranges — blocked unless WEBHOOK_ALLOW_PRIVATE. */
-function isPrivateIp(ip: string): boolean {
-  const v = ip.startsWith('::ffff:') ? ip.slice(7) : ip
-  if (net.isIPv4(v)) {
-    const o = v.split('.').map(Number)
-    if (o[0] === 10) return true                                   // 10.0.0.0/8
-    if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return true      // 172.16.0.0/12
-    if (o[0] === 192 && o[1] === 168) return true                  // 192.168.0.0/16
-    if (o[0] === 100 && o[1] >= 64 && o[1] <= 127) return true     // 100.64.0.0/10 CGNAT
-    return false
-  }
-  const lower = ip.toLowerCase()
-  return lower.startsWith('fc') || lower.startsWith('fd')          // fc00::/7 ULA
-}
-
-function ipIsBlocked(ip: string): boolean {
-  if (isAlwaysBlockedIp(ip)) return true
-  if (!env.WEBHOOK_ALLOW_PRIVATE && isPrivateIp(ip)) return true
-  return false
-}
-
-interface ValidatedWebhookHost {
-  address: string
-  family: 4 | 6
-}
-
 /**
- * Resolve `rawUrl`'s host and reject internal/reserved addresses (SSRF guard).
- * Returns the validated address (needed by callers that want to pin the
- * subsequent connection to it — see `deliverOne`).
+ * Resolve `rawUrl`'s host and reject internal/reserved addresses (SSRF guard) —
+ * webhook-specific wrapper around the shared lib/url-safety.ts resolver,
+ * pre-configured for http(s) URLs with the ROOMER_WEBHOOK_ALLOW_PRIVATE
+ * escape hatch for internal integrations (loopback/link-local always
+ * blocked regardless). Returns the validated address so callers can pin
+ * the subsequent connection to it — see `deliverOne`.
  */
-async function resolveValidatedHost(rawUrl: string): Promise<ValidatedWebhookHost> {
-  let url: URL
-  try {
-    url = new URL(rawUrl)
-  } catch {
-    throw new Error('Invalid webhook URL')
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('Webhook URL must use http or https')
-  }
-  const host = url.hostname
-  if (host === 'localhost') throw new Error('Webhook URL host is not allowed')
-
-  const literalFamily = net.isIP(host)
-  if (literalFamily) {
-    if (ipIsBlocked(host)) throw new Error('Webhook URL resolves to a disallowed address')
-    return { address: host, family: literalFamily as 4 | 6 }
-  }
-
-  // A hung/slow DNS resolver for the target host would otherwise block this
-  // lookup indefinitely — it runs before the 10s AbortSignal on the actual
-  // fetch() even exists, so that timeout can't cover it. The only other
-  // backstop is pg-boss's expireInSeconds, which is a 24h per-attempt
-  // watchdog — far too generous to be the real defense here.
-  const records = await Promise.race([
-    dnsPromises.lookup(host, { all: true }),
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('DNS lookup for webhook URL timed out')), 5000)),
-  ])
-  if (records.length === 0) throw new Error('Webhook URL host could not be resolved')
-  for (const { address } of records) {
-    if (ipIsBlocked(address)) throw new Error('Webhook URL resolves to a disallowed address')
-  }
-  return { address: records[0].address, family: records[0].family as 4 | 6 }
+async function resolveValidatedHost(rawUrl: string) {
+  return resolveValidatedHostShared(rawUrl, ['http:', 'https:'], env.WEBHOOK_ALLOW_PRIVATE)
 }
 
 /**

@@ -1,6 +1,7 @@
 import webpush from 'web-push'
 import { env } from '../env.js'
 import { prisma } from './prisma.js'
+import { resolveValidatedHost } from './url-safety.js'
 
 let vapidConfigured = false
 let warnedMissingVapid = false
@@ -51,6 +52,14 @@ export async function sendPushNotification(userId: string, payload: PushPayload)
   await Promise.all(
     subscriptions.map(async (sub) => {
       try {
+        // Re-validate at send time, not just at subscribe time (routes/push.ts)
+        // — closes the DNS-rebinding window where a hostname resolved to a
+        // public address on subscribe but has since been repointed at an
+        // internal/metadata address. web-push's own https.request has no way
+        // to pin the connection to a pre-validated address the way the
+        // undici-based webhook delivery does, so this re-check right before
+        // sending is the available mitigation.
+        await resolveValidatedHost(sub.endpoint, ['https:'], false)
         await webpush.sendNotification(
           { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
           body,

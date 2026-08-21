@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { getVapidPublicKey } from '../lib/push.js'
+import { resolveValidatedHost } from '../lib/url-safety.js'
 
 const subscribeSchema = z.object({
   endpoint: z.string().url(),
@@ -15,6 +16,25 @@ const subscribeSchema = z.object({
 const unsubscribeSchema = z.object({
   endpoint: z.string().url(),
 })
+
+/**
+ * A real push endpoint (FCM, Mozilla autopush, Microsoft notify, etc.) is
+ * always a public https:// URL — `z.string().url()` alone accepts any
+ * scheme/host, including `http://169.254.169.254/...` or a private RFC1918
+ * address. Without this, an authenticated user could register their own
+ * subscription endpoint pointed at an internal/cloud-metadata address and
+ * then trigger a notification to themselves (e.g. by booking a desk) to
+ * make the API server originate an outbound request to it — SSRF. https-only
+ * (never http, unlike webhooks) since no legitimate push service uses http.
+ * Throws with a user-facing message on failure.
+ */
+async function assertValidPushEndpoint(endpoint: string): Promise<void> {
+  try {
+    await resolveValidatedHost(endpoint, ['https:'], false)
+  } catch (err) {
+    throw new Error(err instanceof Error ? err.message : 'Invalid push endpoint')
+  }
+}
 
 export async function pushRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Push'], ...route.schema } })
@@ -37,6 +57,12 @@ export async function pushRoutes(fastify: FastifyInstance): Promise<void> {
     }
     const { endpoint, keys } = result.data
     const userAgent = request.headers['user-agent']?.slice(0, 255)
+
+    try {
+      await assertValidPushEndpoint(endpoint)
+    } catch (err) {
+      return reply.status(400).send({ error: { message: err instanceof Error ? err.message : 'Invalid push endpoint', code: 'INVALID_ENDPOINT' } })
+    }
 
     await prisma.pushSubscription.upsert({
       where: { endpoint },
