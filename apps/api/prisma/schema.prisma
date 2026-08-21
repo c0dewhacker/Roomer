@@ -754,6 +754,15 @@ model Booking {
   /// Set on rejection (by an approver or by the auto-reject cron) — shown to
   /// the requester so they know why. Not used for any other cancellation reason.
   rejectionNote     String?
+  /// Visitor/guest booking (#79) — userId stays the host; these just record
+  /// who they're hosting. Null for an ordinary (non-guest) booking.
+  guestName          String?
+  guestEmail         String?
+  /// One-click check-in link token emailed to guestEmail — a guest has no
+  /// User row/session, so check-in can't go through the normal authenticated
+  /// POST /:id/check-in path. Cleared once used or once the booking is no
+  /// longer CONFIRMED, mirroring QueueEntry.claimToken's single-use pattern.
+  guestCheckInToken  String?               @unique
   createdAt       DateTime              @default(now())
   updatedAt       DateTime              @updatedAt
   user            User                  @relation(fields: [userId], references: [id], onDelete: Cascade)

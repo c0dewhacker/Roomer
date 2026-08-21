@@ -278,20 +278,25 @@ export const DEFAULT_TEMPLATE_STRINGS: Record<string, { subject: string; html: s
 // ─── BOOKING_CONFIRMED ────────────────────────────────────────────────────────
 
 export function renderBookingConfirmed(
-  booking: Pick<Booking, 'id' | 'startsAt' | 'endsAt' | 'notes'>,
+  booking: Pick<Booking, 'id' | 'startsAt' | 'endsAt' | 'notes'> & { guestName?: string | null },
   user: Pick<User, 'displayName' | 'email'>,
   asset: Pick<Asset, 'name'> & { zoneName?: string; floorName?: string },
 ): { subject: string; html: string; text: string } {
-  const subject = `Booking confirmed — ${escapeHtml(asset.name)}`
+  // A guest booking (see #79) is still confirmed to the host, not the guest
+  // (who gets their own separate invite email) — naming the guest here just
+  // distinguishes it from the host's own bookings at a glance.
+  const guestSuffix = booking.guestName ? ` for ${booking.guestName}` : ''
+  const subject = `Booking confirmed${guestSuffix} — ${escapeHtml(asset.name)}`
   const safeUser = escapeHtml(user.displayName)
   const safeAsset = escapeHtml(asset.name)
+  const safeGuestSuffix = booking.guestName ? ` for ${escapeHtml(booking.guestName)}` : ''
   const safeZone = asset.zoneName ? escapeHtml(asset.zoneName) : ''
   const safeFloor = asset.floorName ? escapeHtml(asset.floorName) : ''
   const safeNotes = booking.notes ? escapeHtml(booking.notes) : ''
   const html = baseHtml(
     subject,
     `<h1>Your booking is confirmed</h1>
-     <p>Hi ${safeUser}, your booking has been confirmed.</p>
+     <p>Hi ${safeUser}, your booking${safeGuestSuffix} has been confirmed.</p>
      <div class="detail">
        <dl>
          <dt>Asset</dt><dd>${safeAsset}${safeZone ? ` — ${safeZone}` : ''}${safeFloor ? `, ${safeFloor}` : ''}</dd>
@@ -302,7 +307,7 @@ export function renderBookingConfirmed(
      </div>
      <a href="${env.APP_URL}/bookings/${booking.id}" class="btn">View Booking</a>`,
   )
-  const text = `Hi ${user.displayName},\n\nYour booking for ${asset.name} has been confirmed.\nFrom: ${formatDate(booking.startsAt)}\nTo: ${formatDate(booking.endsAt)}\n\nView: ${env.APP_URL}/bookings/${booking.id}`
+  const text = `Hi ${user.displayName},\n\nYour booking${guestSuffix} for ${asset.name} has been confirmed.\nFrom: ${formatDate(booking.startsAt)}\nTo: ${formatDate(booking.endsAt)}\n\nView: ${env.APP_URL}/bookings/${booking.id}`
   return { subject, html, text }
 }
 
@@ -992,5 +997,40 @@ export function renderBookingRejected(
      <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
   )
   const text = `Hi ${requester.displayName},\n\nYour booking request for ${asset.name} (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}) was declined.${rejectionNote ? `\n\nNote: ${rejectionNote}` : ''}`
+  return { subject, html, text }
+}
+
+// ─── Visitor/guest booking invite (see #79) ───────────────────────────────────
+// Sent directly to guestEmail rather than through the Notification/
+// enqueueNotification pipeline — a guest has no User row, so there's no
+// userId to key a Notification on and no in-app bell to show it in.
+
+export function renderGuestBookingInvite(
+  guestName: string,
+  host: Pick<User, 'displayName'>,
+  booking: Pick<Booking, 'startsAt' | 'endsAt'>,
+  asset: Pick<Asset, 'name'> & { zoneName?: string; floorName?: string; buildingName?: string },
+  checkInUrl: string,
+): { subject: string; html: string; text: string } {
+  const subject = `You're booked in — ${escapeHtml(asset.name)}`
+  const safeGuest = escapeHtml(guestName)
+  const safeHost = escapeHtml(host.displayName)
+  const safeAsset = escapeHtml(asset.name)
+  const location = [asset.zoneName, asset.floorName, asset.buildingName].filter((v): v is string => !!v).map(escapeHtml).join(', ')
+  const html = baseHtml(
+    subject,
+    `<h1>You're booked in</h1>
+     <p>Hi ${safeGuest}, ${safeHost} has booked ${safeAsset} for your visit.</p>
+     <div class="detail">
+       <dl>
+         <dt>Location</dt><dd>${safeAsset}${location ? ` — ${location}` : ''}</dd>
+         <dt>From</dt><dd>${formatDate(booking.startsAt)}</dd>
+         <dt>To</dt><dd>${formatDate(booking.endsAt)}</dd>
+       </dl>
+     </div>
+     <p>When you arrive, tap the button below to check in.</p>
+     <a href="${checkInUrl}" class="btn">Check In</a>`,
+  )
+  const text = `Hi ${guestName},\n\n${host.displayName} has booked ${asset.name}${location ? ` (${location})` : ''} for your visit.\nFrom: ${formatDate(booking.startsAt)}\nTo: ${formatDate(booking.endsAt)}\n\nCheck in when you arrive: ${checkInUrl}`
   return { subject, html, text }
 }

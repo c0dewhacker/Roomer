@@ -6,6 +6,7 @@ import LoginPage from './pages/LoginPage'
 import BookingsPage from './pages/BookingsPage'
 import QueuePage from './pages/QueuePage'
 import QueueClaimPage from './pages/QueueClaimPage'
+import GuestCheckInPage from './pages/GuestCheckInPage'
 import ProfilePage from './pages/ProfilePage'
 import WhosInPage from './pages/WhosInPage'
 import BuildingsAdminPage from './pages/admin/BuildingsAdminPage'
@@ -168,6 +169,7 @@ export function AppRouter() {
       <Route path="/" element={<RootRedirect />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/queue/claim" element={<QueueClaimPage />} />
+      <Route path="/guest-check-in" element={<GuestCheckInPage />} />
 
       <Route element={<ProtectedRoute />}>
         {/* No <Layout /> chrome — a scanned desk QR code should land on a

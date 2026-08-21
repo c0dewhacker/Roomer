@@ -1,5 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import type { Prisma } from '@prisma/client'
+import { randomUUID } from 'crypto'
+import { env } from '../env.js'
 import { prisma } from '../lib/prisma.js'
 import { createBookingSchema, updateBookingSchema, GlobalRole, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
@@ -7,6 +9,7 @@ import { isFloorManagerForFloor, isBuildingManagerForBuilding, getManagedBuildin
 import { enqueueNotification, fanOutFloorAvailable, promoteNextQueueEntry } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { buildBookingIcs } from '../lib/ical.js'
+import { sendEmail, renderGuestBookingInvite } from '../lib/mailer.js'
 import { checkGroupAccess } from './groups.js'
 import { assertBookable, assertUnderBookingQuota, hasBlockingOverlap, checkZoneGroupOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, lockUserForBookingQuota, isOverlapConstraintViolation, resolveRequiresApproval } from '../lib/booking.js'
 import { z } from 'zod'
@@ -16,6 +19,31 @@ class BookingConflictError extends Error {
     super(message)
     this.name = 'BookingConflictError'
   }
+}
+
+/**
+ * Emails the guest a check-in link once their booking is actually CONFIRMED
+ * (immediately on creation, or later via POST /:id/approve if the zone
+ * requires approval) — sent directly via sendEmail rather than through
+ * enqueueNotification/Notification, since a guest has no User row to key a
+ * Notification on or an in-app bell to show it in.
+ */
+async function sendGuestBookingInvite(booking: {
+  startsAt: Date
+  endsAt: Date
+  guestName: string
+  guestEmail: string
+  guestCheckInToken: string
+}, hostDisplayName: string, asset: { name: string; primaryZone?: { name: string } | null; floor?: { name: string; building?: { name: string } | null } | null }): Promise<void> {
+  const checkInUrl = `${env.APP_URL}/guest-check-in?token=${encodeURIComponent(booking.guestCheckInToken)}`
+  const payload = renderGuestBookingInvite(
+    booking.guestName,
+    { displayName: hostDisplayName },
+    booking,
+    { name: asset.name, zoneName: asset.primaryZone?.name, floorName: asset.floor?.name, buildingName: asset.floor?.building?.name },
+    checkInUrl,
+  )
+  await sendEmail({ to: booking.guestEmail, ...payload }).catch(() => {})
 }
 
 const reportQuerySchema = z.object({
@@ -220,7 +248,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    const { assetId, notes, attendeeCount } = result.data
+    const { assetId, notes, attendeeCount, guestName, guestEmail } = result.data
     const startsAt = new Date(result.data.startsAt)
     const endsAt = new Date(result.data.endsAt)
 
@@ -245,7 +273,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
-    const quota = await assertUnderBookingQuota(prisma, request.user.id, isSuperAdmin)
+    const quota = await assertUnderBookingQuota(prisma, request.user.id, isSuperAdmin, !!guestName)
     if (!quota.ok) {
       return reply.status(quota.status).send({ error: { message: quota.message, code: quota.code } })
     }
@@ -293,7 +321,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         // each only take their own per-asset lock above, which doesn't
         // serialise them against each other.
         await lockUserForBookingQuota(tx, request.user.id)
-        const quotaRecheck = await assertUnderBookingQuota(tx, request.user.id, isSuperAdmin)
+        const quotaRecheck = await assertUnderBookingQuota(tx, request.user.id, isSuperAdmin, !!guestName)
         if (!quotaRecheck.ok) {
           throw new BookingConflictError(quotaRecheck.code, quotaRecheck.message)
         }
@@ -312,6 +340,11 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
             attendeeCount,
             status: requiresApproval ? 'PENDING_APPROVAL' : 'CONFIRMED',
             approvalExpiresAt: requiresApproval ? new Date(Date.now() + approvalWindowHours * 60 * 60 * 1000) : null,
+            guestName: guestName ?? null,
+            guestEmail: guestEmail ?? null,
+            // Only a guest with an email gets a check-in link — no email, no
+            // way to deliver it, so no point minting a token nobody can use.
+            guestCheckInToken: guestEmail ? randomUUID() : null,
           },
           include: {
             asset: {
@@ -365,6 +398,14 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       })
 
       dispatchWebhook('booking.created', { id: booking.id, userId: booking.userId, assetId: booking.assetId, startsAt: booking.startsAt, endsAt: booking.endsAt }).catch(() => {})
+
+      if (booking.guestName && booking.guestEmail && booking.guestCheckInToken) {
+        await sendGuestBookingInvite(
+          { startsAt: booking.startsAt, endsAt: booking.endsAt, guestName: booking.guestName, guestEmail: booking.guestEmail, guestCheckInToken: booking.guestCheckInToken },
+          request.user.displayName,
+          booking.asset,
+        )
+      }
     }
 
     return reply.status(201).send({ data: booking })
@@ -473,6 +514,43 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     const updated = await prisma.booking.update({ where: { id }, data: { checkedInAt: new Date() } })
     dispatchWebhook('booking.checked_in', { id: updated.id, userId: updated.userId, assetId: updated.assetId, checkedInAt: updated.checkedInAt }).catch(() => {})
     return reply.status(200).send({ data: { id: updated.id, checkedInAt: updated.checkedInAt } })
+  })
+
+  // POST /bookings/guest-check-in-by-token — one-click check-in for a guest
+  // (see #79), who has no account/session to use the authenticated check-in
+  // route above. Mirrors /queue/claim-by-token: unauthenticated, rate-limited,
+  // and does not identify who else's bookings exist (a 404-shaped response
+  // for "wrong token" and "already checked in" alike, mirroring the token
+  // itself as the only credential).
+  fastify.post('/guest-check-in-by-token', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const result = z.object({ token: z.string().min(1) }).safeParse(request.body)
+    if (!result.success) {
+      return reply.status(400).send({ error: { message: 'Validation failed', code: 'VALIDATION_ERROR' } })
+    }
+    const booking = await prisma.booking.findUnique({
+      where: { guestCheckInToken: result.data.token },
+      select: { id: true, assetId: true, userId: true, status: true, startsAt: true, endsAt: true, checkedInAt: true, guestName: true },
+    })
+    if (!booking) {
+      return reply.status(404).send({ error: { message: 'Invalid or expired check-in link', code: 'NOT_FOUND' } })
+    }
+    if (booking.status !== 'CONFIRMED') {
+      return reply.status(409).send({ error: { message: 'This booking is no longer active', code: 'BOOKING_NOT_ACTIVE' } })
+    }
+    const now = new Date()
+    if (booking.endsAt < now) {
+      return reply.status(409).send({ error: { message: 'This booking has already ended', code: 'BOOKING_ENDED' } })
+    }
+    if (booking.startsAt > now) {
+      return reply.status(409).send({ error: { message: 'This booking has not started yet', code: 'BOOKING_NOT_STARTED' } })
+    }
+    if (booking.checkedInAt) {
+      return reply.status(200).send({ data: { guestName: booking.guestName, checkedInAt: booking.checkedInAt } })
+    }
+
+    const updated = await prisma.booking.update({ where: { id: booking.id }, data: { checkedInAt: now } })
+    dispatchWebhook('booking.checked_in', { id: updated.id, userId: updated.userId, assetId: updated.assetId, checkedInAt: updated.checkedInAt }).catch(() => {})
+    return reply.status(200).send({ data: { guestName: booking.guestName, checkedInAt: updated.checkedInAt } })
   })
 
   // PATCH /bookings/:id — modify booking
@@ -761,7 +839,16 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string }
     const booking = await prisma.booking.findUnique({
       where: { id },
-      include: { asset: { select: { floorId: true, floor: { select: { buildingId: true } } } } },
+      include: {
+        asset: {
+          select: {
+            name: true, floorId: true,
+            floor: { select: { buildingId: true, name: true, building: { select: { name: true } } } },
+            primaryZone: { select: { name: true } },
+          },
+        },
+        user: { select: { displayName: true } },
+      },
     })
     if (!booking) {
       return reply.status(404).send({ error: { message: 'Booking not found', code: 'NOT_FOUND' } })
@@ -799,6 +886,18 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       userId: booking.userId,
       bookingId: affected[0].id,
     })
+
+    // A guest booking (see #79) never got its invite at creation time if it
+    // needed approval first (see POST /) — send it now that it's actually
+    // confirmed. Guest bookings are never recurring, so `booking` itself
+    // (not `affected`) always has the right dates here.
+    if (booking.guestName && booking.guestEmail && booking.guestCheckInToken) {
+      await sendGuestBookingInvite(
+        { startsAt: booking.startsAt, endsAt: booking.endsAt, guestName: booking.guestName, guestEmail: booking.guestEmail, guestCheckInToken: booking.guestCheckInToken },
+        booking.user.displayName,
+        booking.asset,
+      )
+    }
 
     return reply.status(200).send({ data: { ok: true, approvedCount: affected.length } })
   })

@@ -21,7 +21,7 @@ export function useCreateBooking() {
   const qc = useQueryClient()
 
   return useMutation({
-    mutationFn: (body: { assetId: string; startsAt: string; endsAt: string; notes?: string; attendeeCount?: number }) =>
+    mutationFn: (body: { assetId: string; startsAt: string; endsAt: string; notes?: string; attendeeCount?: number; guestName?: string; guestEmail?: string }) =>
       bookingsApi.create(body),
     onSuccess: () => {
       toast.success('Desk booked successfully')

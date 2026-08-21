@@ -9,9 +9,18 @@ export const createBookingSchema = z.object({
   // — never validated against the asset's capacity server-side, since an
   // oversized group is a client-side warning, not a rejection reason.
   attendeeCount: z.number().int().positive().max(1000).optional(),
+  // Visitor/guest booking (#79) — the host is still `userId` (request.user.id),
+  // guestName/guestEmail just record who they're hosting. guestEmail is
+  // optional even for a guest booking (a host may not have it yet) but when
+  // present a check-in link is emailed to it.
+  guestName: z.string().min(1).max(255).optional(),
+  guestEmail: z.string().email().max(255).optional(),
 }).refine(
   (data) => new Date(data.startsAt) < new Date(data.endsAt),
   { message: 'startsAt must be before endsAt', path: ['startsAt'] },
+).refine(
+  (data) => !data.guestEmail || !!data.guestName,
+  { message: 'guestName is required when guestEmail is provided', path: ['guestName'] },
 )
 
 export const updateBookingSchema = z.object({

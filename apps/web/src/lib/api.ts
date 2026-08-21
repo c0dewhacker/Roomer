@@ -399,12 +399,14 @@ export const bookingsApi = {
       `/bookings${status ? `?status=${status}` : ''}`,
     ),
   get: (id: string) => api.get<{ data: Booking }>(`/bookings/${id}`),
-  create: (body: { assetId: string; startsAt: string; endsAt: string; notes?: string; attendeeCount?: number }) =>
+  create: (body: { assetId: string; startsAt: string; endsAt: string; notes?: string; attendeeCount?: number; guestName?: string; guestEmail?: string }) =>
     api.post<{ data: Booking }>('/bookings', body),
   update: (id: string, body: Partial<{ startsAt: string; endsAt: string; notes: string; attendeeCount: number | null }>) =>
     api.patch<{ data: Booking }>(`/bookings/${id}`, body),
   cancel: (id: string) => api.delete<{ data: { ok: true } }>(`/bookings/${id}`),
   checkIn: (id: string) => api.post<{ data: { id: string; checkedInAt: string } }>(`/bookings/${id}/check-in`),
+  guestCheckInByToken: (token: string) =>
+    api.post<{ data: { guestName: string | null; checkedInAt: string } }>('/bookings/guest-check-in-by-token', { token }),
   pendingApprovals: () =>
     api.get<{ data: Array<Booking & { user: { id: string; displayName: string; email: string }; asset: { id: string; name: string; floor?: { id: string; name: string; building: { id: string; name: string } } } }> }>(
       '/bookings/pending-approvals',

@@ -518,6 +518,9 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   const [recurringFrequency, setRecurringFrequency] = useState<'DAILY' | 'WEEKLY' | 'MONTHLY'>('WEEKLY')
   const [recurringLastDate, setRecurringLastDate] = useState('')
   const [attendeeCount, setAttendeeCount] = useState('')
+  const [isGuestBooking, setIsGuestBooking] = useState(false)
+  const [guestName, setGuestName] = useState('')
+  const [guestEmail, setGuestEmail] = useState('')
 
   // Keep endDate in sync when the floor page navigates to a different day
   useEffect(() => { setEndDate(date) }, [date])
@@ -527,6 +530,9 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   // different asset (and a previous room's headcount silently attaching to a
   // newly-selected desk would be a confusing, wrong default).
   useEffect(() => { setAttendeeCount('') }, [desk?.id])
+  // Same reasoning for the visitor fields — a different asset means a fresh
+  // booking, not "still booking for the same visitor as before".
+  useEffect(() => { setIsGuestBooking(false); setGuestName(''); setGuestEmail('') }, [desk?.id])
   const [showAdmin, setShowAdmin] = useState(false)
   const [editAssetOpen, setEditAssetOpen] = useState(false)
   const [addAllowListOpen, setAddAllowListOpen] = useState(false)
@@ -721,12 +727,18 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
       toast.error('This time slot has already passed')
       return
     }
+    if (isGuestBooking && !guestName.trim()) {
+      toast.error("Enter your visitor's name")
+      return
+    }
     try {
       await createBooking.mutateAsync({
         assetId: desk.id,
         startsAt: start.toISOString(),
         endsAt: end.toISOString(),
         attendeeCount: attendeeCount ? Number(attendeeCount) : undefined,
+        guestName: isGuestBooking ? guestName.trim() : undefined,
+        guestEmail: isGuestBooking && guestEmail.trim() ? guestEmail.trim() : undefined,
       })
       onBookingCreated()
     } catch {
@@ -1053,6 +1065,53 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                   )}
                 </div>
 
+                {/* Visitor/guest booking (#79) — single bookings only, not recurring series */}
+                {!isRecurring && (
+                  <div className="space-y-3 pt-1">
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="book-for-visitor"
+                        type="checkbox"
+                        checked={isGuestBooking}
+                        onChange={(e) => setIsGuestBooking(e.target.checked)}
+                        className="h-4 w-4 rounded border-border"
+                      />
+                      <Label htmlFor="book-for-visitor" className="cursor-pointer text-sm flex items-center gap-1.5">
+                        <UserPlus className="h-3.5 w-3.5 text-muted-foreground" />
+                        Book for a visitor
+                      </Label>
+                    </div>
+                    {isGuestBooking && (
+                      <div className="rounded-md border border-dashed px-3 py-3 space-y-3">
+                        <div>
+                          <Label htmlFor="guest-name" className="text-xs">Visitor name *</Label>
+                          <Input
+                            id="guest-name"
+                            value={guestName}
+                            onChange={(e) => setGuestName(e.target.value)}
+                            className="mt-1"
+                            placeholder="e.g. Jane Doe"
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="guest-email" className="text-xs">Visitor email (optional)</Label>
+                          <Input
+                            id="guest-email"
+                            type="email"
+                            value={guestEmail}
+                            onChange={(e) => setGuestEmail(e.target.value)}
+                            className="mt-1"
+                            placeholder="jane@example.com"
+                          />
+                          <p className="text-xs text-muted-foreground mt-1">
+                            If provided, your visitor gets an email with a check-in link. This booking won't count toward your own booking limit.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {desk.requiresApproval && (
                   <p className="text-xs text-amber-600 bg-amber-50 rounded-md p-2">
                     This booking will need approval from a Super Admin, building admin, or floor manager before it's confirmed. The slot is reserved for you while you wait.
@@ -1064,7 +1123,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                   disabled={
                     isRecurring
                       ? createRecurring.isPending || !recurringLastDate
-                      : createBooking.isPending
+                      : createBooking.isPending || (isGuestBooking && !guestName.trim())
                   }
                   className="w-full"
                 >
@@ -1075,7 +1134,9 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                       ? (isRecurring ? `Request recurring ${categoryName}` : `Request ${categoryName}`)
                       : isRecurring
                         ? `Book recurring ${categoryName}`
-                        : `Book ${categoryName}`
+                        : isGuestBooking
+                          ? `Book ${categoryName} for visitor`
+                          : `Book ${categoryName}`
                   }
                 </Button>
               </div>

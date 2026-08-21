@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { parseISO, isToday } from 'date-fns'
-import { Calendar, MapPin, Clock, Trash2, Pencil, CalendarPlus, Armchair, Repeat, Check, List, Send, ArrowLeftRight, Inbox } from 'lucide-react'
+import { Calendar, MapPin, Clock, Trash2, Pencil, CalendarPlus, Armchair, Repeat, Check, List, Send, ArrowLeftRight, Inbox, UserPlus } from 'lucide-react'
 import { useMyBookings, useCancelBooking, useUpdateBooking } from '@/hooks/useBookings'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -506,6 +506,11 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
             >
               <div className="flex items-center gap-2 flex-wrap">
                 <p className="font-medium truncate">{bookingAsset?.name ?? 'Unknown asset'}</p>
+                {booking.guestName && (
+                  <Badge variant="outline" className="shrink-0 text-xs gap-1">
+                    <UserPlus className="h-3 w-3" /> for {booking.guestName}
+                  </Badge>
+                )}
                 {todayBooking && (
                   <Badge variant="outline" className="shrink-0 text-xs border-green-500 text-green-600">Today</Badge>
                 )}

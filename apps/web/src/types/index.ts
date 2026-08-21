@@ -204,6 +204,9 @@ export interface Booking {
   approvalExpiresAt?: string | null
   approvedAt?: string | null
   rejectionNote?: string | null
+  /** Visitor/guest booking (#79) — set when this booking was made on behalf of an external visitor. */
+  guestName?: string | null
+  guestEmail?: string | null
   user?: User
   asset?: Asset & {
     floor?: Floor & { building?: Building }

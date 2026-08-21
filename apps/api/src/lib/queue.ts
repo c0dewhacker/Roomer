@@ -386,8 +386,12 @@ async function processSendNotification(
       include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true, building: { select: { name: true } } } } } } },
     })
     if (booking) {
-      title = `Booking confirmed — ${booking.asset.name}`
-      body = `Your booking for ${booking.asset.name} is confirmed from ${formatDate(booking.startsAt)} to ${formatDate(booking.endsAt)}`
+      // A guest booking (see #79) is still confirmed to the host, not the
+      // guest (who gets their own separate invite email) — naming the guest
+      // here just distinguishes it from the host's own bookings at a glance.
+      const guestSuffix = booking.guestName ? ` for ${booking.guestName}` : ''
+      title = `Booking confirmed${guestSuffix} — ${booking.asset.name}`
+      body = `Your booking${guestSuffix} for ${booking.asset.name} is confirmed from ${formatDate(booking.startsAt)} to ${formatDate(booking.endsAt)}`
       emailPayload = renderBookingConfirmed(booking, user, {
         name: booking.asset.name,
         zoneName: booking.asset.primaryZone?.name ?? '',

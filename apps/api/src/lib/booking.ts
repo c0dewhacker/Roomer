@@ -216,17 +216,23 @@ export function isNotAlreadyElapsed(endsAt: Date): boolean {
  * deliberately NOT applied to recurring series creation, which would make the
  * default 12-week/5-booking combination reject nearly every series outright;
  * recurring commitments are governed by maxRecurringBookingWeeks instead.
+ *
+ * Guest bookings (guestName set — see #79) are excluded from both the count
+ * and the check itself: maxBookingsPerUser caps how many desks a person is
+ * personally occupying, not how many visitors they can host, so hosting
+ * guests shouldn't eat into — or be capped by — that personal quota.
  */
 export async function assertUnderBookingQuota(
   client: Prisma.TransactionClient,
   userId: string,
   isSuperAdmin: boolean,
+  isGuestBooking = false,
 ): Promise<BookabilityResult> {
-  if (isSuperAdmin) return { ok: true }
+  if (isSuperAdmin || isGuestBooking) return { ok: true }
   const org = await client.organisation.findFirst({ select: { maxBookingsPerUser: true } })
   if (!org?.maxBookingsPerUser) return { ok: true }
   const activeCount = await client.booking.count({
-    where: { userId, status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, endsAt: { gt: new Date() } },
+    where: { userId, status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, endsAt: { gt: new Date() }, guestName: null },
   })
   if (activeCount >= org.maxBookingsPerUser) {
     return deny(409, 'MAX_BOOKINGS_EXCEEDED', `You already have ${org.maxBookingsPerUser} active bookings, the maximum allowed`)
