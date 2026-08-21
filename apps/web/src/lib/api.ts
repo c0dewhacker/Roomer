@@ -202,6 +202,8 @@ export const zonesApi = {
 export const zoneGroupsApi = {
   create: (body: { floorId: string; name: string }) =>
     api.post<{ data: { id: string; floorId: string; name: string } }>('/zone-groups', body),
+  update: (id: string, body: { name: string }) =>
+    api.put<{ data: { id: string; floorId: string; name: string } }>(`/zone-groups/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/zone-groups/${id}`),
 }
 

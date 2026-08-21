@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
-import { createZoneSchema, updateZoneSchema, createZoneGroupSchema, GlobalRole } from '@roomer/shared'
+import { createZoneSchema, updateZoneSchema, createZoneGroupSchema, updateZoneGroupSchema, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { isFloorManagerForFloor } from '../middleware/requireRole.js'
 import { cancelFutureBookingsForAssets } from '../lib/queue.js'
@@ -201,6 +201,36 @@ export async function zoneGroupRoutes(fastify: FastifyInstance): Promise<void> {
       })
 
       return reply.status(201).send({ data: group })
+    },
+  )
+
+  // PUT /zone-groups/:id — rename (SUPER_ADMIN or floor manager for the group's floor)
+  fastify.put(
+    '/:id',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const result = updateZoneGroupSchema.safeParse(request.body)
+      if (!result.success) {
+        return reply.status(400).send({
+          error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
+        })
+      }
+
+      const existing = await prisma.zoneGroup.findUnique({ where: { id }, select: { floorId: true } })
+      if (!existing) {
+        return reply.status(404).send({ error: { message: 'Zone group not found', code: 'NOT_FOUND' } })
+      }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isFloorManagerForFloor(request.user.id, existing.floorId)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+
+      const group = await prisma.zoneGroup.update({ where: { id }, data: { name: result.data.name } })
+      return reply.status(200).send({ data: group })
     },
   )
 

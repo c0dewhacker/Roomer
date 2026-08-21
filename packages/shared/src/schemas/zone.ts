@@ -24,6 +24,11 @@ export const createZoneGroupSchema = z.object({
   name: z.string().min(1, 'Zone group name is required').max(255),
 })
 
+export const updateZoneGroupSchema = z.object({
+  name: z.string().min(1, 'Zone group name is required').max(255),
+})
+
 export type CreateZoneInput = z.infer<typeof createZoneSchema>
 export type UpdateZoneInput = z.infer<typeof updateZoneSchema>
 export type CreateZoneGroupInput = z.infer<typeof createZoneGroupSchema>
+export type UpdateZoneGroupInput = z.infer<typeof updateZoneGroupSchema>
