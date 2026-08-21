@@ -5,6 +5,7 @@ import { resolveBuildingTimezone, zonedWallClockToUtc } from './timezone.js'
 import { checkGroupAccess } from '../routes/groups.js'
 import { enqueueNotification, promoteNextQueueEntry, fanOutFloorAvailable, getBoss } from './queue.js'
 import { dispatchWebhook } from './webhook.js'
+import { recordAuditLog } from './audit.js'
 
 /**
  * The asset pool a Ballot draws from: every bookable, currently-open asset
@@ -120,7 +121,7 @@ async function tryAssign(
  * Safe to call more than once for the same run (only OPEN runs are drawn;
  * calling it again on an already-DRAWN run is a no-op).
  */
-export async function runDrawForRun(runId: string): Promise<void> {
+export async function runDrawForRun(runId: string, actorId: string | null = null): Promise<void> {
   const run = await prisma.ballotRun.findUnique({
     where: { id: runId },
     include: { ballot: true, entries: { where: { status: 'ENTERED' } } },
@@ -141,6 +142,8 @@ export async function runDrawForRun(runId: string): Promise<void> {
   const shuffledEntries = shuffle(run.entries)
 
   let assetCursor = 0
+  let wonCount = 0
+  let lostCount = 0
   for (const entry of shuffledEntries) {
     // Re-check access — the user's group/role access may have changed
     // between entering and the draw closing.
@@ -159,6 +162,7 @@ export async function runDrawForRun(runId: string): Promise<void> {
         })
         dispatchWebhook('booking.created', { id: result.bookingId, userId: entry.userId, assetId: candidate.id, startsAt: result.startsAt, endsAt: result.endsAt }).catch(() => {})
         await enqueueNotification({ type: NotificationType.BALLOT_WON, userId: entry.userId, ballotEntryId: entry.id })
+        wonCount++
         break
       }
       // Asset was taken by something else in the meantime — move on, but
@@ -167,8 +171,21 @@ export async function runDrawForRun(runId: string): Promise<void> {
     if (!assigned) {
       await prisma.ballotEntry.update({ where: { id: entry.id }, data: { status: 'LOST' } })
       await enqueueNotification({ type: NotificationType.BALLOT_LOST, userId: entry.userId, ballotEntryId: entry.id })
+      lostCount++
     }
   }
+
+  // One summary row for the whole draw, not one per entrant — actorId is
+  // null when the hourly cron (handleBallotDraw) triggers this, or the
+  // admin's own id when a manual force-draw (POST /runs/:runId/draw) does.
+  await recordAuditLog(prisma, {
+    actorId,
+    action: 'ballot_run.drawn',
+    resourceType: 'BallotRun',
+    resourceId: runId,
+    before: { status: 'OPEN' },
+    after: { status: 'DRAWN', entrants: shuffledEntries.length, wonCount, lostCount },
+  })
 
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[ballot] Drew run', runId, entrants: shuffledEntries.length }) + '\n')
 }
@@ -204,6 +221,14 @@ export async function declineBallotEntry(entryId: string, userId: string): Promi
     prisma.ballotEntry.update({ where: { id: entry.id }, data: { status: 'DECLINED' } }),
   ])
   dispatchWebhook('booking.cancelled', { id: booking.id, userId: entry.userId, assetId }).catch(() => {})
+  await recordAuditLog(prisma, {
+    actorId: userId,
+    action: 'ballot_entry.declined',
+    resourceType: 'BallotEntry',
+    resourceId: entryId,
+    before: { status: 'WON', assetId, bookingId: booking.id },
+    after: { status: 'DECLINED' },
+  })
 
   // Re-draw among this run's LOST entries for the freed asset.
   const losers = shuffle(
@@ -328,7 +353,7 @@ function computeSlotDates(ballot: { slotLeadDays: number; slotDurationDays: numb
  * no-op'd whenever it wasn't yet the scheduled time, while still reporting
  * success back to the caller.
  */
-export async function ensureNextBallotRun(ballotId: string, options: { force?: boolean } = {}): Promise<boolean> {
+export async function ensureNextBallotRun(ballotId: string, options: { force?: boolean; actorId?: string | null } = {}): Promise<boolean> {
   const ballot = await prisma.ballot.findUnique({ where: { id: ballotId } })
   if (!ballot || ballot.status !== 'ACTIVE') return false
 
@@ -342,7 +367,7 @@ export async function ensureNextBallotRun(ballotId: string, options: { force?: b
     const registrationClosesAt = new Date(now.getTime() + ballot.registrationWindowHours * 60 * 60 * 1000)
     const drawDateOnly = new Date(Date.UTC(registrationClosesAt.getUTCFullYear(), registrationClosesAt.getUTCMonth(), registrationClosesAt.getUTCDate()))
     const { slotStartsAt, slotEndsAt } = computeSlotDates(ballot, drawDateOnly)
-    await prisma.ballotRun.create({
+    const run = await prisma.ballotRun.create({
       data: {
         ballotId,
         registrationOpensAt: now,
@@ -350,6 +375,13 @@ export async function ensureNextBallotRun(ballotId: string, options: { force?: b
         slotStartsAt,
         slotEndsAt,
       },
+    })
+    await recordAuditLog(prisma, {
+      actorId: options.actorId ?? null,
+      action: 'ballot_run.opened',
+      resourceType: 'BallotRun',
+      resourceId: run.id,
+      after: { ballotId, registrationOpensAt: run.registrationOpensAt, registrationClosesAt: run.registrationClosesAt },
     })
     return true
   }
@@ -364,7 +396,7 @@ export async function ensureNextBallotRun(ballotId: string, options: { force?: b
   if (alreadyExists) return false
 
   const { slotStartsAt, slotEndsAt } = computeSlotDates(ballot, nextDrawDate)
-  await prisma.ballotRun.create({
+  const run = await prisma.ballotRun.create({
     data: {
       ballotId,
       // The computed value, not `now` — when registrationWindowHours is
@@ -381,6 +413,13 @@ export async function ensureNextBallotRun(ballotId: string, options: { force?: b
       slotStartsAt,
       slotEndsAt,
     },
+  })
+  await recordAuditLog(prisma, {
+    actorId: options.actorId ?? null,
+    action: 'ballot_run.opened',
+    resourceType: 'BallotRun',
+    resourceId: run.id,
+    after: { ballotId, registrationOpensAt: run.registrationOpensAt, registrationClosesAt: run.registrationClosesAt, forced: options.force ?? false },
   })
   return true
 }

@@ -11,6 +11,7 @@ import { lockAssetForQueue } from './booking.js'
 import { resolveBuildingTimezone } from './timezone.js'
 import { getBuildingAdminUserIds } from '../middleware/requireRole.js'
 import { sendPushNotification } from './push.js'
+import { recordAuditLog } from './audit.js'
 
 // Types worth interrupting someone's phone for — the rest stay in-app/email
 // only. Scoped per the #76 phase-2 design discussion: the 3 originally named
@@ -1145,6 +1146,14 @@ async function handleExpireQueueEntries(): Promise<void> {
     })),
   )
 
+  await recordAuditLog(prisma, {
+    actorId: null,
+    action: 'queue_entry.expired_sweep',
+    resourceType: 'QueueEntry',
+    resourceId: randomUUID(),
+    after: { expiredIds: toExpire.map((e) => e.id), count: toExpire.length },
+  })
+
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Expired queue entries', count: toExpire.length }) + '\n')
 }
 
@@ -1192,6 +1201,13 @@ async function handleExpireTransferRequests(): Promise<void> {
       for (const t of stillExpiredTransfers) {
         dispatchWebhook('booking.transfer_expired', { id: t.id }).catch(() => {})
       }
+      await recordAuditLog(prisma, {
+        actorId: null,
+        action: 'booking_transfer.expired_sweep',
+        resourceType: 'BookingTransfer',
+        resourceId: randomUUID(),
+        after: { expiredIds: stillExpiredTransfers.map((t) => t.id), count: stillExpiredTransfers.length },
+      })
     }
   }
 
@@ -1219,6 +1235,13 @@ async function handleExpireTransferRequests(): Promise<void> {
       for (const s of stillExpiredSwaps) {
         dispatchWebhook('booking.swap_expired', { id: s.id }).catch(() => {})
       }
+      await recordAuditLog(prisma, {
+        actorId: null,
+        action: 'booking_swap.expired_sweep',
+        resourceType: 'BookingSwap',
+        resourceId: randomUUID(),
+        after: { expiredIds: stillExpiredSwaps.map((s) => s.id), count: stillExpiredSwaps.length },
+      })
     }
   }
 }
@@ -1264,6 +1287,13 @@ async function handleExpireManagerRequests(): Promise<void> {
   for (const r of stillExpired) {
     dispatchWebhook('manager_request.expired', { id: r.id, userId: r.userId }).catch(() => {})
   }
+  await recordAuditLog(prisma, {
+    actorId: null,
+    action: 'floor_manager_request.expired_sweep',
+    resourceType: 'FloorManagerRequest',
+    resourceId: randomUUID(),
+    after: { expiredIds: stillExpired.map((r) => r.id), count: stillExpired.length },
+  })
 }
 
 // ─── Worker: lease-expiry (cron daily) ────────────────────────────────────────
@@ -1341,6 +1371,13 @@ async function handleAutoCompleteBookings(): Promise<void> {
   for (const booking of bookings) {
     dispatchWebhook('booking.completed', booking).catch(() => {})
   }
+  await recordAuditLog(prisma, {
+    actorId: null,
+    action: 'booking.auto_completed_sweep',
+    resourceType: 'Booking',
+    resourceId: randomUUID(),
+    after: { completedIds: bookings.map((b) => b.id), count: bookings.length },
+  })
 
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Auto-completed past bookings', count: bookings.length }) + '\n')
 }
@@ -1454,6 +1491,14 @@ async function handleReleaseNoShows(): Promise<void> {
     }
   }
 
+  await recordAuditLog(prisma, {
+    actorId: null,
+    action: 'booking.no_show_released_sweep',
+    resourceType: 'Booking',
+    resourceId: randomUUID(),
+    after: { releasedIds: toRelease.map((b) => b.id), count: toRelease.length },
+  })
+
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Released no-show bookings', count: toRelease.length }) + '\n')
 }
 
@@ -1538,6 +1583,14 @@ async function handleExpireClaimDeadlines(): Promise<void> {
       dispatchWebhook('queue.promoted', { id: nextEntry.id, userId: nextEntry.userId, assetId: nextEntry.assetId, claimDeadline: nextEntry.claimDeadline.toISOString() }).catch(() => {})
     }
   }
+
+  await recordAuditLog(prisma, {
+    actorId: null,
+    action: 'queue_entry.claim_expired_sweep',
+    resourceType: 'QueueEntry',
+    resourceId: randomUUID(),
+    after: { expiredIds: stillExpired.map((e) => e.id), count: stillExpired.length },
+  })
 
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Processed expired claim deadlines', count: expiredPromoted.length }) + '\n')
 }
@@ -1634,6 +1687,14 @@ async function handleAutoRejectPendingApprovals(): Promise<void> {
         .catch((err) => process.stderr.write(JSON.stringify({ level: 'warn', msg: '[queue] floor fan-out error', err: String(err) }) + '\n'))
     }
   }
+
+  await recordAuditLog(prisma, {
+    actorId: null,
+    action: 'booking.auto_rejected_sweep',
+    resourceType: 'Booking',
+    resourceId: randomUUID(),
+    after: { rejectedIds: stillPending.map((b) => b.id), count: stillPending.length, note: AUTO_REJECT_NOTE },
+  })
 
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Auto-rejected expired pending-approval bookings', count: stillPending.length }) + '\n')
 }

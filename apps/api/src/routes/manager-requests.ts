@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { isBuildingManagerForBuilding, isFloorManagerForFloor, getManagedBuildingIds, getBuildingAdminUserIds } from '../middleware/requireRole.js'
 import { enqueueNotification } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
+import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
 // How long an unactioned request stays open before the expire-manager-requests
@@ -71,9 +72,18 @@ export async function managerRequestRoutes(fastify: FastifyInstance): Promise<vo
         throw Object.assign(new Error('ALREADY_PENDING'), { code: 'ALREADY_PENDING' })
       }
 
-      return tx.floorManagerRequest.create({
+      const req = await tx.floorManagerRequest.create({
         data: { userId: request.user.id, floorId, note: note ?? null, expiresAt },
       })
+      await recordAuditLog(tx, {
+        actorId: request.user.id,
+        action: 'floor_manager_request.created',
+        resourceType: 'FloorManagerRequest',
+        resourceId: req.id,
+        after: { userId: request.user.id, floorId, note: req.note },
+        ipAddress: request.ip,
+      }, request.log)
+      return req
     }).catch((err) => {
       if ((err as { code?: string }).code === 'ALREADY_PENDING') return null
       throw err
@@ -165,9 +175,26 @@ export async function managerRequestRoutes(fastify: FastifyInstance): Promise<vo
           where: { id },
           data: { status: 'APPROVED', reviewedById: request.user.id, reviewedAt: new Date() },
         })
-        await tx.userResourceRole.create({
+        const role = await tx.userResourceRole.create({
           data: { userId: req.userId, role: 'FLOOR_MANAGER', scopeType: 'FLOOR', floorId: req.floorId },
         })
+        await recordAuditLog(tx, {
+          actorId: request.user.id,
+          action: 'floor_manager_request.approved',
+          resourceType: 'FloorManagerRequest',
+          resourceId: id,
+          before: { status: 'PENDING' },
+          after: { status: 'APPROVED', reviewedById: request.user.id },
+          ipAddress: request.ip,
+        }, request.log)
+        await recordAuditLog(tx, {
+          actorId: request.user.id,
+          action: 'user_resource_role.granted',
+          resourceType: 'UserResourceRole',
+          resourceId: role.id,
+          after: { userId: req.userId, role: 'FLOOR_MANAGER', scopeType: 'FLOOR', floorId: req.floorId },
+          ipAddress: request.ip,
+        }, request.log)
       })
     } catch (err) {
       // Unique constraint on UserResourceRole — the user picked up the same
@@ -179,6 +206,15 @@ export async function managerRequestRoutes(fastify: FastifyInstance): Promise<vo
           where: { id },
           data: { status: 'APPROVED', reviewedById: request.user.id, reviewedAt: new Date() },
         })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'floor_manager_request.approved',
+          resourceType: 'FloorManagerRequest',
+          resourceId: id,
+          before: { status: 'PENDING' },
+          after: { status: 'APPROVED', reviewedById: request.user.id },
+          ipAddress: request.ip,
+        }, request.log)
       } else {
         throw err
       }
@@ -216,6 +252,15 @@ export async function managerRequestRoutes(fastify: FastifyInstance): Promise<vo
       where: { id },
       data: { status: 'REJECTED', reviewedById: request.user.id, reviewedAt: new Date(), reviewNote: result.data.reviewNote ?? null },
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'floor_manager_request.rejected',
+      resourceType: 'FloorManagerRequest',
+      resourceId: id,
+      before: { status: 'PENDING' },
+      after: { status: 'REJECTED', reviewedById: request.user.id, reviewNote: result.data.reviewNote ?? null },
+      ipAddress: request.ip,
+    }, request.log)
 
     await enqueueNotification({ type: NotificationType.MANAGER_REQUEST_REJECTED, userId: req.userId, managerRequestId: req.id })
     dispatchWebhook('manager_request.rejected', { id: req.id, userId: req.userId, floorId: req.floorId, reviewedById: request.user.id }).catch(() => {})
@@ -235,6 +280,15 @@ export async function managerRequestRoutes(fastify: FastifyInstance): Promise<vo
       return reply.status(409).send({ error: { message: 'This request is no longer pending', code: 'NOT_PENDING' } })
     }
     await prisma.floorManagerRequest.update({ where: { id }, data: { status: 'CANCELLED' } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'floor_manager_request.cancelled',
+      resourceType: 'FloorManagerRequest',
+      resourceId: id,
+      before: { status: 'PENDING' },
+      after: { status: 'CANCELLED' },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 }

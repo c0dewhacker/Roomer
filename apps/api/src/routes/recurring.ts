@@ -8,6 +8,7 @@ import { dispatchWebhook } from '../lib/webhook.js'
 import { assertBookable, isWithinAdvanceBookingWindow, lockAssetForBooking, lockUserForBookingQuota, checkZoneGroupOverlap, isOverlapConstraintViolation, resolveRequiresApproval } from '../lib/booking.js'
 import { resolveBuildingTimezone, zonedWallClockToUtc } from '../lib/timezone.js'
 import { getBuildingAdminUserIds, getFloorManagerUserIds } from '../middleware/requireRole.js'
+import { recordAuditLog } from '../lib/audit.js'
 
 const createRecurringSchema = z.object({
   assetId: z.string().min(1),
@@ -302,6 +303,18 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
           dispatchWebhook('booking.created', { id: b.id, userId: request.user.id, assetId, startsAt: b.startsAt, endsAt: b.endsAt }).catch(() => {})
         }
       }
+
+      // One summary row for the whole series, not one per materialised
+      // occurrence — a series is one booking decision (see the approval
+      // notification logic above, which applies the same reasoning).
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'recurring_booking_rule.created',
+        resourceType: 'RecurringBookingRule',
+        resourceId: rule.id,
+        after: { assetId, frequency, firstDate, lastDate, occurrenceCount: rule.bookings.length, requiresApproval },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(201).send({ data: rule })
     } catch (err: unknown) {
@@ -667,6 +680,19 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
         }
       }
 
+      // One summary row per PATCH call, not one per occurrence created/cancelled.
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: outcome.kind === 'extend' ? 'recurring_booking_rule.extended' : 'recurring_booking_rule.shortened',
+        resourceType: 'RecurringBookingRule',
+        resourceId: id,
+        before: { lastDate: rule.lastDate },
+        after: outcome.kind === 'extend'
+          ? { lastDate: outcome.rule.lastDate, newOccurrenceCount: outcome.newlyCreated.length }
+          : { lastDate: outcome.rule.lastDate, droppedOccurrenceCount: outcome.droppedBookings.length },
+        ipAddress: request.ip,
+      }, request.log)
+
       return reply.status(200).send({ data: outcome.rule })
     } catch (err: unknown) {
       const e = err as { code?: string; conflictAt?: string; status?: number; message?: string }
@@ -762,6 +788,16 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
         data: { status: 'CANCELLED' },
       }),
     ])
+    // One summary row for the whole cancellation, not one per cancelled occurrence.
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'recurring_booking_rule.cancelled',
+      resourceType: 'RecurringBookingRule',
+      resourceId: id,
+      before: { status: rule.status },
+      after: { status: 'CANCELLED', cancelledOccurrenceCount: futureBookings.length },
+      ipAddress: request.ip,
+    }, request.log)
 
     // A recurring rule is always for a single asset — fetched once, only used
     // in the "nobody was queued" branch below. Same fan-out a single ad-hoc

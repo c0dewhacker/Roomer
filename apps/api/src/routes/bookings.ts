@@ -13,6 +13,7 @@ import { sendEmail, renderGuestBookingInvite } from '../lib/mailer.js'
 import { checkGroupAccess } from './groups.js'
 import { assertBookable, assertUnderBookingQuota, hasBlockingOverlap, checkZoneGroupOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, lockUserForBookingQuota, isOverlapConstraintViolation, resolveRequiresApproval } from '../lib/booking.js'
 import { resolveBuildingTimezone } from '../lib/timezone.js'
+import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
 class BookingConflictError extends Error {
@@ -435,6 +436,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'booking.created',
+      resourceType: 'Booking',
+      resourceId: booking.id,
+      after: { assetId: booking.assetId, startsAt: booking.startsAt, endsAt: booking.endsAt, status: booking.status, guestName: booking.guestName },
+      ipAddress: request.ip,
+    }, request.log)
+
     return reply.status(201).send({ data: booking })
   })
 
@@ -541,6 +551,14 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     const updated = await prisma.booking.update({ where: { id }, data: { checkedInAt: new Date() } })
     dispatchWebhook('booking.checked_in', { id: updated.id, userId: updated.userId, assetId: updated.assetId, checkedInAt: updated.checkedInAt }).catch(() => {})
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'booking.checked_in',
+      resourceType: 'Booking',
+      resourceId: id,
+      after: { checkedInAt: updated.checkedInAt },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { id: updated.id, checkedInAt: updated.checkedInAt } })
   })
 
@@ -578,6 +596,17 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     const updated = await prisma.booking.update({ where: { id: booking.id }, data: { checkedInAt: now } })
     dispatchWebhook('booking.checked_in', { id: updated.id, userId: updated.userId, assetId: updated.assetId, checkedInAt: updated.checkedInAt }).catch(() => {})
+    // actorId is the booking's own owner — this endpoint is deliberately
+    // unauthenticated (a guest check-in link), but the identity is known
+    // exactly via the booking it's tied to, not a system/cron action.
+    await recordAuditLog(prisma, {
+      actorId: updated.userId,
+      action: 'booking.guest_checked_in',
+      resourceType: 'Booking',
+      resourceId: updated.id,
+      after: { checkedInAt: updated.checkedInAt },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { guestName: booking.guestName, checkedInAt: updated.checkedInAt } })
   })
 
@@ -701,6 +730,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     dispatchWebhook('booking.modified', { id: updated.id, userId: updated.userId, assetId: updated.assetId, startsAt: updated.startsAt, endsAt: updated.endsAt }).catch(() => {})
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'booking.modified',
+      resourceType: 'Booking',
+      resourceId: id,
+      before: { startsAt: booking.startsAt, endsAt: booking.endsAt, notes: booking.notes, attendeeCount: booking.attendeeCount },
+      after: { startsAt: updated.startsAt, endsAt: updated.endsAt, notes: updated.notes, attendeeCount: updated.attendeeCount },
+      ipAddress: request.ip,
+    }, request.log)
 
     // Re-send the booking notification (in-app + email + a fresh .ics REQUEST
     // attachment, same rendering path as the original confirmation) whenever
@@ -782,6 +820,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     await prisma.booking.update({ where: { id }, data: { status: 'CANCELLED' } })
 
     dispatchWebhook('booking.cancelled', { id: booking.id, userId: booking.userId, assetId: booking.assetId }).catch(() => {})
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'booking.cancelled',
+      resourceType: 'Booking',
+      resourceId: id,
+      before: { status: booking.status, startsAt: booking.startsAt, endsAt: booking.endsAt },
+      after: { status: 'CANCELLED' },
+      ipAddress: request.ip,
+    }, request.log)
 
     // Notify the original booker
     const notificationType = !isSelf
@@ -933,6 +980,18 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       )
     }
 
+    // One summary row for the whole decision, not one per occurrence — a
+    // recurring series' pending occurrences are approved as a single unit.
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'booking.approved',
+      resourceType: 'Booking',
+      resourceId: id,
+      before: { status: 'PENDING_APPROVAL' },
+      after: { status: 'CONFIRMED', approvedCount: affected.length },
+      ipAddress: request.ip,
+    }, request.log)
+
     return reply.status(200).send({ data: { ok: true, approvedCount: affected.length } })
   })
 
@@ -991,6 +1050,16 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       userId: booking.userId,
       bookingId: affected[0].id,
     })
+
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'booking.rejected',
+      resourceType: 'Booking',
+      resourceId: id,
+      before: { status: 'PENDING_APPROVAL' },
+      after: { status: 'CANCELLED', rejectedCount: affected.length, rejectionNote: note },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(200).send({ data: { ok: true, rejectedCount: affected.length } })
   })
@@ -1057,6 +1126,14 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       transferId: transfer.id,
     })
     dispatchWebhook('booking.transfer_requested', { id: transfer.id, bookingId: id, fromUserId: request.user.id, toUserId }).catch(() => {})
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'booking_transfer.requested',
+      resourceType: 'BookingTransfer',
+      resourceId: transfer.id,
+      after: { bookingId: id, fromUserId: request.user.id, toUserId },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(201).send({ data: transfer })
   })
@@ -1173,6 +1250,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     await enqueueNotification({ type: NotificationType.BOOKING_TRANSFER_ACCEPTED, userId: transfer.fromUserId, transferId: transfer.id })
     await enqueueNotification({ type: NotificationType.BOOKING_CONFIRMED, userId: request.user.id, bookingId: transfer.bookingId })
     dispatchWebhook('booking.transfer_accepted', { id: transfer.id, bookingId: transfer.bookingId, fromUserId: transfer.fromUserId, toUserId: transfer.toUserId }).catch(() => {})
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'booking_transfer.accepted',
+      resourceType: 'Booking',
+      resourceId: transfer.bookingId,
+      before: { userId: transfer.fromUserId },
+      after: { userId: request.user.id },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(200).send({ data: { ok: true } })
   })
@@ -1191,6 +1277,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     await prisma.bookingTransfer.update({ where: { id }, data: { status: 'DECLINED', respondedAt: new Date() } })
     await enqueueNotification({ type: NotificationType.BOOKING_TRANSFER_DECLINED, userId: transfer.fromUserId, transferId: transfer.id })
     dispatchWebhook('booking.transfer_declined', { id: transfer.id, bookingId: transfer.bookingId, fromUserId: transfer.fromUserId, toUserId: transfer.toUserId }).catch(() => {})
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'booking_transfer.declined',
+      resourceType: 'BookingTransfer',
+      resourceId: id,
+      before: { status: 'PENDING' },
+      after: { status: 'DECLINED' },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 
@@ -1206,6 +1301,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(409).send({ error: { message: 'This transfer request is no longer pending', code: 'NOT_PENDING' } })
     }
     await prisma.bookingTransfer.update({ where: { id }, data: { status: 'CANCELLED', respondedAt: new Date() } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'booking_transfer.cancelled',
+      resourceType: 'BookingTransfer',
+      resourceId: id,
+      before: { status: 'PENDING' },
+      after: { status: 'CANCELLED' },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 
@@ -1319,6 +1423,14 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     await enqueueNotification({ type: NotificationType.BOOKING_SWAP_REQUESTED, userId: bookingB.userId, swapId: swap.id })
     dispatchWebhook('booking.swap_requested', { id: swap.id, bookingAId: id, bookingBId: withBookingId, initiatorUserId: request.user.id, recipientUserId: bookingB.userId }).catch(() => {})
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'booking_swap.requested',
+      resourceType: 'BookingSwap',
+      resourceId: swap.id,
+      after: { bookingAId: id, bookingBId: withBookingId, initiatorUserId: request.user.id, recipientUserId: bookingB.userId },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(201).send({ data: swap })
   })
@@ -1446,6 +1558,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     await enqueueNotification({ type: NotificationType.BOOKING_CANCELLED, userId: swap.initiatorUserId, bookingId: swap.bookingAId })
     await enqueueNotification({ type: NotificationType.BOOKING_CANCELLED, userId: swap.recipientUserId, bookingId: swap.bookingBId })
     dispatchWebhook('booking.swap_accepted', { id: swap.id, bookingAId: swap.bookingAId, bookingBId: swap.bookingBId, initiatorUserId: swap.initiatorUserId, recipientUserId: swap.recipientUserId }).catch(() => {})
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'booking_swap.accepted',
+      resourceType: 'BookingSwap',
+      resourceId: id,
+      before: { status: 'PENDING' },
+      after: { status: 'ACCEPTED', bookingAId: swap.bookingAId, bookingBId: swap.bookingBId },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(200).send({ data: { ok: true } })
   })
@@ -1464,6 +1585,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     await prisma.bookingSwap.update({ where: { id }, data: { status: 'DECLINED', respondedAt: new Date() } })
     await enqueueNotification({ type: NotificationType.BOOKING_SWAP_DECLINED, userId: swap.initiatorUserId, swapId: swap.id })
     dispatchWebhook('booking.swap_declined', { id: swap.id, bookingAId: swap.bookingAId, bookingBId: swap.bookingBId, initiatorUserId: swap.initiatorUserId, recipientUserId: swap.recipientUserId }).catch(() => {})
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'booking_swap.declined',
+      resourceType: 'BookingSwap',
+      resourceId: id,
+      before: { status: 'PENDING' },
+      after: { status: 'DECLINED' },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 
@@ -1479,6 +1609,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(409).send({ error: { message: 'This swap request is no longer pending', code: 'NOT_PENDING' } })
     }
     await prisma.bookingSwap.update({ where: { id }, data: { status: 'CANCELLED', respondedAt: new Date() } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'booking_swap.cancelled',
+      resourceType: 'BookingSwap',
+      resourceId: id,
+      before: { status: 'PENDING' },
+      after: { status: 'CANCELLED' },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 }

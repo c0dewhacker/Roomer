@@ -6,6 +6,7 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { getManagedBuildingIds, getManagedFloorIds } from '../middleware/requireRole.js'
 import { checkGroupAccess } from './groups.js'
 import { ensureNextBallotRun, runDrawForRun, declineBallotEntry, resolveBallotAssetPool } from '../lib/ballot.js'
+import { recordAuditLog } from '../lib/audit.js'
 
 /**
  * True when the caller may create/manage a ballot over this scope: SUPER_ADMIN,
@@ -70,10 +71,18 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
       data: { ...result.data, createdByUserId: request.user.id },
       select: ballotSelect,
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'ballot.created',
+      resourceType: 'Ballot',
+      resourceId: ballot.id,
+      after: { name: ballot.name, buildingIds: ballot.buildingIds, floorIds: ballot.floorIds, frequency: ballot.frequency },
+      ipAddress: request.ip,
+    }, request.log)
     // A ONCE ballot's single run opens immediately; a recurring one waits
     // for its first scheduled cycle via the ballot-open-registration cron.
     if (ballot.frequency === 'ONCE') {
-      await ensureNextBallotRun(ballot.id)
+      await ensureNextBallotRun(ballot.id, { actorId: request.user.id })
     }
     return reply.status(201).send({ data: ballot })
   })
@@ -122,6 +131,15 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     const updated = await prisma.ballot.update({ where: { id }, data: result.data, select: ballotSelect })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'ballot.updated',
+      resourceType: 'Ballot',
+      resourceId: id,
+      before: { name: existing.name, buildingIds: existing.buildingIds, floorIds: existing.floorIds, status: existing.status },
+      after: { name: updated.name, buildingIds: updated.buildingIds, floorIds: updated.floorIds, status: updated.status },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: updated })
   })
 
@@ -135,6 +153,14 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
     }
     await prisma.ballot.delete({ where: { id } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'ballot.deleted',
+      resourceType: 'Ballot',
+      resourceId: id,
+      before: { name: existing.name, buildingIds: existing.buildingIds, floorIds: existing.floorIds },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 
@@ -167,7 +193,7 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
     if (ballot.status !== 'ACTIVE') {
       return reply.status(409).send({ error: { message: 'Ballot is not active', code: 'BALLOT_NOT_ACTIVE' } })
     }
-    const created = await ensureNextBallotRun(id, { force: true })
+    const created = await ensureNextBallotRun(id, { force: true, actorId: request.user.id })
     if (!created) {
       // `force: true` bypasses the schedule gate, so this can only mean a
       // run already exists — either a ONCE ballot's one-and-only run, or a
@@ -215,7 +241,7 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
     if (run.status !== 'OPEN') {
       return reply.status(409).send({ error: { message: 'This run has already been drawn or cancelled', code: 'RUN_NOT_OPEN' } })
     }
-    await runDrawForRun(runId)
+    await runDrawForRun(runId, request.user.id)
     return reply.status(200).send({ data: { ok: true } })
   })
 
@@ -258,6 +284,14 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
 
     try {
       const entry = await prisma.ballotEntry.create({ data: { runId, userId: request.user.id } })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'ballot_entry.entered',
+        resourceType: 'BallotEntry',
+        resourceId: entry.id,
+        after: { runId, userId: request.user.id },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(201).send({ data: entry })
     } catch {
       return reply.status(409).send({ error: { message: 'You have already entered this ballot', code: 'ALREADY_ENTERED' } })
@@ -273,6 +307,14 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(409).send({ error: { message: 'This ballot has already been drawn', code: 'ALREADY_DRAWN' } })
     }
     await prisma.ballotEntry.delete({ where: { id: entry.id } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'ballot_entry.withdrawn',
+      resourceType: 'BallotEntry',
+      resourceId: entry.id,
+      before: { runId, userId: request.user.id },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 

@@ -15,6 +15,7 @@ import {
   isOverlapConstraintViolation,
   isWithinAdvanceBookingWindow,
 } from '../lib/booking.js'
+import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
 class QuotaExceededError extends Error {
@@ -117,7 +118,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
         },
       })
 
-      return tx.queueEntry.create({
+      const created = await tx.queueEntry.create({
         data: {
           userId: request.user.id,
           assetId,
@@ -138,6 +139,15 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
           },
         },
       })
+      await recordAuditLog(tx, {
+        actorId: request.user.id,
+        action: 'queue_entry.joined',
+        resourceType: 'QueueEntry',
+        resourceId: created.id,
+        after: { assetId, wantedStartsAt, wantedEndsAt, position: created.position },
+        ipAddress: request.ip,
+      }, request.log)
+      return created
     }).catch((err) => {
       if ((err as { code?: string }).code === 'ALREADY_QUEUED') return null
       throw err
@@ -203,6 +213,16 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
         },
         data: { position: { decrement: 1 } },
       })
+
+      await recordAuditLog(tx, {
+        actorId: request.user.id,
+        action: 'queue_entry.left',
+        resourceType: 'QueueEntry',
+        resourceId: id,
+        before: { status: entry.status, assetId: entry.assetId, position: entry.position },
+        after: { status: 'CANCELLED' },
+        ipAddress: request.ip,
+      }, request.log)
     })
 
     dispatchWebhook('queue.cancelled', { id: entry.id, userId: entry.userId, assetId: entry.assetId }).catch(() => {})
@@ -356,6 +376,17 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
     })
 
     dispatchWebhook('queue.claimed', { id: entry.id, userId: entry.userId, assetId: entry.assetId, bookingId: result.id }).catch(() => {})
+    // actorId is the entry's own owner — this endpoint is deliberately
+    // unauthenticated (an email-link claim), but the identity is known
+    // exactly (the queue entry it's tied to), not a system/cron action.
+    await recordAuditLog(prisma, {
+      actorId: entry.userId,
+      action: 'queue_entry.claimed_by_token',
+      resourceType: 'Booking',
+      resourceId: result.id,
+      after: { assetId: entry.assetId, startsAt: result.startsAt, endsAt: result.endsAt },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(201).send({ data: { booking: result, queueEntry: { id: entry.id, status: 'CLAIMED' } } })
   })
@@ -494,6 +525,14 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
     })
 
     dispatchWebhook('queue.claimed', { id: entry.id, userId: entry.userId, assetId: entry.assetId, bookingId: booking.id }).catch(() => {})
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'queue_entry.claimed',
+      resourceType: 'Booking',
+      resourceId: booking.id,
+      after: { assetId: entry.assetId, startsAt: booking.startsAt, endsAt: booking.endsAt },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(201).send({ data: { booking, queueEntry: { id, status: 'CLAIMED' } } })
   })
