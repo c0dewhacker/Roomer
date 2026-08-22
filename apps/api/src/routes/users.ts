@@ -686,30 +686,52 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
         })
       }
 
-      try {
-        const role = await prisma.userResourceRole.create({
-          data: {
-            userId: id,
-            role: result.data.role,
-            scopeType: result.data.scopeType,
-            buildingId: result.data.buildingId ?? null,
-            floorId: result.data.floorId ?? null,
-          },
-        })
-        await recordAuditLog(prisma, {
-          actorId: request.user.id,
-          action: 'user_resource_role.granted',
-          resourceType: 'UserResourceRole',
-          resourceId: role.id,
-          after: { userId: id, role: role.role, scopeType: role.scopeType, buildingId: role.buildingId, floorId: role.floorId },
-          ipAddress: request.ip,
-        }, request.log)
-        return reply.status(201).send({ data: role })
-      } catch {
+      // The unique index on UserResourceRole is (userId, scopeType, buildingId,
+      // floorId), but a BUILDING-scope row always has floorId NULL and a
+      // FLOOR-scope row always has buildingId NULL — Postgres treats NULL <>
+      // NULL for uniqueness, so that constraint never actually fires for
+      // either scope and the same user could be assigned the same role twice.
+      // POST /buildings/:id/managers already guards its equivalent case with
+      // this same explicit findFirst (see its own comment) — this generic
+      // endpoint (the *only* grant path for FLOOR_MANAGER; there is no
+      // POST /floors/:id/managers) never had it. Without this, revoking one
+      // of the two duplicate grants via DELETE below (which deletes exactly
+      // the row id given, correctly for a single grant) left the other
+      // grant — and therefore the access — silently in place, looking to the
+      // admin like a successful, complete revocation.
+      const existing = await prisma.userResourceRole.findFirst({
+        where: {
+          userId: id,
+          role: result.data.role,
+          scopeType: result.data.scopeType,
+          buildingId: result.data.buildingId ?? null,
+          floorId: result.data.floorId ?? null,
+        },
+      })
+      if (existing) {
         return reply.status(409).send({
           error: { message: 'Role already assigned', code: 'ALREADY_EXISTS' },
         })
       }
+
+      const role = await prisma.userResourceRole.create({
+        data: {
+          userId: id,
+          role: result.data.role,
+          scopeType: result.data.scopeType,
+          buildingId: result.data.buildingId ?? null,
+          floorId: result.data.floorId ?? null,
+        },
+      })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user_resource_role.granted',
+        resourceType: 'UserResourceRole',
+        resourceId: role.id,
+        after: { userId: id, role: role.role, scopeType: role.scopeType, buildingId: role.buildingId, floorId: role.floorId },
+        ipAddress: request.ip,
+      }, request.log)
+      return reply.status(201).send({ data: role })
     },
   )
 
