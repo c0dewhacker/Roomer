@@ -1636,17 +1636,33 @@ async function handleAutoRejectPendingApprovals(): Promise<void> {
 
   const AUTO_REJECT_NOTE = 'Auto-rejected: no response within the approval window'
 
-  await prisma.booking.updateMany({
+  const claimed = await prisma.booking.updateMany({
     where: { id: { in: stillPending.map((b) => b.id) }, status: 'PENDING_APPROVAL' },
     data: { status: 'CANCELLED', rejectionNote: AUTO_REJECT_NOTE, approvalExpiresAt: null },
   })
+  if (claimed.count === 0) return
+
+  // The guarded updateMany above already correctly skips a booking a human
+  // just approved/rejected in the gap between the stillPending read and this
+  // write — but everything below this point must act on exactly the rows it
+  // actually touched, not the (potentially stale) stillPending snapshot.
+  // Without this, that same race lets a booking a human just approved get a
+  // spurious "cancelled" webhook, a contradictory BOOKING_REJECTED
+  // notification, and promoteNextQueueEntry attempting to hand its
+  // still-occupied slot to the next queue entrant.
+  const actuallyRejected = claimed.count === stillPending.length
+    ? stillPending
+    : await prisma.booking.findMany({
+        where: { id: { in: stillPending.map((b) => b.id) }, status: 'CANCELLED', rejectionNote: AUTO_REJECT_NOTE },
+        select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
+      })
 
   // A recurring series' occurrences all share the same approvalExpiresAt (set
   // once at creation — see POST /recurring-bookings), so a whole rule expires
   // together in the same sweep. Mark it CANCELLED the same way a manual
   // reject does (POST /bookings/:id/reject), rather than leaving it ACTIVE
   // with zero bookings and no obvious reason why.
-  const ruleIds = [...new Set(stillPending.map((b) => b.recurringRuleId).filter((v): v is string => !!v))]
+  const ruleIds = [...new Set(actuallyRejected.map((b) => b.recurringRuleId).filter((v): v is string => !!v))]
   if (ruleIds.length > 0) {
     await prisma.recurringBookingRule.updateMany({
       where: { id: { in: ruleIds }, status: { not: 'CANCELLED' } },
@@ -1654,7 +1670,7 @@ async function handleAutoRejectPendingApprovals(): Promise<void> {
     })
   }
 
-  for (const b of stillPending) {
+  for (const b of actuallyRejected) {
     dispatchWebhook('booking.cancelled', { id: b.id, userId: b.userId, assetId: b.assetId }).catch(() => {})
   }
 
@@ -1663,8 +1679,8 @@ async function handleAutoRejectPendingApprovals(): Promise<void> {
   // catch several independent series/standalone bookings at once, so group
   // by recurringRuleId (falling back to the booking's own id when standalone)
   // and notify once per group, referencing its earliest occurrence.
-  const groups = new Map<string, typeof stillPending>()
-  for (const b of stillPending) {
+  const groups = new Map<string, typeof actuallyRejected>()
+  for (const b of actuallyRejected) {
     const key = b.recurringRuleId ?? `single:${b.id}`
     const group = groups.get(key)
     if (group) group.push(b)
@@ -1681,7 +1697,7 @@ async function handleAutoRejectPendingApprovals(): Promise<void> {
 
   // Release each freed slot — promote the next queued entry and fan out to
   // floor subscribers, same as any other booking cancellation.
-  for (const b of stillPending) {
+  for (const b of actuallyRejected) {
     const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
     if (nextQueued) {
       await enqueueNotification({
@@ -1705,10 +1721,10 @@ async function handleAutoRejectPendingApprovals(): Promise<void> {
     action: 'booking.auto_rejected_sweep',
     resourceType: 'Booking',
     resourceId: randomUUID(),
-    after: { rejectedIds: stillPending.map((b) => b.id), count: stillPending.length, note: AUTO_REJECT_NOTE },
+    after: { rejectedIds: actuallyRejected.map((b) => b.id), count: actuallyRejected.length, note: AUTO_REJECT_NOTE },
   })
 
-  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Auto-rejected expired pending-approval bookings', count: stillPending.length }) + '\n')
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Auto-rejected expired pending-approval bookings', count: actuallyRejected.length }) + '\n')
 }
 
 // ─── Worker: send-booking-reminders (cron every 15 min) ──────────────────────

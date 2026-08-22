@@ -1008,10 +1008,23 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         })
       : [{ id: booking.id, assetId: booking.assetId, startsAt: booking.startsAt, endsAt: booking.endsAt }]
 
-    await prisma.booking.updateMany({
-      where: { id: { in: affected.map((b) => b.id) } },
+    // Claimed atomically (status: 'PENDING_APPROVAL' guard), not an
+    // unconditional update — otherwise this can race a concurrent reject (or
+    // the auto-reject-pending-approvals cron) that read PENDING_APPROVAL
+    // before either commits: whichever side's write lands last would
+    // silently overwrite the other's status with no error, while BOTH
+    // sides' webhooks/notifications/audit rows still fire — a booking that
+    // ends up CANCELLED can still get a booking.created webhook and a
+    // BOOKING_APPROVED email, or (worse) one that ends up CONFIRMED can
+    // still have releaseRejectedSlot hand its still-occupied slot to the
+    // next queued user, a real path to a double-booked desk.
+    const claimed = await prisma.booking.updateMany({
+      where: { id: { in: affected.map((b) => b.id) }, status: 'PENDING_APPROVAL' },
       data: { status: 'CONFIRMED', approvedAt: now, approvedByUserId: request.user.id, approvalExpiresAt: null },
     })
+    if (claimed.count === 0) {
+      return reply.status(409).send({ error: { message: 'Booking is not pending approval', code: 'BOOKING_NOT_PENDING' } })
+    }
 
     for (const b of affected) {
       dispatchWebhook('booking.created', { id: b.id, userId: booking.userId, assetId: b.assetId, startsAt: b.startsAt, endsAt: b.endsAt }).catch(() => {})
@@ -1047,11 +1060,11 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       resourceType: 'Booking',
       resourceId: id,
       before: { status: 'PENDING_APPROVAL' },
-      after: { status: 'CONFIRMED', approvedCount: affected.length },
+      after: { status: 'CONFIRMED', approvedCount: claimed.count },
       ipAddress: request.ip,
     }, request.log)
 
-    return reply.status(200).send({ data: { ok: true, approvedCount: affected.length } })
+    return reply.status(200).send({ data: { ok: true, approvedCount: claimed.count } })
   })
 
   const rejectBookingSchema = z.object({ note: z.string().max(1000).optional() })
@@ -1088,17 +1101,32 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         })
       : [{ id: booking.id, assetId: booking.assetId, startsAt: booking.startsAt, endsAt: booking.endsAt }]
 
-    await prisma.$transaction([
-      prisma.booking.updateMany({
-        where: { id: { in: affected.map((b) => b.id) } },
+    // Claimed atomically (status: 'PENDING_APPROVAL' guard), not an
+    // unconditional update — same reasoning as approve above: without this,
+    // a concurrent approve (or the auto-reject-pending-approvals cron) could
+    // race this call, and whichever write lands last silently overwrites the
+    // other's status while both sides' webhooks/notifications/audit rows
+    // still fire regardless. The recurring-rule cancellation is only applied
+    // if this call actually won the claim — an interactive transaction
+    // (rather than the array form) is needed so that second statement can be
+    // conditional on the first's result.
+    const claimedCount = await prisma.$transaction(async (tx) => {
+      const claimed = await tx.booking.updateMany({
+        where: { id: { in: affected.map((b) => b.id) }, status: 'PENDING_APPROVAL' },
         data: { status: 'CANCELLED', rejectionNote: note, approvedByUserId: request.user.id, approvalExpiresAt: null },
-      }),
+      })
       // A rejected series never had a single CONFIRMED occurrence — same as
       // the full-cancel path (DELETE /recurring-bookings/:id), the rule
       // itself moves to CANCELLED rather than sitting ACTIVE with zero
       // bookings and no obvious way to tell it was rejected wholesale.
-      ...(booking.recurringRuleId ? [prisma.recurringBookingRule.update({ where: { id: booking.recurringRuleId }, data: { status: 'CANCELLED' } })] : []),
-    ])
+      if (claimed.count > 0 && booking.recurringRuleId) {
+        await tx.recurringBookingRule.updateMany({ where: { id: booking.recurringRuleId, status: 'ACTIVE' }, data: { status: 'CANCELLED' } })
+      }
+      return claimed.count
+    })
+    if (claimedCount === 0) {
+      return reply.status(409).send({ error: { message: 'Booking is not pending approval', code: 'BOOKING_NOT_PENDING' } })
+    }
 
     for (const b of affected) {
       dispatchWebhook('booking.cancelled', { id: b.id, userId: booking.userId, assetId: b.assetId }).catch(() => {})
@@ -1116,11 +1144,11 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       resourceType: 'Booking',
       resourceId: id,
       before: { status: 'PENDING_APPROVAL' },
-      after: { status: 'CANCELLED', rejectedCount: affected.length, rejectionNote: note },
+      after: { status: 'CANCELLED', rejectedCount: claimedCount, rejectionNote: note },
       ipAddress: request.ip,
     }, request.log)
 
-    return reply.status(200).send({ data: { ok: true, rejectedCount: affected.length } })
+    return reply.status(200).send({ data: { ok: true, rejectedCount: claimedCount } })
   })
 
   // ─── Booking transfer ──────────────────────────────────────────────────────
