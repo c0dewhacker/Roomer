@@ -138,24 +138,29 @@ export async function runDrawForRun(runId: string, actorId: string | null = null
   if (claimed.count === 0) return
 
   const pool = await resolveBallotAssetPool(run.ballot)
+  // Mutable — assets are only ever spliced out when genuinely gone (won by
+  // someone, or raced away by ordinary booking activity), never just because
+  // one entrant lacked access to them. A shared read cursor that only ever
+  // advanced would permanently discard an asset the moment any entrant
+  // skipped it for lacking access, denying it to every later entrant even
+  // though it was never actually assigned to anyone.
   const availableAssets = shuffle(pool)
   const shuffledEntries = shuffle(run.entries)
 
-  let assetCursor = 0
   let wonCount = 0
   let lostCount = 0
   for (const entry of shuffledEntries) {
     // Re-check access — the user's group/role access may have changed
     // between entering and the draw closing.
     let assigned: { bookingId: string; startsAt: Date; endsAt: Date } | null = null
-    while (assetCursor < availableAssets.length) {
-      const candidate = availableAssets[assetCursor]
-      assetCursor += 1
+    for (let i = 0; i < availableAssets.length; i++) {
+      const candidate = availableAssets[i]
       const hasAccess = await checkGroupAccess(entry.userId, candidate.buildingId, candidate.floorId)
       if (!hasAccess) continue
       const result = await tryAssign(entry.userId, candidate, run, run.ballot)
       if (result) {
         assigned = result
+        availableAssets.splice(i, 1)
         await prisma.ballotEntry.update({
           where: { id: entry.id },
           data: { status: 'WON', assetId: candidate.id, bookingId: result.bookingId },
@@ -165,8 +170,11 @@ export async function runDrawForRun(runId: string, actorId: string | null = null
         wonCount++
         break
       }
-      // Asset was taken by something else in the meantime — move on, but
-      // don't reuse it for a later entrant either (it's genuinely gone).
+      // Asset was taken by something else in the meantime — remove it for
+      // everyone (it's genuinely gone), then re-check this same index (now
+      // the next candidate) before moving on.
+      availableAssets.splice(i, 1)
+      i--
     }
     if (!assigned) {
       await prisma.ballotEntry.update({ where: { id: entry.id }, data: { status: 'LOST' } })
@@ -354,74 +362,87 @@ function computeSlotDates(ballot: { slotLeadDays: number; slotDurationDays: numb
  * success back to the caller.
  */
 export async function ensureNextBallotRun(ballotId: string, options: { force?: boolean; actorId?: string | null } = {}): Promise<boolean> {
-  const ballot = await prisma.ballot.findUnique({ where: { id: ballotId } })
-  if (!ballot || ballot.status !== 'ACTIVE') return false
+  // Lock the parent Ballot row for the whole check-then-create sequence
+  // below. Without this, two concurrent calls for the same ballot (the
+  // hourly cron racing a manual admin "open run now" trigger, or two
+  // overlapping cron ticks) can both pass the "no existing run for this
+  // cycle" check and each create their own BallotRun — BallotRun has no
+  // unique constraint on ballotId/registrationClosesAt to catch that at the
+  // DB level, and BallotEntry is only unique per (runId, userId), so the
+  // same user could then enter and win a desk in both duplicate runs.
+  return prisma.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "Ballot" WHERE id = ${ballotId} FOR UPDATE`
+    if (locked.length === 0) return false
 
-  const now = new Date()
+    const ballot = await tx.ballot.findUnique({ where: { id: ballotId } })
+    if (!ballot || ballot.status !== 'ACTIVE') return false
 
-  if (ballot.frequency === 'ONCE') {
-    const existing = await prisma.ballotRun.findFirst({ where: { ballotId } })
-    if (existing) return false
-    // ONCE ballots draw as soon as their registration window elapses from
-    // creation — no weekday/day-of-month schedule involved.
-    const registrationClosesAt = new Date(now.getTime() + ballot.registrationWindowHours * 60 * 60 * 1000)
-    const drawDateOnly = new Date(Date.UTC(registrationClosesAt.getUTCFullYear(), registrationClosesAt.getUTCMonth(), registrationClosesAt.getUTCDate()))
-    const { slotStartsAt, slotEndsAt } = computeSlotDates(ballot, drawDateOnly)
-    const run = await prisma.ballotRun.create({
+    const now = new Date()
+
+    if (ballot.frequency === 'ONCE') {
+      const existing = await tx.ballotRun.findFirst({ where: { ballotId } })
+      if (existing) return false
+      // ONCE ballots draw as soon as their registration window elapses from
+      // creation — no weekday/day-of-month schedule involved.
+      const registrationClosesAt = new Date(now.getTime() + ballot.registrationWindowHours * 60 * 60 * 1000)
+      const drawDateOnly = new Date(Date.UTC(registrationClosesAt.getUTCFullYear(), registrationClosesAt.getUTCMonth(), registrationClosesAt.getUTCDate()))
+      const { slotStartsAt, slotEndsAt } = computeSlotDates(ballot, drawDateOnly)
+      const run = await tx.ballotRun.create({
+        data: {
+          ballotId,
+          registrationOpensAt: now,
+          registrationClosesAt,
+          slotStartsAt,
+          slotEndsAt,
+        },
+      })
+      await recordAuditLog(tx, {
+        actorId: options.actorId ?? null,
+        action: 'ballot_run.opened',
+        resourceType: 'BallotRun',
+        resourceId: run.id,
+        after: { ballotId, registrationOpensAt: run.registrationOpensAt, registrationClosesAt: run.registrationClosesAt },
+      })
+      return true
+    }
+
+    const nextDrawDate = computeNextRunDate(ballot.frequency, ballot.dayOfWeek, ballot.dayOfMonth, now)
+    const registrationOpensAt = new Date(nextDrawDate.getTime() - ballot.registrationWindowHours * 60 * 60 * 1000)
+    if (!options.force && registrationOpensAt > now) return false // not yet time to open this cycle's registration
+
+    const alreadyExists = await tx.ballotRun.findFirst({
+      where: { ballotId, registrationClosesAt: nextDrawDate, status: { not: 'CANCELLED' } },
+    })
+    if (alreadyExists) return false
+
+    const { slotStartsAt, slotEndsAt } = computeSlotDates(ballot, nextDrawDate)
+    const run = await tx.ballotRun.create({
       data: {
         ballotId,
-        registrationOpensAt: now,
-        registrationClosesAt,
+        // The computed value, not `now` — when registrationWindowHours is
+        // longer than the gap between recurrence cycles (e.g. a 10-day
+        // window on a weekly ballot), this cron (hourly) may not notice the
+        // cycle is due until sometime after the window was actually meant to
+        // open. Recording the intended open time here keeps the run's stated
+        // window honest even though the hourly cron granularity means
+        // entrants might see it announced a bit later than that. When forced
+        // open early by an admin, `now` IS the actual open time — there's no
+        // "intended" time to honour instead, the admin's action is the intent.
+        registrationOpensAt: options.force && registrationOpensAt > now ? now : registrationOpensAt,
+        registrationClosesAt: nextDrawDate,
         slotStartsAt,
         slotEndsAt,
       },
     })
-    await recordAuditLog(prisma, {
+    await recordAuditLog(tx, {
       actorId: options.actorId ?? null,
       action: 'ballot_run.opened',
       resourceType: 'BallotRun',
       resourceId: run.id,
-      after: { ballotId, registrationOpensAt: run.registrationOpensAt, registrationClosesAt: run.registrationClosesAt },
+      after: { ballotId, registrationOpensAt: run.registrationOpensAt, registrationClosesAt: run.registrationClosesAt, forced: options.force ?? false },
     })
     return true
-  }
-
-  const nextDrawDate = computeNextRunDate(ballot.frequency, ballot.dayOfWeek, ballot.dayOfMonth, now)
-  const registrationOpensAt = new Date(nextDrawDate.getTime() - ballot.registrationWindowHours * 60 * 60 * 1000)
-  if (!options.force && registrationOpensAt > now) return false // not yet time to open this cycle's registration
-
-  const alreadyExists = await prisma.ballotRun.findFirst({
-    where: { ballotId, registrationClosesAt: nextDrawDate, status: { not: 'CANCELLED' } },
   })
-  if (alreadyExists) return false
-
-  const { slotStartsAt, slotEndsAt } = computeSlotDates(ballot, nextDrawDate)
-  const run = await prisma.ballotRun.create({
-    data: {
-      ballotId,
-      // The computed value, not `now` — when registrationWindowHours is
-      // longer than the gap between recurrence cycles (e.g. a 10-day
-      // window on a weekly ballot), this cron (hourly) may not notice the
-      // cycle is due until sometime after the window was actually meant to
-      // open. Recording the intended open time here keeps the run's stated
-      // window honest even though the hourly cron granularity means
-      // entrants might see it announced a bit later than that. When forced
-      // open early by an admin, `now` IS the actual open time — there's no
-      // "intended" time to honour instead, the admin's action is the intent.
-      registrationOpensAt: options.force && registrationOpensAt > now ? now : registrationOpensAt,
-      registrationClosesAt: nextDrawDate,
-      slotStartsAt,
-      slotEndsAt,
-    },
-  })
-  await recordAuditLog(prisma, {
-    actorId: options.actorId ?? null,
-    action: 'ballot_run.opened',
-    resourceType: 'BallotRun',
-    resourceId: run.id,
-    after: { ballotId, registrationOpensAt: run.registrationOpensAt, registrationClosesAt: run.registrationClosesAt, forced: options.force ?? false },
-  })
-  return true
 }
 
 /** Cron: for every ACTIVE ballot, spawn its next run if one isn't already open/pending. */
