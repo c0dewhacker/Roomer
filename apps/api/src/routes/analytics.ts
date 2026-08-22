@@ -99,7 +99,13 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
                 include: {
                   bookings: {
                     where: {
-                      status: 'CONFIRMED',
+                      // Includes COMPLETED alongside CONFIRMED: handleAutoCompleteBookings
+                      // (queue.ts) flips a booking's status 30 minutes after it ends, so any
+                      // backward-looking range (the default here is the last 30 days) is
+                      // querying almost entirely for bookings that have since become
+                      // COMPLETED — CONFIRMED-only silently undercounted historical usage
+                      // toward zero the further back a booking's endsAt was.
+                      status: { in: ['CONFIRMED', 'COMPLETED'] },
                       startsAt: { gte: startDate, lte: endDate },
                     },
                     select: { id: true },
@@ -195,7 +201,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           JOIN "Asset" a ON a.id = b."assetId"
           WHERE b."startsAt" >= ${startDate}
             AND b."startsAt" <= ${endDate}
-            AND b.status = 'CONFIRMED'
+            AND b.status IN ('CONFIRMED', 'COMPLETED')
             AND a."floorId" = ${result.data.floorId}
           GROUP BY DATE(b."startsAt")
           ORDER BY DATE(b."startsAt") ASC
@@ -208,7 +214,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           JOIN "Floor" f ON f.id = a."floorId"
           WHERE b."startsAt" >= ${startDate}
             AND b."startsAt" <= ${endDate}
-            AND b.status = 'CONFIRMED'
+            AND b.status IN ('CONFIRMED', 'COMPLETED')
             AND f."buildingId" = ${result.data.buildingId}
           GROUP BY DATE(b."startsAt")
           ORDER BY DATE(b."startsAt") ASC
@@ -221,7 +227,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           JOIN "Floor" f ON f.id = a."floorId"
           WHERE b."startsAt" >= ${startDate}
             AND b."startsAt" <= ${endDate}
-            AND b.status = 'CONFIRMED'
+            AND b.status IN ('CONFIRMED', 'COMPLETED')
             AND f."buildingId" = ANY(${managedBuildingIds})
           GROUP BY DATE(b."startsAt")
           ORDER BY DATE(b."startsAt") ASC
@@ -232,7 +238,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           FROM "Booking"
           WHERE "startsAt" >= ${startDate}
             AND "startsAt" <= ${endDate}
-            AND status = 'CONFIRMED'
+            AND status IN ('CONFIRMED', 'COMPLETED')
           GROUP BY DATE("startsAt")
           ORDER BY DATE("startsAt") ASC
         `
@@ -321,18 +327,26 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       // Capacity = all non-disabled desks (OPEN + RESTRICTED + ASSIGNED); disabled are truly out of service
       const activeDesks = bookableDesks + assignedDesks
       const totalCapacity = activeDesks * workingDays
-      const overallUtilisationPct = totalCapacity > 0 ? Math.round((confirmed / totalCapacity) * 100) : 0
+      // "Happened" = confirmed (still upcoming/in-progress) + completed
+      // (handleAutoCompleteBookings flips a booking's status 30 minutes
+      // after it ends) — the headline booking/utilisation figures below
+      // need both, same reasoning as uniqueBookers a few lines above.
+      // `confirmed` alone silently collapsed toward zero for any
+      // backward-looking range, since almost every booking in the past has
+      // already transitioned to COMPLETED by the time anyone views this.
+      const happened = confirmed + completed
+      const overallUtilisationPct = totalCapacity > 0 ? Math.round((happened / totalCapacity) * 100) : 0
 
       return reply.status(200).send({
         data: {
-          totalBookings: confirmed,
+          totalBookings: happened,
           cancelledBookings: manualCancelled,
           completedBookings: completed,
           cancellationRate,
           noShowBookings: noShowCount,
           noShowRate,
           uniqueBookers: uniqueBookers.length,
-          avgDailyBookings: Math.round((confirmed / workingDays) * 10) / 10,
+          avgDailyBookings: Math.round((happened / workingDays) * 10) / 10,
           totalDesks,
           bookableDesks,
           assignedDesks,
@@ -433,7 +447,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           JOIN "Floor" f ON f.id = a."floorId"
           WHERE b."startsAt" >= ${startDate}
             AND b."startsAt" <= ${endDate}
-            AND b.status = 'CONFIRMED'
+            AND b.status IN ('CONFIRMED', 'COMPLETED')
             AND f."buildingId" = ${result.data.buildingId}
           GROUP BY EXTRACT(DOW FROM b."startsAt")
           ORDER BY dow ASC
@@ -444,7 +458,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           FROM "Booking"
           WHERE "startsAt" >= ${startDate}
             AND "startsAt" <= ${endDate}
-            AND status = 'CONFIRMED'
+            AND status IN ('CONFIRMED', 'COMPLETED')
           GROUP BY EXTRACT(DOW FROM "startsAt")
           ORDER BY dow ASC
         `
@@ -456,7 +470,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           JOIN "Floor" f ON f.id = a."floorId"
           WHERE b."startsAt" >= ${startDate}
             AND b."startsAt" <= ${endDate}
-            AND b.status = 'CONFIRMED'
+            AND b.status IN ('CONFIRMED', 'COMPLETED')
             AND f."buildingId" = ANY(${managedBuildingIds})
           GROUP BY EXTRACT(DOW FROM b."startsAt")
           ORDER BY dow ASC
@@ -523,7 +537,10 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
                 where: { isBookable: true },
                 include: {
                   bookings: {
-                    where: { status: 'CONFIRMED', startsAt: { gte: startDate, lte: endDate } },
+                    // See /utilisation above — includes COMPLETED alongside
+                    // CONFIRMED so historical usage isn't undercounted once
+                    // handleAutoCompleteBookings flips old bookings' status.
+                    where: { status: { in: ['CONFIRMED', 'COMPLETED'] }, startsAt: { gte: startDate, lte: endDate } },
                     select: { id: true },
                   },
                 },
@@ -612,7 +629,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           JOIN "Asset" a ON a.id = b."assetId"
           WHERE b."startsAt" >= ${startDate}
             AND b."startsAt" <= ${endDate}
-            AND b.status = 'CONFIRMED'
+            AND b.status IN ('CONFIRMED', 'COMPLETED')
             AND a."floorId" = ${result.data.floorId}
           GROUP BY b."userId", u."displayName", u.email
           ORDER BY count DESC
@@ -627,7 +644,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           JOIN "Floor" f ON f.id = a."floorId"
           WHERE b."startsAt" >= ${startDate}
             AND b."startsAt" <= ${endDate}
-            AND b.status = 'CONFIRMED'
+            AND b.status IN ('CONFIRMED', 'COMPLETED')
             AND f."buildingId" = ${result.data.buildingId}
           GROUP BY b."userId", u."displayName", u.email
           ORDER BY count DESC
@@ -642,7 +659,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           JOIN "Floor" f ON f.id = a."floorId"
           WHERE b."startsAt" >= ${startDate}
             AND b."startsAt" <= ${endDate}
-            AND b.status = 'CONFIRMED'
+            AND b.status IN ('CONFIRMED', 'COMPLETED')
             AND f."buildingId" = ANY(${managedBuildingIds})
           GROUP BY b."userId", u."displayName", u.email
           ORDER BY count DESC
@@ -655,7 +672,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           JOIN "User" u ON u.id = b."userId"
           WHERE b."startsAt" >= ${startDate}
             AND b."startsAt" <= ${endDate}
-            AND b.status = 'CONFIRMED'
+            AND b.status IN ('CONFIRMED', 'COMPLETED')
           GROUP BY b."userId", u."displayName", u.email
           ORDER BY count DESC
           LIMIT 20
@@ -733,7 +750,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         LEFT JOIN "Booking" b ON b."userId" = u.id
           AND b."startsAt" >= ${startDate}
           AND b."startsAt" <= ${endDate}
-          AND b.status = 'CONFIRMED'
+          AND b.status IN ('CONFIRMED', 'COMPLETED')
           ${buildingFilter}
         GROUP BY d.id, d.name
         ORDER BY ROUND(
@@ -812,7 +829,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0) AS NUMERIC), 2)::text AS "deskDays"
         FROM subtree s
         LEFT JOIN "Booking" b ON b."userId" = s.id
-          AND b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate} AND b.status = 'CONFIRMED'
+          AND b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate} AND b.status IN ('CONFIRMED', 'COMPLETED')
           ${buildingFilter}
       `
 
@@ -833,7 +850,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         FROM branch br
         JOIN "User" ru ON ru.id = br.root
         LEFT JOIN "Booking" b ON b."userId" = br.id
-          AND b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate} AND b.status = 'CONFIRMED'
+          AND b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate} AND b.status IN ('CONFIRMED', 'COMPLETED')
           ${buildingFilter}
         GROUP BY br.root, ru."displayName"
         ORDER BY ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0) AS NUMERIC), 2) DESC NULLS LAST
@@ -899,7 +916,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
             JOIN "Floor" f ON f.id = a."floorId"
             JOIN "Building" bld ON bld.id = f."buildingId"
             WHERE b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate}
-              AND b.status = 'CONFIRMED' AND f."buildingId" = ANY(${buildingIdFilter})
+              AND b.status IN ('CONFIRMED', 'COMPLETED') AND f."buildingId" = ANY(${buildingIdFilter})
             GROUP BY f."buildingId", bld.name, DATE(b."startsAt")
           `
         : await prisma.$queryRaw<DailyRow[]>`
@@ -908,7 +925,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
             JOIN "Asset" a ON a.id = b."assetId"
             JOIN "Floor" f ON f.id = a."floorId"
             JOIN "Building" bld ON bld.id = f."buildingId"
-            WHERE b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate} AND b.status = 'CONFIRMED'
+            WHERE b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate} AND b.status IN ('CONFIRMED', 'COMPLETED')
             GROUP BY f."buildingId", bld.name, DATE(b."startsAt")
           `
 
@@ -1006,14 +1023,14 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
             JOIN "Asset" a ON a.id = b."assetId"
             JOIN "Floor" f ON f.id = a."floorId"
             WHERE b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate}
-              AND b.status = 'CONFIRMED' AND f."buildingId" = ANY(${buildingIdFilter})
+              AND b.status IN ('CONFIRMED', 'COMPLETED') AND f."buildingId" = ANY(${buildingIdFilter})
             GROUP BY DATE_TRUNC('month', b."startsAt")
             ORDER BY month ASC
           `
         : await prisma.$queryRaw<MonthRow[]>`
             SELECT DATE_TRUNC('month', "startsAt") AS month, COUNT(*)::bigint AS count
             FROM "Booking"
-            WHERE "startsAt" >= ${startDate} AND "startsAt" <= ${endDate} AND status = 'CONFIRMED'
+            WHERE "startsAt" >= ${startDate} AND "startsAt" <= ${endDate} AND status IN ('CONFIRMED', 'COMPLETED')
             GROUP BY DATE_TRUNC('month', "startsAt")
             ORDER BY month ASC
           `
