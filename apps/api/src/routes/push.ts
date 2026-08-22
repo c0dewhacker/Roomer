@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma.js'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { getVapidPublicKey } from '../lib/push.js'
 import { resolveValidatedHost } from '../lib/url-safety.js'
+import { recordAuditLog } from '../lib/audit.js'
 
 const subscribeSchema = z.object({
   endpoint: z.string().url(),
@@ -72,6 +73,16 @@ export async function pushRoutes(fastify: FastifyInstance): Promise<void> {
       update: { userId: request.user.id, p256dh: keys.p256dh, auth: keys.auth, userAgent },
       create: { userId: request.user.id, endpoint, p256dh: keys.p256dh, auth: keys.auth, userAgent },
     })
+    // p256dh/auth are per-device push encryption key material — never logged,
+    // same principle as every other credential in this codebase's audit trail.
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'push_subscription.subscribed',
+      resourceType: 'PushSubscription',
+      resourceId: endpoint,
+      after: { userAgent },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(200).send({ data: { ok: true } })
   })
@@ -87,7 +98,16 @@ export async function pushRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     // Scoped to the caller's own userId so one user can't unsubscribe another's device.
-    await prisma.pushSubscription.deleteMany({ where: { endpoint: result.data.endpoint, userId: request.user.id } })
+    const deleted = await prisma.pushSubscription.deleteMany({ where: { endpoint: result.data.endpoint, userId: request.user.id } })
+    if (deleted.count > 0) {
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'push_subscription.unsubscribed',
+        resourceType: 'PushSubscription',
+        resourceId: result.data.endpoint,
+        ipAddress: request.ip,
+      }, request.log)
+    }
     return reply.status(200).send({ data: { ok: true } })
   })
 }

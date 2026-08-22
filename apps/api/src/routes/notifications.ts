@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
 import { requireAuth } from '../middleware/requireAuth.js'
+import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
 const paginationSchema = z.object({
@@ -49,10 +50,21 @@ export async function notificationRoutes(fastify: FastifyInstance): Promise<void
 
   // PATCH /notifications/read-all — mark all as read
   fastify.patch('/read-all', { preHandler: [requireAuth] }, async (request, reply) => {
-    await prisma.notification.updateMany({
+    const updated = await prisma.notification.updateMany({
       where: { userId: request.user.id, read: false },
       data: { read: true },
     })
+    // One summary row for the whole batch, not one per notification.
+    if (updated.count > 0) {
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'notification.marked_all_read',
+        resourceType: 'Notification',
+        resourceId: request.user.id,
+        after: { count: updated.count },
+        ipAddress: request.ip,
+      }, request.log)
+    }
     return reply.status(200).send({ data: { ok: true } })
   })
 
@@ -73,6 +85,13 @@ export async function notificationRoutes(fastify: FastifyInstance): Promise<void
       where: { id },
       data: { read: true },
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'notification.marked_read',
+      resourceType: 'Notification',
+      resourceId: id,
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(200).send({ data: updated })
   })

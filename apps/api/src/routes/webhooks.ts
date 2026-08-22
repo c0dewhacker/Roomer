@@ -7,6 +7,7 @@ import { requireGlobalRole } from '../middleware/requireRole.js'
 import { GlobalRole } from '@roomer/shared'
 import { WEBHOOK_EVENTS, assertPublicWebhookUrl, dispatchPing } from '../lib/webhook.js'
 import { encrypt } from '../lib/encryption.js'
+import { recordAuditLog } from '../lib/audit.js'
 
 const createEndpointSchema = z.object({
   url: z.string().url(),
@@ -63,6 +64,16 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
       },
       select: { id: true, url: true, events: true, enabled: true, consecutiveFailures: true, lastSuccessAt: true, createdAt: true, updatedAt: true },
     })
+    // The signing secret is never logged, plaintext or encrypted — same
+    // reasoning as every other secret in this codebase's audit trail.
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'webhook_endpoint.created',
+      resourceType: 'WebhookEndpoint',
+      resourceId: endpoint.id,
+      after: { url: endpoint.url, events: endpoint.events, enabled: endpoint.enabled },
+      ipAddress: request.ip,
+    }, request.log)
     // Return the plaintext secret exactly once so the admin can configure the receiver.
     return reply.status(201).send({ data: { ...endpoint, secret } })
   })
@@ -92,6 +103,15 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
       data: { ...rest, ...(secret !== undefined ? { secret: encrypt(secret) } : {}) },
       select: { id: true, url: true, events: true, enabled: true, consecutiveFailures: true, lastSuccessAt: true, createdAt: true, updatedAt: true },
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'webhook_endpoint.updated',
+      resourceType: 'WebhookEndpoint',
+      resourceId: id,
+      before: { url: existing.url, events: existing.events, enabled: existing.enabled },
+      after: { url: endpoint.url, events: endpoint.events, enabled: endpoint.enabled, secretRotated: secret !== undefined },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.send({ data: endpoint })
   })
 
@@ -101,6 +121,14 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
     const existing = await prisma.webhookEndpoint.findUnique({ where: { id } })
     if (!existing) return reply.status(404).send({ error: { message: 'Webhook endpoint not found', code: 'NOT_FOUND' } })
     await prisma.webhookEndpoint.delete({ where: { id } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'webhook_endpoint.deleted',
+      resourceType: 'WebhookEndpoint',
+      resourceId: id,
+      before: { url: existing.url, events: existing.events, enabled: existing.enabled },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.send({ data: { ok: true } })
   })
 
