@@ -10,7 +10,7 @@ import { findOrCreateDepartment } from '../lib/department.js'
 import { recordAuditLog } from '../lib/audit.js'
 import {
   userToScim, groupToScim, scimError, listResponse, parseScimFilter,
-  applyUserPatchOps, applyGroupPatchOps, hashScimToken,
+  applyUserPatchOps, applyGroupPatchOps, hashScimToken, coerceScimActive, lockScimEmail,
   SCIM_SCHEMAS,
 } from '../lib/scim-helpers.js'
 import { env } from '../env.js'
@@ -192,7 +192,17 @@ function registerUsers(fastify: FastifyInstance): void {
     const email = (body.userName as string) ?? ((body.emails as Array<{ value: string }>)?.[0]?.value)
     const displayName = (body.displayName as string) ?? email
     const externalId = body.externalId as string | undefined
-    const active = body.active !== false
+    // SCIM defaults `active` to true when omitted entirely, but a value that
+    // IS present and isn't recognisably a boolean (see coerceScimActive) must
+    // be rejected rather than silently treated as active — a naive
+    // `body.active !== false` check let the STRING "false" (sent by some
+    // real-world IdPs despite the spec requiring a JSON boolean) create the
+    // account as ACTIVE instead of BLOCKED.
+    if (body.active !== undefined && coerceScimActive(body.active) === undefined) {
+      return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(400, 'active must be a boolean'))
+    }
+    const active = body.active === undefined ? true : coerceScimActive(body.active)!
     const enterpriseExt = body[SCIM_SCHEMAS.ENTERPRISE_USER] as Record<string, unknown> | undefined
     const incomingDeptName = typeof enterpriseExt?.department === 'string' ? enterpriseExt.department.trim() : undefined
     const managerRef = extractScimManagerRef(enterpriseExt)
@@ -207,15 +217,6 @@ function registerUsers(fastify: FastifyInstance): void {
         .send(scimError(400, 'userName must be a valid email address'))
     }
 
-    // Case-insensitive — see the GET /Users filter above for why. Without this,
-    // a differently-cased userName for an account that already exists creates
-    // a duplicate rather than hitting the 409 conflict.
-    const existing = await prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } }, select: userSelect })
-    if (existing) {
-      return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
-        .send(scimError(409, `User ${email} already exists`))
-    }
-
     let departmentId: string | undefined
     if (incomingDeptName) {
       const org = await prisma.organisation.findFirst({ select: { id: true } })
@@ -225,17 +226,38 @@ function registerUsers(fastify: FastifyInstance): void {
       }
     }
 
-    const user = await prisma.user.create({
-      data: {
-        email,
-        displayName,
-        externalId: externalId ?? null,
-        accountStatus: active ? 'ACTIVE' : 'BLOCKED',
-        provider: 'OIDC',
-        ...(departmentId ? { departmentId } : {}),
-      },
-      select: userSelect,
-    })
+    // The case-insensitive collision check and the create itself run inside
+    // one transaction, holding a per-email advisory lock — email's DB unique
+    // constraint is case-sensitive, so without a lock two concurrent creates
+    // for emails differing only by case (e.g. "Bob@x.com" vs "bob@x.com")
+    // can both pass this findFirst before either commits, leaving two live
+    // accounts that every case-insensitive lookup elsewhere (login, SSO,
+    // this same check) can no longer tell apart. See lockScimEmail.
+    let user
+    try {
+      user = await prisma.$transaction(async (tx) => {
+        await lockScimEmail(tx, email)
+        const existing = await tx.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } }, select: { id: true } })
+        if (existing) throw Object.assign(new Error('EMAIL_TAKEN'), { code: 'EMAIL_TAKEN' })
+        return tx.user.create({
+          data: {
+            email,
+            displayName,
+            externalId: externalId ?? null,
+            accountStatus: active ? 'ACTIVE' : 'BLOCKED',
+            provider: 'OIDC',
+            ...(departmentId ? { departmentId } : {}),
+          },
+          select: userSelect,
+        })
+      })
+    } catch (err) {
+      if ((err as { code?: string })?.code === 'EMAIL_TAKEN') {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, `User ${email} already exists`))
+      }
+      throw err
+    }
     // Same manager-attribute handling LDAP/OIDC/SAML already do on login —
     // SCIM's own department handling above had no equivalent asymmetry, but
     // manager did: recordManagerRef stores the raw ref for later fuzzy
@@ -283,7 +305,15 @@ function registerUsers(fastify: FastifyInstance): void {
     const email = (body.userName as string) ?? ((body.emails as Array<{ value: string }>)?.[0]?.value)
     const displayName = body.displayName as string | undefined
     const externalId = body.externalId as string | undefined
-    const active = body.active as boolean | undefined
+    // See POST /Users — a value present but not recognisably a boolean (e.g.
+    // the string "false", which some real-world IdPs send despite the spec
+    // requiring a JSON boolean) must be rejected, not silently truthy-cast to
+    // ACTIVE.
+    if (body.active !== undefined && coerceScimActive(body.active) === undefined) {
+      return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(400, 'active must be a boolean'))
+    }
+    const active = coerceScimActive(body.active)
     const enterpriseExt = body[SCIM_SCHEMAS.ENTERPRISE_USER] as Record<string, unknown> | undefined
     const incomingDeptName = typeof enterpriseExt?.department === 'string' ? enterpriseExt.department.trim() : undefined
     const managerRef = extractScimManagerRef(enterpriseExt)
@@ -292,24 +322,6 @@ function registerUsers(fastify: FastifyInstance): void {
       return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
         .send(scimError(400, 'userName must be a valid email address'))
     }
-    if (email) {
-      // email's DB unique constraint is case-sensitive, but every lookup that
-      // matters (login, SSO, this same SCIM upsert path) matches
-      // case-insensitively — a same-case collision would otherwise surface as
-      // a raw P2002 that the generic catch below mislabels as 404 "not
-      // found", and a different-case collision (e.g. "Bob@x.com" vs
-      // "bob@x.com") would pass the DB constraint entirely, leaving two
-      // accounts those case-insensitive lookups can no longer tell apart.
-      const collision = await prisma.user.findFirst({
-        where: { email: { equals: email, mode: 'insensitive' }, id: { not: id } },
-        select: { id: true },
-      })
-      if (collision) {
-        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
-          .send(scimError(409, `userName ${email} is already in use`))
-      }
-    }
-
     let departmentId: string | null | undefined
     if (incomingDeptName) {
       const org = await prisma.organisation.findFirst({ select: { id: true } })
@@ -323,6 +335,25 @@ function registerUsers(fastify: FastifyInstance): void {
 
     try {
       const user = await prisma.$transaction(async (tx) => {
+        if (email) {
+          // The collision check and the update itself now run inside the
+          // same transaction, holding a per-email advisory lock first —
+          // email's DB unique constraint is case-sensitive, but every lookup
+          // that matters (login, SSO, this same SCIM upsert path) matches
+          // case-insensitively. Without the lock, two concurrent renames to
+          // emails differing only by case (e.g. "Bob@x.com" vs "bob@x.com")
+          // can both pass this check before either commits, leaving two
+          // accounts those case-insensitive lookups can no longer tell
+          // apart. A same-case collision is still a real P2002 the generic
+          // catch below reports as 404 — this only closes the
+          // different-case race the DB constraint can't catch on its own.
+          await lockScimEmail(tx, email)
+          const collision = await tx.user.findFirst({
+            where: { email: { equals: email, mode: 'insensitive' }, id: { not: id } },
+            select: { id: true },
+          })
+          if (collision) throw Object.assign(new Error('EMAIL_TAKEN'), { code: 'EMAIL_TAKEN' })
+        }
         if (active === false) {
           await lockSuperAdminGuard(tx)
           if (await wouldRemoveLastActiveSuperAdmin(tx, id)) {
@@ -377,6 +408,10 @@ function registerUsers(fastify: FastifyInstance): void {
         return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
           .send(scimError(409, 'Cannot deactivate the last active super admin'))
       }
+      if (e?.code === 'EMAIL_TAKEN') {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, `userName ${email} is already in use`))
+      }
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
     }
   })
@@ -398,19 +433,6 @@ function registerUsers(fastify: FastifyInstance): void {
       return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
         .send(scimError(400, 'userName must be a valid email address'))
     }
-    if (userPatch.email) {
-      // Same case-insensitive collision check PUT above applies, for the same
-      // reason — the DB constraint alone won't catch a different-case collision.
-      const collision = await prisma.user.findFirst({
-        where: { email: { equals: userPatch.email, mode: 'insensitive' }, id: { not: id } },
-        select: { id: true },
-      })
-      if (collision) {
-        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
-          .send(scimError(409, `userName ${userPatch.email} is already in use`))
-      }
-    }
-
     let departmentId: string | undefined
     if (departmentName) {
       const org = await prisma.organisation.findFirst({ select: { id: true } })
@@ -422,6 +444,18 @@ function registerUsers(fastify: FastifyInstance): void {
 
     try {
       const user = await prisma.$transaction(async (tx) => {
+        if (userPatch.email) {
+          // Same case-insensitive collision race PUT closes, for the same
+          // reason — moved inside the transaction and behind a per-email
+          // advisory lock so a concurrent rename to the same (case-
+          // insensitive) email can't pass this check before either commits.
+          await lockScimEmail(tx, userPatch.email)
+          const collision = await tx.user.findFirst({
+            where: { email: { equals: userPatch.email, mode: 'insensitive' }, id: { not: id } },
+            select: { id: true },
+          })
+          if (collision) throw Object.assign(new Error('EMAIL_TAKEN'), { code: 'EMAIL_TAKEN' })
+        }
         if (userPatch.accountStatus === 'BLOCKED') {
           await lockSuperAdminGuard(tx)
           if (await wouldRemoveLastActiveSuperAdmin(tx, id)) {
@@ -463,6 +497,10 @@ function registerUsers(fastify: FastifyInstance): void {
       if (e?.code === 'LAST_SUPER_ADMIN') {
         return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
           .send(scimError(409, 'Cannot deactivate the last active super admin'))
+      }
+      if (e?.code === 'EMAIL_TAKEN') {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, `userName ${userPatch.email} is already in use`))
       }
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
     }

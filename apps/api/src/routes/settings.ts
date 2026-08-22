@@ -927,10 +927,23 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(400).send({ error: { message: 'enabled (boolean) is required', code: 'VALIDATION_ERROR' } })
       }
       const { enabled } = patchResult.data
-      const cfg = await prisma.scimConfig.findFirst()
-      const updated = cfg
-        ? await prisma.scimConfig.update({ where: { id: cfg.id }, data: { enabled } })
-        : await prisma.scimConfig.create({ data: { enabled } })
+      // ScimConfig is meant to be a singleton with no DB-level constraint
+      // enforcing that — a bare findFirst()-then-create() here let two
+      // concurrent requests (e.g. two admins both toggling SCIM on for the
+      // first time) both take the create() branch, leaving two rows with no
+      // defined "active" one (every reader is a plain findFirst() with no
+      // orderBy). Reusing lockOrgSettings — the same fixed-key lock this
+      // file already uses for the read-merge-write races on Organisation/
+      // AuthConfig — closes it the same way: only one request at a time can
+      // be inside the read-then-create-or-update critical section.
+      const [cfg, updated] = await prisma.$transaction(async (tx) => {
+        await lockOrgSettings(tx)
+        const cfg = await tx.scimConfig.findFirst()
+        const updated = cfg
+          ? await tx.scimConfig.update({ where: { id: cfg.id }, data: { enabled } })
+          : await tx.scimConfig.create({ data: { enabled } })
+        return [cfg, updated] as const
+      })
       await recordAuditLog(prisma, {
         actorId: request.user.id,
         action: 'scim_config.updated',
@@ -951,10 +964,14 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const token = generateScimToken()
       const tokenHash = hashScimToken(token)
-      const cfg = await prisma.scimConfig.findFirst()
-      const updated = cfg
-        ? await prisma.scimConfig.update({ where: { id: cfg.id }, data: { tokenHash, enabled: true } })
-        : await prisma.scimConfig.create({ data: { tokenHash, enabled: true } })
+      // Same singleton race as PATCH /scim above — lock before read-or-create.
+      const updated = await prisma.$transaction(async (tx) => {
+        await lockOrgSettings(tx)
+        const cfg = await tx.scimConfig.findFirst()
+        return cfg
+          ? tx.scimConfig.update({ where: { id: cfg.id }, data: { tokenHash, enabled: true } })
+          : tx.scimConfig.create({ data: { tokenHash, enabled: true } })
+      })
       // Never log the token itself (plaintext or hash) — only that one was
       // rotated, same as SCIM's own "shown once" contract to the admin.
       await recordAuditLog(prisma, {
@@ -978,9 +995,16 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
     '/scim/token',
     { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
     async (request, reply) => {
-      const cfg = await prisma.scimConfig.findFirst()
+      // Same singleton race as PATCH /scim above — lock before read-then-update.
+      const cfg = await prisma.$transaction(async (tx) => {
+        await lockOrgSettings(tx)
+        const cfg = await tx.scimConfig.findFirst()
+        if (cfg) {
+          await tx.scimConfig.update({ where: { id: cfg.id }, data: { tokenHash: null, enabled: false } })
+        }
+        return cfg
+      })
       if (cfg) {
-        await prisma.scimConfig.update({ where: { id: cfg.id }, data: { tokenHash: null, enabled: false } })
         await recordAuditLog(prisma, {
           actorId: request.user.id,
           action: 'scim_token.revoked',
