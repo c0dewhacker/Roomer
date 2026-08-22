@@ -1913,7 +1913,18 @@ export async function startQueue(): Promise<void> {
   // events behind it in the same queue. 5 lets a handful of deliveries run
   // concurrently (this is I/O-bound outbound HTTP, not CPU work) without
   // needing per-tenant queue partitioning.
-  await b.work('webhook-delivery', { includeMetadata: true, batchSize: 5, localConcurrency: 5 }, deliverWebhookJob)
+  //
+  // perJobResults is required, not optional, at batchSize > 1: without it,
+  // pg-boss settles the whole fetched batch as one unit off whether the
+  // handler's single Promise resolves or rejects. deliverWebhookJob's own
+  // loop already attempts every job regardless of an earlier one failing,
+  // but with the plain (non-perJobResults) handler shape, one endpoint's
+  // failure among the batch still failed/retried every OTHER job in it too
+  // — including ones already delivered successfully earlier in the same
+  // loop, causing a real duplicate delivery of an event that had already
+  // succeeded. perJobResults settles each job by the individual outcome
+  // deliverWebhookJob reports for it instead.
+  await b.work('webhook-delivery', { includeMetadata: true, batchSize: 5, localConcurrency: 5, perJobResults: true }, deliverWebhookJob)
 
   await b.work('expire-queue-entries', async () => {
     await handleExpireQueueEntries()

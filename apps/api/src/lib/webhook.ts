@@ -6,7 +6,7 @@ import { getBoss } from './queue.js'
 import { env } from '../env.js'
 import { decryptStringMaybe } from './encryption.js'
 import { resolveValidatedHost as resolveValidatedHostShared } from './url-safety.js'
-import type { Job } from 'pg-boss'
+import type { Job, JobResult } from 'pg-boss'
 
 export const WEBHOOK_EVENTS = [
   'booking.created',
@@ -203,16 +203,31 @@ export async function dispatchPing(endpointId: string): Promise<void> {
   }])
 }
 
-/** pg-boss worker handler — called for each batch of webhook-delivery jobs. */
-export async function deliverWebhookJob(jobs: Job<WebhookDeliveryJobData>[]): Promise<void> {
+/**
+ * pg-boss worker handler — called once per fetched batch of webhook-delivery
+ * jobs (batchSize: 5 in queue.ts). Registered with `perJobResults: true`
+ * (see the work() call site), so each job's outcome is settled individually
+ * via the returned JobResult[] — critical because these deliveries target
+ * unrelated endpoints. A plain single-callback handler that throws once a
+ * delivery fails would (per pg-boss's batch semantics) fail *every* job in
+ * the batch: one already-successfully-delivered earlier in the loop gets
+ * marked failed and retried too, causing a duplicate delivery of an event
+ * that already succeeded; one not yet reached when the throw happened gets
+ * marked failed with no HTTP call ever made and no delivery log row, purely
+ * because it happened to share a batch with a failing one.
+ */
+export async function deliverWebhookJob(jobs: Job<WebhookDeliveryJobData>[]): Promise<JobResult[]> {
+  const results: JobResult[] = []
   for (const job of jobs) {
     // pg-boss exposes the zero-based retry counter as `retryCount`; attempt is 1-based.
     const attempt = ((job as { retryCount?: number }).retryCount ?? 0) + 1
-    await deliverOne(job.data, attempt)
+    const success = await deliverOne(job.data, attempt)
+    results.push({ id: job.id, status: success ? 'completed' : 'failed' })
   }
+  return results
 }
 
-async function deliverOne({ endpointId, deliveryId, url, event, payload }: WebhookDeliveryJobData, attempt: number): Promise<void> {
+async function deliverOne({ endpointId, deliveryId, url, event, payload }: WebhookDeliveryJobData, attempt: number): Promise<boolean> {
   let statusCode: number | null = null
   let success = false
   let error: string | null = null
@@ -221,11 +236,12 @@ async function deliverOne({ endpointId, deliveryId, url, event, payload }: Webho
     // Look up + decrypt the signing secret at delivery time (it is not stored in
     // the job payload). A deleted endpoint means there is nothing to deliver.
     const ep = await prisma.webhookEndpoint.findUnique({ where: { id: endpointId }, select: { secret: true, enabled: true } })
-    if (!ep) return
+    if (!ep) return true
     // The endpoint may have been disabled after this delivery was queued, or
     // between retries of a failing one — without this, an admin disabling a
     // misbehaving or leaked endpoint mid-retry-storm doesn't stop it; pg-boss
-    // keeps retrying (up to 5 attempts over 24h) regardless. Record the skip
+    // keeps retrying (retryLimit: 5 below means up to 6 total attempts — the
+    // initial send plus 5 retries — over 24h) regardless. Record the skip
     // in the delivery log for visibility and stop, rather than throwing (which
     // would just trigger another retry).
     //
@@ -242,7 +258,7 @@ async function deliverOne({ endpointId, deliveryId, url, event, payload }: Webho
         create: { id: deliveryId, endpointId, ...record },
         update: record,
       })
-      return
+      return true
     }
     const secret = decryptStringMaybe(ep.secret)
 
@@ -321,5 +337,5 @@ async function deliverOne({ endpointId, deliveryId, url, event, payload }: Webho
     }).catch(() => {})
   }
 
-  if (!success) throw new Error(error ?? 'Delivery failed')
+  return success
 }
