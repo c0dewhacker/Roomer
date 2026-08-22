@@ -1,5 +1,22 @@
 /**
- * Offline key rotation script for AuthConfig encrypted fields.
+ * Offline key rotation script for every encrypted-at-rest secret in the
+ * database: AuthConfig.config (OIDC/SAML/LDAP settings — already
+ * individually field-encrypted, then the whole JSON blob is encrypted again
+ * as one envelope by encryptJson, so it's rotated as a single whole-column
+ * value), WebhookEndpoint.secret (a plain column, same whole-value pattern),
+ * and Organisation.emailConfig.password (the SMTP password — unlike the
+ * other two, this is one field nested inside an otherwise-plaintext JSON
+ * column, not the whole column, so it needs parsing rather than a raw
+ * whole-value swap).
+ *
+ * Originally this script only covered AuthConfig — following its own
+ * runbook exactly (rotate, update ROOMER_ENCRYPTION_KEY, restart) left
+ * webhook signing secrets and the SMTP password still encrypted under the
+ * *old* key, with no error at rotation time. The first symptom was every
+ * webhook delivery and every outbound email failing at send/decrypt time
+ * after the restart — silently defeating the entire point of rotating
+ * (the standard response to a suspected DB compromise) for exactly the two
+ * secret categories most likely to matter.
  *
  * Usage:
  *   ROTATE_OLD_KEY=<64-hex> ROTATE_NEW_KEY=<64-hex> \
@@ -61,46 +78,101 @@ function encryptWithKey(plaintext: string, key: Buffer): string {
   return `enc:v1:${Buffer.concat([iv, ciphertext, tag]).toString('base64')}`
 }
 
+/**
+ * Rotates a whole-column value that is itself one enc:v1 envelope
+ * (AuthConfig.config, WebhookEndpoint.secret). `isJsonColumn` must be true
+ * for AuthConfig.config — it's a Postgres json column, so the re-encrypted
+ * string has to be written back as a JSON string literal (JSON.stringify'd,
+ * i.e. wrapped in real double quotes) or Postgres rejects it with
+ * "invalid input syntax for type json" (a bare enc:v1:... value isn't valid
+ * JSON on its own). WebhookEndpoint.secret is a plain text column and must
+ * NOT be JSON-encoded.
+ */
+async function rotateWholeColumn(pool: Pool, table: string, column: string, isJsonColumn: boolean): Promise<{ rotated: number; skipped: number }> {
+  const { rows } = await pool.query<{ id: string; value: unknown }>(
+    `SELECT id, "${column}" AS value FROM "${table}"`,
+  )
+  console.log(`Found ${rows.length} ${table} row(s)`)
+  let rotated = 0
+  let skipped = 0
+
+  for (const row of rows) {
+    const raw = typeof row.value === 'string' ? row.value : row.value == null ? '' : JSON.stringify(row.value)
+
+    if (!raw.startsWith('enc:v1:')) {
+      console.log(`  [${row.id}] plaintext/empty — skipping`)
+      skipped++
+      continue
+    }
+
+    let plaintext: string
+    try {
+      plaintext = decryptWithKey(raw, OLD_KEY)
+    } catch {
+      console.error(`  [${row.id}] failed to decrypt with old key — skipping`)
+      skipped++
+      continue
+    }
+
+    const reEncrypted = encryptWithKey(plaintext, NEW_KEY)
+    const writeValue = isJsonColumn ? JSON.stringify(reEncrypted) : reEncrypted
+    await pool.query(`UPDATE "${table}" SET "${column}" = $1 WHERE id = $2`, [writeValue, row.id])
+    console.log(`  [${row.id}] rotated`)
+    rotated++
+  }
+
+  return { rotated, skipped }
+}
+
+/** Rotates Organisation.emailConfig.password — a single field nested inside an otherwise-plaintext JSON column, not the whole column. */
+async function rotateEmailConfigPassword(pool: Pool): Promise<{ rotated: number; skipped: number }> {
+  const { rows } = await pool.query<{ id: string; emailConfig: Record<string, unknown> | null }>(
+    'SELECT id, "emailConfig" FROM "Organisation"',
+  )
+  console.log(`Found ${rows.length} Organisation row(s)`)
+  let rotated = 0
+  let skipped = 0
+
+  for (const row of rows) {
+    const config = row.emailConfig ?? {}
+    const password = config.password
+    if (typeof password !== 'string' || !password.startsWith('enc:v1:')) {
+      console.log(`  [${row.id}] no encrypted SMTP password — skipping`)
+      skipped++
+      continue
+    }
+
+    let plaintext: string
+    try {
+      plaintext = decryptWithKey(password, OLD_KEY)
+    } catch {
+      console.error(`  [${row.id}] failed to decrypt SMTP password with old key — skipping`)
+      skipped++
+      continue
+    }
+
+    const updatedConfig = { ...config, password: encryptWithKey(plaintext, NEW_KEY) }
+    await pool.query('UPDATE "Organisation" SET "emailConfig" = $1 WHERE id = $2', [
+      JSON.stringify(updatedConfig),
+      row.id,
+    ])
+    console.log(`  [${row.id}] rotated`)
+    rotated++
+  }
+
+  return { rotated, skipped }
+}
+
 async function main() {
   const pool = new Pool({ connectionString: DB_URL })
 
   try {
-    const { rows } = await pool.query<{ id: string; config: unknown }>(
-      'SELECT id, config FROM "AuthConfig"',
-    )
+    const authConfig = await rotateWholeColumn(pool, 'AuthConfig', 'config', true)
+    const webhooks = await rotateWholeColumn(pool, 'WebhookEndpoint', 'secret', false)
+    const email = await rotateEmailConfigPassword(pool)
 
-    console.log(`Found ${rows.length} AuthConfig row(s)`)
-    let rotated = 0
-    let skipped = 0
-
-    for (const row of rows) {
-      const raw = typeof row.config === 'string' ? row.config : JSON.stringify(row.config)
-
-      if (!raw.startsWith('enc:v1:')) {
-        console.log(`  [${row.id}] plaintext — skipping (run backfill first or encrypt manually)`)
-        skipped++
-        continue
-      }
-
-      let plaintext: string
-      try {
-        plaintext = decryptWithKey(raw, OLD_KEY)
-      } catch {
-        console.error(`  [${row.id}] failed to decrypt with old key — skipping`)
-        skipped++
-        continue
-      }
-
-      const reEncrypted = encryptWithKey(plaintext, NEW_KEY)
-
-      await pool.query('UPDATE "AuthConfig" SET config = $1 WHERE id = $2', [
-        reEncrypted,
-        row.id,
-      ])
-      console.log(`  [${row.id}] rotated`)
-      rotated++
-    }
-
+    const rotated = authConfig.rotated + webhooks.rotated + email.rotated
+    const skipped = authConfig.skipped + webhooks.skipped + email.skipped
     console.log(`\nDone. Rotated: ${rotated}, skipped: ${skipped}`)
   } finally {
     await pool.end()
