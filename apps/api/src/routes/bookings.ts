@@ -29,13 +29,22 @@ class BookingConflictError extends Error {
  * requires approval) — sent directly via sendEmail rather than through
  * enqueueNotification/Notification, since a guest has no User row to key a
  * Notification on or an in-app bell to show it in.
+ *
+ * Includes an .ics REQUEST attachment, same as the host's own confirmation
+ * email — a guest's "you're booked in" email is a confirmation email, and
+ * without a calendar payload their calendar app never actually gets the
+ * event. A reschedule resend reuses the same id/UID with the booking's
+ * current (already-bumped) icsSequence, so the recipient's calendar app
+ * recognises it as an update to the existing event rather than a duplicate.
  */
 async function sendGuestBookingInvite(booking: {
+  id: string
   startsAt: Date
   endsAt: Date
   guestName: string
   guestEmail: string
   guestCheckInToken: string
+  icsSequence: number
 }, hostDisplayName: string, asset: { name: string; primaryZone?: { name: string } | null; floor?: { name: string; building?: { name: string } | null } | null }, timeZone = 'UTC'): Promise<void> {
   const checkInUrl = `${env.APP_URL}/guest-check-in?token=${encodeURIComponent(booking.guestCheckInToken)}`
   const payload = renderGuestBookingInvite(
@@ -46,7 +55,16 @@ async function sendGuestBookingInvite(booking: {
     checkInUrl,
     timeZone,
   )
-  await sendEmail({ to: booking.guestEmail, ...payload }).catch(() => {})
+  const icalEvent = {
+    method: 'REQUEST',
+    content: buildBookingIcs({
+      id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
+      assetName: asset.name, zoneName: asset.primaryZone?.name, floorName: asset.floor?.name, buildingName: asset.floor?.building?.name,
+      sequence: booking.icsSequence,
+      attendeeEmail: booking.guestEmail, attendeeName: booking.guestName,
+    }, 'REQUEST'),
+  }
+  await sendEmail({ to: booking.guestEmail, ...payload, icalEvent }).catch(() => {})
 }
 
 const reportQuerySchema = z.object({
@@ -428,7 +446,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       if (booking.guestName && booking.guestEmail && guestCheckInToken) {
         const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.building?.id)
         await sendGuestBookingInvite(
-          { startsAt: booking.startsAt, endsAt: booking.endsAt, guestName: booking.guestName, guestEmail: booking.guestEmail, guestCheckInToken },
+          { id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt, guestName: booking.guestName, guestEmail: booking.guestEmail, guestCheckInToken, icsSequence: booking.icsSequence },
           request.user.displayName,
           booking.asset,
           tz,
@@ -490,6 +508,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
             primaryZone: { select: { name: true } },
           },
         },
+        user: { select: { email: true, displayName: true } },
       },
     })
     if (!booking) {
@@ -507,6 +526,9 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       floorName: booking.asset.floor?.name,
       buildingName: booking.asset.floor?.building?.name,
       sequence: method === 'CANCEL' ? booking.icsSequence + 1 : booking.icsSequence,
+      // The booking's actual owner, not necessarily the caller — a
+      // SUPER_ADMIN can download this on the owner's behalf.
+      attendeeEmail: booking.user.email, attendeeName: booking.user.displayName,
     }, method)
 
     return reply
@@ -781,7 +803,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       if (booking.guestName && booking.guestEmail && booking.guestCheckInToken) {
         const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
         await sendGuestBookingInvite(
-          { startsAt: newStartsAt, endsAt: newEndsAt, guestName: booking.guestName, guestEmail: booking.guestEmail, guestCheckInToken: booking.guestCheckInToken },
+          { id: updated.id, startsAt: newStartsAt, endsAt: newEndsAt, guestName: booking.guestName, guestEmail: booking.guestEmail, guestCheckInToken: booking.guestCheckInToken, icsSequence: updated.icsSequence },
           booking.user.displayName,
           booking.asset,
           tz,
@@ -897,7 +919,17 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (booking.guestName && booking.guestEmail) {
       const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
       const { subject, html, text } = renderGuestBookingCancelled(booking.guestName, booking.user, booking, booking.asset, tz)
-      await sendEmail({ to: booking.guestEmail, subject, html, text }).catch(() => {})
+      const icalEvent = {
+        method: 'CANCEL',
+        content: buildBookingIcs({
+          id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
+          assetName: booking.asset.name, zoneName: booking.asset.primaryZone?.name,
+          floorName: booking.asset.floor?.name, buildingName: booking.asset.floor?.building?.name,
+          sequence: booking.icsSequence + 1,
+          attendeeEmail: booking.guestEmail, attendeeName: booking.guestName,
+        }, 'CANCEL'),
+      }
+      await sendEmail({ to: booking.guestEmail, subject, html, text, icalEvent }).catch(() => {})
     }
 
     // Promote next queue entry for overlapping slot
@@ -1045,7 +1077,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (booking.guestName && booking.guestEmail && booking.guestCheckInToken) {
       const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
       await sendGuestBookingInvite(
-        { startsAt: booking.startsAt, endsAt: booking.endsAt, guestName: booking.guestName, guestEmail: booking.guestEmail, guestCheckInToken: booking.guestCheckInToken },
+        { id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt, guestName: booking.guestName, guestEmail: booking.guestEmail, guestCheckInToken: booking.guestCheckInToken, icsSequence: booking.icsSequence },
         booking.user.displayName,
         booking.asset,
         tz,
