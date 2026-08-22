@@ -2140,8 +2140,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     const now = new Date()
+    // Includes PENDING_APPROVAL alongside CONFIRMED — it reserves the slot
+    // exactly like CONFIRMED (#74, see assertBookable/hasBlockingOverlap
+    // below, which already correctly treat it that way for canBookNow).
+    // CONFIRMED-only here meant a desk with a same-day pending request still
+    // displayed "no current booking" even though scanning in was correctly
+    // blocked a moment later by the gate — a misleading, if not exploitable,
+    // inconsistency between what this screen shows and what it then does.
     const active = await prisma.booking.findFirst({
-      where: { assetId: id, status: 'CONFIRMED', startsAt: { lte: now }, endsAt: { gt: now } },
+      where: { assetId: id, status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { lte: now }, endsAt: { gt: now } },
       select: { id: true, userId: true, startsAt: true, endsAt: true, checkedInAt: true },
     })
 

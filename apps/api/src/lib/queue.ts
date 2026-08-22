@@ -217,7 +217,11 @@ export async function cancelFutureBookingsForFloors(floorIds: string[]): Promise
   if (floorIds.length === 0) return
   const now = new Date()
   const bookings = await prisma.booking.findMany({
-    where: { status: 'CONFIRMED', startsAt: { gt: now }, asset: { floorId: { in: floorIds } } },
+    // PENDING_APPROVAL reserves its slot exactly like CONFIRMED (#74) — a
+    // still-pending request on a floor about to be deleted needs releasing
+    // and notifying the same as a confirmed one, otherwise it's silently
+    // deleted by the Booking->Asset cascade with no cancellation email at all.
+    where: { status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { gt: now }, asset: { floorId: { in: floorIds } } },
     select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true, floorId: true, primaryZoneId: true } } },
   })
   await cancelBookingsAndPromoteQueues(
@@ -242,7 +246,10 @@ export async function cancelFutureBookingsForAssets(assetIds: string[], opts: { 
   if (assetIds.length === 0) return
   const now = new Date()
   const bookings = await prisma.booking.findMany({
-    where: { status: 'CONFIRMED', startsAt: { gt: now }, assetId: { in: assetIds } },
+    // See cancelFutureBookingsForFloors — PENDING_APPROVAL reserves its slot
+    // exactly like CONFIRMED (#74), so it needs releasing here too, not just
+    // silently cascade-deleted with the asset (e.g. DELETE /assets/:id).
+    where: { status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { gt: now }, assetId: { in: assetIds } },
     select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true, floorId: true, primaryZoneId: true } } },
   })
   await cancelBookingsAndPromoteQueues(
@@ -261,7 +268,11 @@ export async function cancelFutureBookingsForAssets(assetIds: string[], opts: { 
 export async function cancelFutureBookingsForUser(userId: string): Promise<void> {
   const now = new Date()
   const bookings = await prisma.booking.findMany({
-    where: { status: 'CONFIRMED', startsAt: { gt: now }, userId },
+    // PENDING_APPROVAL reserves its slot exactly like CONFIRMED (#74) — a
+    // blocked user's still-pending request otherwise keeps reserving the
+    // slot under an account nobody can manage, and would still confirm into
+    // a real booking if a manager later approved it.
+    where: { status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { gt: now }, userId },
     select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true, floorId: true, primaryZoneId: true } } },
   })
   await cancelBookingsAndPromoteQueues(
