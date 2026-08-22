@@ -66,10 +66,19 @@ export async function resolveValidatedHost(rawUrl: string, allowedProtocols: rea
   const host = url.hostname
   if (host === 'localhost') throw new Error('URL host is not allowed')
 
-  const literalFamily = net.isIP(host)
+  // URL.hostname wraps an IPv6 literal in brackets (e.g. "[::1]"), which
+  // net.isIP() doesn't recognise as an IP at all — left unstripped, every
+  // literal IPv6 host (blocked or legitimately public) fell through to the
+  // dns.lookup() branch below with the brackets still attached, which always
+  // throws ENOTFOUND. That happened to fail closed (no SSRF bypass), but it
+  // meant no IPv6 literal could ever be registered, even a legitimate public
+  // one, and surfaced a raw Node DNS error instead of a clean validation
+  // message.
+  const ipLiteral = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+  const literalFamily = net.isIP(ipLiteral)
   if (literalFamily) {
-    if (ipIsBlocked(host, allowPrivate)) throw new Error('URL resolves to a disallowed address')
-    return { address: host, family: literalFamily as 4 | 6 }
+    if (ipIsBlocked(ipLiteral, allowPrivate)) throw new Error('URL resolves to a disallowed address')
+    return { address: ipLiteral, family: literalFamily as 4 | 6 }
   }
 
   // A hung/slow DNS resolver for the target host would otherwise block this

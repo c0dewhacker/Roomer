@@ -144,6 +144,16 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
     // Deliver a ping to exactly this endpoint — does not touch enabled state and
     // does not fan out to other endpoints.
     await dispatchPing(id)
+    // Every other action here (create/update/delete) is audited — a ping is a
+    // real outbound request to an admin-chosen URL and was the one action on
+    // this resource left with no audit trail at all.
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'webhook_endpoint.pinged',
+      resourceType: 'WebhookEndpoint',
+      resourceId: id,
+      ipAddress: request.ip,
+    }, request.log)
     return reply.send({ data: { ok: true } })
   })
 
