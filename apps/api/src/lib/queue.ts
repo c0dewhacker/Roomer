@@ -9,6 +9,7 @@ import { NotificationType } from '@roomer/shared'
 import { dispatchWebhook } from './webhook.js'
 import { lockAssetForQueue } from './booking.js'
 import { resolveBuildingTimezone } from './timezone.js'
+import { toZonedTime } from 'date-fns-tz'
 import { getBuildingAdminUserIds } from '../middleware/requireRole.js'
 import { sendPushNotification } from './push.js'
 import { recordAuditLog } from './audit.js'
@@ -1796,15 +1797,40 @@ async function handleWarnClaimExpiring(): Promise<void> {
  * no in-app/bell equivalent to record.
  */
 async function handleSendWeeklyReport(): Promise<void> {
-  const org = await prisma.organisation.findFirst({ select: { weeklyReportEnabled: true } })
+  const org = await prisma.organisation.findFirst({ select: { id: true, weeklyReportEnabled: true, lastWeeklyReportSentAt: true } })
   if (!org?.weeklyReportEnabled) return
 
-  const endDate = new Date()
+  // Claim atomically before doing any work — guards against a duplicate send
+  // if this job is retried after a crash or somehow fires twice in close
+  // succession, same non-duplicate-send guarantee handleSendBookingReminders/
+  // handleWarnClaimExpiring get from claiming their own per-row timestamp
+  // before enqueueing. The cron fires weekly, so anything within the last 6
+  // days is treated as "already sent this cycle" — a day of slack for the
+  // scheduler's own timing jitter, without risking skipping a genuine week.
+  const now = new Date()
+  const notSentRecently = { OR: [{ lastWeeklyReportSentAt: null }, { lastWeeklyReportSentAt: { lt: new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000) } }] }
+  const claimed = await prisma.organisation.updateMany({
+    where: { id: org.id, ...notSentRecently },
+    data: { lastWeeklyReportSentAt: now },
+  })
+  if (claimed.count === 0) return
+
+  // Resolved against the org's own default timezone (not a specific
+  // building — this report is org-wide), same as any other org-level
+  // timezone-sensitive calculation (see resolveBuildingTimezone). Without
+  // this, the weekday classification below and the displayed date range
+  // both silently used UTC regardless of the org's configured timezone —
+  // for a non-UTC org, bookings made in the local evening near a day
+  // boundary could land in the wrong side of the workingDays split, and the
+  // emailed date range wouldn't match the local week the recipient expects.
+  const tz = await resolveBuildingTimezone(prisma, null)
+
+  const endDate = now
   const startDate = new Date(endDate.getTime() - 7 * 24 * 60 * 60 * 1000)
   let workingDays = 0
   const cursor = new Date(startDate)
   while (cursor <= endDate) {
-    const d = cursor.getUTCDay()
+    const d = toZonedTime(cursor, tz).getDay()
     if (d !== 0 && d !== 6) workingDays++
     cursor.setUTCDate(cursor.getUTCDate() + 1)
   }
@@ -1827,7 +1853,7 @@ async function handleSendWeeklyReport(): Promise<void> {
   const activeDesks = bookableDesks + assignedDesks
   const totalCapacity = activeDesks * workingDays
   const overallUtilisationPct = totalCapacity > 0 ? Math.round((confirmed / totalCapacity) * 100) : 0
-  const rangeLabel = `${formatDate(startDate)} – ${formatDate(endDate)}`
+  const rangeLabel = `${formatDate(startDate, tz)} – ${formatDate(endDate, tz)}`
 
   const admins = await prisma.user.findMany({
     where: { globalRole: 'SUPER_ADMIN', accountStatus: 'ACTIVE' },

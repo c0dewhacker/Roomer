@@ -233,6 +233,12 @@ model Organisation {
   /// Opt-in (default off) — shipping this on by default would start emailing
   /// every existing org's admins with no action on their part.
   weeklyReportEnabled         Boolean      @default(false)
+  /// Claimed atomically immediately before sending (see handleSendWeeklyReport)
+  /// to guard against a duplicate send if the cron job is retried after a
+  /// crash or somehow fires twice in close succession — same non-duplicate-
+  /// send guarantee handleSendBookingReminders/handleWarnClaimExpiring get
+  /// from claiming their own per-row timestamp before enqueueing.
+  lastWeeklyReportSentAt      DateTime?
   /// Org-wide fallback IANA timezone (e.g. "Australia/Sydney"), used to render
   /// and validate booking times for any building without its own override
   /// (Building.timezone — see #72). Bookings themselves are always stored in

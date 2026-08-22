@@ -53,12 +53,26 @@ export async function auditLogRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     if (wantsCsv(request)) {
-      const rows = await prisma.auditLog.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        take: CSV_EXPORT_LIMIT,
-        include: { actor: { select: { displayName: true, email: true } } },
-      })
+      const [rows, total] = await Promise.all([
+        prisma.auditLog.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          take: CSV_EXPORT_LIMIT,
+          include: { actor: { select: { displayName: true, email: true } } },
+        }),
+        prisma.auditLog.count({ where }),
+      ])
+      // A filter matching more rows than CSV_EXPORT_LIMIT silently dropped
+      // the oldest excess rows with no way for a direct API/BI-tool
+      // consumer (the web UI doesn't use this path — it pages through the
+      // JSON list endpoint client-side instead) to tell the export apart
+      // from a genuinely complete one. Signalled via a response header
+      // rather than changing the CSV body shape, so existing consumers that
+      // only read the file aren't affected.
+      if (total > CSV_EXPORT_LIMIT) {
+        reply.header('X-Export-Truncated', 'true')
+        reply.header('X-Export-Total-Matching', String(total))
+      }
       return sendCsv(
         reply,
         `audit-log-${Date.now()}.csv`,
