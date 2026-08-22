@@ -227,9 +227,14 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+      // Looked up unconditionally, not just in the non-SUPER_ADMIN branch —
+      // groupResourceRole.create below has a real FK on floorId with no
+      // try/catch around it, so a SUPER_ADMIN hitting this with a bogus floor
+      // id previously fell straight through to an unhandled FK-violation 500
+      // instead of a clean 404.
+      const floor = await prisma.floor.findUnique({ where: { id }, select: { buildingId: true } })
+      if (!floor) return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
       if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
-        const floor = await prisma.floor.findUnique({ where: { id }, select: { buildingId: true } })
-        if (!floor) return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
         const canManage = await isBuildingManagerForBuilding(request.user.id, floor.buildingId)
         if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
@@ -408,11 +413,35 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       // but its files on disk don't clean themselves up (same fix as the
       // existing "replace floor plan" upload path above).
       const floorPlan = await prisma.floorPlan.findUnique({ where: { floorId: id } })
-      const floorBefore = await prisma.floor.findUnique({ where: { id }, select: { buildingId: true, name: true, level: true } })
 
-      try {
-        await prisma.floor.delete({ where: { id } })
-      } catch {
+      // The pre-delete asset snapshot and the delete itself run inside one
+      // transaction, locking the floor row first — same race and same fix
+      // shape as zones.ts DELETE /:id: a concurrent PATCH /assets/:id that
+      // places an asset onto this floor needs an FK check against this row,
+      // so Postgres blocks it until we commit, then it fails outright (the
+      // floor being gone) instead of racing our snapshot below.
+      const result = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Floor" WHERE id = ${id} FOR UPDATE`
+        const before = await tx.floor.findUnique({ where: { id }, select: { buildingId: true, name: true, level: true } })
+        if (!before) return null
+        const floorAssetIds = (await tx.asset.findMany({ where: { floorId: id }, select: { id: true } })).map((a) => a.id)
+        await tx.floor.delete({ where: { id } })
+        if (floorAssetIds.length > 0) {
+          // Asset.floorId/primaryZoneId SetNull automatically via cascade,
+          // but stale x/y/width/height/rotation survive — same "vanishes into
+          // a gap no admin screen can reach" issue as deleting a zone (#206),
+          // just missing here for the floor-delete path until now. Left
+          // uncleared, a later re-placement on a different floor without
+          // explicit repositioning renders at this stale, nonsensical spot.
+          await tx.asset.updateMany({
+            where: { id: { in: floorAssetIds } },
+            data: { x: null, y: null, width: null, height: null, rotation: null },
+          })
+        }
+        return before
+      }).catch(() => null)
+
+      if (!result) {
         return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
       }
       await recordAuditLog(prisma, {
@@ -420,7 +449,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         action: 'floor.deleted',
         resourceType: 'Floor',
         resourceId: id,
-        before: floorBefore,
+        before: result,
         ipAddress: request.ip,
       }, request.log)
 
@@ -484,8 +513,6 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         })
       }
 
-      const existing = await prisma.floorPlan.findUnique({ where: { floorId: id } })
-
       // Validate and save the new file BEFORE touching the old one — this can
       // still reject on invalid magic bytes, and if the old files were already
       // deleted at that point, a rejected replacement would leave a floor with
@@ -500,6 +527,41 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         throw err
       }
 
+      // Re-read "existing" and upsert inside one transaction, locking the
+      // floor row first — two concurrent uploads to the same floor each
+      // computed their own stale `existing` snapshot before saveFloorPlan
+      // (slow: image/PDF/DXF processing), so whichever upsert lost pointed at
+      // a file its own `existing` never captured, permanently orphaning it on
+      // disk. Locking here serializes the read+upsert step: the loser now
+      // re-reads the winner's just-committed row as `existing` and correctly
+      // schedules those files for deletion instead of its own already-stale
+      // ones. File I/O stays outside the transaction/lock.
+      const { floorPlan, existing } = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Floor" WHERE id = ${id} FOR UPDATE`
+        const existing = await tx.floorPlan.findUnique({ where: { floorId: id } })
+        const floorPlan = await tx.floorPlan.upsert({
+          where: { floorId: id },
+          update: {
+            fileType: saved.fileType,
+            originalPath: saved.originalPath,
+            renderedPath: saved.renderedPath,
+            thumbnailPath: saved.thumbnailPath,
+            width: saved.width,
+            height: saved.height,
+          },
+          create: {
+            floorId: id,
+            fileType: saved.fileType,
+            originalPath: saved.originalPath,
+            renderedPath: saved.renderedPath,
+            thumbnailPath: saved.thumbnailPath,
+            width: saved.width,
+            height: saved.height,
+          },
+        })
+        return { floorPlan, existing }
+      })
+
       if (existing) {
         await deleteFile(existing.originalPath)
         if (existing.renderedPath !== existing.originalPath) {
@@ -510,26 +572,6 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      const floorPlan = await prisma.floorPlan.upsert({
-        where: { floorId: id },
-        update: {
-          fileType: saved.fileType,
-          originalPath: saved.originalPath,
-          renderedPath: saved.renderedPath,
-          thumbnailPath: saved.thumbnailPath,
-          width: saved.width,
-          height: saved.height,
-        },
-        create: {
-          floorId: id,
-          fileType: saved.fileType,
-          originalPath: saved.originalPath,
-          renderedPath: saved.renderedPath,
-          thumbnailPath: saved.thumbnailPath,
-          width: saved.width,
-          height: saved.height,
-        },
-      })
       await recordAuditLog(prisma, {
         actorId: request.user.id,
         action: existing ? 'floor_plan.replaced' : 'floor_plan.uploaded',

@@ -146,49 +146,67 @@ export async function zoneRoutes(fastify: FastifyInstance): Promise<void> {
       // issue #206), while not qualifying as "unplaced" either since floorId is
       // still set. Unplace them the same way "Remove from floor plan" already
       // does for a single asset, so they correctly reappear in the unplaced pool
-      // instead of falling into a gap no admin screen can reach. Cancel their
-      // future bookings first, before they become unreachable from any floor.
-      const zoneAssets = await prisma.asset.findMany({ where: { primaryZoneId: id }, select: { id: true } })
-      const zoneAssetIds = zoneAssets.map((a) => a.id)
-      await cancelFutureBookingsForAssets(zoneAssetIds)
-      if (zoneAssetIds.length > 0) {
-        await prisma.asset.updateMany({
-          where: { id: { in: zoneAssetIds } },
-          data: { floorId: null, primaryZoneId: null, x: null, y: null },
+      // instead of falling into a gap no admin screen can reach.
+      //
+      // The snapshot of "assets in this zone" and the zone delete itself run
+      // inside one transaction, locking the zone row first — a concurrent
+      // PATCH /assets/:id that re-zones an asset into this zone needs an FK
+      // check against that same row, so Postgres blocks it until we commit,
+      // then it fails outright (the zone being gone) instead of racing our
+      // snapshot and surviving deletion with floorId/x/y intact but no zone,
+      // reproducing the exact #206 gap this unplace step exists to prevent.
+      const result = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Zone" WHERE id = ${id} FOR UPDATE`
+
+        const zoneAssets = await tx.asset.findMany({ where: { primaryZoneId: id }, select: { id: true } })
+        const zoneAssetIds = zoneAssets.map((a) => a.id)
+        if (zoneAssetIds.length > 0) {
+          await tx.asset.updateMany({
+            where: { id: { in: zoneAssetIds } },
+            data: { floorId: null, primaryZoneId: null, x: null, y: null },
+          })
+        }
+
+        // Deleting a zone must not silently widen an existing subscription from
+        // "notify me about this zone" to "notify me about the whole floor" —
+        // FloorSubscriptionZone cascades away on zone delete, and an empty
+        // zones relation on a FloorSubscription means "match all zones" (see
+        // handleFloorSubscriptions in queue.ts), so a subscription whose only
+        // zone was this one would otherwise start firing floor-wide with no
+        // signal to the subscriber. Delete those subscriptions outright instead;
+        // subscriptions that also reference other zones are unaffected — the
+        // cascade just narrows their scope, which is correct.
+        const soleZoneSubs = await tx.floorSubscription.findMany({
+          where: { zones: { every: { zoneId: id }, some: {} } },
+          select: { id: true },
         })
-      }
+        if (soleZoneSubs.length > 0) {
+          await tx.floorSubscription.deleteMany({ where: { id: { in: soleZoneSubs.map((s) => s.id) } } })
+        }
 
-      // Deleting a zone must not silently widen an existing subscription from
-      // "notify me about this zone" to "notify me about the whole floor" —
-      // FloorSubscriptionZone cascades away on zone delete, and an empty
-      // zones relation on a FloorSubscription means "match all zones" (see
-      // handleFloorSubscriptions in queue.ts), so a subscription whose only
-      // zone was this one would otherwise start firing floor-wide with no
-      // signal to the subscriber. Delete those subscriptions outright instead;
-      // subscriptions that also reference other zones are unaffected — the
-      // cascade just narrows their scope, which is correct.
-      const soleZoneSubs = await prisma.floorSubscription.findMany({
-        where: { zones: { every: { zoneId: id }, some: {} } },
-        select: { id: true },
-      })
-      if (soleZoneSubs.length > 0) {
-        await prisma.floorSubscription.deleteMany({ where: { id: { in: soleZoneSubs.map((s) => s.id) } } })
-      }
+        const deleted = await tx.zone.delete({ where: { id } })
+        return { deleted, zoneAssetIds }
+      }).catch(() => null)
 
-      try {
-        const deleted = await prisma.zone.delete({ where: { id } })
-        await recordAuditLog(prisma, {
-          actorId: request.user.id,
-          action: 'zone.deleted',
-          resourceType: 'Zone',
-          resourceId: id,
-          before: { floorId: deleted.floorId, name: deleted.name, colour: deleted.colour, zoneGroupId: deleted.zoneGroupId },
-          ipAddress: request.ip,
-        }, request.log)
-        return reply.status(200).send({ data: { ok: true } })
-      } catch {
+      if (!result) {
         return reply.status(404).send({ error: { message: 'Zone not found', code: 'NOT_FOUND' } })
       }
+
+      // Cancel bookings on the assets that were actually in the zone at the
+      // moment of deletion (per the lock above, not a pre-lock snapshot) —
+      // done outside the transaction since it dispatches webhooks/notification
+      // jobs, not just DB writes.
+      await cancelFutureBookingsForAssets(result.zoneAssetIds)
+
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'zone.deleted',
+        resourceType: 'Zone',
+        resourceId: id,
+        before: { floorId: result.deleted.floorId, name: result.deleted.name, colour: result.deleted.colour, zoneGroupId: result.deleted.zoneGroupId },
+        ipAddress: request.ip,
+      }, request.log)
+      return reply.status(200).send({ data: { ok: true } })
     },
   )
 }
