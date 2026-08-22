@@ -41,6 +41,13 @@ const updateUserSchema = z.object({
 const notificationPrefValueSchema = z.object({
   email: z.boolean().optional(),
   inApp: z.boolean().optional(),
+  // Added for Web Push (#76 phase 2) — queue.ts's processSendNotification
+  // and ProfilePage.tsx's toggle UI both already read/write this field;
+  // this schema (the actual PATCH validation) was never updated to match,
+  // so a push preference change was silently stripped by Zod's default
+  // strip-unknown-keys behaviour before it ever reached the DB — the UI
+  // showed "saved" but the toggle reverted to on-by-default on next load.
+  push: z.boolean().optional(),
 })
 
 const updateNotificationPreferencesSchema = z.object({
@@ -382,7 +389,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       where: { id: request.user.id },
       select: { notificationPreferences: true },
     })
-    const preferences = (user?.notificationPreferences ?? {}) as Record<string, { email?: boolean; inApp?: boolean }>
+    const preferences = (user?.notificationPreferences ?? {}) as Record<string, { email?: boolean; inApp?: boolean; push?: boolean }>
     return reply.status(200).send({ data: { preferences } })
   })
 

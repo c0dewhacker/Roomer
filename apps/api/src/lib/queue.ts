@@ -1060,7 +1060,7 @@ async function processSendNotification(
     return
   }
 
-  // Respect per-user notification preferences. Missing key = both channels enabled.
+  // Respect per-user notification preferences. Missing key = all three channels enabled.
   type NotifPref = { email?: boolean; inApp?: boolean; push?: boolean }
   const prefs = (user as unknown as { notificationPreferences: Record<string, NotifPref> }).notificationPreferences ?? {}
   const pref: NotifPref = prefs[type] ?? {}
