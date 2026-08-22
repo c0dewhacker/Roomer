@@ -171,10 +171,19 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
 
     const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
 
-    // Check building-level access for non-admins
+    // Check building-level access for non-admins. canUserAccessBuilding only
+    // considers GroupBuildingAccess — a BUILDING_ADMIN (direct or via group)
+    // for a building that's ALSO group-restricted to a different group they
+    // aren't in would otherwise 404 on their own building, exactly like the
+    // list route's own fix comment below describes ("could never select
+    // their own building... even though the backend would authorize the
+    // request once made").
     if (!isAdmin) {
-      const hasAccess = await canUserAccessBuilding(request.user.id, id)
-      if (!hasAccess) {
+      const [hasAccess, adminBuildingIds] = await Promise.all([
+        canUserAccessBuilding(request.user.id, id),
+        getManagedBuildingIds(request.user.id),
+      ])
+      if (!hasAccess && !adminBuildingIds.includes(id)) {
         return reply.status(404).send({ error: { message: 'Building not found', code: 'NOT_FOUND' } })
       }
     }
@@ -560,10 +569,36 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
         select: { storagePath: true },
       })
 
-      const buildingBefore = await prisma.building.findUnique({ where: { id }, select: { name: true, address: true } })
-      try {
-        await prisma.building.delete({ where: { id } })
-      } catch {
+      // The pre-delete asset snapshot and the delete itself run inside one
+      // transaction, locking every floor row under this building first —
+      // same race and fix shape as zones.ts/floors.ts DELETE /:id. Asset.
+      // floorId's FK checks against the Floor row, not the Building row
+      // directly, so a concurrent PATCH /assets/:id that places an asset
+      // onto one of this building's floors needs a lock on that same row;
+      // locking it here means Postgres blocks that write until we commit,
+      // then it fails outright (the floor being gone via cascade) instead of
+      // racing our snapshot below.
+      const result = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Floor" WHERE "buildingId" = ${id} FOR UPDATE`
+        const before = await tx.building.findUnique({ where: { id }, select: { name: true, address: true } })
+        if (!before) return null
+        const buildingAssetIds = (await tx.asset.findMany({ where: { floor: { buildingId: id } }, select: { id: true } })).map((a) => a.id)
+        await tx.building.delete({ where: { id } })
+        if (buildingAssetIds.length > 0) {
+          // Floor/Zone cascade-delete with the building, so Asset.floorId/
+          // primaryZoneId SetNull automatically, but stale x/y/width/height/
+          // rotation survive — same "vanishes into a gap no admin screen can
+          // reach" issue as deleting a zone or floor (#206), just missing
+          // here for the building-level cascade until now.
+          await tx.asset.updateMany({
+            where: { id: { in: buildingAssetIds } },
+            data: { x: null, y: null, width: null, height: null, rotation: null },
+          })
+        }
+        return before
+      }).catch(() => null)
+
+      if (!result) {
         return reply.status(404).send({
           error: { message: 'Building not found', code: 'NOT_FOUND' },
         })
@@ -573,7 +608,7 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
         action: 'building.deleted',
         resourceType: 'Building',
         resourceId: id,
-        before: buildingBefore,
+        before: result,
         ipAddress: request.ip,
       }, request.log)
 

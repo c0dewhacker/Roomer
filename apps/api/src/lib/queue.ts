@@ -8,7 +8,7 @@ import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
 import { dispatchWebhook } from './webhook.js'
 import { lockAssetForQueue } from './booking.js'
-import { resolveBuildingTimezone } from './timezone.js'
+import { resolveBuildingTimezone, calendarDaysUntil } from './timezone.js'
 import { toZonedTime } from 'date-fns-tz'
 import { getBuildingAdminUserIds } from '../middleware/requireRole.js'
 import { sendPushNotification } from './push.js'
@@ -1323,28 +1323,6 @@ async function handleExpireManagerRequests(): Promise<void> {
 // real notification), and again once it actually expires. Each half is
 // tracked by its own *NotifiedAt timestamp so a lease isn't re-notified every
 // day it sits in the window — see #222.
-/**
- * Calendar-day difference between a date-only value (UTC midnight of the
- * calendar day an admin picked, e.g. BuildingLease.endDate — read via its
- * UTC getters directly, since it has no real instant meaning of its own)
- * and "now" as it currently reads in `timeZone`. Comparing endDate as a raw
- * instant against `now` (as this used to) flips a lease to expired from the
- * start of its own end date in any positive-UTC-offset building's
- * timezone — up to ~14 hours before the day is actually over locally, and
- * the wrong direction (a day early) for a negative-offset building. This
- * mirrors LeasesAdminPage.tsx's daysUntilLeaseExpiry, which already carries
- * the same fix on the frontend, just anchored to the building's configured
- * timezone (resolveBuildingTimezone) instead of the browser's local one —
- * the sensible server-side equivalent, since there's no "current user" to
- * anchor to here.
- */
-function calendarDaysUntil(endDateUtcMidnight: Date, now: Date, timeZone: string): number {
-  const endMs = Date.UTC(endDateUtcMidnight.getUTCFullYear(), endDateUtcMidnight.getUTCMonth(), endDateUtcMidnight.getUTCDate())
-  const zonedNow = toZonedTime(now, timeZone)
-  const nowMs = Date.UTC(zonedNow.getFullYear(), zonedNow.getMonth(), zonedNow.getDate())
-  return Math.round((endMs - nowMs) / (24 * 60 * 60 * 1000))
-}
-
 async function handleLeaseExpiry(): Promise<void> {
   const now = new Date()
   // Widened by a day on each side of the nominal window — this is only a

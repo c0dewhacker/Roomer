@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { isBuildingManagerForBuilding, getManagedBuildingIds } from '../middleware/requireRole.js'
+import { resolveBuildingTimezone, calendarDaysUntil } from '../lib/timezone.js'
 import { resolveStoragePath, checkFileMagic } from '../lib/storage.js'
 import { recordAuditLog } from '../lib/audit.js'
 import path from 'path'
@@ -210,12 +211,20 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
     // handleLeaseExpiry only ever looks at leases where the flag is still
     // null. Only touched when endDate is part of this request; editing e.g.
     // just the rent amount must not reset either flag.
+    //
+    // endDate is a date-only value (UTC midnight of the picked calendar day),
+    // not a real instant — classified via calendarDaysUntil against the
+    // building's own timezone, the same fix already applied to the
+    // lease-expiry cron (queue.ts) for this exact field. Comparing it as a
+    // raw instant against `now` (as this used to) flips the classification a
+    // day early/late depending on the building's UTC offset.
     let notifiedResets: { expiringNotifiedAt?: null; expiredNotifiedAt?: null } = {}
     if (result.data.endDate !== undefined) {
       const now = new Date()
-      const ninetyDaysOut = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000)
-      const inExpiringWindow = effectiveEndDate !== null && effectiveEndDate >= now && effectiveEndDate <= ninetyDaysOut
-      const isPast = effectiveEndDate !== null && effectiveEndDate < now
+      const tz = await resolveBuildingTimezone(prisma, existing.buildingId)
+      const days = effectiveEndDate !== null ? calendarDaysUntil(effectiveEndDate, now, tz) : null
+      const inExpiringWindow = days !== null && days >= 0 && days <= 90
+      const isPast = days !== null && days < 0
       notifiedResets = {
         ...(!inExpiringWindow && { expiringNotifiedAt: null }),
         ...(!isPast && { expiredNotifiedAt: null }),

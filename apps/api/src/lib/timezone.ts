@@ -22,6 +22,28 @@ export async function resolveBuildingTimezone(client: Prisma.TransactionClient, 
   return org?.defaultTimezone ?? 'UTC'
 }
 
+/**
+ * Calendar-day difference between a date-only value (UTC midnight of the
+ * calendar day an admin picked, e.g. BuildingLease.endDate — read via its UTC
+ * getters directly, since it has no real instant meaning of its own) and
+ * "now" as it currently reads in `timeZone`. Comparing such a value as a raw
+ * instant against `now` flips it a day early/late depending on the
+ * building's UTC offset — up to ~14 hours early in any positive-offset
+ * timezone, a day early in a negative-offset one. Mirrors
+ * LeasesAdminPage.tsx's daysUntilLeaseExpiry, which carries the same fix on
+ * the frontend anchored to the browser's local timezone instead — the
+ * sensible server-side equivalent, since there's no "current user" to anchor
+ * to here. Shared by the lease-expiry cron (queue.ts) and the admin-facing
+ * lease update endpoint (routes/leases.ts), which both need to classify a
+ * lease's endDate against "today" in the lease's own building's timezone.
+ */
+export function calendarDaysUntil(endDateUtcMidnight: Date, now: Date, timeZone: string): number {
+  const endMs = Date.UTC(endDateUtcMidnight.getUTCFullYear(), endDateUtcMidnight.getUTCMonth(), endDateUtcMidnight.getUTCDate())
+  const zonedNow = toZonedTime(now, timeZone)
+  const nowMs = Date.UTC(zonedNow.getFullYear(), zonedNow.getMonth(), zonedNow.getDate())
+  return Math.round((endMs - nowMs) / (24 * 60 * 60 * 1000))
+}
+
 export interface WorkingHours {
   start: string
   end: string
