@@ -65,22 +65,32 @@ export function zonedWallClockToUtc(year: number, month1to12: number, day: numbe
 
 /**
  * True when [startsAt, endsAt) falls within [hoursStart, hoursEnd) local
- * clock time in `timeZone`, for a booking that stays within a single
- * calendar day in that timezone. A booking spanning multiple local calendar
- * days is deliberately exempt — enforcing an hours-of-day window against a
- * multi-day booking would require every full day in between to also fit a
- * same-day window (impossible unless the window is 00:00–24:00), and a
- * multi-day desk booking is a different use case than the single-session
- * in-office bookings working hours are meant to bound.
+ * clock time in `timeZone`. A booking spanning two or more *full* local
+ * calendar days (e.g. Monday 9am to Wednesday 5pm) is deliberately exempt —
+ * enforcing an hours-of-day window against a genuine multi-day booking would
+ * require every full day in between to also fit a same-day window
+ * (impossible unless the window is 00:00–24:00), and a multi-day desk
+ * booking is a different use case than the single-session in-office
+ * bookings working hours are meant to bound.
+ *
+ * A booking that merely tips a few minutes past local midnight (e.g.
+ * 8am–11:05pm the same evening) is NOT a multi-day booking in that sense —
+ * treating "different calendar date" as the exemption trigger (the
+ * original check here) made it trivial to defeat working-hours enforcement
+ * entirely just by picking an end time a minute or two after midnight, with
+ * no minimum span required. A one-calendar-day crossing is instead checked
+ * by extending the end time past 24:00 (e.g. 00:05 becomes 24:05) so it's
+ * compared against the same day's window on a continuous clock, exactly as
+ * a person booking "9am to just after midnight" would expect that session
+ * to still be judged against the evening's own working-hours cutoff.
  */
 export function isWithinWorkingHours(startsAt: Date, endsAt: Date, timeZone: string, hoursStart: string, hoursEnd: string): boolean {
   const localStart = toZonedTime(startsAt, timeZone)
   const localEnd = toZonedTime(endsAt, timeZone)
 
-  const sameLocalDay = localStart.getFullYear() === localEnd.getFullYear()
-    && localStart.getMonth() === localEnd.getMonth()
-    && localStart.getDate() === localEnd.getDate()
-  if (!sameLocalDay) return true
+  const localMidnightUtcMs = (d: Date) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())
+  const dayDiff = Math.round((localMidnightUtcMs(localEnd) - localMidnightUtcMs(localStart)) / (24 * 60 * 60 * 1000))
+  if (dayDiff >= 2) return true
 
   const [startH, startM] = hoursStart.split(':').map(Number)
   const [endH, endM] = hoursEnd.split(':').map(Number)
@@ -88,7 +98,11 @@ export function isWithinWorkingHours(startsAt: Date, endsAt: Date, timeZone: str
   const windowEndMinutes = endH * 60 + endM
 
   const bookingStartMinutes = localStart.getHours() * 60 + localStart.getMinutes()
-  const bookingEndMinutes = localEnd.getHours() * 60 + localEnd.getMinutes()
+  // dayDiff is 0 (same day) or 1 (tips into the next calendar day) here —
+  // in the latter case, extend past 24:00 rather than wrapping back to a
+  // small number, so e.g. 00:05 the next day compares as 24:05, correctly
+  // past any window's end rather than looking like early-morning-in-hours.
+  const bookingEndMinutes = dayDiff * 24 * 60 + localEnd.getHours() * 60 + localEnd.getMinutes()
 
   return bookingStartMinutes >= windowStartMinutes && bookingEndMinutes <= windowEndMinutes
 }
