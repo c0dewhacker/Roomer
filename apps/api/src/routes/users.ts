@@ -210,13 +210,22 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     if (!result.success) {
       return reply.status(200).send({ data: [] })
     }
+    // A user who opted out of "Show me in Who's In" was promised (ProfilePage)
+    // they "won't appear in Who's In or colleague search" — this endpoint's
+    // own name is "colleague picker," so it's exactly the surface that
+    // promise covers, same visibility rule GET /directory/whereabouts already
+    // applies. Unlike the floor plan (a deliberate, separately-documented
+    // exception — see #219, whose fix updated this exact copy to carve it
+    // out explicitly), nothing carves this endpoint out of the promise, so
+    // it must honour it too.
+    const visibility = { OR: [{ visibleInColleagueSearch: true }, { id: request.user.id }] }
     const users = await prisma.user.findMany({
       where: {
         accountStatus: 'ACTIVE',
-        OR: [
-          { email: { contains: result.data.q, mode: 'insensitive' } },
-          { displayName: { contains: result.data.q, mode: 'insensitive' } },
-        ],
+        AND: [visibility, { OR: [
+          { email: { contains: result.data.q, mode: 'insensitive' as const } },
+          { displayName: { contains: result.data.q, mode: 'insensitive' as const } },
+        ] }],
       },
       select: { id: true, email: true, displayName: true },
       orderBy: { displayName: 'asc' },
