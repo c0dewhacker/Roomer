@@ -770,7 +770,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
         primaryZone: { select: { id: true, name: true } },
         bookings: {
-          where: { status: 'CONFIRMED', startsAt: { lt: dayEnd }, endsAt: { gt: dayStart } },
+          // PENDING_APPROVAL reserves the slot exactly like CONFIRMED (#74)
+          // — hasBlockingOverlap (lib/booking.ts), the floor-plan occupancy
+          // query, and the DB's own overlap exclusion constraint all treat
+          // it that way. This was the one place still only checking
+          // CONFIRMED, so a desk someone else had already requested (but
+          // not yet had approved) could still be suggested here, only to
+          // fail with ASSET_CONFLICT the moment the user tried to book it.
+          where: { status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { lt: dayEnd }, endsAt: { gt: dayStart } },
           select: { id: true },
         },
       },
