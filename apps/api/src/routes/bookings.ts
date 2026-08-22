@@ -9,7 +9,7 @@ import { isFloorManagerForFloor, isBuildingManagerForBuilding, getManagedBuildin
 import { enqueueNotification, fanOutFloorAvailable, promoteNextQueueEntry } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { buildBookingIcs } from '../lib/ical.js'
-import { sendEmail, renderGuestBookingInvite } from '../lib/mailer.js'
+import { sendEmail, renderGuestBookingInvite, renderGuestBookingCancelled } from '../lib/mailer.js'
 import { checkGroupAccess } from './groups.js'
 import { assertBookable, assertUnderBookingQuota, hasBlockingOverlap, checkZoneGroupOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, lockUserForBookingQuota, isOverlapConstraintViolation, resolveRequiresApproval } from '../lib/booking.js'
 import { resolveBuildingTimezone } from '../lib/timezone.js'
@@ -594,6 +594,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(200).send({ data: { guestName: booking.guestName, checkedInAt: booking.checkedInAt } })
     }
 
+    // Deliberately does NOT clear guestCheckInToken here, despite the schema
+    // comment describing it as "cleared once used": this lookup finds the
+    // booking BY that token (see the findUnique above), and the idempotent
+    // "already checked in" replay a few lines up depends on being able to
+    // find the same booking again on a second visit to the same link. Nulling
+    // it here would make a repeat visit 404 instead of replaying successfully.
+    // It's still cleared once the booking is no longer CONFIRMED (see the
+    // cancel path below), which closes the other half of that contract
+    // without breaking this one.
     const updated = await prisma.booking.update({ where: { id: booking.id }, data: { checkedInAt: now } })
     dispatchWebhook('booking.checked_in', { id: updated.id, userId: updated.userId, assetId: updated.assetId, checkedInAt: updated.checkedInAt }).catch(() => {})
     // actorId is the booking's own owner — this endpoint is deliberately
@@ -620,7 +629,18 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    const booking = await prisma.booking.findUnique({ where: { id }, include: { asset: { include: { floor: true } } } })
+    const booking = await prisma.booking.findUnique({
+      where: { id },
+      include: {
+        asset: {
+          include: {
+            floor: { include: { building: true } },
+            primaryZone: { select: { name: true } },
+          },
+        },
+        user: { select: { displayName: true } },
+      },
+    })
     if (!booking) {
       return reply.status(404).send({ error: { message: 'Booking not found', code: 'NOT_FOUND' } })
     }
@@ -753,6 +773,20 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         userId: updated.userId,
         bookingId: updated.id,
       })
+
+      // A guest has no in-app presence — their only record of the booking is
+      // the original invite email. Without this, rescheduling silently left
+      // them holding a check-in link that still works but states the old
+      // time, with no notice anything changed.
+      if (booking.guestName && booking.guestEmail && booking.guestCheckInToken) {
+        const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
+        await sendGuestBookingInvite(
+          { startsAt: newStartsAt, endsAt: newEndsAt, guestName: booking.guestName, guestEmail: booking.guestEmail, guestCheckInToken: booking.guestCheckInToken },
+          booking.user.displayName,
+          booking.asset,
+          tz,
+        )
+      }
     }
 
     // A reschedule can free up part of the original slot — shrinking it from
@@ -790,7 +824,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
     const booking = await prisma.booking.findUnique({
       where: { id },
-      include: { asset: { select: { floorId: true } } },
+      include: {
+        asset: {
+          include: {
+            floor: { include: { building: true } },
+            primaryZone: { select: { name: true } },
+          },
+        },
+        user: { select: { displayName: true } },
+      },
     })
     if (!booking) {
       return reply.status(404).send({ error: { message: 'Booking not found', code: 'NOT_FOUND' } })
@@ -816,8 +858,16 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(409).send({ error: { message: 'Booking is not active', code: 'BOOKING_NOT_ACTIVE' } })
     }
 
-    // Cancel the booking
-    await prisma.booking.update({ where: { id }, data: { status: 'CANCELLED' } })
+    // Cancel the booking. The guest check-in token is cleared here too —
+    // schema.prisma documents it as "cleared once used or once the booking
+    // is no longer CONFIRMED" (mirroring QueueEntry.claimToken's single-use
+    // pattern), but it was previously never actually nulled anywhere. Not
+    // exploitable today (the public check-in route independently gates on
+    // status === 'CONFIRMED'), but leaving a dead token sitting in the DB
+    // indefinitely contradicts the documented contract and is exactly the
+    // kind of latent gap that becomes a real bug the next time this code
+    // is touched.
+    await prisma.booking.update({ where: { id }, data: { status: 'CANCELLED', guestCheckInToken: null } })
 
     dispatchWebhook('booking.cancelled', { id: booking.id, userId: booking.userId, assetId: booking.assetId }).catch(() => {})
     await recordAuditLog(prisma, {
@@ -840,6 +890,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       userId: booking.userId,
       bookingId: id,
     })
+
+    // A guest has no in-app presence — without this they only ever found out
+    // their visit was cancelled by trying a now-dead check-in link on the
+    // day, with no explanation.
+    if (booking.guestName && booking.guestEmail) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
+      const { subject, html, text } = renderGuestBookingCancelled(booking.guestName, booking.user, booking, booking.asset, tz)
+      await sendEmail({ to: booking.guestEmail, subject, html, text }).catch(() => {})
+    }
 
     // Promote next queue entry for overlapping slot
     const nextQueued = await promoteNextQueueEntry(booking.assetId, booking.startsAt, booking.endsAt)

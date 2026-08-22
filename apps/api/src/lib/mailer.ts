@@ -1049,6 +1049,37 @@ export function renderGuestBookingInvite(
   return { subject, html, text }
 }
 
+/**
+ * A guest has no User row and no in-app bell, so an invite is the only
+ * channel they ever get — without this, a cancelled visit only surfaced to
+ * them as a dead check-in link on the day, with no explanation.
+ */
+export function renderGuestBookingCancelled(
+  guestName: string,
+  host: Pick<User, 'displayName'>,
+  booking: Pick<Booking, 'startsAt' | 'endsAt'>,
+  asset: Pick<Asset, 'name'>,
+  timeZone = 'UTC',
+): { subject: string; html: string; text: string } {
+  const subject = `Your visit has been cancelled — ${escapeHtml(asset.name)}`
+  const safeGuest = escapeHtml(guestName)
+  const safeHost = escapeHtml(host.displayName)
+  const safeAsset = escapeHtml(asset.name)
+  const html = baseHtml(
+    subject,
+    `<h1>Visit cancelled</h1>
+     <p>Hi ${safeGuest}, your visit booked by ${safeHost} has been cancelled.</p>
+     <div class="detail">
+       <dl>
+         <dt>Was scheduled</dt><dd>${safeAsset} — ${formatDate(booking.startsAt, timeZone)} → ${formatDate(booking.endsAt, timeZone)}</dd>
+       </dl>
+     </div>
+     <p>Your check-in link for this visit is no longer valid.</p>`,
+  )
+  const text = `Hi ${guestName},\n\nYour visit booked by ${host.displayName} (${asset.name}, ${formatDate(booking.startsAt, timeZone)} → ${formatDate(booking.endsAt, timeZone)}) has been cancelled.\n\nYour check-in link for this visit is no longer valid.`
+  return { subject, html, text }
+}
+
 // ─── BALLOT_WON / BALLOT_LOST (see #159) ──────────────────────────────────────
 
 export function renderBallotWon(

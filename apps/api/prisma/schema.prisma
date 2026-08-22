@@ -825,8 +825,11 @@ model Booking {
   guestEmail         String?
   /// One-click check-in link token emailed to guestEmail — a guest has no
   /// User row/session, so check-in can't go through the normal authenticated
-  /// POST /:id/check-in path. Cleared once used or once the booking is no
-  /// longer CONFIRMED, mirroring QueueEntry.claimToken's single-use pattern.
+  /// POST /:id/check-in path. Cleared once the booking is no longer
+  /// CONFIRMED (cancelled) — NOT cleared on use, unlike QueueEntry.claimToken:
+  /// the check-in route looks the booking up BY this token, so a repeat visit
+  /// to the same link needs it to still resolve in order to replay the
+  /// "already checked in" response idempotently instead of 404ing.
   guestCheckInToken  String?               @unique
   createdAt       DateTime              @default(now())
   updatedAt       DateTime              @updatedAt
