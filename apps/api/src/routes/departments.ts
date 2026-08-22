@@ -30,6 +30,18 @@ export async function departmentRoutes(fastify: FastifyInstance): Promise<void> 
     const org = await prisma.organisation.findFirst({ select: { id: true } })
     if (!org) return reply.status(500).send({ error: { message: 'No organisation found', code: 'NO_ORGANISATION' } })
 
+    // Case-insensitive check — the @@unique constraint below is exact-match
+    // only (Department.name has no case-insensitive collation), so "Sales"
+    // and "sales" would otherwise create two rows that read as the same
+    // department everywhere they're displayed, without ever tripping the
+    // P2002 catch below.
+    const existing = await prisma.department.findFirst({
+      where: { organisationId: org.id, name: { equals: result.data.name, mode: 'insensitive' } },
+    })
+    if (existing) {
+      return reply.status(409).send({ error: { message: 'A department with this name already exists', code: 'ALREADY_EXISTS' } })
+    }
+
     try {
       const department = await prisma.department.create({
         data: { organisationId: org.id, name: result.data.name },
@@ -80,7 +92,18 @@ export async function departmentRoutes(fastify: FastifyInstance): Promise<void> 
     }
 
     try {
-      const before = await prisma.department.findUnique({ where: { id }, select: { name: true } })
+      const before = await prisma.department.findUnique({ where: { id }, select: { name: true, organisationId: true } })
+      // Same case-insensitive check as POST above, scoped to this
+      // department's own org and excluding itself (renaming to the same
+      // name, same casing or not, is a no-op, not a collision).
+      if (before && result.data.name) {
+        const existing = await prisma.department.findFirst({
+          where: { organisationId: before.organisationId, id: { not: id }, name: { equals: result.data.name, mode: 'insensitive' } },
+        })
+        if (existing) {
+          return reply.status(409).send({ error: { message: 'A department with this name already exists', code: 'ALREADY_EXISTS' } })
+        }
+      }
       const department = await prisma.department.update({
         where: { id },
         data: result.data,

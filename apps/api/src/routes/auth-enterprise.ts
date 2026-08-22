@@ -6,6 +6,7 @@ import { buildAuthorizationUrl, authorizationCodeGrant, fetchUserInfo, skipSubje
 import { getSamlConfig, buildSaml, extractEmailFromProfile, extractDisplayNameFromProfile, extractGroupsFromProfile, extractDepartmentFromProfile, extractManagerFromProfile, type SamlProfile } from '../lib/saml.js'
 import { applyGroupMappings, recordLastIdpGroups } from '../lib/group-mapping.js'
 import { recordManagerRef, resolveManagerForUser } from '../lib/manager.js'
+import { findOrCreateDepartment } from '../lib/department.js'
 import { signAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE } from '../lib/jwt.js'
 import type { User } from '@prisma/client'
 import { recordAuditLog } from '../lib/audit.js'
@@ -241,11 +242,7 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
         if (deptName) {
           const org = await prisma.organisation.findFirst({ select: { id: true } })
           if (org) {
-            const dept = await prisma.department.upsert({
-              where: { organisationId_name: { organisationId: org.id, name: deptName } },
-              create: { organisationId: org.id, name: deptName },
-              update: {},
-            })
+            const dept = await findOrCreateDepartment(org.id, deptName)
             await prisma.user.update({ where: { id: user.id }, data: { departmentId: dept.id } })
           }
         }
@@ -332,11 +329,7 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
       if (deptName) {
         const org = await prisma.organisation.findFirst({ select: { id: true } })
         if (org) {
-          const dept = await prisma.department.upsert({
-            where: { organisationId_name: { organisationId: org.id, name: deptName } },
-            create: { organisationId: org.id, name: deptName },
-            update: {},
-          })
+          const dept = await findOrCreateDepartment(org.id, deptName)
           await prisma.user.update({ where: { id: user.id }, data: { departmentId: dept.id } })
         }
       }

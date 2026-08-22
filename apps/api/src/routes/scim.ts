@@ -6,6 +6,7 @@ import { cancelFutureBookingsForUser, cancelQueueEntriesForUser, releaseAssetAss
 import { lockSuperAdminGuard, wouldRemoveLastActiveSuperAdmin } from '../lib/group-mapping.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { recordManagerRef, resolveManagerForUser } from '../lib/manager.js'
+import { findOrCreateDepartment } from '../lib/department.js'
 import { recordAuditLog } from '../lib/audit.js'
 import {
   userToScim, groupToScim, scimError, listResponse, parseScimFilter,
@@ -219,11 +220,7 @@ function registerUsers(fastify: FastifyInstance): void {
     if (incomingDeptName) {
       const org = await prisma.organisation.findFirst({ select: { id: true } })
       if (org) {
-        const dept = await prisma.department.upsert({
-          where: { organisationId_name: { organisationId: org.id, name: incomingDeptName } },
-          create: { organisationId: org.id, name: incomingDeptName },
-          update: {},
-        })
+        const dept = await findOrCreateDepartment(org.id, incomingDeptName)
         departmentId = dept.id
       }
     }
@@ -317,11 +314,7 @@ function registerUsers(fastify: FastifyInstance): void {
     if (incomingDeptName) {
       const org = await prisma.organisation.findFirst({ select: { id: true } })
       if (org) {
-        const dept = await prisma.department.upsert({
-          where: { organisationId_name: { organisationId: org.id, name: incomingDeptName } },
-          create: { organisationId: org.id, name: incomingDeptName },
-          update: {},
-        })
+        const dept = await findOrCreateDepartment(org.id, incomingDeptName)
         departmentId = dept.id
       }
     } else if (incomingDeptName === '') {
@@ -422,11 +415,7 @@ function registerUsers(fastify: FastifyInstance): void {
     if (departmentName) {
       const org = await prisma.organisation.findFirst({ select: { id: true } })
       if (org) {
-        const dept = await prisma.department.upsert({
-          where: { organisationId_name: { organisationId: org.id, name: departmentName } },
-          create: { organisationId: org.id, name: departmentName },
-          update: {},
-        })
+        const dept = await findOrCreateDepartment(org.id, departmentName)
         departmentId = dept.id
       }
     }

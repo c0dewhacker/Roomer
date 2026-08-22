@@ -224,11 +224,8 @@ async function runLdapSync(cfg: LdapConfig): Promise<LdapSyncResult> {
         }
 
         if (departmentName && orgId) {
-          const dept = await prisma.department.upsert({
-            where: { organisationId_name: { organisationId: orgId, name: departmentName } },
-            create: { organisationId: orgId, name: departmentName },
-            update: {},
-          })
+          const { findOrCreateDepartment } = await import('./department.js')
+          const dept = await findOrCreateDepartment(orgId, departmentName)
           await prisma.user.update({ where: { id: userId }, data: { departmentId: dept.id } })
         }
       } catch (err) {

@@ -6,6 +6,7 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { authenticateWithLdap, getLdapConfig } from '../lib/ldap.js'
 import { applyGroupMappings, recordLastIdpGroups } from '../lib/group-mapping.js'
 import { recordManagerRef, resolveManagerForUser } from '../lib/manager.js'
+import { findOrCreateDepartment } from '../lib/department.js'
 import { signAccessToken, verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE, MAX_SESSION_SECONDS } from '../lib/jwt.js'
 import { blockToken, isTokenBlocked } from '../lib/token-blocklist.js'
 import { recordAuditLog } from '../lib/audit.js'
@@ -93,11 +94,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         if (ldapResult.department) {
           const org = await prisma.organisation.findFirst({ select: { id: true } })
           if (org) {
-            const dept = await prisma.department.upsert({
-              where: { organisationId_name: { organisationId: org.id, name: ldapResult.department } },
-              create: { organisationId: org.id, name: ldapResult.department },
-              update: {},
-            })
+            const dept = await findOrCreateDepartment(org.id, ldapResult.department)
             await prisma.user.update({ where: { id: user.id }, data: { departmentId: dept.id } })
           }
         }
