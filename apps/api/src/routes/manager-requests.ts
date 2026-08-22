@@ -171,10 +171,24 @@ export async function managerRequestRoutes(fastify: FastifyInstance): Promise<vo
 
     try {
       await prisma.$transaction(async (tx) => {
-        await tx.floorManagerRequest.update({
-          where: { id },
+        // Claim atomically on the same condition just checked above —
+        // without this, a concurrent reject/cancel/expiry-cron pass reading
+        // PENDING before this transaction commits can unconditionally
+        // overwrite this request's status afterward, leaving the record
+        // showing REJECTED/CANCELLED/EXPIRED while the FLOOR_MANAGER role
+        // this transaction is about to create stays granted regardless — the
+        // record and the actual access grant fall out of sync with nothing
+        // to reconcile them. Every structurally identical PENDING-request
+        // lifecycle elsewhere in this codebase (queue claims, transfers,
+        // swaps, the expiry cron below) already claims this way; this route
+        // just hadn't been brought in line with it.
+        const claimed = await tx.floorManagerRequest.updateMany({
+          where: { id, status: 'PENDING' },
           data: { status: 'APPROVED', reviewedById: request.user.id, reviewedAt: new Date() },
         })
+        if (claimed.count === 0) {
+          throw Object.assign(new Error('NOT_PENDING'), { code: 'NOT_PENDING' })
+        }
         const role = await tx.userResourceRole.create({
           data: { userId: req.userId, role: 'FLOOR_MANAGER', scopeType: 'FLOOR', floorId: req.floorId },
         })
@@ -197,15 +211,23 @@ export async function managerRequestRoutes(fastify: FastifyInstance): Promise<vo
         }, request.log)
       })
     } catch (err) {
+      if ((err as { code?: string }).code === 'NOT_PENDING') {
+        return reply.status(409).send({ error: { message: 'This request is no longer pending', code: 'NOT_PENDING' } })
+      }
       // Unique constraint on UserResourceRole — the user picked up the same
       // FLOOR_MANAGER grant some other way (direct admin assignment, a group
       // role) between the request being created and this approval. The
       // request itself should still resolve as approved rather than error.
+      // Re-claims the same way (status: 'PENDING' guard) rather than an
+      // unconditional update, for the same reason as above.
       if ((err as { code?: string }).code === 'P2002') {
-        await prisma.floorManagerRequest.update({
-          where: { id },
+        const claimed = await prisma.floorManagerRequest.updateMany({
+          where: { id, status: 'PENDING' },
           data: { status: 'APPROVED', reviewedById: request.user.id, reviewedAt: new Date() },
         })
+        if (claimed.count === 0) {
+          return reply.status(409).send({ error: { message: 'This request is no longer pending', code: 'NOT_PENDING' } })
+        }
         await recordAuditLog(prisma, {
           actorId: request.user.id,
           action: 'floor_manager_request.approved',
@@ -248,10 +270,18 @@ export async function managerRequestRoutes(fastify: FastifyInstance): Promise<vo
       return reply.status(409).send({ error: { message: 'This request is no longer pending', code: 'NOT_PENDING' } })
     }
 
-    await prisma.floorManagerRequest.update({
-      where: { id },
+    // Claimed atomically (status: 'PENDING' guard), not an unconditional
+    // update — otherwise this can race a concurrent approve (or the expiry
+    // cron) that read PENDING first and overwrite its result: the request
+    // would show REJECTED here while the other path's FLOOR_MANAGER grant
+    // (or EXPIRED status) still stands, with nothing to reconcile the two.
+    const claimed = await prisma.floorManagerRequest.updateMany({
+      where: { id, status: 'PENDING' },
       data: { status: 'REJECTED', reviewedById: request.user.id, reviewedAt: new Date(), reviewNote: result.data.reviewNote ?? null },
     })
+    if (claimed.count === 0) {
+      return reply.status(409).send({ error: { message: 'This request is no longer pending', code: 'NOT_PENDING' } })
+    }
     await recordAuditLog(prisma, {
       actorId: request.user.id,
       action: 'floor_manager_request.rejected',
@@ -279,7 +309,17 @@ export async function managerRequestRoutes(fastify: FastifyInstance): Promise<vo
     if (req.status !== 'PENDING') {
       return reply.status(409).send({ error: { message: 'This request is no longer pending', code: 'NOT_PENDING' } })
     }
-    await prisma.floorManagerRequest.update({ where: { id }, data: { status: 'CANCELLED' } })
+    // Claimed atomically (status: 'PENDING' guard) — otherwise a self-cancel
+    // can race a concurrent approve and overwrite an already-APPROVED row
+    // back to CANCELLED while the FLOOR_MANAGER grant that approve created
+    // stays in place, same class of bug as approve/reject above.
+    const claimed = await prisma.floorManagerRequest.updateMany({
+      where: { id, status: 'PENDING' },
+      data: { status: 'CANCELLED' },
+    })
+    if (claimed.count === 0) {
+      return reply.status(409).send({ error: { message: 'This request is no longer pending', code: 'NOT_PENDING' } })
+    }
     await recordAuditLog(prisma, {
       actorId: request.user.id,
       action: 'floor_manager_request.cancelled',
