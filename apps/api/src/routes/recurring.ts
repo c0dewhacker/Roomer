@@ -569,10 +569,16 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
         }
 
         // Shortening — cancel occurrences that now fall after the new end date.
+        // Includes PENDING_APPROVAL, not just CONFIRMED: an occurrence still
+        // awaiting approval blocks its slot exactly like a confirmed one (see
+        // hasBlockingOverlap), and leaving it untouched here would let an
+        // approver later confirm it into existence past the series' own new
+        // end date via POST /bookings/:id/approve, which only checks the
+        // individual booking's own status, not whether its rule still covers it.
         const newLastDateEndOfDay = new Date(newLastDateObj)
         newLastDateEndOfDay.setUTCHours(23, 59, 59, 999)
         const droppedBookings = await tx.booking.findMany({
-          where: { recurringRuleId: id, status: 'CONFIRMED', startsAt: { gt: newLastDateEndOfDay } },
+          where: { recurringRuleId: id, status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { gt: newLastDateEndOfDay } },
           select: { id: true, assetId: true, startsAt: true, endsAt: true },
         })
         await tx.booking.updateMany({
@@ -749,8 +755,15 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
     // already does. Without this, cancelling a recurring series silently orphans
     // any queue entries waiting on those slots: the desk is free again but no
     // one ever gets promoted or notified.
+    // Includes PENDING_APPROVAL, not just CONFIRMED: an occurrence still
+    // awaiting approval blocks its slot exactly like a confirmed one (see
+    // hasBlockingOverlap), and leaving it untouched here would let an
+    // approver later confirm it into existence via POST /bookings/:id/approve
+    // — which resurrects the very series the caller just cancelled, since
+    // approve only checks the individual booking's own status, not whether
+    // its parent rule is still ACTIVE.
     const futureBookings = await prisma.booking.findMany({
-      where: { recurringRuleId: id, status: 'CONFIRMED', startsAt: { gt: now } },
+      where: { recurringRuleId: id, status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { gt: now } },
       select: { id: true, assetId: true, startsAt: true, endsAt: true },
     })
 
