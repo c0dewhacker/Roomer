@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { checkGroupAccess } from './groups.js'
+import { recordAuditLog } from '../lib/audit.js'
 
 const createSchema = z.object({
   floorId: z.string().min(1),
@@ -84,6 +85,14 @@ export async function subscriptionRoutes(fastify: FastifyInstance): Promise<void
           zones: { include: { zone: { select: { id: true, name: true, colour: true } } } },
         },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'floor_subscription.updated',
+        resourceType: 'FloorSubscription',
+        resourceId: existing.id,
+        after: { floorId, zoneIds: zoneIds ?? [] },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: sub })
     }
 
@@ -100,6 +109,14 @@ export async function subscriptionRoutes(fastify: FastifyInstance): Promise<void
         zones: { include: { zone: { select: { id: true, name: true, colour: true } } } },
       },
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'floor_subscription.created',
+      resourceType: 'FloorSubscription',
+      resourceId: sub.id,
+      after: { floorId, zoneIds: zoneIds ?? [] },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(201).send({ data: sub })
   })
@@ -150,6 +167,14 @@ export async function subscriptionRoutes(fastify: FastifyInstance): Promise<void
         zones: { include: { zone: { select: { id: true, name: true, colour: true } } } },
       },
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'floor_subscription.updated',
+      resourceType: 'FloorSubscription',
+      resourceId: id,
+      after: { zoneIds },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: updated })
   })
 
@@ -166,6 +191,14 @@ export async function subscriptionRoutes(fastify: FastifyInstance): Promise<void
     }
 
     await prisma.floorSubscription.delete({ where: { id } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'floor_subscription.deleted',
+      resourceType: 'FloorSubscription',
+      resourceId: id,
+      before: { floorId: sub.floorId },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 }

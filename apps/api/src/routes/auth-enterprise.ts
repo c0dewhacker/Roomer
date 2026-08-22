@@ -8,6 +8,7 @@ import { applyGroupMappings, recordLastIdpGroups } from '../lib/group-mapping.js
 import { recordManagerRef, resolveManagerForUser } from '../lib/manager.js'
 import { signAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE } from '../lib/jwt.js'
 import type { User } from '@prisma/client'
+import { recordAuditLog } from '../lib/audit.js'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -20,6 +21,7 @@ async function findOrCreateSsoUser(
   displayName: string,
   provider: 'OIDC' | 'SAML',
   externalId?: string,
+  ipAddress?: string,
 ): Promise<SsoUserResult> {
   // Case-insensitive lookup, same reasoning as the local-login and LDAP paths
   // in auth.ts: the IdP-provided email claim isn't guaranteed to match the
@@ -64,6 +66,18 @@ async function findOrCreateSsoUser(
           passwordHash: null,
         },
       })
+  // actorId: null — IdP-driven JIT provisioning triggered by the user's own
+  // login, not a human admin action, same reasoning as SCIM/LDAP JIT (Batch A,
+  // auth.ts). A provider-specific action name lets a reviewer tell provenance
+  // (and which IdP) apart at a glance.
+  await recordAuditLog(prisma, {
+    actorId: null,
+    action: existing ? `user.${provider.toLowerCase()}_updated` : `user.${provider.toLowerCase()}_created`,
+    resourceType: 'User',
+    resourceId: user.id,
+    after: { email: user.email, displayName: user.displayName, externalId: user.externalId },
+    ipAddress,
+  })
   if (user.accountStatus === 'BLOCKED') return { ok: false, error: 'blocked' }
   return { ok: true, user }
 }
@@ -199,7 +213,7 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
         return reply.redirect(`${env.APP_URL}/login?error=oidc_email_unverified`)
       }
 
-      const ssoResult = await findOrCreateSsoUser(email, displayName ?? email, 'OIDC', userinfo.sub)
+      const ssoResult = await findOrCreateSsoUser(email, displayName ?? email, 'OIDC', userinfo.sub, request.ip)
       if (!ssoResult.ok) {
         const errorCode = ssoResult.error === 'blocked' ? 'account_blocked' : `oidc_${ssoResult.error}`
         return reply.redirect(`${env.APP_URL}/login?error=${errorCode}`)
@@ -296,7 +310,7 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
         return reply.redirect(`${env.APP_URL}/login?error=saml_no_email`)
       }
 
-      const ssoResult = await findOrCreateSsoUser(email, displayName, 'SAML', profile.nameID)
+      const ssoResult = await findOrCreateSsoUser(email, displayName, 'SAML', profile.nameID, request.ip)
       if (!ssoResult.ok) {
         const errorCode = ssoResult.error === 'blocked' ? 'account_blocked' : `saml_${ssoResult.error}`
         return reply.redirect(`${env.APP_URL}/login?error=${errorCode}`)

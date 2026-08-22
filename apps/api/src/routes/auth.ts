@@ -8,6 +8,7 @@ import { applyGroupMappings, recordLastIdpGroups } from '../lib/group-mapping.js
 import { recordManagerRef, resolveManagerForUser } from '../lib/manager.js'
 import { signAccessToken, verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE, MAX_SESSION_SECONDS } from '../lib/jwt.js'
 import { blockToken, isTokenBlocked } from '../lib/token-blocklist.js'
+import { recordAuditLog } from '../lib/audit.js'
 
 // A valid bcrypt hash (cost 12) of a random string, used to equalise response
 // timing when an account has no local password (non-existent user or SSO-only).
@@ -62,6 +63,18 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
                 passwordHash: null,
               },
             })
+        // actorId: null — this is IdP-driven JIT provisioning triggered by the
+        // user's own login, not a human admin action, same reasoning as SCIM's
+        // actorId: null (users.ts/scim.ts, Batch A). A distinguishing
+        // ldap_-prefixed action name lets a reviewer tell provenance apart.
+        await recordAuditLog(prisma, {
+          actorId: null,
+          action: existingLdapUser ? 'user.ldap_updated' : 'user.ldap_created',
+          resourceType: 'User',
+          resourceId: user.id,
+          after: { email: user.email, displayName: user.displayName, externalId: user.externalId },
+          ipAddress: request.ip,
+        }, request.log)
         await recordLastIdpGroups(user.id, ldapResult.groups)
         const ldapCfg = await getLdapConfig()
         const mappings = ldapCfg?.groupMappings ?? []
