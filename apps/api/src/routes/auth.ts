@@ -78,7 +78,16 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         await recordLastIdpGroups(user.id, ldapResult.groups)
         const ldapCfg = await getLdapConfig()
         const mappings = ldapCfg?.groupMappings ?? []
-        if (ldapResult.groups.length && mappings.length) {
+        // Deliberately does NOT also require ldapResult.groups.length: an
+        // empty array is exactly the "user was removed from every mapped
+        // group" signal that must reach applyGroupMappings so its sync=true
+        // eviction/demotion logic can run — gating this on a non-empty group
+        // list silently skipped revocation for a fully-deprovisioned
+        // directory entry. Mirrors lib/ldap.ts's full sync and
+        // auth-enterprise.ts's OIDC/SAML JIT paths, which already avoid this
+        // exact gate for this exact reason — this interactive-login path was
+        // the one caller still doing it wrong.
+        if (mappings.length) {
           await applyGroupMappings(user.id, ldapResult.groups, mappings, true)
         }
         if (ldapResult.department) {
