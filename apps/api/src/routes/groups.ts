@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
@@ -194,7 +195,14 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
         ipAddress: request.ip,
       }, request.log)
       return reply.status(201).send({ data: { groupId: id, userId } })
-    } catch {
+    } catch (err) {
+      // group/user existed moments ago (checked above) but create() can still
+      // throw an FK violation (P2003) if either was deleted in the window
+      // between that check and this write — a bare catch previously reported
+      // "already exists" (409) for that case too, which is simply wrong.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') {
+        return reply.status(404).send({ error: { message: 'Group or user no longer exists', code: 'NOT_FOUND' } })
+      }
       return reply.status(409).send({ error: { message: 'User already in group', code: 'ALREADY_EXISTS' } })
     }
   })
@@ -247,7 +255,14 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
         ipAddress: request.ip,
       }, request.log)
       return reply.status(201).send({ data: { groupId: id, buildingId } })
-    } catch {
+    } catch (err) {
+      // See POST /:id/members — group/building existed moments ago (checked
+      // above) but create() can still throw an FK violation (P2003) if
+      // either was deleted in the window since, which a bare catch
+      // previously misreported as "already exists".
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') {
+        return reply.status(404).send({ error: { message: 'Group or building no longer exists', code: 'NOT_FOUND' } })
+      }
       return reply.status(409).send({ error: { message: 'Access rule already exists', code: 'ALREADY_EXISTS' } })
     }
   })
@@ -300,7 +315,14 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
         ipAddress: request.ip,
       }, request.log)
       return reply.status(201).send({ data: { groupId: id, floorId } })
-    } catch {
+    } catch (err) {
+      // See POST /:id/members — group/floor existed moments ago (checked
+      // above) but create() can still throw an FK violation (P2003) if
+      // either was deleted in the window since, which a bare catch
+      // previously misreported as "already exists".
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') {
+        return reply.status(404).send({ error: { message: 'Group or floor no longer exists', code: 'NOT_FOUND' } })
+      }
       return reply.status(409).send({ error: { message: 'Access rule already exists', code: 'ALREADY_EXISTS' } })
     }
   })
