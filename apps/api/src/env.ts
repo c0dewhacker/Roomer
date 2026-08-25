@@ -30,6 +30,17 @@ const envSchema = z.object({
   SESSION_SECRET: z.string()
     .min(32, 'SESSION_SECRET must be at least 32 characters. Generate with: openssl rand -hex 32')
     .refine((v) => !isLowEntropyPlaceholder(v), 'SESSION_SECRET is a placeholder value (no character variation) — generate a real secret with: openssl rand -hex 32'),
+  // Optional — signs the @fastify/session cookie (used only to carry OIDC/SAML
+  // state/nonce across the IdP redirect, never identity). Falls back to
+  // SESSION_SECRET when unset, matching every existing deployment's current
+  // behaviour with no required action. Set this separately to compartmentalise
+  // a compromise/implementation flaw in either signing scheme (jsonwebtoken's
+  // HS256 JWTs vs @fastify/session's cookie signing) to just that scheme,
+  // rather than one secret backing both.
+  COOKIE_SESSION_SECRET: z.string()
+    .min(32, 'COOKIE_SESSION_SECRET must be at least 32 characters. Generate with: openssl rand -hex 32')
+    .refine((v) => !isLowEntropyPlaceholder(v), 'COOKIE_SESSION_SECRET is a placeholder value (no character variation) — generate a real secret with: openssl rand -hex 32')
+    .optional(),
   // 32-byte hex key for AES-256-GCM encryption of sensitive DB fields (AuthConfig secrets).
   // Generate with: openssl rand -hex 32
   ROOMER_ENCRYPTION_KEY: z.string()
@@ -115,6 +126,7 @@ const envSchema = z.object({
 const parsed = envSchema.safeParse({
   DATABASE_URL:           r('DATABASE_URL'),
   SESSION_SECRET:         r('SESSION_SECRET'),
+  COOKIE_SESSION_SECRET:  r('COOKIE_SESSION_SECRET'),
   ROOMER_ENCRYPTION_KEY:  process.env['ROOMER_ENCRYPTION_KEY'],
   NODE_ENV:               r('NODE_ENV'),
   PORT:                   r('PORT'),

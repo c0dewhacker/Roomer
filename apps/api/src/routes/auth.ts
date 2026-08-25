@@ -9,6 +9,7 @@ import { recordManagerRef, resolveManagerForUser } from '../lib/manager.js'
 import { findOrCreateDepartment } from '../lib/department.js'
 import { signAccessToken, verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE, MAX_SESSION_SECONDS } from '../lib/jwt.js'
 import { blockToken, isTokenBlocked } from '../lib/token-blocklist.js'
+import { isLoginThrottled, recordFailedLogin, clearFailedLogins } from '../lib/login-throttle.js'
 import { recordAuditLog } from '../lib/audit.js'
 
 // A valid bcrypt hash (cost 12) of a random string, used to equalise response
@@ -30,6 +31,15 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     const { email, password } = result.data
+
+    // Per-account throttle, independent of the IP-keyed rate limits above —
+    // see login-throttle.ts for why those alone aren't enough. Checked before
+    // any DB/LDAP/bcrypt work so an already-throttled account fails fast.
+    if (isLoginThrottled(email)) {
+      return reply.status(429).send({
+        error: { message: 'Too many failed login attempts for this account. Try again later.', code: 'ACCOUNT_LOGIN_THROTTLED' },
+      })
+    }
 
     // Case-insensitive: email creation is not normalised to lowercase
     // everywhere (LDAP sync lowercases; an admin manually creating a local
@@ -111,6 +121,11 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         // Run a dummy bcrypt comparison so this path takes a similar amount of
         // time to the local-password path — avoids account-enumeration via timing.
         await bcryptjs.compare(password, DUMMY_PASSWORD_HASH)
+        // Recorded identically for "no such user" and "wrong password" (see
+        // the other branch below) — the response is already identical for
+        // both, so the throttle must be too, or its own timing/state becomes
+        // a second account-existence side channel.
+        recordFailedLogin(email)
         return reply.status(401).send({
           error: { message: 'Invalid email or password', code: 'INVALID_CREDENTIALS' },
         })
@@ -119,6 +134,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
       // Local password auth
       const passwordValid = await bcryptjs.compare(password, user.passwordHash)
       if (!passwordValid) {
+        recordFailedLogin(email)
         return reply.status(401).send({
           error: { message: 'Invalid email or password', code: 'INVALID_CREDENTIALS' },
         })
@@ -130,6 +146,10 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         error: { message: 'Your account has been suspended', code: 'ACCOUNT_BLOCKED' },
       })
     }
+
+    // Valid credentials — any prior failed-attempt history for this account
+    // no longer reflects an ongoing guessing attempt.
+    clearFailedLogins(email)
 
     // Issue a signed JWT. The `role` claim is embedded and protected by HS256 —
     // any client-side modification of the payload invalidates the signature.
