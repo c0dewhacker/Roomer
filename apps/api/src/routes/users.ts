@@ -508,6 +508,25 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       if (!user) {
         return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })
       }
+      // A federated (OIDC/SAML/LDAP) account has no Roomer-owned credential
+      // to "reset" — the IdP is the sole source of truth for it. Setting a
+      // passwordHash here would silently open a second, parallel local-login
+      // path for that account: /auth/login only branches into the LDAP
+      // fallback when passwordHash is null (see the `!user?.passwordHash`
+      // check there), so once set, this account could be logged into with a
+      // plain email+password from then on — bypassing the IdP entirely,
+      // including its MFA and any deprovisioning done IdP-side, until
+      // someone notices and manually clears it. Same class of risk as the
+      // SCIM identity-hijack this session already fixed (#283), via a
+      // different vector.
+      if (user.provider !== 'LOCAL') {
+        return reply.status(409).send({
+          error: {
+            message: `This account signs in via ${user.provider} — it has no local password to reset. Manage its access through that identity provider instead.`,
+            code: 'NOT_A_LOCAL_ACCOUNT',
+          },
+        })
+      }
 
       const newHash = await bcryptjs.hash(result.data.password, 12)
       await prisma.user.update({
