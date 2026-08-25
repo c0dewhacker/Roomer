@@ -108,7 +108,14 @@ const updateOrgSchema = z.object({
   // Org-wide fallback timezone + working hours (buildings can override —
   // see #72). enforceWorkingHours is a single org-wide on/off switch: the
   // hours themselves can be configured ahead of actually enforcing them.
-  defaultTimezone: z.string().refine((v) => Intl.supportedValuesOf('timeZone').includes(v), 'Not a recognised IANA timezone').optional(),
+  // 'UTC' is a valid, functional Intl/date-fns-tz timezone identifier (the
+  // Organisation schema's own default, and every fallback throughout this
+  // codebase) but Intl.supportedValuesOf('timeZone') only enumerates
+  // canonical IANA "Zone" entries, not the "UTC" link — it's absent from
+  // that list even though `new Intl.DateTimeFormat('en', { timeZone: 'UTC'
+  // })` works fine. Without the explicit allowance, saving ANY org setting
+  // 400'd the moment the form round-tripped the untouched default back.
+  defaultTimezone: z.string().refine((v) => v === 'UTC' || Intl.supportedValuesOf('timeZone').includes(v), 'Not a recognised IANA timezone').optional(),
   workingHoursStart: z.string().regex(/^\d{2}:\d{2}$/).optional(),
   workingHoursEnd: z.string().regex(/^\d{2}:\d{2}$/).optional(),
   enforceWorkingHours: z.boolean().optional(),
