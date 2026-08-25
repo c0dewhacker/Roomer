@@ -3,6 +3,7 @@ import type { User } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
+import { zonedWallClockToUtc } from '../lib/timezone.js'
 import { z } from 'zod'
 
 const querySchema = z.object({
@@ -126,12 +127,21 @@ export async function directoryRoutes(fastify: FastifyInstance): Promise<void> {
     }
     const search = parsed.data.search && parsed.data.search.length > 0 ? parsed.data.search : undefined
     const dateStr = parsed.data.date ?? new Date().toISOString().slice(0, 10)
-    const dayStart = new Date(`${dateStr}T00:00:00.000Z`)
-    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000)
+    const [year, month, day] = dateStr.split('-').map(Number)
+    // Widened DB pre-filter only — "who's in on this date" spans buildings in
+    // different timezones at once, so no single fixed UTC window can
+    // correctly represent "today" for all of them simultaneously (unlike a
+    // single-building calculation such as lease-expiry's calendarDaysUntil).
+    // ±14h covers every real-world UTC offset; the precise per-building
+    // local-day check happens per booking below, after each row's own
+    // resolvedTimezone is known.
+    const dayStartApprox = new Date(Date.UTC(year, month - 1, day) - 14 * 60 * 60 * 1000)
+    const dayEndApprox = new Date(Date.UTC(year, month - 1, day) + 24 * 60 * 60 * 1000 + 14 * 60 * 60 * 1000)
 
-    const [accessible, accessibleFloors] = await Promise.all([
+    const [accessible, accessibleFloors, orgDefaultTimezone] = await Promise.all([
       accessibleBuildingIds(request.user),
       accessibleFloorIds(request.user),
+      prisma.organisation.findFirst({ select: { defaultTimezone: true } }).then((o) => o?.defaultTimezone ?? 'UTC'),
     ])
     if (
       (accessible !== 'ALL' && accessible.length === 0) ||
@@ -168,11 +178,11 @@ export async function directoryRoutes(fastify: FastifyInstance): Promise<void> {
         ] }] }
       : visibility
 
-    const bookings = await prisma.booking.findMany({
+    const bookingsCandidates = await prisma.booking.findMany({
       where: {
         status: 'CONFIRMED',
-        startsAt: { lt: dayEnd },
-        endsAt: { gt: dayStart },
+        startsAt: { lt: dayEndApprox },
+        endsAt: { gt: dayStartApprox },
         asset: assetWhere,
         user: userWhere,
       },
@@ -181,15 +191,29 @@ export async function directoryRoutes(fastify: FastifyInstance): Promise<void> {
         user: { select: { id: true, displayName: true, email: true } },
         asset: { select: assetLocationSelect },
       },
-      take: PER_QUERY_CAP,
+      // Over-fetch relative to PER_QUERY_CAP since the ±14h DB window is
+      // deliberately wider than any single building's actual local day —
+      // trimmed back down to PER_QUERY_CAP after the precise per-booking
+      // filter below.
+      take: PER_QUERY_CAP * 2,
     })
 
+    // Precise filter: does this booking overlap the REQUESTED calendar date
+    // in ITS OWN building's timezone (same buildingTimezone ?? org-default
+    // resolution order used for display below, so the filter and the
+    // resolvedTimezone shown to the user always agree)? A fixed UTC window
+    // alone can't do this correctly across buildings in different
+    // timezones — see the ±14h DB pre-filter comment above for why.
+    const bookings = bookingsCandidates
+      .filter((b) => {
+        const tz = b.asset.floor?.building?.timezone ?? orgDefaultTimezone
+        const localDayStart = zonedWallClockToUtc(year, month, day, 0, 0, tz)
+        const localDayEnd = new Date(localDayStart.getTime() + 24 * 60 * 60 * 1000)
+        return b.startsAt < localDayEnd && b.endsAt > localDayStart
+      })
+      .slice(0, PER_QUERY_CAP)
+
     const bookedUserIds = [...new Set(bookings.map((b) => b.user.id))]
-    // Resolved once, reused for every entry with no building-level override
-    // (see #72) — the frontend needs this to render each "who's in" time in
-    // its actual building-local time rather than the viewer's own browser
-    // timezone.
-    const orgDefaultTimezone = (await prisma.organisation.findFirst({ select: { defaultTimezone: true } }))?.defaultTimezone ?? 'UTC'
 
     // Assignments: when searching, return all matched users' home desks (even if
     // they have no booking). Otherwise only the booked users' desks, as context.

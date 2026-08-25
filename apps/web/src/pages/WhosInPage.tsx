@@ -118,6 +118,15 @@ export default function WhosInPage() {
   const { data, isLoading, isError } = useQuery({
     queryKey: ['whereabouts', date, search],
     queryFn: () => directoryApi.whereabouts({ date, search: search || undefined }).then((r) => r.data),
+    // No booking mutation anywhere in the app invalidates this query key —
+    // wiring up every cancel/approve/check-in/swap/transfer path across the
+    // codebase to remember to do so would be a lot of scattered surface area
+    // for a page that's inherently "live-ish" anyway. Polling instead, same
+    // pattern already used for the notification bell — a colleague's booking
+    // getting cancelled elsewhere is reflected here within a bounded window
+    // rather than staying stale indefinitely until the viewer changes the
+    // date/search or manually reloads.
+    refetchInterval: 30 * 1000,
   })
 
   return (
