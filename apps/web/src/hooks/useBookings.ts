@@ -41,6 +41,13 @@ export function useCancelBooking() {
     onSuccess: () => {
       toast.success('Booking cancelled')
       qc.invalidateQueries({ queryKey: ['bookings'] })
+      // Freeing a desk changes floor availability — useLeaveQueue,
+      // useClaimDesk, and useMakeAvailable below all already invalidate this
+      // too; cancel was the one mutation in this file that didn't, leaving
+      // DeskPanel/the floor plan showing the just-cancelled booking (still
+      // "yours", marker still blue) until an unrelated refetch happened to
+      // occur.
+      qc.invalidateQueries({ queryKey: ['floors'] })
     },
     onError: (err: Error) => {
       toast.error(apiErrMsg(err, 'Failed to cancel booking'))
@@ -57,6 +64,10 @@ export function useUpdateBooking() {
     onSuccess: () => {
       toast.success('Booking updated')
       qc.invalidateQueries({ queryKey: ['bookings'] })
+      // Same staleness gap as useCancelBooking above — rescheduling frees
+      // the old slot and occupies a new one, both of which affect floor
+      // availability.
+      qc.invalidateQueries({ queryKey: ['floors'] })
     },
     onError: (err: Error) => {
       toast.error(err.message ?? 'Failed to update booking')

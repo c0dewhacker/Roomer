@@ -599,7 +599,7 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
 
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive">
+                    <Button variant="ghost" size="icon" disabled={cancel.isPending} className="h-8 w-8 text-muted-foreground hover:text-destructive">
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </AlertDialogTrigger>
@@ -629,7 +629,7 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
               <div className="flex items-center gap-1 shrink-0">
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" title="Withdraw request">
+                    <Button variant="ghost" size="icon" disabled={cancel.isPending} className="h-8 w-8 text-muted-foreground hover:text-destructive" title="Withdraw request">
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </AlertDialogTrigger>
