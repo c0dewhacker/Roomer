@@ -95,12 +95,21 @@ export function formatDate(date: Date | string, timeZone = 'UTC'): string {
 }
 
 function baseHtml(title: string, body: string): string {
+  // title is the plain-text subject line (also sent verbatim as the SMTP
+  // Subject header and interpolated raw into the `text` fallback below) —
+  // it must be escaped here, not by the caller, since every render*()
+  // function builds it from raw user-controlled strings (displayName,
+  // asset/floor/building name, ballot name). Escaping it a second time at
+  // the call site (as every one of them used to, before this fix) would
+  // double-escape it into the visible subject line instead — this is the
+  // one place it's rendered as HTML, so this is the one place it should be
+  // escaped.
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${title}</title>
+  <title>${escapeHtml(title)}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f4f4f5; margin: 0; padding: 20px; }
     .card { background: #fff; border-radius: 8px; max-width: 560px; margin: 0 auto; padding: 32px; }
@@ -292,7 +301,7 @@ export function renderBookingConfirmed(
   // (who gets their own separate invite email) — naming the guest here just
   // distinguishes it from the host's own bookings at a glance.
   const guestSuffix = booking.guestName ? ` for ${booking.guestName}` : ''
-  const subject = `Booking confirmed${guestSuffix} — ${escapeHtml(asset.name)}`
+  const subject = `Booking confirmed${guestSuffix} — ${asset.name}`
   const safeUser = escapeHtml(user.displayName)
   const safeAsset = escapeHtml(asset.name)
   const safeGuestSuffix = booking.guestName ? ` for ${escapeHtml(booking.guestName)}` : ''
@@ -325,7 +334,7 @@ export function renderBookingCancelled(
   asset: Pick<Asset, 'name'>,
   timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
-  const subject = `Booking cancelled — ${escapeHtml(asset.name)}`
+  const subject = `Booking cancelled — ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>Booking cancelled</h1>
@@ -357,7 +366,7 @@ export function renderBookingCancelledByAdmin(
   asset: Pick<Asset, 'name'>,
   timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
-  const subject = `Booking cancelled by administrator — ${escapeHtml(asset.name)}`
+  const subject = `Booking cancelled by administrator — ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>Booking cancelled by administrator</h1>
@@ -387,7 +396,7 @@ export function renderBookingNoShow(
   asset: Pick<Asset, 'name'>,
   timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
-  const subject = `Booking released — ${escapeHtml(asset.name)}`
+  const subject = `Booking released — ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>Booking released</h1>
@@ -411,7 +420,7 @@ export function renderQueueJoined(
   user: Pick<User, 'displayName' | 'email'>,
   asset: Pick<Asset, 'name'>,
 ): { subject: string; html: string; text: string } {
-  const subject = `You've joined the queue — ${escapeHtml(asset.name)}`
+  const subject = `You've joined the queue — ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>You're in the queue</h1>
@@ -439,7 +448,7 @@ export function renderQueuePromoted(
   claimToken: string,
 ): { subject: string; html: string; text: string } {
   const claimUrl = `${env.APP_URL}/queue/claim?token=${encodeURIComponent(claimToken)}`
-  const subject = `Asset available — claim now! ${escapeHtml(asset.name)}`
+  const subject = `Asset available — claim now! ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>Your asset is available!</h1>
@@ -467,7 +476,7 @@ export function renderQueueClaimExpiring(
   claimToken: string,
 ): { subject: string; html: string; text: string } {
   const claimUrl = `${env.APP_URL}/queue/claim?token=${encodeURIComponent(claimToken)}`
-  const subject = `Claim window closing soon — ${escapeHtml(asset.name)}`
+  const subject = `Claim window closing soon — ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>Your claim window is closing soon</h1>
@@ -521,7 +530,7 @@ export function renderQueueExpired(
   user: Pick<User, 'displayName' | 'email'>,
   asset: Pick<Asset, 'name'>,
 ): { subject: string; html: string; text: string } {
-  const subject = `Queue entry expired — ${escapeHtml(asset.name)}`
+  const subject = `Queue entry expired — ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>Your queue entry has expired</h1>
@@ -546,7 +555,7 @@ export function renderAssetAssigned(
   user: Pick<User, 'displayName' | 'email'>,
   asset: Pick<Asset, 'name'>,
 ): { subject: string; html: string; text: string } {
-  const subject = `Asset assigned to you — ${escapeHtml(asset.name)}`
+  const subject = `Asset assigned to you — ${asset.name}`
   const safeNotes = assignment.notes ? escapeHtml(assignment.notes) : ''
   const html = baseHtml(
     subject,
@@ -573,7 +582,7 @@ export function renderBookingReminder(
   asset: Pick<Asset, 'name'> & { zoneName?: string; floorName?: string },
   timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
-  const subject = `Reminder — ${escapeHtml(asset.name)} booking coming up`
+  const subject = `Reminder — ${asset.name} booking coming up`
   const safeUser = escapeHtml(user.displayName)
   const safeAsset = escapeHtml(asset.name)
   const safeZone = asset.zoneName ? escapeHtml(asset.zoneName) : ''
@@ -657,7 +666,7 @@ export function renderBookingTransferRequested(
   fromUser: Pick<User, 'displayName'>,
   asset: Pick<Asset, 'name'>,
 ): { subject: string; html: string; text: string } {
-  const subject = `${fromUser.displayName} wants to transfer a booking to you — ${escapeHtml(asset.name)}`
+  const subject = `${fromUser.displayName} wants to transfer a booking to you — ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>Booking transfer request</h1>
@@ -680,7 +689,7 @@ export function renderBookingTransferAccepted(
   toUser: Pick<User, 'displayName'>,
   asset: Pick<Asset, 'name'>,
 ): { subject: string; html: string; text: string } {
-  const subject = `${toUser.displayName} accepted your transfer — ${escapeHtml(asset.name)}`
+  const subject = `${toUser.displayName} accepted your transfer — ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>Transfer accepted</h1>
@@ -703,7 +712,7 @@ export function renderBookingTransferDeclined(
   toUser: Pick<User, 'displayName'>,
   asset: Pick<Asset, 'name'>,
 ): { subject: string; html: string; text: string } {
-  const subject = `${toUser.displayName} declined your transfer — ${escapeHtml(asset.name)}`
+  const subject = `${toUser.displayName} declined your transfer — ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>Transfer declined</h1>
@@ -725,7 +734,7 @@ export function renderBookingTransferExpired(
   fromUser: Pick<User, 'displayName'>,
   asset: Pick<Asset, 'name'>,
 ): { subject: string; html: string; text: string } {
-  const subject = `Your transfer request expired — ${escapeHtml(asset.name)}`
+  const subject = `Your transfer request expired — ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>Transfer request expired</h1>
@@ -748,7 +757,7 @@ export function renderBookingSwapRequested(
   initiator: Pick<User, 'displayName'>,
   assetA: Pick<Asset, 'name'>,
 ): { subject: string; html: string; text: string } {
-  const subject = `${initiator.displayName} wants to swap desks with you — ${escapeHtml(assetA.name)}`
+  const subject = `${initiator.displayName} wants to swap desks with you — ${assetA.name}`
   const html = baseHtml(
     subject,
     `<h1>Desk swap request</h1>
@@ -771,7 +780,7 @@ export function renderBookingSwapAccepted(
   otherUser: Pick<User, 'displayName'>,
   newAsset: Pick<Asset, 'name'>,
 ): { subject: string; html: string; text: string } {
-  const subject = `Desk swap complete — you're now on ${escapeHtml(newAsset.name)}`
+  const subject = `Desk swap complete — you're now on ${newAsset.name}`
   const html = baseHtml(
     subject,
     `<h1>Swap complete</h1>
@@ -794,7 +803,7 @@ export function renderBookingSwapDeclined(
   recipient: Pick<User, 'displayName'>,
   assetA: Pick<Asset, 'name'>,
 ): { subject: string; html: string; text: string } {
-  const subject = `${recipient.displayName} declined your swap request — ${escapeHtml(assetA.name)}`
+  const subject = `${recipient.displayName} declined your swap request — ${assetA.name}`
   const html = baseHtml(
     subject,
     `<h1>Swap declined</h1>
@@ -816,7 +825,7 @@ export function renderBookingSwapExpired(
   initiator: Pick<User, 'displayName'>,
   assetA: Pick<Asset, 'name'>,
 ): { subject: string; html: string; text: string } {
-  const subject = `Your swap request expired — ${escapeHtml(assetA.name)}`
+  const subject = `Your swap request expired — ${assetA.name}`
   const html = baseHtml(
     subject,
     `<h1>Swap request expired</h1>
@@ -838,7 +847,7 @@ export function renderManagerRequestSubmitted(
   requester: Pick<User, 'displayName' | 'email'>,
   floor: { name: string; buildingName: string },
 ): { subject: string; html: string; text: string } {
-  const subject = `Floor manager access request — ${escapeHtml(floor.name)}`
+  const subject = `Floor manager access request — ${floor.name}`
   const html = baseHtml(
     subject,
     `<h1>Floor manager access request</h1>
@@ -858,7 +867,7 @@ export function renderManagerRequestApproved(
   requester: Pick<User, 'displayName'>,
   floor: { name: string; buildingName: string },
 ): { subject: string; html: string; text: string } {
-  const subject = `Floor manager access approved — ${escapeHtml(floor.name)}`
+  const subject = `Floor manager access approved — ${floor.name}`
   const html = baseHtml(
     subject,
     `<h1>Access request approved</h1>
@@ -874,7 +883,7 @@ export function renderManagerRequestRejected(
   floor: { name: string; buildingName: string },
   reviewNote: string | null,
 ): { subject: string; html: string; text: string } {
-  const subject = `Floor manager access declined — ${escapeHtml(floor.name)}`
+  const subject = `Floor manager access declined — ${floor.name}`
   const html = baseHtml(
     subject,
     `<h1>Access request declined</h1>
@@ -889,7 +898,7 @@ export function renderManagerRequestExpired(
   requester: Pick<User, 'displayName'>,
   floor: { name: string; buildingName: string },
 ): { subject: string; html: string; text: string } {
-  const subject = `Floor manager access request expired — ${escapeHtml(floor.name)}`
+  const subject = `Floor manager access request expired — ${floor.name}`
   const html = baseHtml(
     subject,
     `<h1>Access request expired</h1>
@@ -907,7 +916,7 @@ export function renderLeaseExpiring(
   lease: { name: string; buildingName: string; endDate: Date },
   daysLeft: number,
 ): { subject: string; html: string; text: string } {
-  const subject = `Lease expiring in ${daysLeft} day${daysLeft === 1 ? '' : 's'} — ${escapeHtml(lease.buildingName)}`
+  const subject = `Lease expiring in ${daysLeft} day${daysLeft === 1 ? '' : 's'} — ${lease.buildingName}`
   const html = baseHtml(
     subject,
     `<h1>Lease expiring soon</h1>
@@ -928,7 +937,7 @@ export function renderLeaseExpired(
   recipient: Pick<User, 'displayName'>,
   lease: { name: string; buildingName: string; endDate: Date },
 ): { subject: string; html: string; text: string } {
-  const subject = `Lease expired — ${escapeHtml(lease.buildingName)}`
+  const subject = `Lease expired — ${lease.buildingName}`
   const html = baseHtml(
     subject,
     `<h1>Lease expired</h1>
@@ -954,7 +963,7 @@ export function renderBookingPendingApproval(
   asset: Pick<Asset, 'name'>,
   timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
-  const subject = `Booking approval requested — ${escapeHtml(asset.name)}`
+  const subject = `Booking approval requested — ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>Booking approval requested</h1>
@@ -977,7 +986,7 @@ export function renderBookingApproved(
   asset: Pick<Asset, 'name'>,
   timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
-  const subject = `Booking approved — ${escapeHtml(asset.name)}`
+  const subject = `Booking approved — ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>Booking approved</h1>
@@ -1001,7 +1010,7 @@ export function renderBookingRejected(
   rejectionNote: string | null,
   timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
-  const subject = `Booking request declined — ${escapeHtml(asset.name)}`
+  const subject = `Booking request declined — ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>Booking request declined</h1>
@@ -1026,7 +1035,7 @@ export function renderGuestBookingInvite(
   checkInUrl: string,
   timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
-  const subject = `You're booked in — ${escapeHtml(asset.name)}`
+  const subject = `You're booked in — ${asset.name}`
   const safeGuest = escapeHtml(guestName)
   const safeHost = escapeHtml(host.displayName)
   const safeAsset = escapeHtml(asset.name)
@@ -1061,7 +1070,7 @@ export function renderGuestBookingCancelled(
   asset: Pick<Asset, 'name'>,
   timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
-  const subject = `Your visit has been cancelled — ${escapeHtml(asset.name)}`
+  const subject = `Your visit has been cancelled — ${asset.name}`
   const safeGuest = escapeHtml(guestName)
   const safeHost = escapeHtml(host.displayName)
   const safeAsset = escapeHtml(asset.name)
@@ -1089,7 +1098,7 @@ export function renderBallotWon(
   slot: Pick<Booking, 'startsAt' | 'endsAt'>,
   timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
-  const subject = `You won the ${escapeHtml(ballotName)} ballot — ${escapeHtml(asset.name)}`
+  const subject = `You won the ${ballotName} ballot — ${asset.name}`
   const html = baseHtml(
     subject,
     `<h1>You won!</h1>
@@ -1112,7 +1121,7 @@ export function renderBallotLost(
   user: Pick<User, 'displayName'>,
   ballotName: string,
 ): { subject: string; html: string; text: string } {
-  const subject = `${escapeHtml(ballotName)} ballot results`
+  const subject = `${ballotName} ballot results`
   const html = baseHtml(
     subject,
     `<h1>Ballot results</h1>
