@@ -14,6 +14,11 @@ import { checkGroupAccess } from './groups.js'
 import { saveCategoryIcon, deleteFile, resolveStoragePath } from '../lib/storage.js'
 import { recordAuditLog } from '../lib/audit.js'
 
+// Same "capped, not paginated" contract as audit-log.ts's CSV_EXPORT_LIMIT —
+// this export has no page/limit query param (it's meant to return everything
+// matching the filter), so it needs its own upper bound instead.
+const ASSET_EXPORT_LIMIT = 10_000
+
 class ZoneGroupConflictError extends Error {
   constructor(public readonly code: string, message: string) {
     super(message)
@@ -1351,17 +1356,29 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           whereClause = { floor: { buildingId: { in: managedBuildingIds } } }
         }
       }
-      const assets = await prisma.asset.findMany({
-        where: whereClause,
-        select: {
-          id: true,
-          name: true,
-          userAssignments: {
-            include: { user: { select: { email: true } } },
+      // Every other export path in this codebase caps its query (audit-log.ts's
+      // CSV_EXPORT_LIMIT, the analytics CSV exports) — this one had no upper
+      // bound at all, an unbounded query for an org with a very large asset
+      // inventory (or a super admin omitting buildingId to span the whole org).
+      const [assets, totalAssetCount] = await Promise.all([
+        prisma.asset.findMany({
+          where: whereClause,
+          select: {
+            id: true,
+            name: true,
+            userAssignments: {
+              include: { user: { select: { email: true } } },
+            },
           },
-        },
-        orderBy: { name: 'asc' },
-      })
+          orderBy: { name: 'asc' },
+          take: ASSET_EXPORT_LIMIT,
+        }),
+        prisma.asset.count({ where: whereClause }),
+      ])
+      if (totalAssetCount > ASSET_EXPORT_LIMIT) {
+        reply.header('X-Export-Truncated', 'true')
+        reply.header('X-Export-Total-Matching', String(totalAssetCount))
+      }
       const rows = assets.flatMap((a) =>
         a.userAssignments.length > 0
           ? a.userAssignments.map((ua) => ({
