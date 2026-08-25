@@ -5,7 +5,7 @@ import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { getManagedBuildingIds } from '../middleware/requireRole.js'
 import { wantsCsv, sendCsv } from '../lib/csv.js'
-import { resolveBuildingTimezone, zonedWallClockToUtc } from '../lib/timezone.js'
+import { resolveBuildingTimezone, zonedWallClockToUtc, calendarDaysUntil } from '../lib/timezone.js'
 import { z } from 'zod'
 
 const analyticsQuerySchema = z.object({
@@ -1326,9 +1326,22 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       })
 
       const now = new Date()
-      const data = buildings
-        .map((b) => {
-          const active = b.leases.find((l) => l.startDate <= now && (!l.endDate || l.endDate >= now)) ?? b.leases[0]
+      const data = (await Promise.all(buildings
+        .map(async (b) => {
+          // lease.startDate/endDate are date-only values (UTC midnight of an
+          // admin-picked calendar day, same convention as leases.ts's
+          // endDate), not real instants — classified via calendarDaysUntil
+          // against the building's own timezone, the same fix leases.ts's
+          // PUT handler and the lease-expiry cron already apply to this
+          // exact field. Comparing them as raw instants against `now` (as
+          // this used to) flips "active" a day early/late depending on the
+          // building's UTC offset, near local midnight.
+          const tz = await resolveBuildingTimezone(prisma, b.id)
+          const active = b.leases.find((l) => {
+            const daysUntilStart = calendarDaysUntil(l.startDate, now, tz)
+            const daysUntilEnd = l.endDate ? calendarDaysUntil(l.endDate, now, tz) : null
+            return daysUntilStart <= 0 && (daysUntilEnd === null || daysUntilEnd >= 0)
+          }) ?? b.leases[0]
           const deskCount = b.floors.reduce((sum, f) => sum + f.assets.length, 0)
           if (!active || !active.rentAmount || deskCount === 0) return null
           const costPerSeatPerDay = Math.round((active.rentAmount / 30 / deskCount) * 100) / 100
@@ -1340,7 +1353,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
             deskCount,
             costPerSeatPerDay,
           }
-        })
+        })))
         .filter((d): d is NonNullable<typeof d> => d !== null)
 
       if (wantsCsv(request)) {
