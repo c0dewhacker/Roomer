@@ -672,7 +672,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
             primaryZone: { select: { name: true } },
           },
         },
-        user: { select: { displayName: true } },
+        user: { select: { displayName: true, globalRole: true } },
       },
     })
     if (!booking) {
@@ -735,11 +735,18 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       if (!isNotAlreadyElapsed(newEndsAt)) {
         return reply.status(400).send({ error: { message: 'This time slot has already passed', code: 'ALREADY_ELAPSED' } })
       }
-      const gate = await assertBookable(prisma, request.user, booking.assetId, newStartsAt, newEndsAt)
+      // Checked against the booking's OWNER, not the acting caller — an
+      // admin/floor manager rescheduling on someone else's behalf must not
+      // let that person's booking silently bypass their own bookability
+      // gates (RESTRICTED allow-list, ASSIGNED-desk, group access) or
+      // maxAdvanceBookingDays cap just because the actor happens to be a
+      // SUPER_ADMIN. Mirrors how transfer/swap-accept already check the
+      // future occupant's bookability, not the acting party's.
+      const gate = await assertBookable(prisma, { id: booking.userId, globalRole: booking.user.globalRole }, booking.assetId, newStartsAt, newEndsAt)
       if (!gate.ok) {
         return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
       }
-      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      if (booking.user.globalRole !== GlobalRole.SUPER_ADMIN) {
         const org = await prisma.organisation.findFirst({ select: { maxAdvanceBookingDays: true } })
         if (!isWithinAdvanceBookingWindow(newStartsAt, org?.maxAdvanceBookingDays)) {
           return reply.status(400).send({
@@ -907,16 +914,27 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(409).send({ error: { message: 'Booking is not active', code: 'BOOKING_NOT_ACTIVE' } })
     }
 
-    // Cancel the booking. The guest check-in token is cleared here too —
-    // schema.prisma documents it as "cleared once used or once the booking
-    // is no longer CONFIRMED" (mirroring QueueEntry.claimToken's single-use
-    // pattern), but it was previously never actually nulled anywhere. Not
-    // exploitable today (the public check-in route independently gates on
-    // status === 'CONFIRMED'), but leaving a dead token sitting in the DB
-    // indefinitely contradicts the documented contract and is exactly the
-    // kind of latent gap that becomes a real bug the next time this code
-    // is touched.
-    await prisma.booking.update({ where: { id }, data: { status: 'CANCELLED', guestCheckInToken: null } })
+    // Cancel the booking. Claimed atomically (updateMany + status guard),
+    // same pattern /approve and /reject already use — an unconditional
+    // update() here let two concurrent cancel requests for the same booking
+    // (a double-click, or the owner and a floor manager racing) both pass
+    // the status check above and both run the full promote/notify pipeline
+    // below, double-promoting the queue for one single freed slot. The
+    // guest check-in token is cleared here too — schema.prisma documents it
+    // as "cleared once used or once the booking is no longer CONFIRMED"
+    // (mirroring QueueEntry.claimToken's single-use pattern), but it was
+    // previously never actually nulled anywhere. Not exploitable today (the
+    // public check-in route independently gates on status === 'CONFIRMED'),
+    // but leaving a dead token sitting in the DB indefinitely contradicts
+    // the documented contract and is exactly the kind of latent gap that
+    // becomes a real bug the next time this code is touched.
+    const claimed = await prisma.booking.updateMany({
+      where: { id, status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] } },
+      data: { status: 'CANCELLED', guestCheckInToken: null },
+    })
+    if (claimed.count === 0) {
+      return reply.status(409).send({ error: { message: 'Booking is not active', code: 'BOOKING_NOT_ACTIVE' } })
+    }
 
     dispatchWebhook('booking.cancelled', { id: booking.id, userId: booking.userId, assetId: booking.assetId }).catch(() => {})
     await recordAuditLog(prisma, {

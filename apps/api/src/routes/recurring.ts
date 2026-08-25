@@ -461,7 +461,7 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       const outcome = await prisma.$transaction(async (tx) => {
         await lockAssetForBooking(tx, rule.assetId)
 
-        const freshRule = await tx.recurringBookingRule.findUnique({ where: { id } })
+        const freshRule = await tx.recurringBookingRule.findUnique({ where: { id }, include: { user: { select: { globalRole: true } } } })
         if (!freshRule || freshRule.status === 'CANCELLED') {
           throw Object.assign(new Error('RULE_GONE'), { code: 'RULE_GONE' })
         }
@@ -498,8 +498,13 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
           // same reason (an ASSIGNED-desk allowed-weekday check spanning the
           // whole range would incorrectly require every day between occurrences
           // to also be available).
+          // Checked against the series OWNER, not the acting caller — an
+          // admin extending someone else's series on their behalf must not
+          // let it bypass that person's own bookability gates just because
+          // the actor happens to be a SUPER_ADMIN. Same fix as PATCH
+          // /bookings/:id's reschedule path.
           for (const slot of slots) {
-            const gate = await assertBookable(tx, request.user, freshRule.assetId, slot.startsAt, slot.endsAt)
+            const gate = await assertBookable(tx, { id: freshRule.userId, globalRole: freshRule.user.globalRole }, freshRule.assetId, slot.startsAt, slot.endsAt)
             if (!gate.ok) {
               throw Object.assign(new Error('NOT_BOOKABLE'), { code: gate.code, status: gate.status, message: gate.message })
             }
