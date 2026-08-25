@@ -37,6 +37,30 @@ async function isGroupPrivileged(groupId: string): Promise<boolean> {
   return group.globalRole === GlobalRole.SUPER_ADMIN || group._count.groupResourceRoles > 0
 }
 
+/**
+ * Same reasoning as isGroupPrivileged, applied to the user record itself —
+ * true when this user is a SUPER_ADMIN or holds any individual
+ * (non-group) BUILDING_ADMIN/FLOOR_MANAGER UserResourceRole.
+ *
+ * SSO account-linking (findOrCreateSsoUser, auth-enterprise.ts) matches
+ * purely by email, and refuses to link only when the existing account has
+ * a local password or a conflicting externalId. Without this guard, a SCIM
+ * PUT/PATCH — a narrower credential than SUPER_ADMIN, meant for
+ * directory-driven sync of ordinary users — could repoint a privileged,
+ * SSO-provisioned account's email to one the attacker controls and clear
+ * its externalId, then have the attacker log in via OIDC/SAML and get
+ * silently linked into that account, inheriting its role. Verified: this
+ * was exploitable end-to-end before this guard existed.
+ */
+async function isUserPrivileged(userId: string): Promise<boolean> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { globalRole: true, _count: { select: { resourceRoles: true } } },
+  })
+  if (!user) return false
+  return user.globalRole === GlobalRole.SUPER_ADMIN || user._count.resourceRoles > 0
+}
+
 
 const SCIM_CONTENT_TYPE = 'application/scim+json'
 
@@ -301,6 +325,10 @@ function registerUsers(fastify: FastifyInstance): void {
   // PUT /Users/:id — full replace (Entra uses PATCH but some clients send PUT)
   fastify.put('/Users/:id', { preHandler: [scimAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (await isUserPrivileged(id)) {
+      return reply.status(403).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(403, 'Cannot modify a privileged user via SCIM — use the admin UI'))
+    }
     const body = request.body as Record<string, unknown>
     const email = (body.userName as string) ?? ((body.emails as Array<{ value: string }>)?.[0]?.value)
     const displayName = body.displayName as string | undefined
@@ -419,6 +447,10 @@ function registerUsers(fastify: FastifyInstance): void {
   // PATCH /Users/:id — partial update
   fastify.patch('/Users/:id', { preHandler: [scimAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (await isUserPrivileged(id)) {
+      return reply.status(403).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(403, 'Cannot modify a privileged user via SCIM — use the admin UI'))
+    }
     const body = request.body as { Operations?: Array<{ op: string; path?: string; value?: unknown }> }
     const ops = body.Operations ?? []
 
