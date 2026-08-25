@@ -705,6 +705,21 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     // before the asset became disabled/restricted/reassigned could be rolled
     // forward indefinitely by rescheduling, since only overlap was re-checked.
     if (timeChanged) {
+      // A pending swap trades this exact time slot for another booking's —
+      // moving the time out from under it lets swap-accept silently move the
+      // swap partner onto a slot they never agreed to (the accept handler
+      // re-validates ownership/status/availability but, until now, not that
+      // both sides still share the same time). A pending transfer has the
+      // same issue for whoever's about to receive it. Block outright rather
+      // than letting the swap/transfer's own accept-time checks catch it,
+      // since the recipient may already be looking at a stale proposal.
+      const [pendingSwap, pendingTransfer] = await Promise.all([
+        prisma.bookingSwap.findFirst({ where: { status: 'PENDING', OR: [{ bookingAId: id }, { bookingBId: id }] } }),
+        prisma.bookingTransfer.findFirst({ where: { bookingId: id, status: 'PENDING' } }),
+      ])
+      if (pendingSwap || pendingTransfer) {
+        return reply.status(409).send({ error: { message: 'This booking has a pending swap or transfer request — resolve or cancel it before rescheduling', code: 'SWAP_ALREADY_PENDING' } })
+      }
       if (!isNotAlreadyElapsed(newEndsAt)) {
         return reply.status(400).send({ error: { message: 'This time slot has already passed', code: 'ALREADY_ELAPSED' } })
       }
@@ -1457,6 +1472,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (booking.userId !== request.user.id) {
       return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
     }
+    // Scoped to visibleInColleagueSearch — the caller fully controls
+    // startsAt/endsAt (by making or already holding a booking at any chosen
+    // time), so without this filter userId is an unrestricted "does user X
+    // have a confirmed booking at time T, and on which desk" oracle for
+    // ANY user in the organisation, independent of any real intent to
+    // propose a swap. This is the same privacy flag /users/search already
+    // gates the colleague picker on, which this endpoint is meant to be
+    // used after — someone who's opted out of colleague search shouldn't
+    // be locatable through this side door instead.
     const candidate = await prisma.booking.findFirst({
       where: {
         userId: query.data.userId,
@@ -1464,6 +1488,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         startsAt: booking.startsAt,
         endsAt: booking.endsAt,
         assetId: { not: booking.assetId },
+        user: { visibleInColleagueSearch: true },
       },
       select: { id: true, startsAt: true, endsAt: true, asset: { select: { id: true, name: true } } },
     })
@@ -1639,6 +1664,16 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
           // on the same booking was accepted first) — this swap is stale
           // even though its own status/expiry never changed.
           throw new BookingConflictError('BOOKING_NOT_ACTIVE', 'This swap is no longer valid — one of the bookings has changed hands')
+        }
+        if (fresh.bookingA.startsAt.getTime() !== fresh.bookingB.startsAt.getTime() || fresh.bookingA.endsAt.getTime() !== fresh.bookingB.endsAt.getTime()) {
+          // PATCH /bookings/:id now blocks rescheduling a booking with a
+          // pending swap, but this is the authoritative backstop — every
+          // other invariant this handler re-validates instead of trusting
+          // propose-time state gets one, and this is the load-bearing one:
+          // without it, one side being rescheduled between propose and
+          // accept would silently move the other party onto a slot they
+          // never agreed to.
+          throw new BookingConflictError('TIME_MISMATCH', 'These bookings no longer share the same time — this swap is no longer valid')
         }
 
         // Quota doesn't change for either party (each trades one CONFIRMED
