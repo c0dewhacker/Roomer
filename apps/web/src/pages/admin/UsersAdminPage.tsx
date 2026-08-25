@@ -177,18 +177,23 @@ const statusConfig: Record<string, { label: string; variant: 'default' | 'second
 }
 
 function UserRow({ user, onRefresh }: { user: User; onRefresh: () => void }) {
+  const qc = useQueryClient()
   const [resetPasswordOpen, setResetPasswordOpen] = useState(false)
   const [accessOpen, setAccessOpen] = useState(false)
 
+  // Both also invalidate ['effective-access', user.id] — EffectiveAccessDialog
+  // reads that separate key, and would otherwise keep showing this user's
+  // pre-change role/status if it was already opened (and cached) before this
+  // update, then reopened within its staleTime.
   const updateStatus = useMutation({
     mutationFn: (accountStatus: string) => usersApi.update(user.id, { accountStatus } as any),
-    onSuccess: () => { toast.success('User updated'); onRefresh() },
+    onSuccess: () => { toast.success('User updated'); onRefresh(); qc.invalidateQueries({ queryKey: ['effective-access', user.id] }) },
     onError: (err: Error) => toast.error(err.message),
   })
 
   const updateRole = useMutation({
     mutationFn: (globalRole: string) => usersApi.update(user.id, { globalRole } as any),
-    onSuccess: () => { toast.success('Role updated'); onRefresh() },
+    onSuccess: () => { toast.success('Role updated'); onRefresh(); qc.invalidateQueries({ queryKey: ['effective-access', user.id] }) },
     onError: (err: Error) => toast.error(err.message),
   })
 

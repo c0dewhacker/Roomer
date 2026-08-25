@@ -207,11 +207,17 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
     onError: (err: Error) => toast.error(err.message),
   })
 
+  // Each also invalidates ['access-summary', 'building'|'floor', id] —
+  // BuildingDetailAdminPage.tsx/FloorAdminPage.tsx's own group-access
+  // mutations already invalidate this same key for AccessSummaryDialog;
+  // granting/revoking the identical access from the Groups page instead was
+  // the one path that left it stale.
   const addBuildingAccess = useMutation({
     mutationFn: () => groupsApi.addBuildingAccess(group!.id, selectedBuildingId),
     onSuccess: () => {
       toast.success('Building access added')
       qc.invalidateQueries({ queryKey: ['groups'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'building', selectedBuildingId] })
       setSelectedBuildingId('')
     },
     onError: (err: Error) => toast.error(err.message),
@@ -219,7 +225,11 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
 
   const removeBuildingAccess = useMutation({
     mutationFn: (buildingId: string) => groupsApi.removeBuildingAccess(group!.id, buildingId),
-    onSuccess: () => { toast.success('Building access removed'); qc.invalidateQueries({ queryKey: ['groups'] }) },
+    onSuccess: (_data, buildingId) => {
+      toast.success('Building access removed')
+      qc.invalidateQueries({ queryKey: ['groups'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'building', buildingId] })
+    },
     onError: (err: Error) => toast.error(err.message),
   })
 
@@ -228,6 +238,7 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
     onSuccess: () => {
       toast.success('Floor access added')
       qc.invalidateQueries({ queryKey: ['groups'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'floor', selectedFloorId] })
       setSelectedFloorId('')
     },
     onError: (err: Error) => toast.error(err.message),
@@ -235,7 +246,11 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
 
   const removeFloorAccess = useMutation({
     mutationFn: (floorId: string) => groupsApi.removeFloorAccess(group!.id, floorId),
-    onSuccess: () => { toast.success('Floor access removed'); qc.invalidateQueries({ queryKey: ['groups'] }) },
+    onSuccess: (_data, floorId) => {
+      toast.success('Floor access removed')
+      qc.invalidateQueries({ queryKey: ['groups'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'floor', floorId] })
+    },
     onError: (err: Error) => toast.error(err.message),
   })
 

@@ -38,6 +38,11 @@ export function useApproveManagerRequest() {
     onSuccess: () => {
       toast.success('Request approved')
       qc.invalidateQueries({ queryKey: ['manager-requests'] })
+      // Approval grants a FLOOR_MANAGER UserResourceRole — the same data
+      // FloorAdminPage's Managers tab reads via ['floors', floorId,
+      // 'managers']. Broad ['floors'] invalidation since the mutation only
+      // has the request id in scope here, not the floorId.
+      qc.invalidateQueries({ queryKey: ['floors'] })
     },
     onError: (err: Error) => toast.error(err.message),
   })

@@ -115,8 +115,12 @@ export function useEnterBallot() {
     mutationFn: (runId: string) => ballotsApi.enter(runId),
     onSuccess: () => {
       toast.success("You're entered")
-      qc.invalidateQueries({ queryKey: ['ballots', 'available'] })
-      qc.invalidateQueries({ queryKey: ['ballots', 'my-entries'] })
+      // Broad ['ballots'] invalidation (prefix-covers 'available'/'my-entries'
+      // below too) — an admin watching BallotsAdminPage's run-results dialog
+      // (['ballots', ballotId, 'runs'] / ['ballots', 'runs', runId]) needs
+      // the entrant count/list to update the moment someone enters/withdraws/
+      // declines, not just the entrant's own two views.
+      qc.invalidateQueries({ queryKey: ['ballots'] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -128,8 +132,7 @@ export function useWithdrawBallotEntry() {
     mutationFn: (runId: string) => ballotsApi.withdraw(runId),
     onSuccess: () => {
       toast.success('Entry withdrawn')
-      qc.invalidateQueries({ queryKey: ['ballots', 'available'] })
-      qc.invalidateQueries({ queryKey: ['ballots', 'my-entries'] })
+      qc.invalidateQueries({ queryKey: ['ballots'] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -141,7 +144,7 @@ export function useDeclineBallotEntry() {
     mutationFn: (entryId: string) => ballotsApi.decline(entryId),
     onSuccess: () => {
       toast.success('Declined')
-      qc.invalidateQueries({ queryKey: ['ballots', 'my-entries'] })
+      qc.invalidateQueries({ queryKey: ['ballots'] })
       qc.invalidateQueries({ queryKey: ['bookings'] })
     },
     onError: (err: Error) => toast.error(err.message),
