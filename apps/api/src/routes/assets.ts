@@ -768,7 +768,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     // authenticated user just because their booking history scored a desk
     // highly.
     const candidates = await prisma.asset.findMany({
-      where: { id: { in: rankedIds }, isBookable: true },
+      // primaryZoneId: not null — an asset with no zone (e.g. left unmapped by
+      // a CSV import whose row didn't match an existing zone) never appears in
+      // GET /floors/:id/availability's desks list (that endpoint only walks
+      // floor.zones[].assets), so it can't be selected/booked from the floor
+      // plan at all. Suggesting it anyway meant "Book it" silently did
+      // nothing — the desk it pointed at was invisible to the very picker the
+      // button tries to drive.
+      where: { id: { in: rankedIds }, isBookable: true, primaryZoneId: { not: null } },
       select: {
         id: true, name: true, bookingLabel: true, isBookable: true,
         bookingStatus: true, amenities: true, capacity: true,

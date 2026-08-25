@@ -84,7 +84,14 @@ export default function FloorPage() {
   const dateStr = format(selectedDate, 'yyyy-MM-dd')
   const { data: suggestions } = useAssetSuggestions(selectedDate)
   const [dismissedSuggestionDate, setDismissedSuggestionDate] = useState<string | null>(null)
-  const topSuggestion = dismissedSuggestionDate !== dateStr ? (suggestions?.[0] ?? null) : null
+  const rawTopSuggestion = dismissedSuggestionDate !== dateStr ? (suggestions?.[0] ?? null) : null
+  // Defensive guard against the same class of bug the backend now filters at
+  // the source (an unzoned asset can't appear in `desks`, so clicking "Book
+  // it" would set a selectedDeskId nothing can ever match): if a same-floor
+  // suggestion isn't actually in the loaded desk list, don't offer it.
+  const topSuggestion = rawTopSuggestion && rawTopSuggestion.floor?.id === floorId && desks && !desks.some((d) => d.id === rawTopSuggestion.id)
+    ? null
+    : rawTopSuggestion
 
   // Keep selectedDesk in sync with fresh availability data so mutations (e.g. add permanent user)
   // are reflected immediately in the panel without re-clicking the desk.
