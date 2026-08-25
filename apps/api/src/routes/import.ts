@@ -80,7 +80,7 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
 
       // Validate every row and collect errors
       type ValidatedRow = z.infer<typeof rowSchema>
-      const validRows: Array<{ index: number; row: ValidatedRow }> = []
+      let validRows: Array<{ index: number; row: ValidatedRow }> = []
       const errors: Array<{ row: number; message: string }> = []
 
       for (let i = 0; i < body.data.rows.length; i++) {
@@ -206,6 +206,36 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
 
       await prisma.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(${BULK_IMPORT_LOCK_CLASS}, hashtext(${org.id}))`
+
+        // The asset_tag conflict check above ran before this transaction
+        // acquired the lock — a second concurrent /bulk request (for the same
+        // org, or racing this one before either had serialised) could commit
+        // one of these exact tags in the gap between that check and now. A
+        // raw P2002 from tx.asset.create below would abort this ENTIRE
+        // transaction (Postgres fails the whole tx after any unhandled
+        // statement error, not just the offending statement), silently
+        // rolling back every other valid row in this batch — precisely the
+        // failure mode the pre-transaction check exists to avoid, just
+        // reintroduced by the TOCTOU gap. Re-checking here, now that this
+        // request is the only one holding the org's import lock, closes it:
+        // any tag that conflicts at this point becomes a normal itemized row
+        // error instead of a batch-destroying crash.
+        if (tagsToCheck.length > 0) {
+          const stillConflicting = new Set(
+            (await tx.asset.findMany({ where: { assetTag: { in: tagsToCheck } }, select: { assetTag: true } }))
+              .map((a) => a.assetTag),
+          )
+          if (stillConflicting.size > 0) {
+            validRows = validRows.filter(({ index, row }) => {
+              const tag = row.asset_tag?.trim()
+              if (tag && stillConflicting.has(tag)) {
+                errors.push({ row: index + 2, message: `asset_tag "${tag}" is already used by an existing asset` })
+                return false
+              }
+              return true
+            })
+          }
+        }
 
         for (const { row } of validRows) {
           // ── Building ───────────────────────────────────────────────────────
