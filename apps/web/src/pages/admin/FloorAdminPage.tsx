@@ -908,6 +908,10 @@ function FloorManagersPanel({ floorId, floorName }: { floorId: string; floorName
     onSuccess: () => {
       toast.success('Floor manager assigned')
       qc.invalidateQueries({ queryKey: ['floors', floorId, 'managers'] })
+      // AccessSummaryDialog reads a separate ['access-summary', 'floor', id]
+      // query — without this, "Access summary" kept showing the pre-change
+      // manager list for up to its 30s staleTime after an assign/remove here.
+      qc.invalidateQueries({ queryKey: ['access-summary', 'floor', floorId] })
       setSearch('')
       setSelectedUserId('')
     },
@@ -920,6 +924,7 @@ function FloorManagersPanel({ floorId, floorName }: { floorId: string; floorName
     onSuccess: () => {
       toast.success('Floor manager removed')
       qc.invalidateQueries({ queryKey: ['floors', floorId, 'managers'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'floor', floorId] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -947,6 +952,7 @@ function FloorManagersPanel({ floorId, floorName }: { floorId: string; floorName
     onSuccess: () => {
       toast.success('Group assigned as floor manager')
       qc.invalidateQueries({ queryKey: ['floors', floorId, 'group-managers'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'floor', floorId] })
       setSelectedGroupId('')
     },
     onError: (err: Error) => toast.error(err.message),
@@ -957,6 +963,7 @@ function FloorManagersPanel({ floorId, floorName }: { floorId: string; floorName
     onSuccess: () => {
       toast.success('Group manager removed')
       qc.invalidateQueries({ queryKey: ['floors', floorId, 'group-managers'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'floor', floorId] })
     },
     onError: (err: Error) => toast.error(err.message),
   })

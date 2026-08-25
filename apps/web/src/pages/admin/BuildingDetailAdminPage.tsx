@@ -345,6 +345,10 @@ function BuildingManagersPanel({ buildingId, buildingName }: { buildingId: strin
     onSuccess: () => {
       toast.success('Building manager assigned')
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'managers'] })
+      // AccessSummaryDialog reads a separate ['access-summary', 'building', id]
+      // query — without this, "Access summary" kept showing the pre-change
+      // manager list for up to its 30s staleTime after an assign/remove here.
+      qc.invalidateQueries({ queryKey: ['access-summary', 'building', buildingId] })
       setSearch('')
       setSelectedUserId('')
     },
@@ -356,6 +360,7 @@ function BuildingManagersPanel({ buildingId, buildingName }: { buildingId: strin
     onSuccess: () => {
       toast.success('Building manager removed')
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'managers'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'building', buildingId] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -383,6 +388,7 @@ function BuildingManagersPanel({ buildingId, buildingName }: { buildingId: strin
     onSuccess: () => {
       toast.success('Group assigned as building manager')
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'group-managers'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'building', buildingId] })
       setSelectedGroupId('')
     },
     onError: (err: Error) => toast.error(err.message),
@@ -393,6 +399,7 @@ function BuildingManagersPanel({ buildingId, buildingName }: { buildingId: strin
     onSuccess: () => {
       toast.success('Group manager removed')
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'group-managers'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'building', buildingId] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -625,6 +632,7 @@ function BuildingAccessSection({ buildingId, buildingName }: { buildingId: strin
     onSuccess: () => {
       toast.success('Access group added')
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'access-groups'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'building', buildingId] })
       setSelectedGroupId('')
     },
     onError: (err: Error) => toast.error(err.message),
@@ -635,6 +643,7 @@ function BuildingAccessSection({ buildingId, buildingName }: { buildingId: strin
     onSuccess: () => {
       toast.success('Access group removed')
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'access-groups'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'building', buildingId] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
