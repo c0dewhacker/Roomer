@@ -848,7 +848,7 @@ export default function BuildingDetailAdminPage() {
 
       <AccessSummaryDialog kind="building" id={buildingId!} name={building?.name ?? 'Building'} open={accessOpen} onOpenChange={setAccessOpen} />
 
-      <div className="mb-6 max-w-sm space-y-3">
+      <div className="mb-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
         <NoShowOverrideControl scope="building" value={building?.noShowReleaseEnabled} onChange={(v) => saveNoShow.mutate(v)} disabled={saveNoShow.isPending} />
         <QrCheckInModeControl scope="building" value={building?.qrCheckInMode} onChange={(v) => saveQrMode.mutate(v)} disabled={saveQrMode.isPending} />
         <ApprovalOverrideControl scope="building" value={building?.requiresApproval} onChange={(v) => saveRequiresApproval.mutate(v)} disabled={saveRequiresApproval.isPending} />

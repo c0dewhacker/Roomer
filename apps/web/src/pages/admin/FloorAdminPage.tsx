@@ -1320,7 +1320,7 @@ export default function FloorAdminPage() {
       <div className="flex-1 overflow-hidden">
         {view === 'managers' ? (
           <div className="h-full overflow-y-auto">
-            <div className="p-4 max-w-sm space-y-3">
+            <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
               <NoShowOverrideControl scope="floor" value={floor?.noShowReleaseEnabled} onChange={(v) => saveNoShow.mutate(v)} disabled={saveNoShow.isPending} />
               <QrCheckInModeControl scope="floor" value={floor?.qrCheckInMode} onChange={(v) => saveQrMode.mutate(v)} disabled={saveQrMode.isPending} />
             </div>
