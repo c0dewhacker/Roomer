@@ -54,6 +54,10 @@ export function usePushSubscription() {
   const subscribe = useCallback(async () => {
     if (!vapidData) return
     setBusy(true)
+    // Tracked outside the try block so the catch can tell whether the
+    // browser/OS-level subscription was actually created before whatever
+    // failed — see the rollback comment below.
+    let sub: PushSubscription | null = null
     try {
       const permission = await Notification.requestPermission()
       if (permission !== 'granted') {
@@ -61,7 +65,7 @@ export function usePushSubscription() {
         return
       }
       const reg = await navigator.serviceWorker.ready
-      const sub = await reg.pushManager.subscribe({
+      sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(vapidData),
       })
@@ -73,6 +77,20 @@ export function usePushSubscription() {
       setStatus('subscribed')
       toast.success('Push notifications enabled on this device')
     } catch (err) {
+      // reg.pushManager.subscribe() can succeed (the browser now has a live
+      // push endpoint registered with FCM/etc.) even when the subsequent
+      // pushApi.subscribe() call fails — a network drop right after
+      // subscribing, a transient 5xx. Left as-is, the next refresh() would
+      // find that orphaned browser-side subscription via getSubscription()
+      // and report "subscribed" even though the server has no record of it
+      // and will never deliver to it — a silent, durable break the user has
+      // no way to notice or recover from short of manually toggling it off
+      // and back on. Roll the browser-side subscription back so status
+      // correctly reflects reality and a retry starts clean.
+      if (sub) {
+        await sub.unsubscribe().catch(() => {})
+        setStatus('unsubscribed')
+      }
       toast.error(err instanceof Error ? err.message : 'Failed to enable push notifications')
     } finally {
       setBusy(false)

@@ -151,12 +151,13 @@ const NOTIFICATION_GROUPS: Array<{ label: string; types: Array<{ key: string; la
   },
 ]
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ checked, onChange, ariaLabel }: { checked: boolean; onChange: (v: boolean) => void; ariaLabel: string }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={ariaLabel}
       onClick={() => onChange(!checked)}
       className={`
         relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full
@@ -522,10 +523,10 @@ export default function ProfilePage() {
                   <div key={key} className="grid grid-cols-[1fr_56px_56px] items-center gap-2">
                     <span className="text-sm">{label}</span>
                     <div className="flex justify-center">
-                      <Toggle checked={emailOn} onChange={(v) => handleToggle(key, 'email', v)} />
+                      <Toggle checked={emailOn} onChange={(v) => handleToggle(key, 'email', v)} ariaLabel={`Email notifications for ${label}`} />
                     </div>
                     <div className="flex justify-center">
-                      <Toggle checked={inAppOn} onChange={(v) => handleToggle(key, 'inApp', v)} />
+                      <Toggle checked={inAppOn} onChange={(v) => handleToggle(key, 'inApp', v)} ariaLabel={`In-app notifications for ${label}`} />
                     </div>
                   </div>
                 )
@@ -598,7 +599,7 @@ export default function ProfilePage() {
                     <div key={key} className="grid grid-cols-[1fr_56px] items-center gap-2">
                       <span className="text-sm">{label}</span>
                       <div className="flex justify-center">
-                        <Toggle checked={pushOn} onChange={(v) => handleToggle(key, 'push', v)} />
+                        <Toggle checked={pushOn} onChange={(v) => handleToggle(key, 'push', v)} ariaLabel={`Push notifications for ${label}`} />
                       </div>
                     </div>
                   )

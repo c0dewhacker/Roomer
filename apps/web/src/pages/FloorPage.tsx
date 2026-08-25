@@ -172,7 +172,15 @@ export default function FloorPage() {
   // own group-access check — settled isLoading=false with floor left
   // undefined, and the page rendered a near-blank shell (no name, no plan,
   // no error) instead of telling the user why nothing showed up.
-  if (isError) {
+  //
+  // Gated on `!floor` too: a background refetch failing (a connectivity
+  // blip, exactly the condition a PWA most needs to tolerate) flips isError
+  // to true without clearing the last-successfully-fetched `floor` out of
+  // the cache. Replacing the whole page with a full error screen in that
+  // case threw away a perfectly good, still-valid desk map the user was
+  // already looking at — only show the error screen when there's genuinely
+  // nothing to fall back on.
+  if (isError && !floor) {
     const isForbidden = floorError instanceof ApiError && floorError.status === 403
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-center px-6">
