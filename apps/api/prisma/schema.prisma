@@ -62,6 +62,11 @@ enum BookingStatus {
   CONFIRMED
   CANCELLED
   COMPLETED
+  /// Awaiting approver decision (see #74). Holds the slot exactly like
+  /// CONFIRMED — hasBlockingOverlap and the DB-level exclusion constraint
+  /// both treat it as blocking — so it counts toward quota and prevents a
+  /// double-booking of the same slot while a decision is pending.
+  PENDING_APPROVAL
 }
 
 enum RecurringRuleStatus {
@@ -73,6 +78,42 @@ enum RecurringFrequency {
   DAILY
   WEEKLY
   MONTHLY
+}
+
+/// See #159 — a Ballot's recurrence. ONCE materialises exactly one BallotRun
+/// at creation; WEEKLY/MONTHLY spawn a new run each cycle (ballot-open-
+/// registration cron).
+enum BallotFrequency {
+  ONCE
+  WEEKLY
+  MONTHLY
+}
+
+enum BallotStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
+enum BallotRunStatus {
+  OPEN
+  DRAWN
+  CANCELLED
+}
+
+enum BallotEntryStatus {
+  ENTERED
+  WON
+  DECLINED
+  LOST
+}
+
+/// Whether a user's weighted-ballot consecutive-loss streak (see
+/// BallotUserStreak / User.ballotConsecutiveLosses) is tracked separately
+/// per ballot, or as one counter across every ballot they enter org-wide.
+enum BallotWeightScope {
+  PER_BALLOT
+  GLOBAL
 }
 
 enum QueueEntryStatus {
@@ -104,6 +145,49 @@ enum NotificationType {
   ASSET_ASSIGNED
   WELCOME
   FLOOR_AVAILABLE
+  BOOKING_TRANSFER_REQUESTED
+  BOOKING_TRANSFER_ACCEPTED
+  BOOKING_TRANSFER_DECLINED
+  BOOKING_TRANSFER_EXPIRED
+  BOOKING_SWAP_REQUESTED
+  BOOKING_SWAP_ACCEPTED
+  BOOKING_SWAP_DECLINED
+  BOOKING_SWAP_EXPIRED
+  MANAGER_REQUEST_SUBMITTED
+  MANAGER_REQUEST_APPROVED
+  MANAGER_REQUEST_REJECTED
+  MANAGER_REQUEST_EXPIRED
+  LEASE_EXPIRING
+  LEASE_EXPIRED
+  BOOKING_PENDING_APPROVAL
+  BOOKING_APPROVED
+  BOOKING_REJECTED
+  BALLOT_WON
+  BALLOT_LOST
+}
+
+/// DISABLED: no QR functionality shown/generated for the scope.
+/// OPTIONAL: QR scan-to-book/check-in is available alongside the existing
+/// manual "I'm here" check-in button — no change to no-show enforcement.
+/// MANDATORY: same QR functionality, but the manual check-in button is
+/// hidden (QR becomes the only way to check in) and no-show release is
+/// treated as active for the scope regardless of noShowReleaseEnabled —
+/// a "mandatory" check-in with no enforcement behind it would do nothing.
+enum QrCheckInMode {
+  DISABLED
+  OPTIONAL
+  MANDATORY
+}
+
+/// PENDING → ACCEPTED/DECLINED/EXPIRED (recipient-driven) or CANCELLED
+/// (requester withdraws before the recipient responds). Shared by
+/// BookingTransfer and BookingSwap — same lifecycle shape for both.
+enum TransferRequestStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  CANCELLED
+  EXPIRED
 }
 
 enum FloorPlanFileType {
@@ -143,6 +227,66 @@ model Organisation {
   /// is promoted, freeing ghost desks.
   noShowReleaseEnabled        Boolean      @default(false)
   checkInGraceMinutes         Int          @default(30)
+  /// Org-wide default for QR-code desk check-in/instant-booking. Overridable
+  /// per building/floor (see Building.qrCheckInMode / Floor.qrCheckInMode).
+  qrCheckInMode                QrCheckInMode @default(DISABLED)
+  /// Org-wide default for whether a new booking needs approver sign-off
+  /// before confirming (see #74). Overridable per building (Building.
+  /// requiresApproval) and per zone (Zone.requiresApproval, most specific).
+  requiresApproval            Boolean      @default(false)
+  /// Hours a PENDING_APPROVAL booking waits before being auto-rejected if
+  /// nobody acts on it.
+  approvalWindowHours         Int          @default(24)
+  /// Weekly utilisation-summary email sent to every active SUPER_ADMIN.
+  /// Opt-in (default off) — shipping this on by default would start emailing
+  /// every existing org's admins with no action on their part.
+  weeklyReportEnabled         Boolean      @default(false)
+  /// Claimed atomically immediately before sending (see handleSendWeeklyReport)
+  /// to guard against a duplicate send if the cron job is retried after a
+  /// crash or somehow fires twice in close succession — same non-duplicate-
+  /// send guarantee handleSendBookingReminders/handleWarnClaimExpiring get
+  /// from claiming their own per-row timestamp before enqueueing.
+  lastWeeklyReportSentAt      DateTime?
+  /// Org-wide fallback IANA timezone (e.g. "Australia/Sydney"), used to render
+  /// and validate booking times for any building without its own override
+  /// (Building.timezone — see #72). Bookings themselves are always stored in
+  /// UTC; this only affects display and working-hours validation, never
+  /// reinterprets already-stored data.
+  defaultTimezone             String       @default("UTC")
+  /// Org-wide default working-hours window (HH:MM, local to whichever
+  /// timezone applies) — overridable per building (Building.workingHours*).
+  /// Purely informational unless enforceWorkingHours is also on.
+  workingHoursStart           String       @default("07:00")
+  workingHoursEnd             String       @default("19:00")
+  /// Single org-wide on/off switch for whether the working-hours window
+  /// above actually blocks out-of-hours bookings, or is just configured
+  /// for display/future use. Lets an admin set up hours ahead of actually
+  /// enforcing them. Default off — enabling this changes booking behaviour
+  /// org-wide with no per-building opt-out.
+  enforceWorkingHours          Boolean      @default(false)
+  /// Weighted-ballot priority: gives a user who's lost recent ballot draws a
+  /// better chance in future ones, so nobody can lose the same recurring
+  /// ballot indefinitely with no improving odds. Default off — purely
+  /// additive to the existing uniform-random draw when disabled. See
+  /// BallotUserStreak / User.ballotConsecutiveLosses for where the
+  /// underlying streak is tracked, and runDrawForRun (lib/ballot.ts) for how
+  /// it turns into a weighted-random (not deterministic-priority) draw.
+  ballotWeightingEnabled       Boolean      @default(false)
+  /// Added to a 1.0 baseline multiplier per consecutive loss, e.g. 3 losses
+  /// with the default 0.2 increment → 1.6x this entrant's draw weight
+  /// relative to a fresh entrant's 1.0x. Still fully probabilistic for
+  /// everyone — a higher weight improves odds, it never guarantees a win.
+  ballotWeightIncrement        Float        @default(0.2)
+  /// Caps how many consecutive losses count toward the weight multiplier,
+  /// so one very unlucky streak can't eventually dominate every draw. The
+  /// streak itself keeps incrementing past this in storage (informational),
+  /// only the multiplier calculation clamps to it.
+  ballotWeightCapStreak        Int          @default(5)
+  /// PER_BALLOT (default): each ballot tracks its own streak per user,
+  /// independently. GLOBAL: one streak per user across every ballot
+  /// org-wide — losing any ballot raises odds in all of them, winning any
+  /// one resets to 0 everywhere.
+  ballotWeightScope            BallotWeightScope @default(PER_BALLOT)
   createdAt                   DateTime     @default(now())
   updatedAt                   DateTime     @updatedAt
   buildings                   Building[]
@@ -151,36 +295,57 @@ model Organisation {
 }
 
 model Building {
-  id             String             @id @default(cuid())
-  organisationId String
-  name           String
-  address        String?
+  id                   String                @id @default(cuid())
+  organisationId       String
+  name                 String
+  address              String?
   /// Per-building override for no-show release. null = inherit the org default.
   noShowReleaseEnabled Boolean?
-  createdAt      DateTime           @default(now())
-  updatedAt      DateTime           @updatedAt
-  organisation   Organisation       @relation(fields: [organisationId], references: [id], onDelete: Cascade)
-  floors         Floor[]
-  resourceRoles       UserResourceRole[]
-  groupResourceRoles  GroupResourceRole[]
-  leases              BuildingLease[]
-  groupAccess         GroupBuildingAccess[]
+  /// Per-building override for QR check-in mode. null = inherit the org default.
+  qrCheckInMode        QrCheckInMode?
+  /// Per-building override for whether a booking needs approval. null = inherit
+  /// the org default; a zone's own override (Zone.requiresApproval) wins over this.
+  requiresApproval     Boolean?
+  /// Per-building IANA timezone override (e.g. "Europe/London"). null = inherit
+  /// Organisation.defaultTimezone (see #72). Determines how this building's
+  /// booking times display and how recurring-series slots/working hours are
+  /// computed — never reinterprets already-stored UTC data.
+  timezone             String?
+  /// Per-building working-hours override (HH:MM, local to this building's
+  /// timezone). null = inherit the org default.
+  workingHoursStart    String?
+  workingHoursEnd      String?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  organisation         Organisation          @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  floors               Floor[]
+  resourceRoles        UserResourceRole[]
+  groupResourceRoles   GroupResourceRole[]
+  leases               BuildingLease[]
+  groupAccess          GroupBuildingAccess[]
 }
 
 model BuildingLease {
-  id           String          @id @default(cuid())
-  buildingId   String
-  name         String
-  startDate    DateTime
-  endDate      DateTime?
-  landlord     String?
-  rentAmount   Float?
-  currency     String          @default("GBP")
-  notes        String?
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
-  building     Building        @relation(fields: [buildingId], references: [id], onDelete: Cascade)
-  documents    LeaseDocument[]
+  id         String          @id @default(cuid())
+  buildingId String
+  name       String
+  startDate  DateTime
+  endDate    DateTime?
+  landlord   String?
+  rentAmount Float?
+  currency   String          @default("GBP")
+  notes      String?
+  /// Set once the "expiring within 90 days" notification/webhook has fired
+  /// for this lease (matching the same 90-day threshold the admin UI's
+  /// banner already uses) — prevents re-notifying on every cron run.
+  /// Cleared automatically if endDate is edited back out past the window.
+  expiringNotifiedAt DateTime?
+  /// Set once the post-expiry notification/webhook has fired.
+  expiredNotifiedAt  DateTime?
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+  building   Building        @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  documents  LeaseDocument[]
 
   @@index([buildingId])
 }
@@ -199,23 +364,26 @@ model LeaseDocument {
 }
 
 model Floor {
-  id         String             @id @default(cuid())
-  buildingId String
-  name       String
-  level      Int                @default(0)
+  id                   String              @id @default(cuid())
+  buildingId           String
+  name                 String
+  level                Int                 @default(0)
   /// Per-floor override for no-show release. null = inherit (floor → building → org).
   noShowReleaseEnabled Boolean?
-  createdAt  DateTime           @default(now())
-  updatedAt  DateTime           @updatedAt
-  building   Building           @relation(fields: [buildingId], references: [id], onDelete: Cascade)
-  floorPlan  FloorPlan?
-  zoneGroups ZoneGroup[]
-  zones      Zone[]
-  assets     Asset[]
-  resourceRoles      UserResourceRole[]
-  groupResourceRoles GroupResourceRole[]
-  groupAccess        GroupFloorAccess[]
-  subscriptions      FloorSubscription[]
+  /// Per-floor override for QR check-in mode. null = inherit (floor → building → org).
+  qrCheckInMode        QrCheckInMode?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  building             Building            @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  floorPlan            FloorPlan?
+  zoneGroups           ZoneGroup[]
+  zones                Zone[]
+  assets               Asset[]
+  resourceRoles        UserResourceRole[]
+  groupResourceRoles   GroupResourceRole[]
+  groupAccess          GroupFloorAccess[]
+  subscriptions        FloorSubscription[]
+  managerRequests      FloorManagerRequest[]
 }
 
 model FloorPlan {
@@ -244,19 +412,23 @@ model ZoneGroup {
 }
 
 model Zone {
-  id          String     @id @default(cuid())
-  floorId     String
-  zoneGroupId String?
-  name        String
-  colour      String     @default("#6366f1")
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-  floor       Floor      @relation(fields: [floorId], references: [id], onDelete: Cascade)
-  zoneGroup   ZoneGroup? @relation(fields: [zoneGroupId], references: [id])
+  id                String                  @id @default(cuid())
+  floorId           String
+  zoneGroupId       String?
+  name              String
+  colour            String                  @default("#6366f1")
+  /// Per-zone override for whether a booking on an asset in this zone needs
+  /// approval. null = inherit (zone → building → org); the most specific
+  /// non-null value wins, matching noShowReleaseEnabled/qrCheckInMode.
+  requiresApproval  Boolean?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  floor             Floor                   @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  zoneGroup         ZoneGroup?              @relation(fields: [zoneGroupId], references: [id])
   /// Assets whose primary zone is this zone
-  assets      Asset[]    @relation("PrimaryZone")
+  assets            Asset[]                 @relation("PrimaryZone")
   /// Additional zone memberships (asset can belong to multiple zones)
-  assetZones  AssetZone[]
+  assetZones        AssetZone[]
   subscriptionZones FloorSubscriptionZone[]
 }
 
@@ -288,19 +460,19 @@ model AssetAllowList {
 
 /// Category for an asset. Controls default bookability and map appearance.
 model AssetCategory {
-  id               String   @id @default(cuid())
-  name             String   @unique
-  description      String?
+  id                String   @id @default(cuid())
+  name              String   @unique
+  description       String?
   /// New assets in this category are bookable by default when true.
-  defaultIsBookable Boolean @default(false)
+  defaultIsBookable Boolean  @default(false)
   /// Icon slug used on the floor-plan canvas (e.g. "monitor", "phone", "lock").
-  defaultIcon      String?
+  defaultIcon       String?
   /// Relative storage path for a custom uploaded icon image.
-  iconUrl          String?
+  iconUrl           String?
   /// Hex colour for map markers in this category.
-  colour           String   @default("#6366f1")
-  createdAt        DateTime @default(now())
-  assets           Asset[]
+  colour            String   @default("#6366f1")
+  createdAt         DateTime @default(now())
+  assets            Asset[]
 }
 
 /// Unified asset model. Bookable assets (isBookable=true) replace the old Desk model.
@@ -318,17 +490,22 @@ model Asset {
 
   // ── Bookability ────────────────────────────────────────────────────────────
   /// When true, users can book this asset on the floor plan.
-  isBookable    Boolean        @default(false)
+  isBookable         Boolean         @default(false)
   /// Label shown in the booking UI, e.g. "Desk", "Phone Booth", "Room".
-  bookingLabel  String?
+  bookingLabel       String?
   /// Amenities available on this asset (only meaningful when isBookable=true).
-  amenities     String[]
+  amenities          String[]
   /// Booking eligibility. Null when not bookable.
-  bookingStatus BookableStatus?
+  bookingStatus      BookableStatus?
   /// bookingStatus as it was immediately before a permanent user-assignment
   /// forced it to ASSIGNED (e.g. RESTRICTED). Restored when the last
   /// permanent assignment is removed, instead of defaulting to OPEN.
   priorBookingStatus BookableStatus?
+  /// Occupant capacity. Null = single-occupant (a desk); a room/shared space
+  /// sets this so the booking flow can warn (not block) when the declared
+  /// attendeeCount exceeds it, and the floor plan can render it as a room
+  /// rather than a desk marker.
+  capacity           Int?
 
   // ── Map placement ──────────────────────────────────────────────────────────
   /// Primary zone this asset belongs to (null = not placed on any floor plan).
@@ -350,11 +527,11 @@ model Asset {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  category        AssetCategory         @relation(fields: [categoryId], references: [id])
-  primaryZone     Zone?                 @relation("PrimaryZone", fields: [primaryZoneId], references: [id], onDelete: SetNull)
-  floor           Floor?                @relation(fields: [floorId], references: [id], onDelete: SetNull)
-  additionalZones AssetZone[]
-  allowList       AssetAllowList[]
+  category              AssetCategory             @relation(fields: [categoryId], references: [id])
+  primaryZone           Zone?                     @relation("PrimaryZone", fields: [primaryZoneId], references: [id], onDelete: SetNull)
+  floor                 Floor?                    @relation(fields: [floorId], references: [id], onDelete: SetNull)
+  additionalZones       AssetZone[]
+  allowList             AssetAllowList[]
   userAssignments       AssetUserAssignment[]
   availabilityWindows   AssetAvailabilityWindow[]
   availabilityRules     AssetAvailabilityRule[]
@@ -363,6 +540,7 @@ model Asset {
   queueEntries          QueueEntry[]
   recurringBookingRules RecurringBookingRule[]
   favouritedBy          UserFavouriteAsset[]
+  ballotEntries         BallotEntry[]
 
   @@index([floorId])
   @@index([primaryZoneId])
@@ -448,58 +626,75 @@ model Department {
 }
 
 model User {
-  id                      String        @id @default(cuid())
-  email                   String        @unique
-  displayName             String
-  passwordHash            String?
+  id                       String        @id @default(cuid())
+  email                    String        @unique
+  displayName              String
+  passwordHash             String?
   /// Set whenever passwordHash changes (self-service or admin-initiated). Access
   /// tokens issued before this timestamp are rejected in requireAuth, so changing
   /// a password immediately invalidates any other still-live session/stolen token
   /// instead of leaving it valid until its own expiry (up to MAX_SESSION_SECONDS).
-  passwordChangedAt      DateTime?
-  provider                AuthProvider  @default(LOCAL)
-  externalId              String?
-  accountStatus           AccountStatus @default(ACTIVE)
-  globalRole              GlobalRole    @default(USER)
+  passwordChangedAt        DateTime?
+  provider                 AuthProvider  @default(LOCAL)
+  externalId               String?
+  accountStatus            AccountStatus @default(ACTIVE)
+  globalRole               GlobalRole    @default(USER)
   /// Provenance of globalRole. When IDP, directory sync may downgrade it; when
   /// MANUAL (an admin set it), sync leaves it untouched.
-  globalRoleSource        RoleSource    @default(MANUAL)
-  departmentId            String?
+  globalRoleSource         RoleSource    @default(MANUAL)
+  departmentId             String?
   /// The user's manager, derived from the IdP (LDAP `manager` DN, or an OIDC/SAML
   /// manager claim). Drives the inferred org/department hierarchy.
-  managerId               String?
+  managerId                String?
   /// Raw manager identifier from the IdP (a DN, email, or UPN) before it is
   /// resolved to a Roomer user — kept so forward references reconcile on later sync/login.
-  managerExternalRef      String?
-  notificationPreferences Json          @default("{}")
+  managerExternalRef       String?
+  notificationPreferences  Json          @default("{}")
   /// When false, the user is hidden from the colleague finder / "who's in"
   /// directory (their bookings and assigned desks are not surfaced to others).
   /// Users can always see their own whereabouts regardless of this flag.
-  visibleInColleagueSearch Boolean      @default(true)
+  visibleInColleagueSearch Boolean       @default(true)
   /// Raw IdP group values received on the user's most recent SSO/LDAP login.
   /// Surfaced in the admin UI so admins can copy exact group identifiers when
   /// configuring mappings, and used by the mapping dry-run preview.
-  lastIdpGroups           String[]      @default([])
-  lastSsoLoginAt          DateTime?
-  createdAt               DateTime      @default(now())
-  updatedAt               DateTime      @updatedAt
+  lastIdpGroups            String[]      @default([])
+  lastSsoLoginAt           DateTime?
+  /// Org-wide consecutive-ballot-loss streak, used only when
+  /// Organisation.ballotWeightScope = GLOBAL — incremented (capped at
+  /// ballotWeightCapStreak) on any ballot loss, reset to 0 on any ballot
+  /// win, regardless of which ballot. See BallotUserStreak for the
+  /// PER_BALLOT equivalent.
+  ballotConsecutiveLosses  Int           @default(0)
+  createdAt                DateTime      @default(now())
+  updatedAt                DateTime      @updatedAt
 
-  department           Department?  @relation(fields: [departmentId], references: [id], onDelete: SetNull)
-  manager              User?        @relation("UserManager", fields: [managerId], references: [id], onDelete: SetNull)
-  reports              User[]       @relation("UserManager")
-  resourceRoles        UserResourceRole[]
-  bookings             Booking[]
-  queueEntries         QueueEntry[]
-  notifications        Notification[]
-  auditLogsAsActor     AuditLog[]           @relation("actor")
-  assetAllowList       AssetAllowList[]
-  groupMemberships     UserGroupMember[]
-  assetUserAssignments AssetUserAssignment[]
+  department            Department?               @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  manager               User?                     @relation("UserManager", fields: [managerId], references: [id], onDelete: SetNull)
+  reports               User[]                    @relation("UserManager")
+  resourceRoles         UserResourceRole[]
+  bookings              Booking[]
+  queueEntries          QueueEntry[]
+  notifications         Notification[]
+  auditLogsAsActor      AuditLog[]                @relation("actor")
+  assetAllowList        AssetAllowList[]
+  groupMemberships      UserGroupMember[]
+  assetUserAssignments  AssetUserAssignment[]
   availabilityWindows   AssetAvailabilityWindow[] @relation("AvailabilityWindowOwner")
   availabilityRules     AssetAvailabilityRule[]   @relation("AvailabilityRuleOwner")
   floorSubscriptions    FloorSubscription[]
   recurringBookingRules RecurringBookingRule[]
   favouriteAssets       UserFavouriteAsset[]
+  transfersSent         BookingTransfer[]         @relation("BookingTransferFrom")
+  transfersReceived     BookingTransfer[]         @relation("BookingTransferTo")
+  swapsInitiated        BookingSwap[]             @relation("BookingSwapInitiator")
+  swapsReceived         BookingSwap[]             @relation("BookingSwapRecipient")
+  managerRequestsMade     FloorManagerRequest[] @relation("FloorManagerRequestUser")
+  managerRequestsReviewed FloorManagerRequest[] @relation("FloorManagerRequestReviewer")
+  pushSubscriptions       PushSubscription[]
+  bookingsApproved        Booking[]             @relation("BookingApprover")
+  ballotsCreated          Ballot[]              @relation("BallotCreatedBy")
+  ballotEntries           BallotEntry[]
+  ballotStreaks           BallotUserStreak[]
 
   @@index([email])
   @@index([provider, externalId])
@@ -508,17 +703,17 @@ model User {
 }
 
 model UserGroup {
-  id             String            @id @default(cuid())
-  organisationId String
-  name           String
-  description    String?
-  globalRole     GlobalRole        @default(USER)
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-  organisation   Organisation      @relation(fields: [organisationId], references: [id], onDelete: Cascade)
-  members        UserGroupMember[]
-  buildingAccess GroupBuildingAccess[]
-  floorAccess    GroupFloorAccess[]
+  id                 String                @id @default(cuid())
+  organisationId     String
+  name               String
+  description        String?
+  globalRole         GlobalRole            @default(USER)
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  organisation       Organisation          @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  members            UserGroupMember[]
+  buildingAccess     GroupBuildingAccess[]
+  floorAccess        GroupFloorAccess[]
   groupResourceRoles GroupResourceRole[]
 
   @@unique([organisationId, name])
@@ -573,6 +768,44 @@ model UserResourceRole {
   @@index([userId])
 }
 
+enum ManagerRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  /// Requester withdrew before it was reviewed — same shape as
+  /// TransferRequestStatus.CANCELLED.
+  CANCELLED
+  EXPIRED
+}
+
+/// Self-service request for FLOOR_MANAGER access to a specific floor —
+/// reviewed by a Super Admin or a Building Admin for the floor's building,
+/// approval creates a UserResourceRole exactly as if granted directly. See #85.
+model FloorManagerRequest {
+  id           String               @id @default(cuid())
+  userId       String
+  floorId      String
+  status       ManagerRequestStatus @default(PENDING)
+  /// Requester's optional note explaining why they need access.
+  note         String?
+  reviewedById String?
+  reviewedAt   DateTime?
+  /// Reviewer's optional note — most useful on rejection.
+  reviewNote   String?
+  /// Auto-rejected if left PENDING past this — see the expire-manager-requests
+  /// cron worker in lib/queue.ts.
+  expiresAt    DateTime
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  user         User                 @relation("FloorManagerRequestUser", fields: [userId], references: [id], onDelete: Cascade)
+  floor        Floor                @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  reviewedBy   User?                @relation("FloorManagerRequestReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([floorId])
+  @@index([status])
+}
+
 model GroupResourceRole {
   id         String            @id @default(cuid())
   groupId    String
@@ -591,85 +824,311 @@ model GroupResourceRole {
 }
 
 model Booking {
-  id                String               @id @default(cuid())
-  userId            String
-  assetId           String
-  startsAt          DateTime
-  endsAt            DateTime
-  status            BookingStatus        @default(CONFIRMED)
-  notes             String?
-  reminderSentAt    DateTime?
+  id              String                @id @default(cuid())
+  userId          String
+  assetId         String
+  startsAt        DateTime
+  endsAt          DateTime
+  status          BookingStatus         @default(CONFIRMED)
+  notes           String?
+  /// Optional declared group size for a room/shared-space booking (see
+  /// Asset.capacity). Purely informational — an oversized group only warns
+  /// the booker client-side, it never blocks confirming.
+  attendeeCount   Int?
+  reminderSentAt  DateTime?
   /// When the booker confirmed they are physically present. Null = not checked
   /// in; the no-show release job cancels un-checked-in bookings past the grace.
-  checkedInAt       DateTime?
+  checkedInAt     DateTime?
   /// True when this booking was CANCELLED by the no-show release job (vs a manual
   /// cancellation). Lets analytics separate no-show rate from cancellation rate.
-  noShow            Boolean              @default(false)
+  noShow          Boolean               @default(false)
   /// RFC 5546 SEQUENCE for this booking's ICS invite. Bumped on every
   /// reschedule so a re-sent REQUEST is recognised as an update to the
   /// existing calendar entry (not a duplicate/no-op) by clients that key off
   /// SEQUENCE rather than DTSTAMP; a CANCEL always uses sequence+1 so it
   /// supersedes whatever REQUEST was last sent.
-  icsSequence       Int                  @default(0)
-  recurringRuleId   String?
-  createdAt         DateTime             @default(now())
-  updatedAt         DateTime             @updatedAt
-  user              User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  asset             Asset                @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  recurringRule     RecurringBookingRule? @relation(fields: [recurringRuleId], references: [id], onDelete: SetNull)
+  icsSequence     Int                   @default(0)
+  recurringRuleId String?
+  /// Deadline for auto-rejecting a still-PENDING_APPROVAL booking (see #74).
+  /// Null for any booking that never needed approval.
+  approvalExpiresAt DateTime?
+  approvedAt        DateTime?
+  approvedByUserId  String?
+  /// Set on rejection (by an approver or by the auto-reject cron) — shown to
+  /// the requester so they know why. Not used for any other cancellation reason.
+  rejectionNote     String?
+  /// Visitor/guest booking (#79) — userId stays the host; these just record
+  /// who they're hosting. Null for an ordinary (non-guest) booking.
+  guestName          String?
+  guestEmail         String?
+  /// One-click check-in link token emailed to guestEmail — a guest has no
+  /// User row/session, so check-in can't go through the normal authenticated
+  /// POST /:id/check-in path. Cleared once the booking is no longer
+  /// CONFIRMED (cancelled) — NOT cleared on use, unlike QueueEntry.claimToken:
+  /// the check-in route looks the booking up BY this token, so a repeat visit
+  /// to the same link needs it to still resolve in order to replay the
+  /// "already checked in" response idempotently instead of 404ing.
+  guestCheckInToken  String?               @unique
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  user            User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  asset           Asset                 @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  recurringRule   RecurringBookingRule? @relation(fields: [recurringRuleId], references: [id], onDelete: SetNull)
+  approvedBy      User?                 @relation("BookingApprover", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  transfers       BookingTransfer[]
+  swapsAsA        BookingSwap[]         @relation("SwapBookingA")
+  swapsAsB        BookingSwap[]         @relation("SwapBookingB")
+  ballotEntry     BallotEntry?
 
   @@index([assetId, startsAt, endsAt])
   @@index([userId, startsAt])
   @@index([recurringRuleId])
   @@index([status])
+  @@index([approvalExpiresAt])
+}
+
+/// A request to hand a CONFIRMED booking to another user — the recipient
+/// must accept before booking.userId actually changes, so nobody can dump an
+/// unwanted booking on a colleague without consent. Single bookings only
+/// (not recurring-series occurrences) for now — see #83.
+model BookingTransfer {
+  id          String                @id @default(cuid())
+  bookingId   String
+  fromUserId  String
+  toUserId    String
+  status      TransferRequestStatus @default(PENDING)
+  /// Auto-declines if the recipient doesn't respond in time — reuses
+  /// org.queueClaimWindowHours (the same "how long do we wait for someone to
+  /// respond" window the queue-claim flow already exposes) rather than
+  /// adding a second, easily-confused setting.
+  expiresAt   DateTime
+  respondedAt DateTime?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  booking     Booking               @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  fromUser    User                  @relation("BookingTransferFrom", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser      User                  @relation("BookingTransferTo", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@index([toUserId, status])
+  @@index([status, expiresAt])
+}
+
+/// A mutual request to swap two users' CONFIRMED bookings — same start/end
+/// time (see #83: mismatched-time swaps are out of scope for now), different
+/// assets. Both sides keep their own time slot, just on the other person's
+/// desk.
+model BookingSwap {
+  id              String                @id @default(cuid())
+  bookingAId      String
+  bookingBId      String
+  initiatorUserId String
+  recipientUserId String
+  status          TransferRequestStatus @default(PENDING)
+  expiresAt       DateTime
+  respondedAt     DateTime?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  bookingA        Booking               @relation("SwapBookingA", fields: [bookingAId], references: [id], onDelete: Cascade)
+  bookingB        Booking               @relation("SwapBookingB", fields: [bookingBId], references: [id], onDelete: Cascade)
+  initiator       User                  @relation("BookingSwapInitiator", fields: [initiatorUserId], references: [id], onDelete: Cascade)
+  recipient       User                  @relation("BookingSwapRecipient", fields: [recipientUserId], references: [id], onDelete: Cascade)
+
+  @@index([bookingAId])
+  @@index([bookingBId])
+  @@index([recipientUserId, status])
+  @@index([status, expiresAt])
 }
 
 /// A weekly recurring booking rule. All individual Booking rows linked to this
 /// rule are materialized immediately at creation time.
 model RecurringBookingRule {
-  id          String               @id @default(cuid())
-  userId      String
-  assetId     String
-  frequency   RecurringFrequency   @default(WEEKLY)
+  id        String              @id @default(cuid())
+  userId    String
+  assetId   String
+  frequency RecurringFrequency  @default(WEEKLY)
   /// ISO day of week: 0=Sunday … 6=Saturday. Required only for WEEKLY frequency.
-  dayOfWeek   Int?
+  dayOfWeek Int?
   /// Wall-clock start time in HH:MM UTC
-  startTime   String
+  startTime String
   /// Wall-clock end time in HH:MM UTC
-  endTime     String
+  endTime   String
   /// Date of first occurrence (stored as midnight UTC)
-  firstDate   DateTime             @db.Date
+  firstDate DateTime            @db.Date
   /// Date of last occurrence (stored as midnight UTC)
-  lastDate    DateTime             @db.Date
-  status      RecurringRuleStatus  @default(ACTIVE)
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
-  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  asset       Asset               @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  bookings    Booking[]
+  lastDate  DateTime            @db.Date
+  status    RecurringRuleStatus @default(ACTIVE)
+  /// Id of the one occurrence that actually received an ICS REQUEST invite
+  /// (only the series' first-created occurrence ever gets one — see POST /).
+  /// Recorded once at creation, not re-derived by date later: an individual
+  /// occurrence can be rescheduled to a date after its siblings, so "the
+  /// earliest-dated booking on this rule" is not a stable way to find which
+  /// one the recipient's calendar actually has a live invite for.
+  firstInvitedBookingId String?
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  asset     Asset               @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  bookings  Booking[]
 
   @@index([userId])
   @@index([assetId])
 }
 
+/// A recurring or one-off random-allocation draw for scarce assets (e.g. a
+/// weekly car-park ballot) — see #159. Distinct from ordinary first-come-
+/// first-served booking/queueing: eligible users opt in during a
+/// registration window, then winners are drawn uniformly at random (no
+/// history weighting) and materialised as normal CONFIRMED bookings,
+/// bypassing the approval workflow (#74) and queue entirely for that slot
+/// — the draw itself IS the decision. Assets stay normally bookable
+/// outside of the specific slot(s) a ballot claims for its winners.
+model Ballot {
+  id              String          @id @default(cuid())
+  name            String
+  createdByUserId String
+  /// Scope: the asset pool is the union of every bookable asset on any of
+  /// these floors, plus every floor of any of these buildings. Plain
+  /// Postgres arrays (like User.lastIdpGroups) rather than a join table —
+  /// no per-row metadata needed, and referential integrity here is
+  /// best-effort (a deleted building/floor just drops out of the
+  /// intersection at draw time, it doesn't need active cleanup).
+  buildingIds     String[]        @default([])
+  floorIds        String[]        @default([])
+  /// When true, buildingIds/floorIds are ignored and the asset pool is
+  /// resolved fresh across every building in the org at draw/entry time —
+  /// unlike buildingIds/floorIds (a snapshot frozen at creation time that
+  /// never grows to include a building added afterward), this stays
+  /// current automatically. SUPER_ADMIN only (see canManageBallotScope) —
+  /// a building/floor manager's scope is inherently bounded to what they
+  /// manage, so org-wide reach isn't theirs to claim.
+  scopeAllBuildings Boolean        @default(false)
+  /// Optional category filter — empty means every bookable asset in scope.
+  assetCategoryIds String[]       @default([])
+  frequency       BallotFrequency @default(WEEKLY)
+  /// Required for WEEKLY — ISO day of week (0=Sunday) registration closes/the draw happens.
+  dayOfWeek       Int?
+  /// Required for MONTHLY — day-of-month registration closes/the draw happens.
+  dayOfMonth      Int?
+  /// How long before the draw registration opens.
+  registrationWindowHours Int     @default(72)
+  /// Wall-clock time-of-day the assigned slot covers, resolved against the
+  /// asset's building timezone like any other booking (see #72).
+  slotStartTime   String          @default("00:00")
+  slotEndTime     String          @default("23:59")
+  /// Days between the draw and the assigned slot's start (1 = "the day after the draw").
+  slotLeadDays    Int             @default(1)
+  /// How many consecutive days the assignment covers (e.g. 5 for "the working week").
+  slotDurationDays Int            @default(1)
+  status          BallotStatus    @default(ACTIVE)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  createdBy User        @relation("BallotCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  runs      BallotRun[]
+  streaks   BallotUserStreak[]
+}
+
+/// One concrete occurrence of a Ballot — its own registration window, draw,
+/// and results. A ONCE ballot has exactly one run, created immediately
+/// alongside it; a recurring ballot gets a new run materialised each cycle
+/// by the ballot-open-registration cron.
+model BallotRun {
+  id                   String          @id @default(cuid())
+  ballotId             String
+  registrationOpensAt  DateTime
+  registrationClosesAt DateTime
+  /// Calendar date only (stored at UTC midnight, like RecurringBookingRule.
+  /// firstDate/lastDate) — the first/last day the slot covers, NOT a real
+  /// instant. Each winner's actual booking instant is computed per-asset at
+  /// draw time via zonedWallClockToUtc(this date, Ballot.slotStartTime/
+  /// EndTime, that asset's building timezone) — necessary because a single
+  /// ballot can span buildings in different timezones, so there is no one
+  /// "the" instant until an asset (and therefore a building) is assigned.
+  slotStartsAt         DateTime
+  slotEndsAt           DateTime
+  status               BallotRunStatus @default(OPEN)
+  drawnAt              DateTime?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  ballot  Ballot        @relation(fields: [ballotId], references: [id], onDelete: Cascade)
+  entries BallotEntry[]
+
+  @@index([ballotId])
+  @@index([status, registrationClosesAt])
+}
+
+/// One user's opt-in entry for one BallotRun. WON/assetId/bookingId are set
+/// by the draw; a declined WON entry moves to DECLINED and (per #159's
+/// confirmed design) triggers a mini re-draw among that run's LOST entries
+/// for the freed asset, rather than reopening registration or leaving the
+/// slot unfilled.
+model BallotEntry {
+  id        String            @id @default(cuid())
+  runId     String
+  userId    String
+  status    BallotEntryStatus @default(ENTERED)
+  assetId   String?
+  bookingId String?           @unique
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  run     BallotRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  user    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  asset   Asset?    @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  booking Booking?  @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  @@unique([runId, userId])
+  @@index([userId])
+  @@index([assetId])
+}
+
+/// Per-user, per-ballot consecutive-loss streak — used only when
+/// Organisation.ballotWeightScope = PER_BALLOT. (The GLOBAL mode instead
+/// uses User.ballotConsecutiveLosses, a single org-wide counter — kept as a
+/// separate field rather than a nullable ballotId row here, since Postgres
+/// treats NULL as distinct from NULL in unique constraints and a
+/// nullable-ballotId unique key wouldn't actually prevent duplicate "global"
+/// rows per user; see the identical reasoning already applied to
+/// UserResourceRole's BUILDING-scope rows.)
+///
+/// Incremented on LOST (capped at Organisation.ballotWeightCapStreak), reset
+/// to 0 on WON — only written to at all when Organisation.ballotWeightingEnabled
+/// is true, so a losing streak accrued while weighting was off never silently
+/// starts affecting draws once it's turned on.
+model BallotUserStreak {
+  id                String   @id @default(cuid())
+  ballotId          String
+  userId            String
+  consecutiveLosses Int      @default(0)
+  updatedAt         DateTime @updatedAt
+
+  ballot Ballot @relation(fields: [ballotId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([ballotId, userId])
+  @@index([userId])
+}
+
 model QueueEntry {
-  id             String           @id @default(cuid())
-  userId         String
-  assetId        String
-  wantedStartsAt DateTime
-  wantedEndsAt   DateTime
-  position       Int
-  status         QueueEntryStatus @default(WAITING)
-  expiresAt      DateTime
-  claimDeadline  DateTime?
-  claimToken     String?          @unique
+  id                  String           @id @default(cuid())
+  userId              String
+  assetId             String
+  wantedStartsAt      DateTime
+  wantedEndsAt        DateTime
+  position            Int
+  status              QueueEntryStatus @default(WAITING)
+  expiresAt           DateTime
+  claimDeadline       DateTime?
+  claimToken          String?          @unique
   /// Set once the claim-expiring-soon warning has been sent, so the cron
   /// sweep doesn't re-notify every run before the deadline actually passes.
   claimExpiryWarnedAt DateTime?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
-  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  asset          Asset            @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  user                User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  asset               Asset            @relation(fields: [assetId], references: [id], onDelete: Cascade)
 
   @@index([assetId, status, wantedStartsAt, wantedEndsAt])
   @@index([userId, status])
@@ -694,7 +1153,9 @@ model Notification {
 
 model AuditLog {
   id           String   @id @default(cuid())
-  actorId      String
+  /// Null = a system/cron/SCIM-driven change with no requesting human actor
+  /// (e.g. the no-show release sweep, a SCIM-provisioned user create/update).
+  actorId      String?
   action       String
   resourceType String
   resourceId   String
@@ -702,7 +1163,11 @@ model AuditLog {
   after        Json?
   ipAddress    String?
   createdAt    DateTime @default(now())
-  actor        User     @relation("actor", fields: [actorId], references: [id])
+  /// onDelete: SetNull rather than the implicit Restrict a required relation
+  /// would carry — without it, a future user-hard-delete feature would be
+  /// silently blocked the moment it touches any user who ever appeared as
+  /// an audit actor.
+  actor        User?    @relation("actor", fields: [actorId], references: [id], onDelete: SetNull)
 
   @@index([actorId])
   @@index([resourceType, resourceId])
@@ -726,13 +1191,13 @@ model ScimConfig {
 }
 
 model FloorSubscription {
-  id             String    @id @default(cuid())
+  id             String                  @id @default(cuid())
   userId         String
   floorId        String
   lastNotifiedAt DateTime?
-  createdAt      DateTime  @default(now())
-  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  floor          Floor     @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  createdAt      DateTime                @default(now())
+  user           User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  floor          Floor                   @relation(fields: [floorId], references: [id], onDelete: Cascade)
   zones          FloorSubscriptionZone[]
 
   @@unique([userId, floorId])
@@ -748,6 +1213,24 @@ model FloorSubscriptionZone {
 
   @@id([subscriptionId, zoneId])
   @@index([zoneId])
+}
+
+/// A browser's Web Push subscription (one row per browser/device a user has
+/// enabled push on — a user can have several). `endpoint` is unique because
+/// it's the push service's own identity for this subscription; re-subscribing
+/// the same browser (e.g. after clearing permission and re-granting) yields a
+/// new endpoint, so this is an upsert-by-endpoint model, not upsert-by-user.
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model RevokedToken {
@@ -779,6 +1262,12 @@ model WebhookEndpoint {
   secret     String
   events     String[]
   enabled    Boolean           @default(true)
+  /// Reset to 0 on any successful delivery; incremented on each failed
+  /// delivery attempt. A permanently-broken endpoint otherwise fails 100% of
+  /// its deliveries indefinitely with nothing to surface that in the admin
+  /// UI short of manually opening its delivery history.
+  consecutiveFailures Int      @default(0)
+  lastSuccessAt       DateTime?
   createdAt  DateTime          @default(now())
   updatedAt  DateTime          @updatedAt
   deliveries WebhookDelivery[]

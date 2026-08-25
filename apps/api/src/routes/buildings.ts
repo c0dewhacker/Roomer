@@ -6,6 +6,7 @@ import { requireGlobalRole, getManagedBuildingIds } from '../middleware/requireR
 import { canUserAccessBuilding } from './groups.js'
 import { cancelFutureBookingsForFloors } from '../lib/queue.js'
 import { deleteFile } from '../lib/storage.js'
+import { recordAuditLog } from '../lib/audit.js'
 
 /**
  * Filter a building's floors down to the ones `userId` may access, matching
@@ -151,6 +152,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
         },
         include: { _count: { select: { floors: true } } },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'building.created',
+        resourceType: 'Building',
+        resourceId: building.id,
+        after: { name: building.name, address: building.address },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(201).send({ data: building })
     },
@@ -162,10 +171,19 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
 
     const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
 
-    // Check building-level access for non-admins
+    // Check building-level access for non-admins. canUserAccessBuilding only
+    // considers GroupBuildingAccess — a BUILDING_ADMIN (direct or via group)
+    // for a building that's ALSO group-restricted to a different group they
+    // aren't in would otherwise 404 on their own building, exactly like the
+    // list route's own fix comment below describes ("could never select
+    // their own building... even though the backend would authorize the
+    // request once made").
     if (!isAdmin) {
-      const hasAccess = await canUserAccessBuilding(request.user.id, id)
-      if (!hasAccess) {
+      const [hasAccess, adminBuildingIds] = await Promise.all([
+        canUserAccessBuilding(request.user.id, id),
+        getManagedBuildingIds(request.user.id),
+      ])
+      if (!hasAccess && !adminBuildingIds.includes(id)) {
         return reply.status(404).send({ error: { message: 'Building not found', code: 'NOT_FOUND' } })
       }
     }
@@ -251,6 +269,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
 
       try {
         await prisma.groupBuildingAccess.create({ data: { groupId, buildingId: id } })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'group_building_access.granted',
+          resourceType: 'GroupBuildingAccess',
+          resourceId: `${groupId}:${id}`,
+          after: { groupId, buildingId: id },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(201).send({ data: { groupId, buildingId: id } })
       } catch {
         return reply.status(409).send({ error: { message: 'Access rule already exists', code: 'ALREADY_EXISTS' } })
@@ -269,6 +295,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
         await prisma.groupBuildingAccess.delete({
           where: { groupId_buildingId: { groupId, buildingId: id } },
         })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'group_building_access.revoked',
+          resourceType: 'GroupBuildingAccess',
+          resourceId: `${groupId}:${id}`,
+          before: { groupId, buildingId: id },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: { ok: true } })
       } catch {
         return reply.status(404).send({ error: { message: 'Access rule not found', code: 'NOT_FOUND' } })
@@ -333,6 +367,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       const role = await prisma.userResourceRole.create({
         data: { userId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user_resource_role.granted',
+        resourceType: 'UserResourceRole',
+        resourceId: role.id,
+        after: { userId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(201).send({ data: { roleId: role.id, id: user.id, displayName: user.displayName, email: user.email } })
     },
   )
@@ -354,6 +396,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       if (result.count === 0) {
         return reply.status(404).send({ error: { message: 'Manager role not found', code: 'NOT_FOUND' } })
       }
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user_resource_role.revoked',
+        resourceType: 'UserResourceRole',
+        resourceId: `${userId}:BUILDING:${id}`,
+        before: { userId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id, deletedCount: result.count },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     },
   )
@@ -414,6 +464,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       const role = await prisma.groupResourceRole.create({
         data: { groupId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'group_resource_role.granted',
+        resourceType: 'GroupResourceRole',
+        resourceId: role.id,
+        after: { groupId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(201).send({ data: { roleId: role.id, id: group.id, name: group.name, memberCount: 0 } })
     },
@@ -434,6 +492,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       await prisma.groupResourceRole.delete({ where: { id: role.id } })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'group_resource_role.revoked',
+        resourceType: 'GroupResourceRole',
+        resourceId: role.id,
+        before: { groupId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     },
   )
@@ -452,10 +518,20 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       try {
+        const before = await prisma.building.findUnique({ where: { id }, select: { name: true, address: true } })
         const building = await prisma.building.update({
           where: { id },
           data: result.data,
         })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'building.updated',
+          resourceType: 'Building',
+          resourceId: id,
+          before,
+          after: { name: building.name, address: building.address },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: building })
       } catch {
         return reply.status(404).send({
@@ -493,13 +569,48 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
         select: { storagePath: true },
       })
 
-      try {
-        await prisma.building.delete({ where: { id } })
-      } catch {
+      // The pre-delete asset snapshot and the delete itself run inside one
+      // transaction, locking every floor row under this building first —
+      // same race and fix shape as zones.ts/floors.ts DELETE /:id. Asset.
+      // floorId's FK checks against the Floor row, not the Building row
+      // directly, so a concurrent PATCH /assets/:id that places an asset
+      // onto one of this building's floors needs a lock on that same row;
+      // locking it here means Postgres blocks that write until we commit,
+      // then it fails outright (the floor being gone via cascade) instead of
+      // racing our snapshot below.
+      const result = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Floor" WHERE "buildingId" = ${id} FOR UPDATE`
+        const before = await tx.building.findUnique({ where: { id }, select: { name: true, address: true } })
+        if (!before) return null
+        const buildingAssetIds = (await tx.asset.findMany({ where: { floor: { buildingId: id } }, select: { id: true } })).map((a) => a.id)
+        await tx.building.delete({ where: { id } })
+        if (buildingAssetIds.length > 0) {
+          // Floor/Zone cascade-delete with the building, so Asset.floorId/
+          // primaryZoneId SetNull automatically, but stale x/y/width/height/
+          // rotation survive — same "vanishes into a gap no admin screen can
+          // reach" issue as deleting a zone or floor (#206), just missing
+          // here for the building-level cascade until now.
+          await tx.asset.updateMany({
+            where: { id: { in: buildingAssetIds } },
+            data: { x: null, y: null, width: null, height: null, rotation: null },
+          })
+        }
+        return before
+      }).catch(() => null)
+
+      if (!result) {
         return reply.status(404).send({
           error: { message: 'Building not found', code: 'NOT_FOUND' },
         })
       }
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'building.deleted',
+        resourceType: 'Building',
+        resourceId: id,
+        before: result,
+        ipAddress: request.ip,
+      }, request.log)
 
       for (const plan of floorPlans) {
         await deleteFile(plan.originalPath)

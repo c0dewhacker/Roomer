@@ -20,6 +20,7 @@ const CATEGORY_ICONS: Record<string, string> = {
 const STATUS_BG: Record<string, string> = {
   available:    'bg-green-500 hover:bg-green-600',
   mine:         'bg-blue-500 hover:bg-blue-600',
+  mine_pending: 'bg-amber-500 hover:bg-amber-600',
   booked:       'bg-red-400 hover:bg-red-500',
   assigned:     'bg-slate-400 hover:bg-slate-500',
   restricted:   'bg-orange-400 hover:bg-orange-500',
@@ -32,6 +33,7 @@ const STATUS_BG: Record<string, string> = {
 const STATUS_DOT: Record<string, string> = {
   available:    'bg-green-500',
   mine:         'bg-blue-500',
+  mine_pending: 'bg-amber-500',
   booked:       'bg-red-400',
   assigned:     'bg-slate-400',
   restricted:   'bg-orange-400',
@@ -44,6 +46,7 @@ const STATUS_DOT: Record<string, string> = {
 const STATUS_LABEL: Record<string, string> = {
   available:    'Available',
   mine:         'Your booking',
+  mine_pending: 'Pending approval',
   booked:       'Booked',
   assigned:     'Assigned',
   restricted:   'Restricted',
@@ -105,6 +108,14 @@ export function DeskMarker({
   const iconSlug = desk.category?.defaultIcon
   const iconChar = iconSlug ? (CATEGORY_ICONS[iconSlug] ?? desk.category?.name?.[0]) : undefined
 
+  // A room/shared space (capacity set, >1) gets a rounded-square disc instead
+  // of a circle, plus a capacity badge — a quick, glanceable way to tell a
+  // 12-person boardroom apart from a desk without the much larger change of
+  // rendering markers at their true proportional footprint (that treatment
+  // already exists in the floor-plan editor's Konva canvas, AssetShape.tsx,
+  // where getting a room's actual placed size right matters most).
+  const isRoom = !!desk.capacity && desk.capacity > 1
+
   return (
     <div
       className="absolute transition-opacity"
@@ -127,10 +138,11 @@ export function DeskMarker({
               {/* Icon disc */}
               <div
                 className={`
-                  relative rounded-full flex items-center justify-center
+                  relative flex items-center justify-center
                   shadow-md
                   transition-all duration-150 ease-out
                   group-hover:scale-110 group-hover:shadow-lg group-focus-visible:ring-2 group-focus-visible:ring-ring
+                  ${isRoom ? 'rounded-lg' : 'rounded-full'}
                   ${bgClass}
                 `}
                 style={{
@@ -142,8 +154,8 @@ export function DeskMarker({
                 {/* Wayfinder highlight ring */}
                 {highlighted && (
                   <>
-                    <span className="absolute -inset-2 rounded-full ring-4 ring-primary/70 animate-ping" />
-                    <span className="absolute -inset-2 rounded-full ring-4 ring-primary" />
+                    <span className={`absolute -inset-2 ${isRoom ? 'rounded-lg' : 'rounded-full'} ring-4 ring-primary/70 animate-ping`} />
+                    <span className={`absolute -inset-2 ${isRoom ? 'rounded-lg' : 'rounded-full'} ring-4 ring-primary`} />
                   </>
                 )}
                 {iconUrl ? (
@@ -180,6 +192,23 @@ export function DeskMarker({
                     }}
                   />
                 )}
+
+                {/* Capacity badge */}
+                {isRoom && (
+                  <span
+                    className="absolute rounded-full bg-white/95 text-foreground border border-border/60 shadow-sm flex items-center justify-center font-semibold leading-none"
+                    style={{
+                      minWidth: Math.max(16, iconSize * 0.4),
+                      height: Math.max(16, iconSize * 0.32),
+                      padding: '0 4px',
+                      fontSize: Math.max(9, iconSize * 0.18),
+                      bottom: -Math.max(2, iconSize * 0.08),
+                      right: -Math.max(2, iconSize * 0.08),
+                    }}
+                  >
+                    {desk.capacity}
+                  </span>
+                )}
               </div>
 
               {/* Name chip */}
@@ -211,6 +240,12 @@ export function DeskMarker({
               <p className="text-xs text-muted-foreground">
                 Zone: <span className="text-foreground font-medium">{desk.zoneName}</span>
               </p>
+
+              {isRoom && (
+                <p className="text-xs text-muted-foreground">
+                  Seats up to <span className="text-foreground font-medium">{desk.capacity}</span>
+                </p>
+              )}
 
               {desk.assignedUsers && desk.assignedUsers.length > 0 && (
                 <p className="text-xs text-muted-foreground">

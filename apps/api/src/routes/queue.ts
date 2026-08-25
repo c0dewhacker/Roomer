@@ -7,18 +7,28 @@ import { dispatchWebhook } from '../lib/webhook.js'
 import {
   assertBookable,
   assertUnderBookingQuota,
-  hasConfirmedOverlap,
+  hasBlockingOverlap,
+  checkZoneGroupOverlap,
   lockAssetForBooking,
   lockAssetForQueue,
   lockUserForBookingQuota,
   isOverlapConstraintViolation,
+  isWithinAdvanceBookingWindow,
 } from '../lib/booking.js'
+import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
 class QuotaExceededError extends Error {
   constructor(public readonly code: string, message: string) {
     super(message)
     this.name = 'QuotaExceededError'
+  }
+}
+
+class ZoneGroupConflictError extends Error {
+  constructor(public readonly code: string, message: string) {
+    super(message)
+    this.name = 'ZoneGroupConflictError'
   }
 }
 
@@ -78,26 +88,26 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
     }
 
-    // Check duplicate
-    const existing = await prisma.queueEntry.findFirst({
-      where: {
-        userId: request.user.id,
-        assetId,
-        status: { in: ['WAITING', 'PROMOTED'] },
-        wantedStartsAt: { lt: wantedEndsAt },
-        wantedEndsAt: { gt: wantedStartsAt },
-      },
-    })
-
-    if (existing) {
-      return reply.status(409).send({
-        error: { message: 'You already have a queue entry for this asset and period', code: 'ALREADY_QUEUED' },
-      })
-    }
-
-    // Count + create in one transaction with advisory lock to prevent position race
+    // Count + create in one transaction with advisory lock to prevent position race.
+    // The duplicate check must run INSIDE this same lock, not before it — two
+    // near-simultaneous joins for the same user/asset/period would otherwise
+    // both read "no existing entry" before either commits, letting a user hold
+    // multiple queue positions for the same slot (queue-stuffing).
     const entry = await prisma.$transaction(async (tx) => {
       await lockAssetForQueue(tx, assetId)
+
+      const existing = await tx.queueEntry.findFirst({
+        where: {
+          userId: request.user.id,
+          assetId,
+          status: { in: ['WAITING', 'PROMOTED'] },
+          wantedStartsAt: { lt: wantedEndsAt },
+          wantedEndsAt: { gt: wantedStartsAt },
+        },
+      })
+      if (existing) {
+        throw Object.assign(new Error('ALREADY_QUEUED'), { code: 'ALREADY_QUEUED' })
+      }
 
       const position = await tx.queueEntry.count({
         where: {
@@ -108,7 +118,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
         },
       })
 
-      return tx.queueEntry.create({
+      const created = await tx.queueEntry.create({
         data: {
           userId: request.user.id,
           assetId,
@@ -129,7 +139,25 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
           },
         },
       })
+      await recordAuditLog(tx, {
+        actorId: request.user.id,
+        action: 'queue_entry.joined',
+        resourceType: 'QueueEntry',
+        resourceId: created.id,
+        after: { assetId, wantedStartsAt, wantedEndsAt, position: created.position },
+        ipAddress: request.ip,
+      }, request.log)
+      return created
+    }).catch((err) => {
+      if ((err as { code?: string }).code === 'ALREADY_QUEUED') return null
+      throw err
     })
+
+    if (!entry) {
+      return reply.status(409).send({
+        error: { message: 'You already have a queue entry for this asset and period', code: 'ALREADY_QUEUED' },
+      })
+    }
 
     await enqueueNotification({
       type: NotificationType.QUEUE_JOINED,
@@ -161,24 +189,43 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    await prisma.queueEntry.update({
-      where: { id },
-      data: { status: 'CANCELLED' },
+    // Cancel + position compaction under the same advisory lock every other
+    // queue-position mutation in this codebase takes (see lockAssetForQueue's
+    // uses in POST / above and promoteNextQueueEntry) — without it, this could
+    // interleave with a concurrent join's position count() or a concurrent
+    // promotion and leave duplicate/skewed position numbers for the asset.
+    await prisma.$transaction(async (tx) => {
+      await lockAssetForQueue(tx, entry.assetId)
+
+      await tx.queueEntry.update({
+        where: { id },
+        data: { status: 'CANCELLED' },
+      })
+
+      // Compact positions: decrement all WAITING entries for the same asset/period that were behind the cancelled one
+      await tx.queueEntry.updateMany({
+        where: {
+          assetId: entry.assetId,
+          status: 'WAITING',
+          position: { gt: entry.position },
+          wantedStartsAt: { lt: entry.wantedEndsAt },
+          wantedEndsAt: { gt: entry.wantedStartsAt },
+        },
+        data: { position: { decrement: 1 } },
+      })
+
+      await recordAuditLog(tx, {
+        actorId: request.user.id,
+        action: 'queue_entry.left',
+        resourceType: 'QueueEntry',
+        resourceId: id,
+        before: { status: entry.status, assetId: entry.assetId, position: entry.position },
+        after: { status: 'CANCELLED' },
+        ipAddress: request.ip,
+      }, request.log)
     })
 
     dispatchWebhook('queue.cancelled', { id: entry.id, userId: entry.userId, assetId: entry.assetId }).catch(() => {})
-
-    // Compact positions: decrement all WAITING entries for the same asset/period that were behind the cancelled one
-    await prisma.queueEntry.updateMany({
-      where: {
-        assetId: entry.assetId,
-        status: 'WAITING',
-        position: { gt: entry.position },
-        wantedStartsAt: { lt: entry.wantedEndsAt },
-        wantedEndsAt: { gt: entry.wantedStartsAt },
-      },
-      data: { position: { decrement: 1 } },
-    })
 
     return reply.status(200).send({ data: { ok: true } })
   })
@@ -192,7 +239,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
 
     const entry = await prisma.queueEntry.findUnique({
       where: { claimToken: token },
-      include: { asset: true, user: { select: { id: true, globalRole: true } } },
+      include: { asset: true, user: { select: { id: true, globalRole: true, accountStatus: true } } },
     })
 
     if (!entry) {
@@ -201,6 +248,16 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
 
     if (entry.status !== 'PROMOTED') {
       return reply.status(409).send({ error: { message: 'This booking has already been claimed or expired', code: 'ALREADY_CLAIMED' } })
+    }
+
+    // This is the one write path in the app that creates a real booking with
+    // no requireAuth preHandler (it's an unauthenticated email-link claim), so
+    // requireAuth's accountStatus === 'BLOCKED' check never runs for it. A
+    // blocked user's queue entries are normally already cancelled by the same
+    // action that blocked them (see cancelQueueEntriesForUser), but that's a
+    // side effect of an unrelated code path, not a guarantee — check directly.
+    if (entry.user.accountStatus === 'BLOCKED') {
+      return reply.status(403).send({ error: { message: 'This account has been suspended', code: 'ACCOUNT_BLOCKED' } })
     }
 
     if (!entry.claimDeadline || entry.claimDeadline < new Date()) {
@@ -212,6 +269,23 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
     const gate = await assertBookable(prisma, entry.user, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)
     if (!gate.ok) {
       return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+    }
+
+    // A queue entry isn't itself a booking commitment, so joining the queue
+    // was never checked against maxAdvanceBookingDays (see the comment on
+    // isWithinAdvanceBookingWindow) — but claiming one creates a real
+    // CONFIRMED booking exactly like POST /bookings does, so it must pass the
+    // same gate. Without this, the org's advance-booking cap was bypassable
+    // by queueing behind a far-future booking (e.g. one occurrence of a
+    // recurring series, which has its own separate horizon) and claiming
+    // once that booking was cancelled and freed the slot.
+    if (entry.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const org = await prisma.organisation.findFirst({ select: { maxAdvanceBookingDays: true } })
+      if (!isWithinAdvanceBookingWindow(entry.wantedStartsAt, org?.maxAdvanceBookingDays)) {
+        return reply.status(400).send({
+          error: { message: `Bookings cannot be made more than ${org?.maxAdvanceBookingDays} days in advance`, code: 'MAX_ADVANCE_EXCEEDED' },
+        })
+      }
     }
 
     const quota = await assertUnderBookingQuota(prisma, entry.userId, entry.user.globalRole === GlobalRole.SUPER_ADMIN)
@@ -229,7 +303,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
         // below it writes, and returning null from an interactive transaction
         // does NOT roll back writes already made in this callback (only a
         // throw does) — so nothing may be written before this point.
-        if (await hasConfirmedOverlap(tx, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)) return null
+        if (await hasBlockingOverlap(tx, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)) return null
 
         // The pre-transaction PROMOTED/deadline checks above are TOCTOU-prone:
         // the claim-expiry sweep (a separate cron, its own transaction, a
@@ -260,6 +334,15 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
           throw new QuotaExceededError(quotaRecheck.code, quotaRecheck.message)
         }
 
+        // Same rule direct booking (POST /bookings) and rescheduling enforce —
+        // claiming a promoted queue slot shouldn't let a user end up with two
+        // overlapping bookings across zones meant to be mutually exclusive for
+        // them. Checked here, under the per-user lock just acquired above, for
+        // the same lock-domain reason as the quota recheck.
+        if (await checkZoneGroupOverlap(tx, entry.userId, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)) {
+          throw new ZoneGroupConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
+        }
+
         return tx.booking.create({
           data: {
             userId: entry.userId,
@@ -272,7 +355,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       })
     } catch (err) {
       if (isOverlapConstraintViolation(err)) result = null
-      else if (err instanceof QuotaExceededError) {
+      else if (err instanceof QuotaExceededError || err instanceof ZoneGroupConflictError) {
         return reply.status(409).send({ error: { message: err.message, code: err.code } })
       } else throw err
     }
@@ -293,6 +376,17 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
     })
 
     dispatchWebhook('queue.claimed', { id: entry.id, userId: entry.userId, assetId: entry.assetId, bookingId: result.id }).catch(() => {})
+    // actorId is the entry's own owner — this endpoint is deliberately
+    // unauthenticated (an email-link claim), but the identity is known
+    // exactly (the queue entry it's tied to), not a system/cron action.
+    await recordAuditLog(prisma, {
+      actorId: entry.userId,
+      action: 'queue_entry.claimed_by_token',
+      resourceType: 'Booking',
+      resourceId: result.id,
+      after: { assetId: entry.assetId, startsAt: result.startsAt, endsAt: result.endsAt },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(201).send({ data: { booking: result, queueEntry: { id: entry.id, status: 'CLAIMED' } } })
   })
@@ -333,6 +427,18 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
     }
 
+    // See the matching comment in /claim-by-token — claiming creates a real
+    // CONFIRMED booking, which must pass the org's advance-booking cap the
+    // same way POST /bookings does, even though joining the queue didn't.
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const org = await prisma.organisation.findFirst({ select: { maxAdvanceBookingDays: true } })
+      if (!isWithinAdvanceBookingWindow(entry.wantedStartsAt, org?.maxAdvanceBookingDays)) {
+        return reply.status(400).send({
+          error: { message: `Bookings cannot be made more than ${org?.maxAdvanceBookingDays} days in advance`, code: 'MAX_ADVANCE_EXCEEDED' },
+        })
+      }
+    }
+
     const quota = await assertUnderBookingQuota(prisma, request.user.id, request.user.globalRole === GlobalRole.SUPER_ADMIN)
     if (!quota.ok) {
       return reply.status(quota.status).send({ error: { message: quota.message, code: quota.code } })
@@ -349,7 +455,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
         // below it writes, and returning null from an interactive transaction
         // does NOT roll back writes already made in this callback (only a
         // throw does) — so nothing may be written before this point.
-        if (await hasConfirmedOverlap(tx, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)) return null
+        if (await hasBlockingOverlap(tx, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)) return null
 
         // The pre-transaction PROMOTED/deadline checks above are TOCTOU-prone:
         // the claim-expiry sweep (a separate cron, its own transaction, a
@@ -380,6 +486,12 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
           throw new QuotaExceededError(quotaRecheck.code, quotaRecheck.message)
         }
 
+        // Same rule direct booking (POST /bookings) and rescheduling enforce —
+        // see the matching comment in /claim-by-token above.
+        if (await checkZoneGroupOverlap(tx, request.user.id, entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)) {
+          throw new ZoneGroupConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
+        }
+
         return tx.booking.create({
           data: {
             userId: request.user.id,
@@ -392,7 +504,7 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       })
     } catch (err) {
       if (isOverlapConstraintViolation(err)) booking = null
-      else if (err instanceof QuotaExceededError) {
+      else if (err instanceof QuotaExceededError || err instanceof ZoneGroupConflictError) {
         return reply.status(409).send({ error: { message: err.message, code: err.code } })
       } else throw err
     }
@@ -413,6 +525,14 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
     })
 
     dispatchWebhook('queue.claimed', { id: entry.id, userId: entry.userId, assetId: entry.assetId, bookingId: booking.id }).catch(() => {})
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'queue_entry.claimed',
+      resourceType: 'Booking',
+      resourceId: booking.id,
+      after: { assetId: entry.assetId, startsAt: booking.startsAt, endsAt: booking.endsAt },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(201).send({ data: { booking, queueEntry: { id, status: 'CLAIMED' } } })
   })

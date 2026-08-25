@@ -2,12 +2,38 @@ import { PgBoss, type Job } from 'pg-boss'
 import { env } from '../env.js'
 import { prisma } from './prisma.js'
 import { buildBookingIcs } from './ical.js'
-import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingCancelledByAdmin, renderBookingNoShow, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
+import { sendEmail, renderBookingConfirmed, renderBookingCancelled, renderBookingCancelledByAdmin, renderBookingNoShow, renderBookingReminder, renderQueueJoined, renderQueuePromoted, renderQueueExpired, renderQueueClaimExpiring, renderWelcome, renderFloorAvailable, renderAssetAssigned, renderWeeklyReport, renderBookingTransferRequested, renderBookingTransferAccepted, renderBookingTransferDeclined, renderBookingTransferExpired, renderBookingSwapRequested, renderBookingSwapAccepted, renderBookingSwapDeclined, renderBookingSwapExpired, renderManagerRequestSubmitted, renderManagerRequestApproved, renderManagerRequestRejected, renderManagerRequestExpired, renderLeaseExpiring, renderLeaseExpired, renderBookingPendingApproval, renderBookingApproved, renderBookingRejected, renderBallotWon, renderBallotLost, interpolateTemplate, stripHtmlToText, formatDate } from './mailer.js'
 import { randomUUID } from 'crypto'
 import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
 import { dispatchWebhook } from './webhook.js'
 import { lockAssetForQueue } from './booking.js'
+import { resolveBuildingTimezone, calendarDaysUntil } from './timezone.js'
+import { toZonedTime } from 'date-fns-tz'
+import { getBuildingAdminUserIds } from '../middleware/requireRole.js'
+import { sendPushNotification } from './push.js'
+import { recordAuditLog } from './audit.js'
+
+// Types worth interrupting someone's phone for — the rest stay in-app/email
+// only. Scoped per the #76 phase-2 design discussion: the 3 originally named
+// (queue promotion, reminders, floor availability) plus transfer/swap
+// *requested* (needs a timely response from the recipient) and the
+// claim-expiring nudge. Deliberately excludes the *outcome* notifications
+// (accepted/declined/expired, confirmed/cancelled, etc.) — those aren't
+// time-sensitive enough to justify a push.
+const PUSH_ELIGIBLE_TYPES = new Set<NotificationType>([
+  NotificationType.QUEUE_PROMOTED,
+  NotificationType.BOOKING_REMINDER,
+  NotificationType.FLOOR_AVAILABLE,
+  NotificationType.BOOKING_TRANSFER_REQUESTED,
+  NotificationType.BOOKING_SWAP_REQUESTED,
+  NotificationType.QUEUE_CLAIM_EXPIRING,
+  NotificationType.BOOKING_PENDING_APPROVAL,
+])
+
+// Priority order for picking a push notification's click-through target from
+// whichever URL each branch happened to put in templateVars.
+const PUSH_URL_KEYS = ['claimUrl', 'bookingUrl', 'floorUrl', 'queueUrl', 'bookingsUrl'] as const
 
 let boss: PgBoss | null = null
 
@@ -78,15 +104,43 @@ export async function promoteNextQueueEntry(
   })
 }
 
+type CancellableBooking = {
+  id: string
+  userId: string
+  assetId: string
+  assetName: string
+  assetFloorId: string | null
+  assetPrimaryZoneId: string | null
+  startsAt: Date
+  endsAt: Date
+  icsSequence: number
+  recurringRuleId?: string | null
+}
+
 /**
- * Cancel every given CONFIRMED-future booking and promote the next queued
- * entry for each freed slot — same cancel+promote+notify shape as a
- * recurring-series cancellation (see recurring.ts DELETE /:id). Shared core
- * for cancelFutureBookingsForFloors and cancelFutureBookingsForAssets.
+ * Cancel every given CONFIRMED-future booking, notify each original booker,
+ * and promote the next queued entry for each freed slot — same
+ * cancel+promote+notify shape as a recurring-series cancellation (see
+ * recurring.ts DELETE /:id). Shared core for cancelFutureBookingsForFloors,
+ * cancelFutureBookingsForAssets and cancelFutureBookingsForUser.
+ *
+ * `skipQueuePromotion` must be set by any caller whose asset(s) are about to
+ * be hard-deleted (not just unplaced/detached): the asset won't be bookable
+ * for anyone to promote into, and cascade-deleting it destroys the Booking/
+ * QueueEntry rows before the async QUEUE_PROMOTED notification job would
+ * even run (see #228).
+ *
+ * `fanOutOnFree` opts into notifying floor subscribers (same as a single
+ * ad-hoc booking cancel, bookings.ts DELETE /:id) when a freed slot has no
+ * one to promote. Only cancelFutureBookingsForUser sets it — the
+ * floor/asset-delete callers cancel bookings on a floor or asset that's
+ * about to be deleted or unplaced, so there's nothing left to point
+ * subscribers back at by the time the notification would be read.
  */
 async function cancelBookingsAndPromoteQueues(
-  bookings: Array<{ id: string; assetId: string; startsAt: Date; endsAt: Date; recurringRuleId?: string | null }>,
+  bookings: CancellableBooking[],
   logMsg: string,
+  opts: { skipQueuePromotion?: boolean; fanOutOnFree?: boolean } = {},
 ): Promise<void> {
   if (bookings.length === 0) return
 
@@ -109,15 +163,40 @@ async function cancelBookingsAndPromoteQueues(
   }
 
   for (const b of bookings) {
-    const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
-    if (nextQueued) {
-      await enqueueNotification({
-        type: NotificationType.QUEUE_PROMOTED,
-        userId: nextQueued.userId,
-        queueEntryId: nextQueued.id,
-        claimDeadline: nextQueued.claimDeadline.toISOString(),
-      })
-      dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+    // Snapshot the rendering data at enqueue time (not just bookingId) so the
+    // notification survives even if the caller cascade-deletes this Booking
+    // row (via a hard asset delete) before the async job is delivered.
+    await enqueueNotification({
+      type: NotificationType.BOOKING_CANCELLED_BY_ADMIN,
+      userId: b.userId,
+      bookingId: b.id,
+      cancelledAssetName: b.assetName,
+      cancelledStartsAt: b.startsAt.toISOString(),
+      cancelledEndsAt: b.endsAt.toISOString(),
+      cancelledIcsSequence: b.icsSequence,
+    })
+    // Same event a single ad-hoc cancel (bookings.ts DELETE /:id) and a
+    // recurring-series cancel (recurring.ts) both fire — this shared helper
+    // (floor/building/zone delete, blocking a user) is a sibling "a booking
+    // just got cancelled" path and was the one place that never dispatched
+    // it, leaving any integration subscribed to booking.cancelled blind to
+    // exactly the cancellations most likely to affect many bookings at once.
+    dispatchWebhook('booking.cancelled', { id: b.id, userId: b.userId, assetId: b.assetId }).catch(() => {})
+
+    if (!opts.skipQueuePromotion) {
+      const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
+      if (nextQueued) {
+        await enqueueNotification({
+          type: NotificationType.QUEUE_PROMOTED,
+          userId: nextQueued.userId,
+          queueEntryId: nextQueued.id,
+          claimDeadline: nextQueued.claimDeadline.toISOString(),
+        })
+        dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+      } else if (opts.fanOutOnFree && b.assetFloorId) {
+        const slotDate = b.startsAt.toISOString().slice(0, 10)
+        await fanOutFloorAvailable(b.assetId, b.assetFloorId, b.assetPrimaryZoneId, slotDate, b.userId).catch(() => {})
+      }
     }
   }
 
@@ -138,10 +217,17 @@ export async function cancelFutureBookingsForFloors(floorIds: string[]): Promise
   if (floorIds.length === 0) return
   const now = new Date()
   const bookings = await prisma.booking.findMany({
-    where: { status: 'CONFIRMED', startsAt: { gt: now }, asset: { floorId: { in: floorIds } } },
-    select: { id: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
+    // PENDING_APPROVAL reserves its slot exactly like CONFIRMED (#74) — a
+    // still-pending request on a floor about to be deleted needs releasing
+    // and notifying the same as a confirmed one, otherwise it's silently
+    // deleted by the Booking->Asset cascade with no cancellation email at all.
+    where: { status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { gt: now }, asset: { floorId: { in: floorIds } } },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true, floorId: true, primaryZoneId: true } } },
   })
-  await cancelBookingsAndPromoteQueues(bookings, '[queue] Cancelled bookings on deleted floor(s)')
+  await cancelBookingsAndPromoteQueues(
+    bookings.map((b) => ({ ...b, assetName: b.asset.name, assetFloorId: b.asset.floorId, assetPrimaryZoneId: b.asset.primaryZoneId })),
+    '[queue] Cancelled bookings on deleted floor(s)',
+  )
 }
 
 /**
@@ -152,15 +238,25 @@ export async function cancelFutureBookingsForFloors(floorIds: string[]): Promise
  * unplaces every asset still in it — see zones.ts DELETE /:id) so a booking
  * never sits CONFIRMED for a desk that just became unreachable from any floor
  * plan. Must be called before the unplacing update.
+ *
+ * `skipQueuePromotion` must be true when the caller is about to hard-delete
+ * these assets rather than just unplace them (see cancelBookingsAndPromoteQueues).
  */
-export async function cancelFutureBookingsForAssets(assetIds: string[]): Promise<void> {
+export async function cancelFutureBookingsForAssets(assetIds: string[], opts: { skipQueuePromotion?: boolean } = {}): Promise<void> {
   if (assetIds.length === 0) return
   const now = new Date()
   const bookings = await prisma.booking.findMany({
-    where: { status: 'CONFIRMED', startsAt: { gt: now }, assetId: { in: assetIds } },
-    select: { id: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
+    // See cancelFutureBookingsForFloors — PENDING_APPROVAL reserves its slot
+    // exactly like CONFIRMED (#74), so it needs releasing here too, not just
+    // silently cascade-deleted with the asset (e.g. DELETE /assets/:id).
+    where: { status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { gt: now }, assetId: { in: assetIds } },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true, floorId: true, primaryZoneId: true } } },
   })
-  await cancelBookingsAndPromoteQueues(bookings, '[queue] Cancelled bookings on unplaced asset(s)')
+  await cancelBookingsAndPromoteQueues(
+    bookings.map((b) => ({ ...b, assetName: b.asset.name, assetFloorId: b.asset.floorId, assetPrimaryZoneId: b.asset.primaryZoneId })),
+    '[queue] Cancelled bookings on unplaced asset(s)',
+    opts,
+  )
 }
 
 /**
@@ -172,10 +268,18 @@ export async function cancelFutureBookingsForAssets(assetIds: string[]): Promise
 export async function cancelFutureBookingsForUser(userId: string): Promise<void> {
   const now = new Date()
   const bookings = await prisma.booking.findMany({
-    where: { status: 'CONFIRMED', startsAt: { gt: now }, userId },
-    select: { id: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
+    // PENDING_APPROVAL reserves its slot exactly like CONFIRMED (#74) — a
+    // blocked user's still-pending request otherwise keeps reserving the
+    // slot under an account nobody can manage, and would still confirm into
+    // a real booking if a manager later approved it.
+    where: { status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { gt: now }, userId },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true, floorId: true, primaryZoneId: true } } },
   })
-  await cancelBookingsAndPromoteQueues(bookings, '[queue] Cancelled bookings for blocked user')
+  await cancelBookingsAndPromoteQueues(
+    bookings.map((b) => ({ ...b, assetName: b.asset.name, assetFloorId: b.asset.floorId, assetPrimaryZoneId: b.asset.primaryZoneId })),
+    '[queue] Cancelled bookings for blocked user',
+    { fanOutOnFree: true },
+  )
 }
 
 /**
@@ -241,6 +345,28 @@ export interface NotificationJobData {
   zoneId?: string
   assetId?: string
   slotDate?: string
+  /**
+   * Fallback rendering data for BOOKING_CANCELLED_BY_ADMIN, used only when
+   * the live `bookingId` lookup below comes back empty. Needed because
+   * cancelBookingsAndPromoteQueues enqueues this notification before some
+   * callers go on to hard-delete the asset, which cascades and destroys the
+   * Booking row (schema.prisma `onDelete: Cascade`) well before this async
+   * job is picked up — without a snapshot taken at enqueue time, the
+   * cancellation notice would silently vanish (see #228).
+   */
+  cancelledAssetName?: string
+  cancelledStartsAt?: string
+  cancelledEndsAt?: string
+  cancelledIcsSequence?: number
+  /** BookingTransfer id / BookingSwap id — see the transfer and swap notification branches below. */
+  transferId?: string
+  swapId?: string
+  /** FloorManagerRequest id — see the MANAGER_REQUEST_* branches below. */
+  managerRequestId?: string
+  /** BuildingLease id — see the LEASE_* branches below. */
+  leaseId?: string
+  /** BallotEntry id — see the BALLOT_* branches below (#159). */
+  ballotEntryId?: string
 }
 
 // ─── Worker: send-notification ────────────────────────────────────────────────
@@ -256,7 +382,7 @@ async function handleSendNotification(
 async function processSendNotification(
   job: Job<NotificationJobData>,
 ): Promise<void> {
-  const { type, userId, bookingId, queueEntryId, claimDeadline, floorId, zoneId, assetId, slotDate } = job.data
+  const { type, userId, bookingId, queueEntryId, claimDeadline, floorId, zoneId, assetId, slotDate, transferId, swapId, managerRequestId, leaseId, ballotEntryId } = job.data
 
   const user = await prisma.user.findUnique({ where: { id: userId } })
   if (!user) {
@@ -273,16 +399,21 @@ async function processSendNotification(
   if (type === NotificationType.BOOKING_CONFIRMED && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true, building: { select: { name: true } } } } } } },
+      include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true, buildingId: true, building: { select: { name: true } } } } } } },
     })
     if (booking) {
-      title = `Booking confirmed — ${booking.asset.name}`
-      body = `Your booking for ${booking.asset.name} is confirmed from ${formatDate(booking.startsAt)} to ${formatDate(booking.endsAt)}`
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
+      // A guest booking (see #79) is still confirmed to the host, not the
+      // guest (who gets their own separate invite email) — naming the guest
+      // here just distinguishes it from the host's own bookings at a glance.
+      const guestSuffix = booking.guestName ? ` for ${booking.guestName}` : ''
+      title = `Booking confirmed${guestSuffix} — ${booking.asset.name}`
+      body = `Your booking${guestSuffix} for ${booking.asset.name} is confirmed from ${formatDate(booking.startsAt, tz)} to ${formatDate(booking.endsAt, tz)}`
       emailPayload = renderBookingConfirmed(booking, user, {
         name: booking.asset.name,
         zoneName: booking.asset.primaryZone?.name ?? '',
         floorName: booking.asset.floor?.name ?? '',
-      })
+      }, tz)
       icalEvent = {
         method: 'REQUEST',
         content: buildBookingIcs({
@@ -292,6 +423,7 @@ async function processSendNotification(
           floorName: booking.asset.floor?.name,
           buildingName: booking.asset.floor?.building?.name,
           sequence: booking.icsSequence,
+          attendeeEmail: user.email, attendeeName: user.displayName,
         }, 'REQUEST'),
       }
       templateVars = {
@@ -299,7 +431,7 @@ async function processSendNotification(
         assetName: booking.asset.name,
         zoneName: booking.asset.primaryZone?.name ?? '',
         floorName: booking.asset.floor?.name ?? '',
-        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        startsAt: formatDate(booking.startsAt, tz), endsAt: formatDate(booking.endsAt, tz),
         notes: booking.notes ?? '',
         bookingUrl: `${env.APP_URL}/bookings/${booking.id}`,
         appUrl: env.APP_URL,
@@ -308,36 +440,39 @@ async function processSendNotification(
   } else if (type === NotificationType.BOOKING_CANCELLED && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { asset: true },
+      include: { asset: { include: { floor: { select: { buildingId: true } } } } },
     })
     if (booking) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
       title = `Booking cancelled — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} has been cancelled.`
-      emailPayload = renderBookingCancelled(booking, user, booking.asset)
+      emailPayload = renderBookingCancelled(booking, user, booking.asset, tz)
       icalEvent = {
         method: 'CANCEL',
         content: buildBookingIcs({
           id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
           assetName: booking.asset.name,
           sequence: booking.icsSequence + 1,
+          attendeeEmail: user.email, attendeeName: user.displayName,
         }, 'CANCEL'),
       }
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
-        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        startsAt: formatDate(booking.startsAt, tz), endsAt: formatDate(booking.endsAt, tz),
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }
   } else if (type === NotificationType.BOOKING_NO_SHOW && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { asset: true },
+      include: { asset: { include: { floor: { select: { buildingId: true } } } } },
     })
     if (booking) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
       title = `Booking released — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} was released because you didn't check in.`
-      emailPayload = renderBookingNoShow(booking, user, booking.asset)
+      emailPayload = renderBookingNoShow(booking, user, booking.asset, tz)
       // Same as any other cancellation path — without a CANCEL, the invite
       // this booking's confirmation originally sent stays "confirmed" in the
       // booker's calendar forever, even though the desk was released.
@@ -347,58 +482,86 @@ async function processSendNotification(
           id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
           assetName: booking.asset.name,
           sequence: booking.icsSequence + 1,
+          attendeeEmail: user.email, attendeeName: user.displayName,
         }, 'CANCEL'),
       }
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
-        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        startsAt: formatDate(booking.startsAt, tz), endsAt: formatDate(booking.endsAt, tz),
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }
   } else if (type === NotificationType.BOOKING_CANCELLED_BY_ADMIN && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { asset: true },
+      include: { asset: { include: { floor: { select: { buildingId: true } } } } },
     })
     if (booking) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
       title = `Booking cancelled by admin — ${booking.asset.name}`
       body = `Your booking for ${booking.asset.name} has been cancelled by an administrator.`
-      emailPayload = renderBookingCancelledByAdmin(booking, user, booking.asset)
+      emailPayload = renderBookingCancelledByAdmin(booking, user, booking.asset, tz)
       icalEvent = {
         method: 'CANCEL',
         content: buildBookingIcs({
           id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
           assetName: booking.asset.name,
           sequence: booking.icsSequence + 1,
+          attendeeEmail: user.email, attendeeName: user.displayName,
         }, 'CANCEL'),
       }
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
-        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        startsAt: formatDate(booking.startsAt, tz), endsAt: formatDate(booking.endsAt, tz),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    } else if (job.data.cancelledAssetName && job.data.cancelledStartsAt && job.data.cancelledEndsAt) {
+      // Live row is gone (cascade-deleted) — render from the enqueue-time
+      // snapshot instead of dropping the notice. See NotificationJobData's
+      // cancelled* fields for why this can happen.
+      const assetName = job.data.cancelledAssetName
+      const startsAt = new Date(job.data.cancelledStartsAt)
+      const endsAt = new Date(job.data.cancelledEndsAt)
+      title = `Booking cancelled by admin — ${assetName}`
+      body = `Your booking for ${assetName} has been cancelled by an administrator.`
+      emailPayload = renderBookingCancelledByAdmin({ id: bookingId, startsAt, endsAt }, user, { name: assetName })
+      icalEvent = {
+        method: 'CANCEL',
+        content: buildBookingIcs({
+          id: bookingId, startsAt, endsAt, assetName,
+          sequence: (job.data.cancelledIcsSequence ?? 0) + 1,
+          attendeeEmail: user.email, attendeeName: user.displayName,
+        }, 'CANCEL'),
+      }
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName,
+        startsAt: formatDate(startsAt), endsAt: formatDate(endsAt),
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }
   } else if (type === NotificationType.BOOKING_REMINDER && bookingId) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true } } } } },
+      include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true, buildingId: true } } } } },
     })
     if (booking) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
       title = `Reminder — ${booking.asset.name} booking coming up`
-      body = `Your booking starts at ${formatDate(booking.startsAt)}.`
+      body = `Your booking starts at ${formatDate(booking.startsAt, tz)}.`
       emailPayload = renderBookingReminder(booking, user, {
         name: booking.asset.name,
         zoneName: booking.asset.primaryZone?.name ?? '',
         floorName: booking.asset.floor?.name ?? '',
-      })
+      }, tz)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: booking.asset.name,
         zoneName: booking.asset.primaryZone?.name ?? '',
         floorName: booking.asset.floor?.name ?? '',
-        startsAt: formatDate(booking.startsAt), endsAt: formatDate(booking.endsAt),
+        startsAt: formatDate(booking.startsAt, tz), endsAt: formatDate(booking.endsAt, tz),
         bookingUrl: `${env.APP_URL}/bookings/${booking.id}`,
         appUrl: env.APP_URL,
       }
@@ -510,6 +673,375 @@ async function processSendNotification(
         appUrl: env.APP_URL,
       }
     }
+  } else if (type === NotificationType.BOOKING_TRANSFER_REQUESTED && transferId) {
+    const transfer = await prisma.bookingTransfer.findUnique({
+      where: { id: transferId },
+      include: { booking: { include: { asset: true } }, fromUser: true },
+    })
+    if (transfer) {
+      title = `Transfer request — ${transfer.booking.asset.name}`
+      body = `${transfer.fromUser.displayName} wants to transfer their ${transfer.booking.asset.name} booking to you.`
+      emailPayload = renderBookingTransferRequested(transfer.booking, user, transfer.fromUser, transfer.booking.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        fromUserName: transfer.fromUser.displayName,
+        assetName: transfer.booking.asset.name,
+        startsAt: formatDate(transfer.booking.startsAt), endsAt: formatDate(transfer.booking.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_TRANSFER_ACCEPTED && transferId) {
+    const transfer = await prisma.bookingTransfer.findUnique({
+      where: { id: transferId },
+      include: { booking: { include: { asset: true } }, toUser: true },
+    })
+    if (transfer) {
+      title = `Transfer accepted — ${transfer.booking.asset.name}`
+      body = `${transfer.toUser.displayName} accepted your transfer of ${transfer.booking.asset.name}.`
+      emailPayload = renderBookingTransferAccepted(transfer.booking, user, transfer.toUser, transfer.booking.asset)
+      // This notification goes to the FORMER owner (see bookings.ts transfer
+      // accept). The BOOKING_CONFIRMED job sent alongside it only sends a
+      // fresh REQUEST to the NEW owner's calendar — a different mailbox
+      // entirely, so it does nothing for this recipient's copy of the
+      // original invite. Without an explicit CANCEL here, the former owner's
+      // calendar keeps showing the booking as confirmed forever, which is
+      // exactly what renderBookingTransferAccepted's copy ("it's no longer
+      // on your calendar") wrongly promised was already handled.
+      icalEvent = {
+        method: 'CANCEL',
+        content: buildBookingIcs({
+          id: transfer.booking.id, startsAt: transfer.booking.startsAt, endsAt: transfer.booking.endsAt,
+          assetName: transfer.booking.asset.name,
+          sequence: transfer.booking.icsSequence,
+          attendeeEmail: user.email, attendeeName: user.displayName,
+        }, 'CANCEL'),
+      }
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        toUserName: transfer.toUser.displayName,
+        assetName: transfer.booking.asset.name,
+        startsAt: formatDate(transfer.booking.startsAt), endsAt: formatDate(transfer.booking.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_TRANSFER_DECLINED && transferId) {
+    const transfer = await prisma.bookingTransfer.findUnique({
+      where: { id: transferId },
+      include: { booking: { include: { asset: true } }, toUser: true },
+    })
+    if (transfer) {
+      title = `Transfer declined — ${transfer.booking.asset.name}`
+      body = `${transfer.toUser.displayName} declined your transfer of ${transfer.booking.asset.name}.`
+      emailPayload = renderBookingTransferDeclined(transfer.booking, user, transfer.toUser, transfer.booking.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        toUserName: transfer.toUser.displayName,
+        assetName: transfer.booking.asset.name,
+        startsAt: formatDate(transfer.booking.startsAt), endsAt: formatDate(transfer.booking.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_TRANSFER_EXPIRED && transferId) {
+    const transfer = await prisma.bookingTransfer.findUnique({
+      where: { id: transferId },
+      include: { booking: { include: { asset: true } } },
+    })
+    if (transfer) {
+      title = `Transfer request expired — ${transfer.booking.asset.name}`
+      body = `Nobody responded to your transfer of ${transfer.booking.asset.name} in time — it's still yours.`
+      emailPayload = renderBookingTransferExpired(transfer.booking, user, transfer.booking.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: transfer.booking.asset.name,
+        startsAt: formatDate(transfer.booking.startsAt), endsAt: formatDate(transfer.booking.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_SWAP_REQUESTED && swapId) {
+    const swap = await prisma.bookingSwap.findUnique({
+      where: { id: swapId },
+      include: { bookingA: { include: { asset: true } }, bookingB: true, initiator: true },
+    })
+    if (swap) {
+      title = `Swap request — ${swap.bookingA.asset.name}`
+      body = `${swap.initiator.displayName} wants to swap desks with you.`
+      emailPayload = renderBookingSwapRequested(swap.bookingB, user, swap.initiator, swap.bookingA.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        initiatorName: swap.initiator.displayName,
+        assetName: swap.bookingA.asset.name,
+        startsAt: formatDate(swap.bookingB.startsAt), endsAt: formatDate(swap.bookingB.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_SWAP_ACCEPTED && swapId) {
+    const swap = await prisma.bookingSwap.findUnique({
+      where: { id: swapId },
+      include: { bookingA: { include: { asset: true } }, bookingB: { include: { asset: true } }, initiator: true, recipient: true },
+    })
+    if (swap) {
+      // Each recipient of this notification is now on the *other* booking's
+      // asset — this job fires once per party (see bookings.ts swap accept),
+      // so work out which side `user` ended up on.
+      const userEndsUpOnA = user.id === swap.recipientUserId
+      const newBooking = userEndsUpOnA ? swap.bookingA : swap.bookingB
+      const newAsset = userEndsUpOnA ? swap.bookingA.asset : swap.bookingB.asset
+      const otherUser = userEndsUpOnA ? swap.initiator : swap.recipient
+      title = `Swap complete — ${newAsset.name}`
+      body = `Your desk swap with ${otherUser.displayName} is complete — you're now on ${newAsset.name}.`
+      emailPayload = renderBookingSwapAccepted(newBooking, user, otherUser, newAsset)
+      // This booking row's icsSequence was already bumped by the swap-accept
+      // transaction (ownership changed, same reasoning as transfer above) —
+      // a fresh REQUEST here is what actually puts the new desk on this
+      // user's calendar. The desk they gave up is handled separately: see
+      // the BOOKING_CANCELLED job bookings.ts enqueues alongside this one.
+      icalEvent = {
+        method: 'REQUEST',
+        content: buildBookingIcs({
+          id: newBooking.id, startsAt: newBooking.startsAt, endsAt: newBooking.endsAt,
+          assetName: newAsset.name,
+          sequence: newBooking.icsSequence,
+          attendeeEmail: user.email, attendeeName: user.displayName,
+        }, 'REQUEST'),
+      }
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        otherUserName: otherUser.displayName,
+        assetName: newAsset.name,
+        startsAt: formatDate(newBooking.startsAt), endsAt: formatDate(newBooking.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_SWAP_DECLINED && swapId) {
+    const swap = await prisma.bookingSwap.findUnique({
+      where: { id: swapId },
+      include: { bookingA: { include: { asset: true } }, recipient: true },
+    })
+    if (swap) {
+      title = `Swap declined — ${swap.bookingA.asset.name}`
+      body = `${swap.recipient.displayName} declined your desk swap request.`
+      emailPayload = renderBookingSwapDeclined(swap.bookingA, user, swap.recipient, swap.bookingA.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        recipientName: swap.recipient.displayName,
+        assetName: swap.bookingA.asset.name,
+        startsAt: formatDate(swap.bookingA.startsAt), endsAt: formatDate(swap.bookingA.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_SWAP_EXPIRED && swapId) {
+    const swap = await prisma.bookingSwap.findUnique({
+      where: { id: swapId },
+      include: { bookingA: { include: { asset: true } } },
+    })
+    if (swap) {
+      title = `Swap request expired — ${swap.bookingA.asset.name}`
+      body = `Nobody responded to your desk swap request in time — your booking is unchanged.`
+      emailPayload = renderBookingSwapExpired(swap.bookingA, user, swap.bookingA.asset)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: swap.bookingA.asset.name,
+        startsAt: formatDate(swap.bookingA.startsAt), endsAt: formatDate(swap.bookingA.endsAt),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.MANAGER_REQUEST_SUBMITTED && managerRequestId) {
+    const req = await prisma.floorManagerRequest.findUnique({
+      where: { id: managerRequestId },
+      include: { user: true, floor: { include: { building: true } } },
+    })
+    if (req) {
+      const floorLabel = { name: req.floor.name, buildingName: req.floor.building.name }
+      title = `Floor manager access request — ${req.floor.name}`
+      body = `${req.user.displayName} has requested floor manager access to ${req.floor.name}.`
+      emailPayload = renderManagerRequestSubmitted(user, req.user, floorLabel)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        requesterName: req.user.displayName, requesterEmail: req.user.email,
+        floorName: req.floor.name, buildingName: req.floor.building.name,
+        appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.MANAGER_REQUEST_APPROVED && managerRequestId) {
+    const req = await prisma.floorManagerRequest.findUnique({
+      where: { id: managerRequestId },
+      include: { floor: { include: { building: true } } },
+    })
+    if (req) {
+      const floorLabel = { name: req.floor.name, buildingName: req.floor.building.name }
+      title = `Floor manager access approved — ${req.floor.name}`
+      body = `You're now a floor manager for ${req.floor.name}.`
+      emailPayload = renderManagerRequestApproved(user, floorLabel)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        floorName: req.floor.name, buildingName: req.floor.building.name,
+        appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.MANAGER_REQUEST_REJECTED && managerRequestId) {
+    const req = await prisma.floorManagerRequest.findUnique({
+      where: { id: managerRequestId },
+      include: { floor: { include: { building: true } } },
+    })
+    if (req) {
+      const floorLabel = { name: req.floor.name, buildingName: req.floor.building.name }
+      title = `Floor manager access declined — ${req.floor.name}`
+      body = `Your request for floor manager access to ${req.floor.name} was declined.`
+      emailPayload = renderManagerRequestRejected(user, floorLabel, req.reviewNote)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        floorName: req.floor.name, buildingName: req.floor.building.name,
+        reviewNote: req.reviewNote ?? '',
+        appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.MANAGER_REQUEST_EXPIRED && managerRequestId) {
+    const req = await prisma.floorManagerRequest.findUnique({
+      where: { id: managerRequestId },
+      include: { floor: { include: { building: true } } },
+    })
+    if (req) {
+      const floorLabel = { name: req.floor.name, buildingName: req.floor.building.name }
+      title = `Floor manager access request expired — ${req.floor.name}`
+      body = `Nobody reviewed your floor manager access request for ${req.floor.name} in time.`
+      emailPayload = renderManagerRequestExpired(user, floorLabel)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        floorName: req.floor.name, buildingName: req.floor.building.name,
+        appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.LEASE_EXPIRING && leaseId) {
+    const lease = await prisma.buildingLease.findUnique({
+      where: { id: leaseId },
+      include: { building: { select: { name: true } } },
+    })
+    if (lease && lease.endDate) {
+      const daysLeft = Math.max(0, Math.ceil((lease.endDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000)))
+      const leaseLabel = { name: lease.name, buildingName: lease.building.name, endDate: lease.endDate }
+      title = `Lease expiring in ${daysLeft} day${daysLeft === 1 ? '' : 's'} — ${lease.building.name}`
+      body = `The ${lease.name} lease for ${lease.building.name} expires ${formatDate(lease.endDate)}.`
+      emailPayload = renderLeaseExpiring(user, leaseLabel, daysLeft)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        leaseName: lease.name, buildingName: lease.building.name,
+        endDate: formatDate(lease.endDate), appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.LEASE_EXPIRED && leaseId) {
+    const lease = await prisma.buildingLease.findUnique({
+      where: { id: leaseId },
+      include: { building: { select: { name: true } } },
+    })
+    if (lease && lease.endDate) {
+      const leaseLabel = { name: lease.name, buildingName: lease.building.name, endDate: lease.endDate }
+      title = `Lease expired — ${lease.building.name}`
+      body = `The ${lease.name} lease for ${lease.building.name} expired ${formatDate(lease.endDate)}.`
+      emailPayload = renderLeaseExpired(user, leaseLabel)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        leaseName: lease.name, buildingName: lease.building.name,
+        endDate: formatDate(lease.endDate), appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_PENDING_APPROVAL && bookingId) {
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { asset: { include: { floor: { select: { buildingId: true } } } }, user: true },
+    })
+    if (booking) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
+      title = `Booking approval requested — ${booking.asset.name}`
+      body = `${booking.user.displayName} has requested a booking for ${booking.asset.name} that needs your approval.`
+      emailPayload = renderBookingPendingApproval(user, booking.user, booking, booking.asset, tz)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        requesterName: booking.user.displayName, requesterEmail: booking.user.email,
+        assetName: booking.asset.name,
+        startsAt: formatDate(booking.startsAt, tz), endsAt: formatDate(booking.endsAt, tz),
+        bookingUrl: `${env.APP_URL}/admin/approvals`,
+        appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_APPROVED && bookingId) {
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { asset: { include: { primaryZone: { select: { name: true } }, floor: { select: { name: true, buildingId: true, building: { select: { name: true } } } } } } },
+    })
+    if (booking) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
+      title = `Booking approved — ${booking.asset.name}`
+      body = `Your booking for ${booking.asset.name} has been approved.`
+      emailPayload = renderBookingApproved(user, booking, booking.asset, tz)
+      icalEvent = {
+        method: 'REQUEST',
+        content: buildBookingIcs({
+          id: booking.id, startsAt: booking.startsAt, endsAt: booking.endsAt,
+          assetName: booking.asset.name,
+          zoneName: booking.asset.primaryZone?.name,
+          floorName: booking.asset.floor?.name,
+          buildingName: booking.asset.floor?.building?.name,
+          sequence: booking.icsSequence,
+          attendeeEmail: user.email, attendeeName: user.displayName,
+        }, 'REQUEST'),
+      }
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: booking.asset.name,
+        startsAt: formatDate(booking.startsAt, tz), endsAt: formatDate(booking.endsAt, tz),
+        bookingUrl: `${env.APP_URL}/bookings/${booking.id}`,
+        appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BOOKING_REJECTED && bookingId) {
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { asset: { include: { floor: { select: { buildingId: true } } } } },
+    })
+    if (booking) {
+      const tz = await resolveBuildingTimezone(prisma, booking.asset.floor?.buildingId)
+      title = `Booking request declined — ${booking.asset.name}`
+      body = `Your booking request for ${booking.asset.name} was declined.`
+      emailPayload = renderBookingRejected(user, booking, booking.asset, booking.rejectionNote, tz)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        assetName: booking.asset.name,
+        startsAt: formatDate(booking.startsAt, tz), endsAt: formatDate(booking.endsAt, tz),
+        reviewNote: booking.rejectionNote ?? '',
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BALLOT_WON && ballotEntryId) {
+    const entry = await prisma.ballotEntry.findUnique({
+      where: { id: ballotEntryId },
+      include: { run: { include: { ballot: { select: { name: true } } } }, asset: { include: { floor: { select: { buildingId: true } } } }, booking: true },
+    })
+    if (entry?.asset && entry.booking) {
+      const tz = await resolveBuildingTimezone(prisma, entry.asset.floor?.buildingId)
+      title = `You won the ${entry.run.ballot.name} ballot — ${entry.asset.name}`
+      body = `You've been randomly assigned ${entry.asset.name} from the ${entry.run.ballot.name} ballot.`
+      emailPayload = renderBallotWon(user, entry.run.ballot.name, entry.asset, entry.booking, tz)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        ballotName: entry.run.ballot.name, assetName: entry.asset.name,
+        startsAt: formatDate(entry.booking.startsAt, tz), endsAt: formatDate(entry.booking.endsAt, tz),
+        bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
+      }
+    }
+  } else if (type === NotificationType.BALLOT_LOST && ballotEntryId) {
+    const entry = await prisma.ballotEntry.findUnique({
+      where: { id: ballotEntryId },
+      include: { run: { include: { ballot: { select: { name: true } } } } },
+    })
+    if (entry) {
+      title = `${entry.run.ballot.name} ballot results`
+      body = `You weren't assigned an asset in this round of the ${entry.run.ballot.name} ballot.`
+      emailPayload = renderBallotLost(user, entry.run.ballot.name)
+      templateVars = {
+        userName: user.displayName, userEmail: user.email,
+        ballotName: entry.run.ballot.name, appUrl: env.APP_URL,
+      }
+    }
   } else if (type === NotificationType.WELCOME) {
     title = 'Welcome to Roomer'
     body = 'Your account has been created.'
@@ -536,12 +1068,13 @@ async function processSendNotification(
     return
   }
 
-  // Respect per-user notification preferences. Missing key = both channels enabled.
-  type NotifPref = { email?: boolean; inApp?: boolean }
+  // Respect per-user notification preferences. Missing key = all three channels enabled.
+  type NotifPref = { email?: boolean; inApp?: boolean; push?: boolean }
   const prefs = (user as unknown as { notificationPreferences: Record<string, NotifPref> }).notificationPreferences ?? {}
   const pref: NotifPref = prefs[type] ?? {}
   const sendInApp = pref.inApp !== false
   const sendEmailNotif = pref.email !== false
+  const sendPush = pref.push !== false && PUSH_ELIGIBLE_TYPES.has(type)
 
   // Persist in-app notification (if not opted out)
   if (sendInApp) {
@@ -574,6 +1107,15 @@ async function processSendNotification(
       process.stderr.write(JSON.stringify({ level: 'error', msg: '[queue] Failed to send email', to: user.email, err: String(err) }) + '\n')
       // Don't re-throw — notification is persisted, email failure is non-fatal
     }
+  }
+
+  // Push (if this type is push-eligible, user hasn't opted out, and VAPID is
+  // configured — sendPushNotification no-ops otherwise). No try/catch here:
+  // sendPushNotification already handles per-subscription failures
+  // internally and never rejects.
+  if (sendPush) {
+    const url = PUSH_URL_KEYS.map((k) => templateVars[k]).find(Boolean) ?? env.APP_URL
+    await sendPushNotification(userId, { title, body, url })
   }
 }
 
@@ -624,7 +1166,233 @@ async function handleExpireQueueEntries(): Promise<void> {
     })),
   )
 
+  await recordAuditLog(prisma, {
+    actorId: null,
+    action: 'queue_entry.expired_sweep',
+    resourceType: 'QueueEntry',
+    resourceId: randomUUID(),
+    after: { expiredIds: toExpire.map((e) => e.id), count: toExpire.length },
+  })
+
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Expired queue entries', count: toExpire.length }) + '\n')
+}
+
+// ─── Worker: expire-transfer-requests (cron every 15 min) ────────────────────
+// Auto-declines a pending BookingTransfer/BookingSwap nobody responded to in
+// time — same "don't leave a request dangling forever" reasoning as
+// expire-queue-entries above, reusing the org's queueClaimWindowHours as the
+// response window (set at request-creation time in bookings.ts) rather than
+// re-deriving it here.
+
+async function handleExpireTransferRequests(): Promise<void> {
+  const now = new Date()
+
+  const expiredTransfers = await prisma.bookingTransfer.findMany({
+    where: { status: 'PENDING', expiresAt: { lt: now } },
+    select: { id: true, fromUserId: true },
+  })
+  if (expiredTransfers.length > 0) {
+    // Atomic per-row conditional update — only rows still PENDING at the
+    // moment this runs actually flip, so a transfer the recipient accepted/
+    // declined (or the requester cancelled) in the race window between the
+    // findMany above and here is left alone.
+    await prisma.bookingTransfer.updateMany({
+      where: { id: { in: expiredTransfers.map((t) => t.id) }, status: 'PENDING' },
+      data: { status: 'EXPIRED', respondedAt: now },
+    })
+    // `count` alone doesn't say *which* rows the conditional update actually
+    // matched — notifying/webhooking over the pre-recheck expiredTransfers
+    // list would tell someone their transfer expired even if it was accepted/
+    // declined/cancelled in the race window instead. Re-query for the subset
+    // that's actually EXPIRED now, same toRelease/toExpire idiom no-show
+    // release and queue-entry expiry use.
+    const stillExpiredTransfers = await prisma.bookingTransfer.findMany({
+      where: { id: { in: expiredTransfers.map((t) => t.id) }, status: 'EXPIRED' },
+      select: { id: true, fromUserId: true },
+    })
+    if (stillExpiredTransfers.length > 0) {
+      const b = getBoss()
+      await b.insert(
+        'send-notification',
+        stillExpiredTransfers.map((t) => ({
+          data: { type: NotificationType.BOOKING_TRANSFER_EXPIRED, userId: t.fromUserId, transferId: t.id } satisfies NotificationJobData,
+        })),
+      )
+      for (const t of stillExpiredTransfers) {
+        dispatchWebhook('booking.transfer_expired', { id: t.id }).catch(() => {})
+      }
+      await recordAuditLog(prisma, {
+        actorId: null,
+        action: 'booking_transfer.expired_sweep',
+        resourceType: 'BookingTransfer',
+        resourceId: randomUUID(),
+        after: { expiredIds: stillExpiredTransfers.map((t) => t.id), count: stillExpiredTransfers.length },
+      })
+    }
+  }
+
+  const expiredSwaps = await prisma.bookingSwap.findMany({
+    where: { status: 'PENDING', expiresAt: { lt: now } },
+    select: { id: true, initiatorUserId: true },
+  })
+  if (expiredSwaps.length > 0) {
+    await prisma.bookingSwap.updateMany({
+      where: { id: { in: expiredSwaps.map((s) => s.id) }, status: 'PENDING' },
+      data: { status: 'EXPIRED', respondedAt: now },
+    })
+    const stillExpiredSwaps = await prisma.bookingSwap.findMany({
+      where: { id: { in: expiredSwaps.map((s) => s.id) }, status: 'EXPIRED' },
+      select: { id: true, initiatorUserId: true },
+    })
+    if (stillExpiredSwaps.length > 0) {
+      const b = getBoss()
+      await b.insert(
+        'send-notification',
+        stillExpiredSwaps.map((s) => ({
+          data: { type: NotificationType.BOOKING_SWAP_EXPIRED, userId: s.initiatorUserId, swapId: s.id } satisfies NotificationJobData,
+        })),
+      )
+      for (const s of stillExpiredSwaps) {
+        dispatchWebhook('booking.swap_expired', { id: s.id }).catch(() => {})
+      }
+      await recordAuditLog(prisma, {
+        actorId: null,
+        action: 'booking_swap.expired_sweep',
+        resourceType: 'BookingSwap',
+        resourceId: randomUUID(),
+        after: { expiredIds: stillExpiredSwaps.map((s) => s.id), count: stillExpiredSwaps.length },
+      })
+    }
+  }
+}
+
+// ─── Worker: expire-manager-requests (cron every 15 min) ─────────────────────
+// Auto-closes a pending FloorManagerRequest nobody reviewed within
+// MANAGER_REQUEST_EXPIRY_DAYS — same "don't leave a request dangling forever"
+// reasoning as expire-transfer-requests above.
+
+async function handleExpireManagerRequests(): Promise<void> {
+  const now = new Date()
+
+  const expired = await prisma.floorManagerRequest.findMany({
+    where: { status: 'PENDING', expiresAt: { lt: now } },
+    select: { id: true, userId: true },
+  })
+  if (expired.length === 0) return
+
+  // Atomic per-row conditional update — only rows still PENDING at the
+  // moment this runs actually flip, so a request approved/rejected/withdrawn
+  // in the race window between the findMany above and here is left alone.
+  await prisma.floorManagerRequest.updateMany({
+    where: { id: { in: expired.map((r) => r.id) }, status: 'PENDING' },
+    data: { status: 'EXPIRED' },
+  })
+  // Re-query for the subset actually EXPIRED now — a bare update count
+  // doesn't say *which* rows flipped, and notifying over the pre-recheck
+  // `expired` list would tell someone their request expired even if it was
+  // approved/rejected/withdrawn in the race window instead.
+  const stillExpired = await prisma.floorManagerRequest.findMany({
+    where: { id: { in: expired.map((r) => r.id) }, status: 'EXPIRED' },
+    select: { id: true, userId: true },
+  })
+  if (stillExpired.length === 0) return
+
+  const b = getBoss()
+  await b.insert(
+    'send-notification',
+    stillExpired.map((r) => ({
+      data: { type: NotificationType.MANAGER_REQUEST_EXPIRED, userId: r.userId, managerRequestId: r.id } satisfies NotificationJobData,
+    })),
+  )
+  for (const r of stillExpired) {
+    dispatchWebhook('manager_request.expired', { id: r.id, userId: r.userId }).catch(() => {})
+  }
+  await recordAuditLog(prisma, {
+    actorId: null,
+    action: 'floor_manager_request.expired_sweep',
+    resourceType: 'FloorManagerRequest',
+    resourceId: randomUUID(),
+    after: { expiredIds: stillExpired.map((r) => r.id), count: stillExpired.length },
+  })
+}
+
+// ─── Worker: lease-expiry (cron daily) ────────────────────────────────────────
+// Notifies (in-app/email/webhook) once a lease enters the same 90-day
+// "expiring soon" window the admin UI's banner already uses (LeasesAdminPage
+// computes this client-side; this is the same threshold, just also driving a
+// real notification), and again once it actually expires. Each half is
+// tracked by its own *NotifiedAt timestamp so a lease isn't re-notified every
+// day it sits in the window — see #222.
+async function handleLeaseExpiry(): Promise<void> {
+  const now = new Date()
+  // Widened by a day on each side of the nominal window — this is only a
+  // coarse DB-level pre-filter; the true 0/90-day cutoff is re-checked per
+  // lease below using calendarDaysUntil against that lease's own building
+  // timezone, which can differ from the raw-UTC boundary by up to a day in
+  // either direction.
+  const dbWindowStart = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+  const dbWindowEnd = new Date(now.getTime() + 91 * 24 * 60 * 60 * 1000)
+
+  const [candidateExpiringSoon, candidateJustExpired, superAdmins] = await Promise.all([
+    prisma.buildingLease.findMany({
+      where: { endDate: { gte: dbWindowStart, lte: dbWindowEnd }, expiringNotifiedAt: null },
+      include: { building: { select: { id: true, name: true } } },
+    }),
+    prisma.buildingLease.findMany({
+      where: { endDate: { lt: dbWindowEnd }, expiredNotifiedAt: null },
+      include: { building: { select: { id: true, name: true } } },
+    }),
+    prisma.user.findMany({ where: { globalRole: 'SUPER_ADMIN', accountStatus: 'ACTIVE' }, select: { id: true } }),
+  ])
+
+  const expiringSoon: typeof candidateExpiringSoon = []
+  for (const lease of candidateExpiringSoon) {
+    if (!lease.endDate) continue
+    const tz = await resolveBuildingTimezone(prisma, lease.buildingId)
+    const days = calendarDaysUntil(lease.endDate, now, tz)
+    if (days >= 0 && days <= 90) expiringSoon.push(lease)
+  }
+  const justExpired: typeof candidateJustExpired = []
+  for (const lease of candidateJustExpired) {
+    if (!lease.endDate) continue
+    const tz = await resolveBuildingTimezone(prisma, lease.buildingId)
+    const days = calendarDaysUntil(lease.endDate, now, tz)
+    if (days < 0) justExpired.push(lease)
+  }
+  if (expiringSoon.length === 0 && justExpired.length === 0) return
+
+  const superAdminIds = superAdmins.map((a) => a.id)
+  const boss = getBoss()
+
+  for (const lease of expiringSoon) {
+    const buildingAdminIds = await getBuildingAdminUserIds(lease.buildingId)
+    const recipientIds = [...new Set([...superAdminIds, ...buildingAdminIds])]
+    if (recipientIds.length > 0) {
+      await boss.insert(
+        'send-notification',
+        recipientIds.map((userId) => ({
+          data: { type: NotificationType.LEASE_EXPIRING, userId, leaseId: lease.id } satisfies NotificationJobData,
+        })),
+      )
+    }
+    dispatchWebhook('lease.expiring', { id: lease.id, buildingId: lease.buildingId, buildingName: lease.building.name, endDate: lease.endDate?.toISOString() }).catch(() => {})
+    await prisma.buildingLease.update({ where: { id: lease.id }, data: { expiringNotifiedAt: now } })
+  }
+
+  for (const lease of justExpired) {
+    const buildingAdminIds = await getBuildingAdminUserIds(lease.buildingId)
+    const recipientIds = [...new Set([...superAdminIds, ...buildingAdminIds])]
+    if (recipientIds.length > 0) {
+      await boss.insert(
+        'send-notification',
+        recipientIds.map((userId) => ({
+          data: { type: NotificationType.LEASE_EXPIRED, userId, leaseId: lease.id } satisfies NotificationJobData,
+        })),
+      )
+    }
+    dispatchWebhook('lease.expired', { id: lease.id, buildingId: lease.buildingId, buildingName: lease.building.name, endDate: lease.endDate?.toISOString() }).catch(() => {})
+    await prisma.buildingLease.update({ where: { id: lease.id }, data: { expiredNotifiedAt: now } })
+  }
 }
 
 // ─── Worker: auto-complete-bookings (cron every 30 min) ──────────────────────
@@ -644,6 +1412,13 @@ async function handleAutoCompleteBookings(): Promise<void> {
   for (const booking of bookings) {
     dispatchWebhook('booking.completed', booking).catch(() => {})
   }
+  await recordAuditLog(prisma, {
+    actorId: null,
+    action: 'booking.auto_completed_sweep',
+    resourceType: 'Booking',
+    resourceId: randomUUID(),
+    after: { completedIds: bookings.map((b) => b.id), count: bookings.length },
+  })
 
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Auto-completed past bookings', count: bookings.length }) + '\n')
 }
@@ -652,7 +1427,7 @@ async function handleAutoCompleteBookings(): Promise<void> {
 
 async function handleReleaseNoShows(): Promise<void> {
   const org = await prisma.organisation.findFirst({
-    select: { noShowReleaseEnabled: true, checkInGraceMinutes: true },
+    select: { noShowReleaseEnabled: true, checkInGraceMinutes: true, qrCheckInMode: true },
   })
   if (!org) return
   const orgDefault = org.noShowReleaseEnabled
@@ -684,7 +1459,13 @@ async function handleReleaseNoShows(): Promise<void> {
       asset: {
         select: {
           userAssignments: { select: { userId: true } },
-          floor: { select: { noShowReleaseEnabled: true, building: { select: { noShowReleaseEnabled: true } } } },
+          floor: {
+            select: {
+              noShowReleaseEnabled: true,
+              qrCheckInMode: true,
+              building: { select: { noShowReleaseEnabled: true, qrCheckInMode: true } },
+            },
+          },
         },
       },
     },
@@ -695,7 +1476,13 @@ async function handleReleaseNoShows(): Promise<void> {
     if (isAssignee) return false
     const floorOverride = b.asset.floor?.noShowReleaseEnabled
     const buildingOverride = b.asset.floor?.building?.noShowReleaseEnabled
-    return floorOverride ?? buildingOverride ?? orgDefault
+    const enabled = floorOverride ?? buildingOverride ?? orgDefault
+    // A mandatory QR check-in with no release enforcement behind it would do
+    // nothing — resolves the same floor → building → org order as
+    // noShowReleaseEnabled itself, and forces release regardless of that
+    // setting's own value once QR is mandatory for this booking's scope.
+    const qrMode = b.asset.floor?.qrCheckInMode ?? b.asset.floor?.building?.qrCheckInMode ?? org.qrCheckInMode
+    return enabled || qrMode === 'MANDATORY'
   })
   if (noShows.length === 0) return
 
@@ -745,6 +1532,14 @@ async function handleReleaseNoShows(): Promise<void> {
     }
   }
 
+  await recordAuditLog(prisma, {
+    actorId: null,
+    action: 'booking.no_show_released_sweep',
+    resourceType: 'Booking',
+    resourceId: randomUUID(),
+    after: { releasedIds: toRelease.map((b) => b.id), count: toRelease.length },
+  })
+
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Released no-show bookings', count: toRelease.length }) + '\n')
 }
 
@@ -763,9 +1558,22 @@ async function handleExpireClaimDeadlines(): Promise<void> {
 
   if (expiredPromoted.length === 0) return
 
-  // Expire all in one batch
+  // Conditional on status: 'PROMOTED' — without this, a claim that commits
+  // (routes/queue.ts POST /:id/claim-by-token, under lockAssetForBooking) in
+  // the gap between the findMany above and this update would get silently
+  // overwritten back to EXPIRED even though a real Booking now exists for
+  // that user. That route's own comment documents expecting exactly this
+  // guard on the cron side; only the count/rows this condition actually
+  // matches are safe to notify/promote from below — not the stale
+  // pre-recheck `expiredPromoted` list, which may include entries someone
+  // just legitimately claimed.
+  const stillExpired = await prisma.queueEntry.findMany({
+    where: { id: { in: expiredPromoted.map((e) => e.id) }, status: 'PROMOTED' },
+  })
+  if (stillExpired.length === 0) return
+
   await prisma.queueEntry.updateMany({
-    where: { id: { in: expiredPromoted.map((e) => e.id) } },
+    where: { id: { in: stillExpired.map((e) => e.id) }, status: 'PROMOTED' },
     data: { status: 'EXPIRED' },
   })
 
@@ -775,7 +1583,7 @@ async function handleExpireClaimDeadlines(): Promise<void> {
   // lost their slot with no email or in-app notice at all.
   await getBoss().insert(
     'send-notification',
-    expiredPromoted.map((entry) => ({
+    stillExpired.map((entry) => ({
       data: {
         type: NotificationType.QUEUE_EXPIRED,
         userId: entry.userId,
@@ -784,7 +1592,7 @@ async function handleExpireClaimDeadlines(): Promise<void> {
     })),
   )
 
-  for (const entry of expiredPromoted) {
+  for (const entry of stillExpired) {
     dispatchWebhook('queue.expired', { id: entry.id, userId: entry.userId, assetId: entry.assetId }).catch(() => {})
   }
 
@@ -795,7 +1603,7 @@ async function handleExpireClaimDeadlines(): Promise<void> {
   // instead of both racing to promote the same "next" entry.
   const toPromote = (
     await Promise.all(
-      expiredPromoted.map((entry) => promoteNextQueueEntry(entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)),
+      stillExpired.map((entry) => promoteNextQueueEntry(entry.assetId, entry.wantedStartsAt, entry.wantedEndsAt)),
     )
   ).filter((e): e is NonNullable<typeof e> => e !== null)
 
@@ -817,7 +1625,135 @@ async function handleExpireClaimDeadlines(): Promise<void> {
     }
   }
 
+  await recordAuditLog(prisma, {
+    actorId: null,
+    action: 'queue_entry.claim_expired_sweep',
+    resourceType: 'QueueEntry',
+    resourceId: randomUUID(),
+    after: { expiredIds: stillExpired.map((e) => e.id), count: stillExpired.length },
+  })
+
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Processed expired claim deadlines', count: expiredPromoted.length }) + '\n')
+}
+
+// ─── Worker: auto-reject-pending-approvals (cron every 15 min, see #74) ──────
+
+/**
+ * Auto-rejects any PENDING_APPROVAL booking whose approvalExpiresAt has
+ * passed — nobody reviewed it in time, so the requester shouldn't be left
+ * holding an indefinitely-pending slot. Mirrors handleExpireClaimDeadlines's
+ * TOCTOU-safe re-check: a booking can be approved/rejected by a human (POST
+ * /bookings/:id/approve|reject) in the gap between the findMany below and
+ * the update, so only rows still PENDING_APPROVAL at update time are
+ * touched — an unconditional updateMany could otherwise stomp a booking a
+ * reviewer just approved back to CANCELLED.
+ */
+async function handleAutoRejectPendingApprovals(): Promise<void> {
+  const now = new Date()
+
+  const expired = await prisma.booking.findMany({
+    where: { status: 'PENDING_APPROVAL', approvalExpiresAt: { lt: now } },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
+  })
+  if (expired.length === 0) return
+
+  const stillPending = await prisma.booking.findMany({
+    where: { id: { in: expired.map((b) => b.id) }, status: 'PENDING_APPROVAL' },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
+  })
+  if (stillPending.length === 0) return
+
+  const AUTO_REJECT_NOTE = 'Auto-rejected: no response within the approval window'
+
+  const claimed = await prisma.booking.updateMany({
+    where: { id: { in: stillPending.map((b) => b.id) }, status: 'PENDING_APPROVAL' },
+    data: { status: 'CANCELLED', rejectionNote: AUTO_REJECT_NOTE, approvalExpiresAt: null },
+  })
+  if (claimed.count === 0) return
+
+  // The guarded updateMany above already correctly skips a booking a human
+  // just approved/rejected in the gap between the stillPending read and this
+  // write — but everything below this point must act on exactly the rows it
+  // actually touched, not the (potentially stale) stillPending snapshot.
+  // Without this, that same race lets a booking a human just approved get a
+  // spurious "cancelled" webhook, a contradictory BOOKING_REJECTED
+  // notification, and promoteNextQueueEntry attempting to hand its
+  // still-occupied slot to the next queue entrant.
+  const actuallyRejected = claimed.count === stillPending.length
+    ? stillPending
+    : await prisma.booking.findMany({
+        where: { id: { in: stillPending.map((b) => b.id) }, status: 'CANCELLED', rejectionNote: AUTO_REJECT_NOTE },
+        select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true },
+      })
+
+  // A recurring series' occurrences all share the same approvalExpiresAt (set
+  // once at creation — see POST /recurring-bookings), so a whole rule expires
+  // together in the same sweep. Mark it CANCELLED the same way a manual
+  // reject does (POST /bookings/:id/reject), rather than leaving it ACTIVE
+  // with zero bookings and no obvious reason why.
+  const ruleIds = [...new Set(actuallyRejected.map((b) => b.recurringRuleId).filter((v): v is string => !!v))]
+  if (ruleIds.length > 0) {
+    await prisma.recurringBookingRule.updateMany({
+      where: { id: { in: ruleIds }, status: { not: 'CANCELLED' } },
+      data: { status: 'CANCELLED' },
+    })
+  }
+
+  for (const b of actuallyRejected) {
+    dispatchWebhook('booking.cancelled', { id: b.id, userId: b.userId, assetId: b.assetId }).catch(() => {})
+  }
+
+  // One BOOKING_REJECTED per requester per series (not per occurrence) —
+  // same dedup reasoning as the manual reject endpoint. A single sweep can
+  // catch several independent series/standalone bookings at once, so group
+  // by recurringRuleId (falling back to the booking's own id when standalone)
+  // and notify once per group, referencing its earliest occurrence.
+  const groups = new Map<string, typeof actuallyRejected>()
+  for (const b of actuallyRejected) {
+    const key = b.recurringRuleId ?? `single:${b.id}`
+    const group = groups.get(key)
+    if (group) group.push(b)
+    else groups.set(key, [b])
+  }
+  for (const group of groups.values()) {
+    group.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
+    await enqueueNotification({
+      type: NotificationType.BOOKING_REJECTED,
+      userId: group[0].userId,
+      bookingId: group[0].id,
+    })
+  }
+
+  // Release each freed slot — promote the next queued entry and fan out to
+  // floor subscribers, same as any other booking cancellation.
+  for (const b of actuallyRejected) {
+    const nextQueued = await promoteNextQueueEntry(b.assetId, b.startsAt, b.endsAt)
+    if (nextQueued) {
+      await enqueueNotification({
+        type: NotificationType.QUEUE_PROMOTED,
+        userId: nextQueued.userId,
+        queueEntryId: nextQueued.id,
+        claimDeadline: nextQueued.claimDeadline.toISOString(),
+      })
+      dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
+    }
+    const asset = await prisma.asset.findUnique({ where: { id: b.assetId }, select: { floorId: true, primaryZoneId: true } })
+    if (asset?.floorId) {
+      const slotDate = b.startsAt.toISOString().slice(0, 10)
+      await fanOutFloorAvailable(b.assetId, asset.floorId, asset.primaryZoneId, slotDate, b.userId)
+        .catch((err) => process.stderr.write(JSON.stringify({ level: 'warn', msg: '[queue] floor fan-out error', err: String(err) }) + '\n'))
+    }
+  }
+
+  await recordAuditLog(prisma, {
+    actorId: null,
+    action: 'booking.auto_rejected_sweep',
+    resourceType: 'Booking',
+    resourceId: randomUUID(),
+    after: { rejectedIds: actuallyRejected.map((b) => b.id), count: actuallyRejected.length, note: AUTO_REJECT_NOTE },
+  })
+
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Auto-rejected expired pending-approval bookings', count: actuallyRejected.length }) + '\n')
 }
 
 // ─── Worker: send-booking-reminders (cron every 15 min) ──────────────────────
@@ -906,6 +1842,100 @@ async function handleWarnClaimExpiring(): Promise<void> {
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Warned expiring claims', count: entries.length }) + '\n')
 }
 
+/**
+ * Weekly utilisation digest for every active SUPER_ADMIN, gated on
+ * Organisation.weeklyReportEnabled (opt-in — see #78). Org-wide, not scoped
+ * to a building/floor, matching who it's for. Sent directly via sendEmail
+ * rather than through enqueueNotification/NotificationType: this isn't a
+ * per-user notification about the recipient's own bookings (the
+ * notification-preferences system it would otherwise be gated by doesn't
+ * apply to an operational digest tied to an org-level setting), and it has
+ * no in-app/bell equivalent to record.
+ */
+async function handleSendWeeklyReport(): Promise<void> {
+  const org = await prisma.organisation.findFirst({ select: { id: true, weeklyReportEnabled: true, lastWeeklyReportSentAt: true } })
+  if (!org?.weeklyReportEnabled) return
+
+  // Claim atomically before doing any work — guards against a duplicate send
+  // if this job is retried after a crash or somehow fires twice in close
+  // succession, same non-duplicate-send guarantee handleSendBookingReminders/
+  // handleWarnClaimExpiring get from claiming their own per-row timestamp
+  // before enqueueing. The cron fires weekly, so anything within the last 6
+  // days is treated as "already sent this cycle" — a day of slack for the
+  // scheduler's own timing jitter, without risking skipping a genuine week.
+  const now = new Date()
+  const notSentRecently = { OR: [{ lastWeeklyReportSentAt: null }, { lastWeeklyReportSentAt: { lt: new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000) } }] }
+  const claimed = await prisma.organisation.updateMany({
+    where: { id: org.id, ...notSentRecently },
+    data: { lastWeeklyReportSentAt: now },
+  })
+  if (claimed.count === 0) return
+
+  // Resolved against the org's own default timezone (not a specific
+  // building — this report is org-wide), same as any other org-level
+  // timezone-sensitive calculation (see resolveBuildingTimezone). Without
+  // this, the weekday classification below and the displayed date range
+  // both silently used UTC regardless of the org's configured timezone —
+  // for a non-UTC org, bookings made in the local evening near a day
+  // boundary could land in the wrong side of the workingDays split, and the
+  // emailed date range wouldn't match the local week the recipient expects.
+  const tz = await resolveBuildingTimezone(prisma, null)
+
+  const endDate = now
+  const startDate = new Date(endDate.getTime() - 7 * 24 * 60 * 60 * 1000)
+  let workingDays = 0
+  const cursor = new Date(startDate)
+  while (cursor <= endDate) {
+    const d = toZonedTime(cursor, tz).getDay()
+    if (d !== 0 && d !== 6) workingDays++
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  workingDays = workingDays || 1
+
+  const bookingWhere = { startsAt: { gte: startDate, lte: endDate } }
+  const [confirmed, cancelled, noShowCount, uniqueBookers, bookableDesks, assignedDesks] = await Promise.all([
+    prisma.booking.count({ where: { ...bookingWhere, status: 'CONFIRMED' } }),
+    prisma.booking.count({ where: { ...bookingWhere, status: 'CANCELLED' } }),
+    prisma.booking.count({ where: { ...bookingWhere, status: 'CANCELLED', noShow: true } }),
+    prisma.booking.findMany({
+      where: { ...bookingWhere, status: { in: ['CONFIRMED', 'COMPLETED'] } },
+      select: { userId: true },
+      distinct: ['userId'],
+    }),
+    prisma.asset.count({ where: { isBookable: true, bookingStatus: { in: ['OPEN', 'RESTRICTED'] } } }),
+    prisma.asset.count({ where: { isBookable: true, bookingStatus: 'ASSIGNED' } }),
+  ])
+  const manualCancelled = Math.max(0, cancelled - noShowCount)
+  const activeDesks = bookableDesks + assignedDesks
+  const totalCapacity = activeDesks * workingDays
+  const overallUtilisationPct = totalCapacity > 0 ? Math.round((confirmed / totalCapacity) * 100) : 0
+  const rangeLabel = `${formatDate(startDate, tz)} – ${formatDate(endDate, tz)}`
+
+  const admins = await prisma.user.findMany({
+    where: { globalRole: 'SUPER_ADMIN', accountStatus: 'ACTIVE' },
+    select: { displayName: true, email: true },
+  })
+  if (admins.length === 0) return
+
+  const stats = {
+    rangeLabel,
+    totalBookings: confirmed,
+    cancelledBookings: manualCancelled,
+    noShowBookings: noShowCount,
+    uniqueBookers: uniqueBookers.length,
+    overallUtilisationPct,
+  }
+
+  for (const admin of admins) {
+    const { subject, html, text } = renderWeeklyReport(admin, stats)
+    await sendEmail({ to: admin.email, subject, html, text }).catch((err) => {
+      process.stderr.write(JSON.stringify({ level: 'error', msg: '[queue] Failed to send weekly report', email: admin.email, err: String(err) }) + '\n')
+    })
+  }
+
+  process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] Sent weekly report', recipients: admins.length }) + '\n')
+}
+
 // ─── Start queue ──────────────────────────────────────────────────────────────
 
 export async function startQueue(): Promise<void> {
@@ -922,17 +1952,50 @@ export async function startQueue(): Promise<void> {
   await b.createQueue('release-no-shows')
   await b.createQueue('warn-claim-expiring')
   await b.createQueue('webhook-delivery')
+  await b.createQueue('send-weekly-report')
+  await b.createQueue('expire-transfer-requests')
+  await b.createQueue('expire-manager-requests')
+  await b.createQueue('lease-expiry')
+  await b.createQueue('auto-reject-pending-approvals')
+  await b.createQueue('ballot-open-registration')
+  await b.createQueue('ballot-draw')
 
   await b.work<NotificationJobData>('send-notification', handleSendNotification)
 
   const { deliverWebhookJob } = await import('./webhook.js')
   // includeMetadata exposes retryCount on each job so delivery attempts are logged accurately.
-  await b.work('webhook-delivery', { includeMetadata: true }, deliverWebhookJob)
+  // batchSize/localConcurrency default to 1 — a single slow-but-not-hanging
+  // endpoint would otherwise serialize delivery to every OTHER endpoint's
+  // events behind it in the same queue. 5 lets a handful of deliveries run
+  // concurrently (this is I/O-bound outbound HTTP, not CPU work) without
+  // needing per-tenant queue partitioning.
+  //
+  // perJobResults is required, not optional, at batchSize > 1: without it,
+  // pg-boss settles the whole fetched batch as one unit off whether the
+  // handler's single Promise resolves or rejects. deliverWebhookJob's own
+  // loop already attempts every job regardless of an earlier one failing,
+  // but with the plain (non-perJobResults) handler shape, one endpoint's
+  // failure among the batch still failed/retried every OTHER job in it too
+  // — including ones already delivered successfully earlier in the same
+  // loop, causing a real duplicate delivery of an event that had already
+  // succeeded. perJobResults settles each job by the individual outcome
+  // deliverWebhookJob reports for it instead.
+  await b.work('webhook-delivery', { includeMetadata: true, batchSize: 5, localConcurrency: 5, perJobResults: true }, deliverWebhookJob)
 
   await b.work('expire-queue-entries', async () => {
     await handleExpireQueueEntries()
   })
   await b.schedule('expire-queue-entries', '*/15 * * * *', {})
+
+  await b.work('expire-transfer-requests', async () => {
+    await handleExpireTransferRequests()
+  })
+  await b.schedule('expire-transfer-requests', '*/15 * * * *', {})
+
+  await b.work('expire-manager-requests', async () => {
+    await handleExpireManagerRequests()
+  })
+  await b.schedule('expire-manager-requests', '*/15 * * * *', {})
 
   await b.work('expire-claim-deadlines', async () => {
     await handleExpireClaimDeadlines()
@@ -965,14 +2028,61 @@ export async function startQueue(): Promise<void> {
   })
   await b.schedule('warn-claim-expiring', '*/5 * * * *', {})
 
+  // Monday 08:00 UTC — handleSendWeeklyReport itself no-ops when
+  // weeklyReportEnabled is off, so this can stay unconditionally scheduled.
+  await b.work('send-weekly-report', async () => {
+    await handleSendWeeklyReport()
+  })
+  await b.schedule('send-weekly-report', '0 8 * * 1', {})
+
+  // Daily 08:00 UTC — a 90-day-out threshold doesn't need faster polling.
+  await b.work('lease-expiry', async () => {
+    await handleLeaseExpiry()
+  })
+  await b.schedule('lease-expiry', '0 8 * * *', {})
+
+  await b.work('auto-reject-pending-approvals', async () => {
+    await handleAutoRejectPendingApprovals()
+  })
+  await b.schedule('auto-reject-pending-approvals', '*/15 * * * *', {})
+
+  // See #159. Hourly is plenty for spawning a run days/weeks ahead of its
+  // draw; the draw itself runs on the tighter 15-min cadence shared with
+  // the other time-sensitive crons above.
+  const { handleBallotOpenRegistration, handleBallotDraw } = await import('./ballot.js')
+  await b.work('ballot-open-registration', async () => {
+    await handleBallotOpenRegistration()
+  })
+  await b.schedule('ballot-open-registration', '0 * * * *', {})
+
+  await b.work('ballot-draw', async () => {
+    await handleBallotDraw()
+  })
+  await b.schedule('ballot-draw', '*/15 * * * *', {})
+
   process.stdout.write(JSON.stringify({ level: 'info', msg: '[queue] pg-boss started and workers registered' }) + '\n')
 }
 
 // ─── Enqueue helper ───────────────────────────────────────────────────────────
 
+// Every call site in routes/ treats this as fire-and-forget — the primary
+// mutation (booking created/cancelled/rescheduled, transfer accepted, queue
+// claimed, etc.) has already committed by the time this runs, so a failure
+// here must never surface as an error response for a request that actually
+// succeeded. Two call sites (users.ts) already wrapped this in their own
+// .catch(), which is the correct intent — but the other ~28 call sites across
+// bookings/queue/recurring/assets awaited it unguarded, so a transient
+// pg-boss/DB blip would throw past an already-committed transaction straight
+// into Fastify's generic 500 handler, telling the client an operation that
+// fully succeeded had failed. Catching here, once, guarantees that
+// regardless of call site.
 export async function enqueueNotification(data: NotificationJobData): Promise<void> {
   const b = getBoss()
-  await b.send('send-notification', data)
+  try {
+    await b.send('send-notification', data)
+  } catch (err) {
+    process.stderr.write(JSON.stringify({ level: 'error', msg: '[queue] Failed to enqueue notification', type: data.type, err: String(err) }) + '\n')
+  }
 }
 
 // ─── Floor-subscription fan-out ──────────────────────────────────────────────

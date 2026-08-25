@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import type { FastifyInstance } from 'fastify'
+import type { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { createFloorSchema, updateFloorSchema, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
@@ -8,7 +9,32 @@ import { isFloorManagerForFloor, isBuildingManagerForBuilding, requireGlobalRole
 import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage.js'
 import { checkGroupAccess } from './groups.js'
 import { cancelFutureBookingsForFloors } from '../lib/queue.js'
+import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
+
+/**
+ * Merge a zone's primary-membership assets with its secondary (AssetZone)
+ * memberships into one per-zone list, tagging each with isPrimaryZone so the
+ * frontend canvas — which renders one marker per asset at its single x/y —
+ * can de-duplicate an asset appearing under more than one zone rather than
+ * drawing it twice. Previously only `zone.assets` (the primary-zone
+ * relation) was ever read anywhere; AssetZone rows had a full CRUD API and
+ * an admin UI (DeskPanel.tsx) but zero effect on the floor plan or
+ * availability (see #224) — a shared asset (e.g. a meeting room spanning two
+ * team zones) never appeared in the second zone's list at all.
+ */
+function mergeZoneAssets<T extends { id: string }>(
+  primaryAssets: T[],
+  secondaryMemberships: Array<{ asset: T }>,
+): Array<T & { isPrimaryZone: boolean }> {
+  const primaryIds = new Set(primaryAssets.map((a) => a.id))
+  const merged: Array<T & { isPrimaryZone: boolean }> = primaryAssets.map((a) => ({ ...a, isPrimaryZone: true }))
+  for (const { asset } of secondaryMemberships) {
+    if (primaryIds.has(asset.id)) continue // create already rejects primary-as-secondary; defensive only
+    merged.push({ ...asset, isPrimaryZone: false })
+  }
+  return merged
+}
 
 export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Floors'], ...route.schema } })
@@ -77,6 +103,16 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
                 category: { select: { id: true, name: true, defaultIcon: true, colour: true, iconUrl: true } },
               },
             },
+            assetZones: {
+              where: { asset: { isBookable: true } },
+              include: {
+                asset: {
+                  include: {
+                    category: { select: { id: true, name: true, defaultIcon: true, colour: true, iconUrl: true } },
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -96,20 +132,23 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     // Transform category iconUrl storage paths to serve URLs
     const floorWithServeUrls = {
       ...floor,
-      zones: floor.zones.map((zone) => ({
-        ...zone,
-        assets: zone.assets.map((asset) => ({
-          ...asset,
-          category: asset.category
-            ? {
-                ...asset.category,
-                iconUrl: asset.category.iconUrl
-                  ? `/api/v1/assets/categories/${asset.category.id}/icon`
-                  : null,
-              }
-            : null,
-        })),
-      })),
+      zones: floor.zones.map((zone) => {
+        const { assetZones: _assetZones, ...zoneRest } = zone
+        return {
+          ...zoneRest,
+          assets: mergeZoneAssets(zone.assets, zone.assetZones).map((asset) => ({
+            ...asset,
+            category: asset.category
+              ? {
+                  ...asset.category,
+                  iconUrl: asset.category.iconUrl
+                    ? `/api/v1/assets/categories/${asset.category.id}/icon`
+                    : null,
+                }
+              : null,
+          })),
+        }
+      }),
     }
 
     return reply.status(200).send({ data: floorWithServeUrls })
@@ -188,9 +227,14 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+      // Looked up unconditionally, not just in the non-SUPER_ADMIN branch —
+      // groupResourceRole.create below has a real FK on floorId with no
+      // try/catch around it, so a SUPER_ADMIN hitting this with a bogus floor
+      // id previously fell straight through to an unhandled FK-violation 500
+      // instead of a clean 404.
+      const floor = await prisma.floor.findUnique({ where: { id }, select: { buildingId: true } })
+      if (!floor) return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
       if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
-        const floor = await prisma.floor.findUnique({ where: { id }, select: { buildingId: true } })
-        if (!floor) return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
         const canManage = await isBuildingManagerForBuilding(request.user.id, floor.buildingId)
         if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
@@ -215,6 +259,14 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       const role = await prisma.groupResourceRole.create({
         data: { groupId, role: 'FLOOR_MANAGER', scopeType: 'FLOOR', floorId: id },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'group_resource_role.granted',
+        resourceType: 'GroupResourceRole',
+        resourceId: role.id,
+        after: { groupId, role: 'FLOOR_MANAGER', scopeType: 'FLOOR', floorId: id },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(201).send({ data: { roleId: role.id, id: group.id, name: group.name } })
     },
@@ -241,6 +293,14 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       await prisma.groupResourceRole.delete({ where: { id: role.id } })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'group_resource_role.revoked',
+        resourceType: 'GroupResourceRole',
+        resourceId: role.id,
+        before: { groupId, role: 'FLOOR_MANAGER', scopeType: 'FLOOR', floorId: id },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     },
   )
@@ -274,6 +334,14 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           level: result.data.level ?? 0,
         },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'floor.created',
+        resourceType: 'Floor',
+        resourceId: floor.id,
+        after: { buildingId: floor.buildingId, name: floor.name, level: floor.level },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(201).send({ data: floor })
     },
@@ -301,7 +369,17 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       try {
+        const before = await prisma.floor.findUnique({ where: { id }, select: { name: true, level: true } })
         const floor = await prisma.floor.update({ where: { id }, data: result.data })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'floor.updated',
+          resourceType: 'Floor',
+          resourceId: id,
+          before,
+          after: { name: floor.name, level: floor.level },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: floor })
       } catch {
         return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
@@ -336,11 +414,44 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       // existing "replace floor plan" upload path above).
       const floorPlan = await prisma.floorPlan.findUnique({ where: { floorId: id } })
 
-      try {
-        await prisma.floor.delete({ where: { id } })
-      } catch {
+      // The pre-delete asset snapshot and the delete itself run inside one
+      // transaction, locking the floor row first — same race and same fix
+      // shape as zones.ts DELETE /:id: a concurrent PATCH /assets/:id that
+      // places an asset onto this floor needs an FK check against this row,
+      // so Postgres blocks it until we commit, then it fails outright (the
+      // floor being gone) instead of racing our snapshot below.
+      const result = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Floor" WHERE id = ${id} FOR UPDATE`
+        const before = await tx.floor.findUnique({ where: { id }, select: { buildingId: true, name: true, level: true } })
+        if (!before) return null
+        const floorAssetIds = (await tx.asset.findMany({ where: { floorId: id }, select: { id: true } })).map((a) => a.id)
+        await tx.floor.delete({ where: { id } })
+        if (floorAssetIds.length > 0) {
+          // Asset.floorId/primaryZoneId SetNull automatically via cascade,
+          // but stale x/y/width/height/rotation survive — same "vanishes into
+          // a gap no admin screen can reach" issue as deleting a zone (#206),
+          // just missing here for the floor-delete path until now. Left
+          // uncleared, a later re-placement on a different floor without
+          // explicit repositioning renders at this stale, nonsensical spot.
+          await tx.asset.updateMany({
+            where: { id: { in: floorAssetIds } },
+            data: { x: null, y: null, width: null, height: null, rotation: null },
+          })
+        }
+        return before
+      }).catch(() => null)
+
+      if (!result) {
         return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
       }
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'floor.deleted',
+        resourceType: 'Floor',
+        resourceId: id,
+        before: result,
+        ipAddress: request.ip,
+      }, request.log)
 
       if (floorPlan) {
         await deleteFile(floorPlan.originalPath)
@@ -359,7 +470,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /floors/:id/floor-plan — upload floor plan (SUPER_ADMIN or floor manager for that floor)
   fastify.post(
     '/:id/floor-plan',
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth], config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
     async (request, reply) => {
       const { id } = request.params as { id: string }
 
@@ -380,19 +491,27 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(400).send({ error: { message: 'No file uploaded', code: 'NO_FILE' } })
       }
 
-      // Validate MIME type
+      // Validate MIME type. DXF has no browser-standard MIME type, so real
+      // uploads legitimately arrive as 'application/octet-stream' (the
+      // common fallback for unrecognised extensions) or 'text/plain' (DXF is
+      // plaintext) rather than a DXF-specific value — both already covered
+      // below. This used to also unconditionally accept ANY declared
+      // mimetype whenever the filename ended in '.dxf', which let a request
+      // skip MIME validation entirely just by naming the upload right
+      // (content-type is never trusted for serving it back — floor-plan
+      // image serving derives Content-Type from the file extension, not
+      // this stored value — but it's still a real validation gap the
+      // allowlist exists to close).
       const allowedMimes = [
         'image/png', 'image/jpeg', 'image/webp', 'image/gif',
         'application/pdf',
-        'image/vnd.dxf', 'application/dxf', 'application/octet-stream',
+        'image/vnd.dxf', 'application/dxf', 'application/octet-stream', 'text/plain',
       ]
-      if (!allowedMimes.includes(data.mimetype) && !data.filename.endsWith('.dxf')) {
+      if (!allowedMimes.includes(data.mimetype)) {
         return reply.status(400).send({
           error: { message: 'Unsupported file type', code: 'INVALID_FILE_TYPE' },
         })
       }
-
-      const existing = await prisma.floorPlan.findUnique({ where: { floorId: id } })
 
       // Validate and save the new file BEFORE touching the old one — this can
       // still reject on invalid magic bytes, and if the old files were already
@@ -408,6 +527,41 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         throw err
       }
 
+      // Re-read "existing" and upsert inside one transaction, locking the
+      // floor row first — two concurrent uploads to the same floor each
+      // computed their own stale `existing` snapshot before saveFloorPlan
+      // (slow: image/PDF/DXF processing), so whichever upsert lost pointed at
+      // a file its own `existing` never captured, permanently orphaning it on
+      // disk. Locking here serializes the read+upsert step: the loser now
+      // re-reads the winner's just-committed row as `existing` and correctly
+      // schedules those files for deletion instead of its own already-stale
+      // ones. File I/O stays outside the transaction/lock.
+      const { floorPlan, existing } = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Floor" WHERE id = ${id} FOR UPDATE`
+        const existing = await tx.floorPlan.findUnique({ where: { floorId: id } })
+        const floorPlan = await tx.floorPlan.upsert({
+          where: { floorId: id },
+          update: {
+            fileType: saved.fileType,
+            originalPath: saved.originalPath,
+            renderedPath: saved.renderedPath,
+            thumbnailPath: saved.thumbnailPath,
+            width: saved.width,
+            height: saved.height,
+          },
+          create: {
+            floorId: id,
+            fileType: saved.fileType,
+            originalPath: saved.originalPath,
+            renderedPath: saved.renderedPath,
+            thumbnailPath: saved.thumbnailPath,
+            width: saved.width,
+            height: saved.height,
+          },
+        })
+        return { floorPlan, existing }
+      })
+
       if (existing) {
         await deleteFile(existing.originalPath)
         if (existing.renderedPath !== existing.originalPath) {
@@ -418,26 +572,15 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      const floorPlan = await prisma.floorPlan.upsert({
-        where: { floorId: id },
-        update: {
-          fileType: saved.fileType,
-          originalPath: saved.originalPath,
-          renderedPath: saved.renderedPath,
-          thumbnailPath: saved.thumbnailPath,
-          width: saved.width,
-          height: saved.height,
-        },
-        create: {
-          floorId: id,
-          fileType: saved.fileType,
-          originalPath: saved.originalPath,
-          renderedPath: saved.renderedPath,
-          thumbnailPath: saved.thumbnailPath,
-          width: saved.width,
-          height: saved.height,
-        },
-      })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: existing ? 'floor_plan.replaced' : 'floor_plan.uploaded',
+        resourceType: 'FloorPlan',
+        resourceId: floorPlan.id,
+        before: existing ? { fileType: existing.fileType, width: existing.width, height: existing.height } : null,
+        after: { fileType: floorPlan.fileType, width: floorPlan.width, height: floorPlan.height },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(200).send({ data: floorPlan })
     },
@@ -547,6 +690,15 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         where: { floorId: id },
         data: { displayScale },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'floor_plan.transform_updated',
+        resourceType: 'FloorPlan',
+        resourceId: updated.id,
+        before: { displayScale: floorPlan.displayScale },
+        after: { displayScale: updated.displayScale },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.send({ data: updated })
     },
@@ -583,68 +735,103 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     const dayStart = new Date(`${date}T00:00:00.000Z`)
     const dayEnd = new Date(`${date}T23:59:59.999Z`)
 
-    const floor = await prisma.floor.findUnique({
-      where: { id },
-      include: {
-        zones: {
-          orderBy: { name: 'asc' },
-          include: {
-            assets: {
-              where: { isBookable: true },
-              orderBy: { name: 'asc' },
-              include: {
-                category: { select: { id: true, name: true, defaultIcon: true, colour: true, iconUrl: true } },
-                allowList: { select: { userId: true } },
-                userAssignments: {
-                  select: {
-                    isPrimary: true,
-                    user: { select: { id: true, displayName: true, email: true } },
-                  },
-                },
-                bookings: {
-                  where: {
-                    status: 'CONFIRMED',
-                    startsAt: { lt: dayEnd },
-                    endsAt: { gt: dayStart },
-                  },
-                  select: {
-                    id: true,
-                    userId: true,
-                    startsAt: true,
-                    endsAt: true,
-                    user: { select: { displayName: true } },
-                  },
-                },
-                queueEntries: {
-                  where: {
-                    userId: currentUserId,
-                    status: { in: ['WAITING', 'PROMOTED'] },
-                    wantedStartsAt: { lt: dayEnd },
-                    wantedEndsAt: { gt: dayStart },
-                  },
-                  select: { id: true, status: true, position: true, claimDeadline: true, expiresAt: true, wantedStartsAt: true, wantedEndsAt: true },
-                },
-                availabilityWindows: {
-                  where: {
-                    startsAt: { lte: dayEnd },
-                    endsAt: { gte: dayStart },
-                  },
-                  select: { id: true, startsAt: true, endsAt: true, ownerId: true },
-                },
-                availabilityRules: { select: { weekday: true } },
+    // Shared per-asset include shape — reused for both primary-zone assets
+    // (zone.assets) and secondary-zone memberships (zone.assetZones.asset) so
+    // a shared asset carries the exact same booking/queue/availability data
+    // regardless of which zone's list it's read from.
+    const assetInclude = {
+      category: { select: { id: true, name: true, defaultIcon: true, colour: true, iconUrl: true } },
+      allowList: { select: { userId: true } },
+      userAssignments: {
+        select: {
+          isPrimary: true,
+          user: { select: { id: true, displayName: true, email: true } },
+        },
+      },
+      bookings: {
+        where: {
+          // PENDING_APPROVAL reserves the slot exactly like CONFIRMED (#74),
+          // so it must show as occupied here too — otherwise the floor plan
+          // shows a slot as available when booking it would immediately hit
+          // the booking_no_overlap exclusion constraint / hasBlockingOverlap.
+          status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] },
+          startsAt: { lt: dayEnd },
+          endsAt: { gt: dayStart },
+        },
+        select: {
+          id: true,
+          userId: true,
+          startsAt: true,
+          endsAt: true,
+          attendeeCount: true,
+          status: true,
+          user: { select: { displayName: true } },
+        },
+      },
+      queueEntries: {
+        where: {
+          userId: currentUserId,
+          status: { in: ['WAITING', 'PROMOTED'] as const },
+          wantedStartsAt: { lt: dayEnd },
+          wantedEndsAt: { gt: dayStart },
+        },
+        select: { id: true, status: true, position: true, claimDeadline: true, expiresAt: true, wantedStartsAt: true, wantedEndsAt: true },
+      },
+      availabilityWindows: {
+        where: {
+          startsAt: { lte: dayEnd },
+          endsAt: { gte: dayStart },
+        },
+        select: { id: true, startsAt: true, endsAt: true, ownerId: true },
+      },
+      availabilityRules: { select: { weekday: true } },
+    } satisfies Prisma.AssetInclude
+
+    const [floor, org] = await Promise.all([
+      prisma.floor.findUnique({
+        where: { id },
+        include: {
+          building: { select: { requiresApproval: true, timezone: true } },
+          zones: {
+            orderBy: { name: 'asc' },
+            include: {
+              assets: {
+                where: { isBookable: true },
+                orderBy: { name: 'asc' },
+                include: assetInclude,
+              },
+              assetZones: {
+                where: { asset: { isBookable: true } },
+                include: { asset: { include: assetInclude } },
               },
             },
           },
         },
-      },
-    })
+      }),
+      prisma.organisation.findFirst({ select: { requiresApproval: true, defaultTimezone: true } }),
+    ])
 
     if (!floor) {
       return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
     }
 
+    // Resolved once for the whole floor (every asset on it shares the same
+    // building — see #72), not per-asset: the frontend uses this to render
+    // every booking time on this floor's plan in the building's own
+    // timezone rather than the viewer's browser timezone.
+    const resolvedTimezone = floor.building?.timezone ?? org?.defaultTimezone ?? 'UTC'
+
+    // Fold secondary (AssetZone) memberships into each zone's asset list —
+    // done once here so every computation below (amenity filter, queue-depth
+    // lookup, zone-group booked-set, the final per-zone response) already
+    // sees the full membership without needing its own merge step.
+    const mergedZones = floor.zones.map((zone) => ({
+      ...zone,
+      assets: mergeZoneAssets(zone.assets, zone.assetZones),
+    }))
+
     if (amenityFilterLower.length) {
-      for (const zone of floor.zones) {
+      for (const zone of mergedZones) {
         zone.assets = zone.assets.filter((a) => {
           const assetAmenitiesLower = a.amenities.map((am) => am.toLowerCase())
           return amenityFilterLower.every((wanted) => assetAmenitiesLower.includes(wanted))
@@ -659,10 +846,10 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
-    type AvailabilityStatus = 'available' | 'mine' | 'booked' | 'restricted' | 'assigned' | 'disabled' | 'queued' | 'promoted' | 'zone_conflict'
+    type AvailabilityStatus = 'available' | 'mine' | 'mine_pending' | 'booked' | 'restricted' | 'assigned' | 'disabled' | 'queued' | 'promoted' | 'zone_conflict'
 
     // Build a map of assetId → count of WAITING queue entries for the requested period
-    const allAssetIds = floor.zones.flatMap((z) => z.assets.map((a) => a.id))
+    const allAssetIds = mergedZones.flatMap((z) => z.assets.map((a) => a.id))
     const queueDepthRows = await prisma.queueEntry.groupBy({
       by: ['assetId'],
       where: {
@@ -677,7 +864,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
 
     // Collect zone group IDs where the current user has a booking today
     const userBookedZoneGroupIds = new Set<string>()
-    for (const zone of floor.zones) {
+    for (const zone of mergedZones) {
       if (!zone.zoneGroupId) continue
       for (const asset of zone.assets) {
         if (asset.bookings.some((b) => b.userId === currentUserId)) {
@@ -686,7 +873,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
-    const zones = floor.zones.map((zone) => {
+    const zones = mergedZones.map((zone) => {
       const assets = zone.assets.map((asset) => {
         const myBooking = asset.bookings.find((b) => b.userId === currentUserId)
         const othersBookings = asset.bookings.filter((b) => b.userId !== currentUserId)
@@ -706,7 +893,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         if (asset.bookingStatus === 'DISABLED') {
           bookingStatus = 'disabled'
         } else if (myBooking) {
-          bookingStatus = 'mine'
+          bookingStatus = myBooking.status === 'PENDING_APPROVAL' ? 'mine_pending' : 'mine'
         } else if (othersBookings.length > 0) {
           if (myQueueEntry?.status === 'PROMOTED') {
             bookingStatus = 'promoted'
@@ -753,6 +940,12 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           zoneId: zone.id,
           zoneName: zone.name,
           zoneColour: zone.colour,
+          // A shared asset (AssetZone secondary membership) appears once per
+          // zone it belongs to in this nested response — isPrimaryZone lets
+          // the frontend's flattened canvas view keep only one marker per
+          // asset (at its actual x/y) while still surfacing it under every
+          // zone it belongs to for any zone-scoped list/filter.
+          isPrimaryZone: asset.isPrimaryZone,
           name: asset.name,
           bookingLabel: asset.bookingLabel,
           isBookable: asset.isBookable,
@@ -769,14 +962,19 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
           width: asset.width,
           height: asset.height,
           rotation: asset.rotation,
+          capacity: asset.capacity,
           bookingStatus: bookingStatus,
           rawBookingStatus: asset.bookingStatus,
           amenities: asset.amenities,
           availabilityStatus: bookingStatus,
+          // Zone → building → org override chain (#74) — lets the booking
+          // form warn "this needs approval" before the user submits, rather
+          // than only finding out from the PENDING_APPROVAL response after.
+          requiresApproval: zone.requiresApproval ?? floor.building?.requiresApproval ?? org?.requiresApproval ?? false,
           currentBooking: myBooking
-            ? { id: myBooking.id, userId: myBooking.userId, startsAt: myBooking.startsAt, endsAt: myBooking.endsAt }
+            ? { id: myBooking.id, userId: myBooking.userId, startsAt: myBooking.startsAt, endsAt: myBooking.endsAt, attendeeCount: myBooking.attendeeCount, status: myBooking.status }
             : othersBookings[0]
-            ? { id: othersBookings[0].id, userId: othersBookings[0].userId, startsAt: othersBookings[0].startsAt, endsAt: othersBookings[0].endsAt, bookerName: othersBookings[0].user?.displayName }
+            ? { id: othersBookings[0].id, userId: othersBookings[0].userId, startsAt: othersBookings[0].startsAt, endsAt: othersBookings[0].endsAt, attendeeCount: othersBookings[0].attendeeCount, bookerName: othersBookings[0].user?.displayName }
             : null,
           bookedBy: othersBookings.map((b) => ({ userId: b.userId, displayName: b.user?.displayName ?? 'Unknown' })),
           myQueueEntry,
@@ -793,7 +991,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       }
     })
 
-    return reply.status(200).send({ data: { floorId: floor.id, date, zones } })
+    return reply.status(200).send({ data: { floorId: floor.id, date, zones, resolvedTimezone } })
   })
 }
 

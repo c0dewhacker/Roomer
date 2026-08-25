@@ -539,6 +539,170 @@ function DepartmentAnalyticsTable({ params }: { params: AnalyticsParams }) {
   )
 }
 
+// ─── Utilisation trend (month-over-month) ─────────────────────────────────────
+
+function UtilisationTrendChart({ params }: { params: AnalyticsParams }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['analytics', 'utilisation-trend', params],
+    queryFn: () => analyticsApi.utilisationTrend(params),
+    select: (r) => r.data,
+  })
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <div>
+          <CardTitle className="text-base">Utilisation Trend</CardTitle>
+          <CardDescription className="text-xs">Month-over-month desk utilisation — last 6 months by default</CardDescription>
+        </div>
+        {data && data.length > 0 && (
+          <ExportBtn onClick={() => downloadCsv('utilisation-trend.csv', [
+            ['Month', 'Bookings', 'Utilisation %'],
+            ...data.map((d) => [d.month, String(d.bookingCount), String(d.utilisationPct)]),
+          ])} />
+        )}
+      </CardHeader>
+      <CardContent>
+        {isLoading ? <ChartSkeleton /> : !data || data.length === 0 ? <EmptyState /> : (
+          <ResponsiveContainer width="100%" height={256}>
+            <AreaChart data={data} margin={{ top: 4, right: 16, left: 0, bottom: 4 }}>
+              <defs>
+                <linearGradient id="trendGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={PALETTE.primary} stopOpacity={0.25} />
+                  <stop offset="95%" stopColor={PALETTE.primary} stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+              <XAxis dataKey="month" tick={{ fontSize: 11 }} tickFormatter={(v) => { try { return format(parseISO(`${v}-01`), 'MMM yyyy') } catch { return v } }} />
+              <YAxis tick={{ fontSize: 11 }} unit="%" />
+              <Tooltip labelFormatter={(v) => { try { return format(parseISO(`${v}-01`), 'MMMM yyyy') } catch { return v } }} formatter={(v) => [`${v}%`, 'Utilisation']} />
+              <Area type="monotone" dataKey="utilisationPct" name="Utilisation" stroke={PALETTE.primary} fill="url(#trendGrad)" strokeWidth={2} dot={{ r: 3 }} />
+            </AreaChart>
+          </ResponsiveContainer>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ─── Capacity planning ────────────────────────────────────────────────────────
+
+function CapacityPlanningTable({ params }: { params: AnalyticsParams }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['analytics', 'capacity-planning', params],
+    queryFn: () => analyticsApi.capacityPlanning(params),
+    select: (r) => r.data,
+  })
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <div>
+          <CardTitle className="text-base">Capacity Planning</CardTitle>
+          <CardDescription className="text-xs">Peak vs average daily attendance against current desk count</CardDescription>
+        </div>
+        {data && data.length > 0 && (
+          <ExportBtn onClick={() => downloadCsv('capacity-planning.csv', [
+            ['Building', 'Current Desks', 'Peak Daily', 'Average Daily', 'Recommended Desks', 'Spare Capacity'],
+            ...data.map((d) => [d.buildingName, String(d.currentDeskCount), String(d.peakDailyAttendance), String(d.averageDailyAttendance), String(d.recommendedDeskCount), String(d.spareCapacity)]),
+          ])} />
+        )}
+      </CardHeader>
+      <CardContent className="p-0">
+        {isLoading ? (
+          <div className="p-6 space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-9 w-full" />)}</div>
+        ) : !data || data.length === 0 ? (
+          <EmptyState message="No booking activity in this range" />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-muted/40">
+                  <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground">Building</th>
+                  <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground">Current</th>
+                  <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground">Peak</th>
+                  <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground">Average</th>
+                  <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground">Recommended</th>
+                  <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground">Spare</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {data.map((d) => (
+                  <tr key={d.buildingId} className="hover:bg-muted/30 transition-colors">
+                    <td className="px-4 py-2.5 font-medium">{d.buildingName}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{d.currentDeskCount}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums font-medium">{d.peakDailyAttendance}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums">{d.averageDailyAttendance}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums">{d.recommendedDeskCount}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{d.spareCapacity}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ─── Cost per seat ────────────────────────────────────────────────────────────
+
+function CostPerSeatTable({ params }: { params: AnalyticsParams }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['analytics', 'cost-per-seat', params],
+    queryFn: () => analyticsApi.costPerSeat(params),
+    select: (r) => r.data,
+  })
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <div>
+          <CardTitle className="text-base">Cost Per Seat</CardTitle>
+          <CardDescription className="text-xs">Lease cost per desk per day — only shown for buildings with lease data entered</CardDescription>
+        </div>
+        {data && data.length > 0 && (
+          <ExportBtn onClick={() => downloadCsv('cost-per-seat.csv', [
+            ['Building', 'Monthly Rent', 'Currency', 'Desks', 'Cost Per Seat Per Day'],
+            ...data.map((d) => [d.buildingName, String(d.monthlyRent), d.currency, String(d.deskCount), String(d.costPerSeatPerDay)]),
+          ])} />
+        )}
+      </CardHeader>
+      <CardContent className="p-0">
+        {isLoading ? (
+          <div className="p-6 space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-9 w-full" />)}</div>
+        ) : !data || data.length === 0 ? (
+          <EmptyState message="No buildings with lease data entered" />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-muted/40">
+                  <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground">Building</th>
+                  <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground">Monthly Rent</th>
+                  <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground">Desks</th>
+                  <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground">Cost / Seat / Day</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {data.map((d) => (
+                  <tr key={d.buildingId} className="hover:bg-muted/30 transition-colors">
+                    <td className="px-4 py-2.5 font-medium">{d.buildingName}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{d.currency} {d.monthlyRent.toLocaleString()}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums">{d.deskCount}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums font-medium">{d.currency} {d.costPerSeatPerDay.toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 // ─── Manager roll-up ──────────────────────────────────────────────────────────
 
 function ManagerRollupCard({ params }: { params: AnalyticsParams }) {
@@ -547,7 +711,7 @@ function ManagerRollupCard({ params }: { params: AnalyticsParams }) {
 
   const { data: results } = useQuery({
     queryKey: ['users', 'search', search],
-    queryFn: () => usersApi.list({ q: search, limit: 10 }),
+    queryFn: () => usersApi.search(search),
     select: (r) => r.data,
     enabled: search.length >= 2 && !selected,
   })
@@ -848,6 +1012,9 @@ export default function ReportsAdminPage() {
             permissions issue rather than empty data. */}
         {isSuperAdmin && <DepartmentAnalyticsTable params={params} />}
         {isSuperAdmin && <ManagerRollupCard params={params} />}
+        <UtilisationTrendChart params={params} />
+        <CapacityPlanningTable params={params} />
+        <CostPerSeatTable params={params} />
       </div>
     </div>
   )

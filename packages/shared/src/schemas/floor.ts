@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { QrCheckInMode } from '../types.js'
 
 export const createFloorSchema = z.object({
   buildingId: z.string().min(1, 'Invalid building ID'),
@@ -11,6 +12,8 @@ export const updateFloorSchema = z.object({
   level: z.number().int().optional(),
   // Per-floor no-show release override. null = inherit (floor → building → org).
   noShowReleaseEnabled: z.boolean().nullable().optional(),
+  // Per-floor QR check-in mode override. null = inherit (floor → building → org).
+  qrCheckInMode: z.nativeEnum(QrCheckInMode).nullable().optional(),
 })
 
 export type CreateFloorInput = z.infer<typeof createFloorSchema>

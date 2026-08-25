@@ -1,5 +1,25 @@
 import crypto from 'crypto'
+import type { Prisma } from '@prisma/client'
 import { env } from '../env.js'
+
+/**
+ * User.email's DB unique constraint is case-sensitive, but every lookup that
+ * matters (login, SSO, SCIM's own case-insensitive collision checks) treats
+ * it as case-insensitive — so the constraint alone doesn't stop two
+ * concurrent SCIM writes (create, or a rename via PUT/PATCH) for emails that
+ * differ only by case from both passing a `findFirst` collision check before
+ * either commits. Keyed on the lowercased email so "Bob@x.com" and
+ * "bob@x.com" contend on the same lock regardless of casing.
+ *
+ * pg_advisory_xact_lock's classid is a single global namespace — 4247 is
+ * otherwise unused; check lib/booking.ts, lib/queue.ts, and
+ * lib/group-mapping.ts before reusing it elsewhere.
+ */
+const SCIM_EMAIL_LOCK_CLASS = 4247
+
+export async function lockScimEmail(tx: Prisma.TransactionClient, email: string): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${SCIM_EMAIL_LOCK_CLASS}, hashtext(${email.toLowerCase()}))`
+}
 
 export const SCIM_SCHEMAS = {
   USER: 'urn:ietf:params:scim:schemas:core:2.0:User',
@@ -15,6 +35,25 @@ export const SCIM_SCHEMAS = {
 
 type ScimUser = Record<string, unknown>
 type ScimGroup = Record<string, unknown>
+
+/**
+ * SCIM's spec says `active` is a JSON boolean, but real-world IdPs sometimes
+ * send it as the STRING "true"/"false" instead (a documented quirk of some
+ * legacy Okta app integrations). A naive `!== false` check or truthy cast
+ * treats any non-`false` value — including the string "false" — as active,
+ * silently reactivating (or never actually deactivating) an account an
+ * IdP-driven offboarding create/PUT/PATCH meant to block. Returns `undefined`
+ * for anything that isn't recognisably a boolean so the caller can decide
+ * how to handle it (reject with 400, or leave the attribute untouched).
+ */
+export function coerceScimActive(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'string') {
+    if (value.toLowerCase() === 'true') return true
+    if (value.toLowerCase() === 'false') return false
+  }
+  return undefined
+}
 
 export function scimUserLocation(id: string): string {
   return `${env.API_PUBLIC_URL}/scim/v2/Users/${id}`
@@ -129,14 +168,28 @@ export interface UserPatch {
   email?: string
   displayName?: string
   accountStatus?: 'ACTIVE' | 'BLOCKED'
-  externalId?: string
+  // Nullable (not just optional): a `remove` op on externalId (RFC 7644
+  // §3.5.2.2 — "remove" must clear the targeted attribute) needs to
+  // distinguish "clear it" from "the request didn't mention this field",
+  // same reasoning as BuildingLease.endDate elsewhere in this codebase.
+  externalId?: string | null
   /** Resolved from the EnterpriseUser extension — callers must convert to departmentId */
   departmentName?: string
+  /** Raw manager.value from the EnterpriseUser extension — callers pass to recordManagerRef */
+  managerRef?: string
 }
 
 /**
  * Collapse a SCIM PatchOp Operations array into a Roomer user update.
  * Entra emits op values in mixed case (Replace, Add, Remove) — compared case-insensitively.
+ *
+ * `remove` (RFC 7644 §3.5.2.2) is only handled for `externalId` — the one
+ * attribute an IdP unlinking a user has a concrete reason to clear via this
+ * op rather than `replace`. Broader remove semantics (department, manager)
+ * would need to also unwind department/manager assignment side effects this
+ * function has no visibility into, so a `remove` on any other path is
+ * accepted (not rejected) but has no effect, same as an unrecognised path
+ * under replace/add already does.
  */
 export function applyUserPatchOps(
   operations: Array<{ op: string; path?: string; value?: unknown }>,
@@ -145,6 +198,10 @@ export function applyUserPatchOps(
 
   for (const op of operations) {
     const lower = op.op.toLowerCase()
+    if (lower === 'remove') {
+      if ((op.path ?? '').replace(/\s/g, '') === 'externalId') patch.externalId = null
+      continue
+    }
     if (lower !== 'replace' && lower !== 'add') continue
 
     const path = op.path ?? ''
@@ -153,8 +210,16 @@ export function applyUserPatchOps(
     // Valueless path: `{ op, value: { active: false, displayName: "..." } }`
     const obj = (path === '' && typeof val === 'object' && val !== null) ? val as Record<string, unknown> : null
 
-    const active = path === 'active' ? val : obj?.active
-    if (active !== undefined) patch.accountStatus = active ? 'ACTIVE' : 'BLOCKED'
+    // SCIM's spec says `active` is a JSON boolean, but some IdPs send it as
+    // the string "true"/"false" — coerceScimActive normalises both and
+    // returns undefined for anything else, which is silently ignored here
+    // rather than misread as truthy (see its own doc comment for why a
+    // string "false" being misread as active is the actual bug this guards).
+    const activeRaw = path === 'active' ? val : obj?.active
+    if (activeRaw !== undefined) {
+      const active = coerceScimActive(activeRaw)
+      if (active !== undefined) patch.accountStatus = active ? 'ACTIVE' : 'BLOCKED'
+    }
 
     const dn = path === 'displayName' ? val : obj?.displayName
     if (typeof dn === 'string') patch.displayName = dn
@@ -186,6 +251,18 @@ export function applyUserPatchOps(
       if (typeof enterprise?.department === 'string' && enterprise.department.trim()) {
         patch.departmentName = enterprise.department.trim()
       }
+    }
+
+    // EnterpriseUser manager — RFC 7643 §4.1.2 has this as an object
+    // ({ value, $ref, displayName }), not a plain string like department;
+    // accept a bare string too since not every IdP is spec-strict about it.
+    const managerPath = path.startsWith(enterprisePrefix) && path.endsWith('manager')
+    const managerVal = managerPath ? val : (obj?.[enterprisePrefix] as Record<string, unknown> | undefined)?.manager
+    if (typeof managerVal === 'string' && managerVal.trim()) {
+      patch.managerRef = managerVal.trim()
+    } else if (managerVal && typeof managerVal === 'object' && typeof (managerVal as Record<string, unknown>).value === 'string') {
+      const ref = ((managerVal as Record<string, unknown>).value as string).trim()
+      if (ref) patch.managerRef = ref
     }
   }
 

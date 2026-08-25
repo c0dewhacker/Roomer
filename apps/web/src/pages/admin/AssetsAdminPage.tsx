@@ -2,10 +2,12 @@ import { useState, useEffect } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Package, Plus, Pencil, Trash2, UserCheck, UserX, X, Users } from 'lucide-react'
+import { Package, Plus, Pencil, Trash2, UserCheck, UserX, X, Users, QrCode } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { assetsApi, usersApi } from '@/lib/api'
 import AssignmentImportDialog from '@/components/admin/AssignmentImportDialog'
+import { AssetQrDialog } from '@/components/admin/AssetQrDialog'
+import { BulkQrDialog } from '@/components/admin/BulkQrDialog'
 import { toast } from 'sonner'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -98,6 +100,17 @@ const assetSchema = z.object({
   isBookable: z.boolean().optional(),
   bookingLabel: z.string().optional(),
   bookingStatus: z.enum(['OPEN', 'RESTRICTED', 'ASSIGNED', 'DISABLED']).optional(),
+  // Empty string = "not a room" (sent as undefined); otherwise a positive
+  // occupant count. Kept as a string in the form so the input can be blank.
+  // Mirrors the backend's z.number().int().positive().max(1000) — without
+  // this, 0/negative/decimal/>1000 all passed client-side and only failed
+  // server-side with a generic "Validation failed" toast and no indication
+  // of which field was wrong.
+  capacity: z.string().optional().refine((v) => {
+    if (!v) return true
+    const n = Number(v)
+    return Number.isInteger(n) && n >= 1 && n <= 1000
+  }, 'Capacity must be a whole number between 1 and 1000'),
   notes: z.string().optional(),
 })
 type AssetForm = z.infer<typeof assetSchema>
@@ -129,6 +142,7 @@ function AssetDialog({
       isBookable: existing?.isBookable ?? false,
       bookingLabel: existing?.bookingLabel ?? '',
       bookingStatus: (existing?.bookingStatus as AssetForm['bookingStatus']) ?? 'OPEN',
+      capacity: existing?.capacity ? String(existing.capacity) : '',
       notes: existing?.notes ?? '',
     },
   })
@@ -145,6 +159,7 @@ function AssetDialog({
       isBookable: existing?.isBookable ?? false,
       bookingLabel: existing?.bookingLabel ?? '',
       bookingStatus: (existing?.bookingStatus as AssetForm['bookingStatus']) ?? 'OPEN',
+      capacity: existing?.capacity ? String(existing.capacity) : '',
       notes: existing?.notes ?? '',
     })
     setAmenities(existing?.amenities ?? [])
@@ -152,13 +167,13 @@ function AssetDialog({
   }, [existing, reset])
 
   const create = useMutation({
-    mutationFn: (d: AssetForm) => assetsApi.create({ ...d, amenities }),
+    mutationFn: (d: AssetForm) => assetsApi.create({ ...d, amenities, capacity: d.capacity ? Number(d.capacity) : undefined }),
     onSuccess: () => { toast.success('Asset created'); qc.invalidateQueries({ queryKey: ['assets'] }); onClose(); reset() },
     onError: (err: Error) => toast.error(err.message),
   })
 
   const update = useMutation({
-    mutationFn: (d: AssetForm) => assetsApi.update(existing!.id, { ...d, amenities }),
+    mutationFn: (d: AssetForm) => assetsApi.update(existing!.id, { ...d, amenities, capacity: d.capacity ? Number(d.capacity) : null }),
     onSuccess: () => { toast.success('Asset updated'); qc.invalidateQueries({ queryKey: ['assets'] }); onClose() },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -277,6 +292,22 @@ function AssetDialog({
                   <Input id="bookingLabel" {...register('bookingLabel')} className="mt-1.5" placeholder="e.g. Hot desk, Standing desk…" />
                 </div>
                 <div>
+                  <Label htmlFor="capacity">Capacity <span className="text-muted-foreground font-normal text-xs">(leave blank for a single-occupant desk)</span></Label>
+                  <Input
+                    id="capacity"
+                    type="number"
+                    min={1}
+                    step={1}
+                    {...register('capacity')}
+                    className="mt-1.5"
+                    placeholder="e.g. 8 for a meeting room"
+                  />
+                  {errors.capacity && <p className="text-xs text-destructive mt-1">{errors.capacity.message}</p>}
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Rooms with a capacity render as a rectangle on the floor plan and warn (but don't block) if a booking's attendee count is larger.
+                  </p>
+                </div>
+                <div>
                   <Label>Amenities</Label>
                   <div className="flex gap-2 mt-1.5">
                     <Input
@@ -330,7 +361,7 @@ function AssignDialog({ open, onClose, assetId }: { open: boolean; onClose: () =
 
   const { data: userResults } = useQuery({
     queryKey: ['users', 'search', userSearch],
-    queryFn: () => usersApi.list({ q: userSearch, limit: 20 }),
+    queryFn: () => usersApi.search(userSearch),
     select: (r) => r.data,
     enabled: userSearch.length >= 2,
   })
@@ -419,7 +450,11 @@ const categorySchema = z.object({
   description: z.string().optional(),
   defaultIsBookable: z.boolean().optional(),
   defaultIcon: z.string().optional(),
-  colour: z.string().optional(),
+  // Mirrors the backend's z.string().regex(/^#[0-9a-fA-F]{6}$/) — without
+  // this, free text typed into the colour field next to the picker (e.g.
+  // "red", or a 3-digit hex shorthand like "#fff") passed client-side and
+  // only failed server-side with a generic "Validation failed" toast.
+  colour: z.string().optional().refine((v) => !v || /^#[0-9a-fA-F]{6}$/.test(v), 'Must be a 6-digit hex colour, e.g. #6366f1'),
 })
 type CategoryForm = z.infer<typeof categorySchema>
 
@@ -536,12 +571,13 @@ function CategoryDialog({ open, onClose, existing }: { open: boolean; onClose: (
               />
               <Input
                 value={colour ?? ''}
-                onChange={(e) => setValue('colour', e.target.value)}
+                onChange={(e) => setValue('colour', e.target.value, { shouldValidate: true })}
                 className="w-32 font-mono"
                 placeholder="#6366f1"
               />
               <div className="h-7 w-7 rounded border" style={{ backgroundColor: colour ?? '#6366f1' }} />
             </div>
+            {errors.colour && <p className="text-xs text-destructive mt-1">{errors.colour.message}</p>}
           </div>
           <div>
             <Label>Custom Icon Image</Label>
@@ -600,11 +636,29 @@ function CategoryDialog({ open, onClose, existing }: { open: boolean; onClose: (
 // --- Assets Tab ---
 function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; isSuperAdmin: boolean }) {
   const qc = useQueryClient()
+  const user = useAuthStore((s) => s.user)
+  // Mirrors the backend's own DELETE /assets/:id authorization
+  // (isFloorManagerForFloor) — floor managers can legitimately delete an
+  // asset on their own floor, but this page only ever showed the Delete
+  // control to SUPER_ADMIN, leaving them with no UI path to an action the
+  // API would actually allow. Same floor-scoped pattern DeskPanel.tsx's own
+  // canManageDesk already uses (does not additionally check BUILDING_ADMIN
+  // inheritance — a separate, pre-existing gap in that same pattern, not
+  // introduced or fixed here).
+  const canManageAsset = (asset: Asset) =>
+    isSuperAdmin || (!!asset.floorId && (
+      (user?.resourceRoles ?? []).some((r) => r.scopeType === 'FLOOR' && r.floorId === asset.floorId && r.role === 'FLOOR_MANAGER') ||
+      (user?.groupMemberships ?? []).some((m) =>
+        (m.group.groupResourceRoles ?? []).some((r) => r.scopeType === 'FLOOR' && r.floorId === asset.floorId && r.role === 'FLOOR_MANAGER')
+      )
+    ))
   const [search, setSearch] = useState('')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Asset | undefined>()
   const [assignTarget, setAssignTarget] = useState<string | null>(null)
   const [bulkAssignOpen, setBulkAssignOpen] = useState(false)
+  const [qrTarget, setQrTarget] = useState<Asset | null>(null)
+  const [bulkQrOpen, setBulkQrOpen] = useState(false)
 
   const { data: assets, isLoading } = useQuery({
     queryKey: ['assets'],
@@ -649,6 +703,9 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
             <Button variant="outline" onClick={() => setBulkAssignOpen(true)}>
               <Users className="mr-2 h-4 w-4" /> Bulk assign users
             </Button>
+            <Button variant="outline" onClick={() => setBulkQrOpen(true)}>
+              <QrCode className="mr-2 h-4 w-4" /> Bulk QR codes
+            </Button>
             <Button onClick={() => { setEditTarget(undefined); setDialogOpen(true) }}>
               <Plus className="mr-2 h-4 w-4" /> Add Asset
             </Button>
@@ -691,7 +748,12 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
                   : (asset.bookingStatus ?? 'OPEN')
                 return (
                   <TableRow key={asset.id}>
-                    <TableCell className="font-medium">{asset.name}</TableCell>
+                    <TableCell className="font-medium">
+                      {asset.name}
+                      {asset.capacity ? (
+                        <span className="ml-1.5 font-normal text-xs text-muted-foreground">· Seats {asset.capacity}</span>
+                      ) : null}
+                    </TableCell>
                     <TableCell>{asset.category?.name ?? '—'}</TableCell>
                     <TableCell className="text-muted-foreground text-sm">{asset.serialNumber ?? '—'}</TableCell>
                     <TableCell className="text-muted-foreground text-sm">{asset.assetTag ?? '—'}</TableCell>
@@ -741,6 +803,17 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
                         >
                           <Pencil className="h-4 w-4" />
                         </Button>
+                        {asset.isBookable && asset.floorId && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            title="QR code"
+                            onClick={() => setQrTarget(asset)}
+                          >
+                            <QrCode className="h-4 w-4" />
+                          </Button>
+                        )}
                         {isSuperAdmin && (
                           hasPermUsers ? (
                             <Button
@@ -765,10 +838,10 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
                             </Button>
                           )
                         )}
-                        {isSuperAdmin && (
+                        {canManageAsset(asset) && (
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
-                              <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive">
+                              <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive" title="Delete">
                                 <Trash2 className="h-4 w-4" />
                               </Button>
                             </AlertDialogTrigger>
@@ -813,6 +886,21 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
           open={!!assignTarget}
           onClose={() => setAssignTarget(null)}
           assetId={assignTarget}
+        />
+      )}
+      {qrTarget && (
+        <AssetQrDialog
+          open={!!qrTarget}
+          onClose={() => setQrTarget(null)}
+          assetId={qrTarget.id}
+          assetName={qrTarget.name}
+        />
+      )}
+      {bulkQrOpen && (
+        <BulkQrDialog
+          open={bulkQrOpen}
+          onClose={() => setBulkQrOpen(false)}
+          assets={assets ?? []}
         />
       )}
       <AssignmentImportDialog
@@ -885,12 +973,12 @@ function CategoriesTab() {
                   </div>
                 </div>
                 <div className="flex items-center gap-1">
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditTarget(cat); setDialogOpen(true) }}>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" title="Edit" onClick={() => { setEditTarget(cat); setDialogOpen(true) }}>
                     <Pencil className="h-4 w-4" />
                   </Button>
                   <AlertDialog>
                     <AlertDialogTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive">
+                      <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive" title="Delete">
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </AlertDialogTrigger>

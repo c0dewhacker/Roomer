@@ -18,7 +18,9 @@ const TEMPLATE_EXAMPLE = [
 ].join('\n')
 
 function downloadBlob(content: string, filename: string) {
-  const blob = new Blob([content], { type: 'text/csv' })
+  // Prefixed with a UTF-8 BOM so Excel (which otherwise assumes the system
+  // codepage) renders non-ASCII cell values correctly instead of as mojibake.
+  const blob = new Blob(['\uFEFF' + content], { type: 'text/csv' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url

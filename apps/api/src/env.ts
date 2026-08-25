@@ -30,6 +30,17 @@ const envSchema = z.object({
   SESSION_SECRET: z.string()
     .min(32, 'SESSION_SECRET must be at least 32 characters. Generate with: openssl rand -hex 32')
     .refine((v) => !isLowEntropyPlaceholder(v), 'SESSION_SECRET is a placeholder value (no character variation) — generate a real secret with: openssl rand -hex 32'),
+  // Optional — signs the @fastify/session cookie (used only to carry OIDC/SAML
+  // state/nonce across the IdP redirect, never identity). Falls back to
+  // SESSION_SECRET when unset, matching every existing deployment's current
+  // behaviour with no required action. Set this separately to compartmentalise
+  // a compromise/implementation flaw in either signing scheme (jsonwebtoken's
+  // HS256 JWTs vs @fastify/session's cookie signing) to just that scheme,
+  // rather than one secret backing both.
+  COOKIE_SESSION_SECRET: z.string()
+    .min(32, 'COOKIE_SESSION_SECRET must be at least 32 characters. Generate with: openssl rand -hex 32')
+    .refine((v) => !isLowEntropyPlaceholder(v), 'COOKIE_SESSION_SECRET is a placeholder value (no character variation) — generate a real secret with: openssl rand -hex 32')
+    .optional(),
   // 32-byte hex key for AES-256-GCM encryption of sensitive DB fields (AuthConfig secrets).
   // Generate with: openssl rand -hex 32
   ROOMER_ENCRYPTION_KEY: z.string()
@@ -91,6 +102,16 @@ const envSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   EMAIL_FROM: z.string().default('noreply@roomer.local'),
+  // Web Push (RFC 8030) VAPID keypair — identifies this deployment to push
+  // services (FCM, Mozilla autopush, etc.) so they'll accept its pushes.
+  // Optional: push notifications are a no-op (see lib/push.ts) until both
+  // are set. Generate with: npx web-push generate-vapid-keys
+  VAPID_PUBLIC_KEY: z.string().optional(),
+  VAPID_PRIVATE_KEY: z.string().optional(),
+  // Contact URI push services may use to reach the deployment operator if a
+  // subscription is misbehaving — RFC 8292 requires either a mailto: or
+  // https: URI, not an arbitrary string.
+  VAPID_SUBJECT: z.string().default('mailto:admin@roomer.local'),
   APP_URL: z.string().default('http://localhost:5173'),
   // Public-facing base URL for the API itself (used for SCIM endpoint URLs shown in the admin UI).
   // Defaults to localhost in development; set to e.g. https://api.example.com in production.
@@ -105,6 +126,7 @@ const envSchema = z.object({
 const parsed = envSchema.safeParse({
   DATABASE_URL:           r('DATABASE_URL'),
   SESSION_SECRET:         r('SESSION_SECRET'),
+  COOKIE_SESSION_SECRET:  r('COOKIE_SESSION_SECRET'),
   ROOMER_ENCRYPTION_KEY:  process.env['ROOMER_ENCRYPTION_KEY'],
   NODE_ENV:               r('NODE_ENV'),
   PORT:                   r('PORT'),
@@ -125,6 +147,9 @@ const parsed = envSchema.safeParse({
   SMTP_USER:              r('SMTP_USER'),
   SMTP_PASS:              r('SMTP_PASS'),
   EMAIL_FROM:             r('EMAIL_FROM'),
+  VAPID_PUBLIC_KEY:       r('VAPID_PUBLIC_KEY'),
+  VAPID_PRIVATE_KEY:      r('VAPID_PRIVATE_KEY'),
+  VAPID_SUBJECT:          r('VAPID_SUBJECT'),
   APP_URL:                r('APP_URL'),
   API_PUBLIC_URL:         r('API_PUBLIC_URL'),
   SEED_ADMIN_EMAIL:       r('SEED_ADMIN_EMAIL'),

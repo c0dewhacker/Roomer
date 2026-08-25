@@ -1,13 +1,16 @@
 import { useState, useCallback, useMemo } from 'react'
 import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { format, addDays } from 'date-fns'
-import { ChevronLeft, ChevronRight, CalendarDays, Info, Users, Bell, BellRing, SlidersHorizontal } from 'lucide-react'
+import { ChevronLeft, ChevronRight, CalendarDays, Info, Users, Bell, BellRing, SlidersHorizontal, Sparkles, X, ShieldPlus } from 'lucide-react'
 import { FloorPlanCanvas } from '@/components/floor-plan/FloorPlanCanvas'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Textarea } from '@/components/ui/textarea'
 import { DeskPanel } from '@/components/floor-plan/DeskPanel'
 import { FloorSubscribeDialog } from '@/components/floor-plan/FloorSubscribeDialog'
-import { useFloorData, useFloorAvailability } from '@/hooks/useFloor'
+import { useFloorData, useFloorAvailability, useAssetSuggestions } from '@/hooks/useFloor'
 import { useFloorSubscriptions } from '@/hooks/useSubscriptions'
+import { useMyManagerRequests, useCreateManagerRequest } from '@/hooks/useManagerRequests'
+import { useAuthStore } from '@/stores/auth'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -45,6 +48,43 @@ export default function FloorPage() {
   const { data: desks } = useFloorAvailability(floorId!, selectedDate)
   const { data: subscriptions } = useFloorSubscriptions()
   const existingSubscription = subscriptions?.find((s) => s.floorId === floorId) ?? null
+
+  // "Request manager access" — hidden once the user is already a manager here
+  // (directly or via a group role, same check DeskPanel's canManageDesk uses)
+  // or a Super Admin (who already has full access everywhere), and while they
+  // already have a pending request open for this floor. Also hidden for a
+  // BUILDING_ADMIN of this floor's building — the backend's
+  // isFloorManagerForFloor already treats building admins as inheriting
+  // floor-manager access for every floor in their building, so without this
+  // check a building admin visiting their own building's floors saw the
+  // button and, on clicking it, hit an avoidable 409 ALREADY_MANAGER.
+  const { user } = useAuthStore()
+  const isSuperAdmin = user?.globalRole === 'SUPER_ADMIN'
+  const isAlreadyManagerHere = !isSuperAdmin && (
+    (user?.resourceRoles ?? []).some((r) =>
+      (r.scopeType === 'FLOOR' && r.floorId === floorId && r.role === 'FLOOR_MANAGER') ||
+      (r.scopeType === 'BUILDING' && r.buildingId === floor?.buildingId && r.role === 'BUILDING_ADMIN')
+    ) ||
+    (user?.groupMemberships ?? []).some((m) =>
+      (m.group.groupResourceRoles ?? []).some((r) =>
+        (r.scopeType === 'FLOOR' && r.floorId === floorId && r.role === 'FLOOR_MANAGER') ||
+        (r.scopeType === 'BUILDING' && r.buildingId === floor?.buildingId && r.role === 'BUILDING_ADMIN')
+      )
+    )
+  )
+  const { data: myManagerRequests } = useMyManagerRequests()
+  const pendingManagerRequest = myManagerRequests?.find((r) => r.floorId === floorId && r.status === 'PENDING')
+  const createManagerRequest = useCreateManagerRequest()
+  const [showRequestAccess, setShowRequestAccess] = useState(false)
+  const [requestNote, setRequestNote] = useState('')
+
+  // "Suggested for you" — top pick shown when the top suggestion happens to be
+  // available today; dismissible per date rather than permanently, since a
+  // different desk may top the list tomorrow.
+  const dateStr = format(selectedDate, 'yyyy-MM-dd')
+  const { data: suggestions } = useAssetSuggestions(selectedDate)
+  const [dismissedSuggestionDate, setDismissedSuggestionDate] = useState<string | null>(null)
+  const topSuggestion = dismissedSuggestionDate !== dateStr ? (suggestions?.[0] ?? null) : null
 
   // Keep selectedDesk in sync with fresh availability data so mutations (e.g. add permanent user)
   // are reflected immediately in the panel without re-clicking the desk.
@@ -132,7 +172,15 @@ export default function FloorPage() {
   // own group-access check — settled isLoading=false with floor left
   // undefined, and the page rendered a near-blank shell (no name, no plan,
   // no error) instead of telling the user why nothing showed up.
-  if (isError) {
+  //
+  // Gated on `!floor` too: a background refetch failing (a connectivity
+  // blip, exactly the condition a PWA most needs to tolerate) flips isError
+  // to true without clearing the last-successfully-fetched `floor` out of
+  // the cache. Replacing the whole page with a full error screen in that
+  // case threw away a perfectly good, still-valid desk map the user was
+  // already looking at — only show the error screen when there's genuinely
+  // nothing to fall back on.
+  if (isError && !floor) {
     const isForbidden = floorError instanceof ApiError && floorError.status === 403
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-center px-6">
@@ -259,6 +307,51 @@ export default function FloorPage() {
                 : <Bell className="h-3.5 w-3.5" />
               }
             </Button>
+            {!isAlreadyManagerHere && (
+              pendingManagerRequest ? (
+                <Badge variant="outline" className="h-7 gap-1 rounded-md px-2 text-xs font-normal">
+                  <ShieldPlus className="h-3.5 w-3.5" />
+                  Access requested
+                </Badge>
+              ) : (
+                <Popover open={showRequestAccess} onOpenChange={setShowRequestAccess}>
+                  <PopoverTrigger asChild>
+                    <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-xs">
+                      <ShieldPlus className="h-3.5 w-3.5" />
+                      Request manager access
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="end" className="w-72 space-y-3">
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium">Request floor manager access</p>
+                      <p className="text-xs text-muted-foreground">
+                        A Super Admin or this building's admin will review your request.
+                      </p>
+                    </div>
+                    <Textarea
+                      placeholder="Optional note — why do you need access?"
+                      value={requestNote}
+                      onChange={(e) => setRequestNote(e.target.value)}
+                      className="resize-none text-sm"
+                      rows={3}
+                    />
+                    <Button
+                      size="sm"
+                      className="w-full"
+                      disabled={createManagerRequest.isPending}
+                      onClick={() => {
+                        createManagerRequest.mutate(
+                          { floorId: floorId!, note: requestNote.trim() || undefined },
+                          { onSuccess: () => { setShowRequestAccess(false); setRequestNote('') } },
+                        )
+                      }}
+                    >
+                      {createManagerRequest.isPending ? 'Sending…' : 'Send Request'}
+                    </Button>
+                  </PopoverContent>
+                </Popover>
+              )
+            )}
           </div>
         </div>
       </div>
@@ -268,6 +361,44 @@ export default function FloorPage() {
         <div className="mx-6 mt-4 flex items-center gap-2 rounded-md bg-muted px-4 py-2 text-sm text-muted-foreground shrink-0">
           <Info className="h-4 w-4 shrink-0" />
           No floor plan uploaded yet. An admin can upload one from the floor settings.
+        </div>
+      )}
+
+      {/* Suggested for you */}
+      {topSuggestion && (
+        <div className="mx-6 mt-4 flex items-center gap-2 rounded-md border border-primary/20 bg-primary/5 px-4 py-2 text-sm shrink-0">
+          <Sparkles className="h-4 w-4 shrink-0 text-primary" />
+          <span className="flex-1">
+            You usually book <span className="font-medium">{topSuggestion.name}</span> — it's available {format(selectedDate, 'EEE, d MMM')}
+            {topSuggestion.floor && topSuggestion.floor.id !== floorId && (
+              <span className="text-muted-foreground"> ({topSuggestion.floor.name})</span>
+            )}
+          </span>
+          {topSuggestion.floor && topSuggestion.floor.id !== floorId ? (
+            <Button asChild variant="secondary" size="sm" className="h-7 text-xs">
+              <Link to={`/floors/${topSuggestion.floor.id}?date=${dateStr}&highlight=${topSuggestion.id}`}>
+                View it
+              </Link>
+            </Button>
+          ) : (
+            <Button
+              variant="secondary"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => setSelectedDeskId(topSuggestion.id)}
+            >
+              Book it
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 shrink-0"
+            title="Dismiss"
+            onClick={() => setDismissedSuggestionDate(dateStr)}
+          >
+            <X className="h-3.5 w-3.5" />
+          </Button>
         </div>
       )}
 

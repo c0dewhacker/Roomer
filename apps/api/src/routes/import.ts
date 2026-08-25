@@ -17,6 +17,18 @@ function paletteColour(index: number): string {
   return ZONE_COLOUR_PALETTE[index % ZONE_COLOUR_PALETTE.length]
 }
 
+// Building/Floor/Zone have no unique constraint on name (unlike AssetCategory,
+// see the comment above categoryCache below), so two concurrent /bulk imports
+// (e.g. a double-submitted request, or two admins importing overlapping data)
+// could each pass their own find-then-create check for the same
+// building/floor/zone name before either commits, silently creating
+// duplicate rows instead of erroring. A bulk import is a rare, deliberate
+// admin action — fully serialising concurrent imports for the same org via
+// one advisory lock is simpler and just as effective as fine-grained
+// per-entity locking. Distinct integer from every other pg_advisory_xact_lock
+// class in this codebase (4242-4247 are taken).
+const BULK_IMPORT_LOCK_CLASS = 4248
+
 // ─── Validation ───────────────────────────────────────────────────────────────
 
 const rowSchema = z.object({
@@ -148,10 +160,53 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
       const buildingCache = new Map<string, string>()       // name → id
       const floorCache    = new Map<string, string>()       // `${buildingId}::${floorName}` → id
       const zoneCache     = new Map<string, string>()       // `${floorId}::${zoneName}` → id
-      const categoryCache = new Map<string, { id: string; defaultIsBookable: boolean | null }>()
       let zoneIndexCounter = 0
 
+      // AssetCategory.name is unique. Resolve every distinct category name in
+      // the batch here, as its own standalone (non-transactional) step,
+      // BEFORE the big interactive transaction below — not inside it, like
+      // Building/Floor/Zone resolution is. Reason: Postgres aborts an entire
+      // transaction after any unhandled statement error, not just the one
+      // statement — so a raw P2002 from two rows in this batch (or this
+      // import racing another request) introducing the same new category
+      // name would roll back every row already created in the transaction
+      // and return a generic 500 with none of the itemized per-row `errors`
+      // this endpoint otherwise promises, exactly the failure mode the
+      // asset_tag dedup above already exists to avoid. Resolving categories
+      // out here means a conflict is just a create-then-refetch, not a
+      // batch-destroying error.
+      const categoryCache = new Map<string, { id: string; defaultIsBookable: boolean | null }>()
+      for (const name of new Set(validRows.map(({ row }) => row.asset_category.trim()))) {
+        const existing = await prisma.assetCategory.findFirst({
+          where: { name },
+          select: { id: true, defaultIsBookable: true },
+        })
+        if (existing) {
+          categoryCache.set(name, existing)
+          continue
+        }
+        const firstRow = validRows.find(({ row }) => row.asset_category.trim() === name)!.row
+        try {
+          const created = await prisma.assetCategory.create({
+            data: { name, defaultIsBookable: firstRow.is_bookable, colour: '#6366f1' },
+            select: { id: true, defaultIsBookable: true },
+          })
+          categoryCache.set(name, created)
+        } catch (err) {
+          const e = err as { code?: string }
+          if (e?.code !== 'P2002') throw err
+          // Another concurrent request created this exact category name
+          // between the findFirst above and this create — use its row.
+          categoryCache.set(name, await prisma.assetCategory.findFirstOrThrow({
+            where: { name },
+            select: { id: true, defaultIsBookable: true },
+          }))
+        }
+      }
+
       await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${BULK_IMPORT_LOCK_CLASS}, hashtext(${org.id}))`
+
         for (const { row } of validRows) {
           // ── Building ───────────────────────────────────────────────────────
           const buildingKey = row.building_name.trim()
@@ -222,29 +277,9 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
           }
 
           // ── AssetCategory ──────────────────────────────────────────────────
-          const categoryKey = row.asset_category.trim()
-          let categoryEntry = categoryCache.get(categoryKey)
-          if (!categoryEntry) {
-            const existing = await tx.assetCategory.findFirst({
-              where: { name: categoryKey },
-              select: { id: true, defaultIsBookable: true },
-            })
-            if (existing) {
-              categoryEntry = { id: existing.id, defaultIsBookable: existing.defaultIsBookable }
-            } else {
-              // Auto-create category; infer defaultIsBookable from first occurrence of is_bookable
-              const created = await tx.assetCategory.create({
-                data: {
-                  name: categoryKey,
-                  defaultIsBookable: row.is_bookable,
-                  colour: '#6366f1',
-                },
-                select: { id: true, defaultIsBookable: true },
-              })
-              categoryEntry = { id: created.id, defaultIsBookable: created.defaultIsBookable }
-            }
-            categoryCache.set(categoryKey, categoryEntry)
-          }
+          // Already resolved for every distinct category name in the batch,
+          // above, before this transaction started.
+          const categoryEntry = categoryCache.get(row.asset_category.trim())!
 
           // ── Asset ──────────────────────────────────────────────────────────
           const amenities = row.asset_amenities

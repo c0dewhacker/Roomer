@@ -6,23 +6,50 @@ import { buildAuthorizationUrl, authorizationCodeGrant, fetchUserInfo, skipSubje
 import { getSamlConfig, buildSaml, extractEmailFromProfile, extractDisplayNameFromProfile, extractGroupsFromProfile, extractDepartmentFromProfile, extractManagerFromProfile, type SamlProfile } from '../lib/saml.js'
 import { applyGroupMappings, recordLastIdpGroups } from '../lib/group-mapping.js'
 import { recordManagerRef, resolveManagerForUser } from '../lib/manager.js'
+import { findOrCreateDepartment } from '../lib/department.js'
 import { signAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE } from '../lib/jwt.js'
 import type { User } from '@prisma/client'
+import { recordAuditLog } from '../lib/audit.js'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+type SsoUserResult =
+  | { ok: true; user: User }
+  | { ok: false; error: 'blocked' | 'local_password_conflict' | 'identity_mismatch' }
 
 async function findOrCreateSsoUser(
   email: string,
   displayName: string,
   provider: 'OIDC' | 'SAML',
   externalId?: string,
-) {
+  ipAddress?: string,
+): Promise<SsoUserResult> {
   // Case-insensitive lookup, same reasoning as the local-login and LDAP paths
   // in auth.ts: the IdP-provided email claim isn't guaranteed to match the
   // case of an existing account (e.g. one created by an admin, or synced via
   // LDAP, which does lowercase). upsert()'s where must be an exact unique
   // match, so it can't do this directly — find first, then update or create.
   const existing = await prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } })
+
+  // A local-password account is never silently linked to an SSO identity —
+  // mirrors the `if (!user?.passwordHash)` guard auth.ts's LDAP path already
+  // applies. Without this, an IdP asserting the email of an existing local
+  // account (e.g. one created before SSO was enabled, or by an admin) would
+  // log the caller in AS that account — inheriting its role — with no
+  // password ever checked.
+  if (existing?.passwordHash) {
+    return { ok: false, error: 'local_password_conflict' }
+  }
+
+  // An account already linked to a DIFFERENT external identity is never
+  // silently re-pointed by a login asserting the same email — otherwise a
+  // reprovisioned IdP identity (e.g. an email address recycled to a new
+  // employee after the previous one left) would quietly inherit the
+  // previous person's entire account, role, and booking history.
+  if (existing?.externalId && externalId && existing.externalId !== externalId) {
+    return { ok: false, error: 'identity_mismatch' }
+  }
+
   const user = existing
     ? await prisma.user.update({
         where: { id: existing.id },
@@ -40,8 +67,20 @@ async function findOrCreateSsoUser(
           passwordHash: null,
         },
       })
-  if (user.accountStatus === 'BLOCKED') return null
-  return user
+  // actorId: null — IdP-driven JIT provisioning triggered by the user's own
+  // login, not a human admin action, same reasoning as SCIM/LDAP JIT (Batch A,
+  // auth.ts). A provider-specific action name lets a reviewer tell provenance
+  // (and which IdP) apart at a glance.
+  await recordAuditLog(prisma, {
+    actorId: null,
+    action: existing ? `user.${provider.toLowerCase()}_updated` : `user.${provider.toLowerCase()}_created`,
+    resourceType: 'User',
+    resourceId: user.id,
+    after: { email: user.email, displayName: user.displayName, externalId: user.externalId },
+    ipAddress,
+  })
+  if (user.accountStatus === 'BLOCKED') return { ok: false, error: 'blocked' }
+  return { ok: true, user }
 }
 
 /**
@@ -175,16 +214,23 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
         return reply.redirect(`${env.APP_URL}/login?error=oidc_email_unverified`)
       }
 
-      const user = await findOrCreateSsoUser(email, displayName ?? email, 'OIDC', userinfo.sub)
-      if (!user) {
-        return reply.redirect(`${env.APP_URL}/login?error=account_blocked`)
+      const ssoResult = await findOrCreateSsoUser(email, displayName ?? email, 'OIDC', userinfo.sub, request.ip)
+      if (!ssoResult.ok) {
+        const errorCode = ssoResult.error === 'blocked' ? 'account_blocked' : `oidc_${ssoResult.error}`
+        return reply.redirect(`${env.APP_URL}/login?error=${errorCode}`)
       }
+      const user = ssoResult.user
 
       const groupsClaimName = cfg.groupsClaimName ?? 'groups'
       const rawGroups = (userinfo as Record<string, unknown>)[groupsClaimName]
       const idpGroups = Array.isArray(rawGroups) ? rawGroups.map(String) : []
       await recordLastIdpGroups(user.id, idpGroups)
-      if (idpGroups.length && cfg.groupMappings?.length) {
+      // Deliberately does NOT require idpGroups.length here: an empty array is
+      // exactly the "user was removed from every mapped group" signal that must
+      // reach applyGroupMappings so its sync=true eviction/demotion logic can
+      // run — gating this on a non-empty claim silently skipped revocation for
+      // a fully-deprovisioned user on every subsequent login.
+      if (cfg.groupMappings?.length) {
         await applyGroupMappings(user.id, idpGroups, cfg.groupMappings, true)
       }
 
@@ -196,11 +242,7 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
         if (deptName) {
           const org = await prisma.organisation.findFirst({ select: { id: true } })
           if (org) {
-            const dept = await prisma.department.upsert({
-              where: { organisationId_name: { organisationId: org.id, name: deptName } },
-              create: { organisationId: org.id, name: deptName },
-              update: {},
-            })
+            const dept = await findOrCreateDepartment(org.id, deptName)
             await prisma.user.update({ where: { id: user.id }, data: { departmentId: dept.id } })
           }
         }
@@ -265,14 +307,21 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
         return reply.redirect(`${env.APP_URL}/login?error=saml_no_email`)
       }
 
-      const user = await findOrCreateSsoUser(email, displayName, 'SAML', profile.nameID)
-      if (!user) {
-        return reply.redirect(`${env.APP_URL}/login?error=account_blocked`)
+      const ssoResult = await findOrCreateSsoUser(email, displayName, 'SAML', profile.nameID, request.ip)
+      if (!ssoResult.ok) {
+        const errorCode = ssoResult.error === 'blocked' ? 'account_blocked' : `saml_${ssoResult.error}`
+        return reply.redirect(`${env.APP_URL}/login?error=${errorCode}`)
       }
+      const user = ssoResult.user
 
       const idpGroups = extractGroupsFromProfile(samlProfile, cfg.groupAttribute)
       await recordLastIdpGroups(user.id, idpGroups)
-      if (idpGroups.length && cfg.groupMappings?.length) {
+      // Deliberately does NOT require idpGroups.length here: an empty array is
+      // exactly the "user was removed from every mapped group" signal that must
+      // reach applyGroupMappings so its sync=true eviction/demotion logic can
+      // run — gating this on a non-empty claim silently skipped revocation for
+      // a fully-deprovisioned user on every subsequent login.
+      if (cfg.groupMappings?.length) {
         await applyGroupMappings(user.id, idpGroups, cfg.groupMappings, true)
       }
 
@@ -280,11 +329,7 @@ export async function enterpriseAuthRoutes(fastify: FastifyInstance): Promise<vo
       if (deptName) {
         const org = await prisma.organisation.findFirst({ select: { id: true } })
         if (org) {
-          const dept = await prisma.department.upsert({
-            where: { organisationId_name: { organisationId: org.id, name: deptName } },
-            create: { organisationId: org.id, name: deptName },
-            update: {},
-          })
+          const dept = await findOrCreateDepartment(org.id, deptName)
           await prisma.user.update({ where: { id: user.id }, data: { departmentId: dept.id } })
         }
       }

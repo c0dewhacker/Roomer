@@ -6,10 +6,12 @@ import { GlobalRole, ResourceRoleType, ResourceScopeType, RoleSource } from '@ro
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole } from '../middleware/requireRole.js'
 import { enqueueNotification, cancelFutureBookingsForUser, cancelQueueEntriesForUser, releaseAssetAssignmentsForUser } from '../lib/queue.js'
+import { lockSuperAdminGuard, wouldRemoveLastActiveSuperAdmin } from '../lib/group-mapping.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { NotificationType } from '@roomer/shared'
 import { signAccessToken, verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE } from '../lib/jwt.js'
 import { blockToken } from '../lib/token-blocklist.js'
+import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
 const createUserSchema = z.object({
@@ -39,6 +41,13 @@ const updateUserSchema = z.object({
 const notificationPrefValueSchema = z.object({
   email: z.boolean().optional(),
   inApp: z.boolean().optional(),
+  // Added for Web Push (#76 phase 2) — queue.ts's processSendNotification
+  // and ProfilePage.tsx's toggle UI both already read/write this field;
+  // this schema (the actual PATCH validation) was never updated to match,
+  // so a push preference change was silently stripped by Zod's default
+  // strip-unknown-keys behaviour before it ever reached the DB — the UI
+  // showed "saved" but the toggle reverted to on-by-default on next load.
+  push: z.boolean().optional(),
 })
 
 const updateNotificationPreferencesSchema = z.object({
@@ -75,9 +84,16 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Users'], ...route.schema } })
 
   // POST /users — create user (admin)
+  // Every other endpoint that can trigger an outbound email to an
+  // attacker-influenced address (login, refresh, password-change/reset) has
+  // its own per-route limit bounding a compromised-session blast radius —
+  // this one only had the blanket 300/min global default, letting a
+  // hijacked SUPER_ADMIN session email-bomb arbitrary third-party inboxes
+  // via the WELCOME notification. Same 30/15min precedent as
+  // /:id/password/reset below.
   fastify.post(
     '/',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)], config: { rateLimit: { max: 30, timeWindow: '15 minutes' } } },
     async (request, reply) => {
       const result = createUserSchema.safeParse(request.body)
       if (!result.success) {
@@ -123,6 +139,14 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       )
 
       dispatchWebhook('user.created', { id: user.id, email: user.email, displayName: user.displayName, globalRole: user.globalRole }).catch(() => {})
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user.created',
+        resourceType: 'User',
+        resourceId: user.id,
+        after: { email: user.email, displayName: user.displayName, globalRole: user.globalRole },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(201).send({ data: user })
     },
@@ -179,6 +203,43 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       })
     },
   )
+
+  // GET /users/search — colleague picker for any authenticated user (transfer
+  // a booking, propose a swap, add someone to an asset's allow list). Deliberately
+  // separate from GET / above (which stays SUPER_ADMIN-only, admin-only fields,
+  // paginated) rather than loosening that route's auth — this returns just
+  // enough to render a name+email picker row and nothing else (no globalRole,
+  // accountStatus, provider, etc.), the same minimal shape GET /directory/whereabouts
+  // already uses for the colleague-finder feature. Registered before /:id so
+  // "search" is never captured as a user id.
+  fastify.get('/search', { preHandler: [requireAuth] }, async (request, reply) => {
+    const result = z.object({ q: z.string().min(2).max(255) }).safeParse(request.query)
+    if (!result.success) {
+      return reply.status(200).send({ data: [] })
+    }
+    // A user who opted out of "Show me in Who's In" was promised (ProfilePage)
+    // they "won't appear in Who's In or colleague search" — this endpoint's
+    // own name is "colleague picker," so it's exactly the surface that
+    // promise covers, same visibility rule GET /directory/whereabouts already
+    // applies. Unlike the floor plan (a deliberate, separately-documented
+    // exception — see #219, whose fix updated this exact copy to carve it
+    // out explicitly), nothing carves this endpoint out of the promise, so
+    // it must honour it too.
+    const visibility = { OR: [{ visibleInColleagueSearch: true }, { id: request.user.id }] }
+    const users = await prisma.user.findMany({
+      where: {
+        accountStatus: 'ACTIVE',
+        AND: [visibility, { OR: [
+          { email: { contains: result.data.q, mode: 'insensitive' as const } },
+          { displayName: { contains: result.data.q, mode: 'insensitive' as const } },
+        ] }],
+      },
+      select: { id: true, email: true, displayName: true },
+      orderBy: { displayName: 'asc' },
+      take: 20,
+    })
+    return reply.status(200).send({ data: users })
+  })
 
   // GET /users/:id — get user
   fastify.get('/:id', { preHandler: [requireAuth] }, async (request, reply) => {
@@ -246,43 +307,56 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    // Guard against removing the last active super admin (would lock the org out).
+    // Guard against removing the last active super admin (would lock the org
+    // out). lockSuperAdminGuard + wouldRemoveLastActiveSuperAdmin run inside
+    // the same transaction as the update itself so two concurrent requests
+    // demoting two *different* admins (the only two active ones) can't both
+    // pass the check before either commits and leave zero.
     const demotesAdmin = result.data.globalRole !== undefined && result.data.globalRole !== GlobalRole.SUPER_ADMIN
     const blocksAccount = result.data.accountStatus === 'BLOCKED'
-    if (demotesAdmin || blocksAccount) {
-      const target = await prisma.user.findUnique({ where: { id }, select: { globalRole: true, accountStatus: true } })
-      if (target?.globalRole === GlobalRole.SUPER_ADMIN && target.accountStatus === 'ACTIVE') {
-        const otherActiveAdmins = await prisma.user.count({
-          where: { id: { not: id }, globalRole: GlobalRole.SUPER_ADMIN, accountStatus: 'ACTIVE' },
-        })
-        if (otherActiveAdmins === 0) {
-          return reply.status(409).send({
-            error: { message: 'Cannot remove the last active super admin', code: 'LAST_SUPER_ADMIN' },
-          })
-        }
-      }
-    }
 
     try {
-      const updated = await prisma.user.update({
-        where: { id },
-        data: {
-          ...result.data,
-          // An admin explicitly setting the role marks it MANUAL so directory
-          // sync will not later downgrade it.
-          ...(result.data.globalRole !== undefined ? { globalRoleSource: RoleSource.MANUAL } : {}),
-        },
-        select: {
-          id: true,
-          email: true,
-          displayName: true,
-          provider: true,
-          accountStatus: true,
-          globalRole: true,
-          visibleInColleagueSearch: true,
-          createdAt: true,
-          updatedAt: true,
-        },
+      const updated = await prisma.$transaction(async (tx) => {
+        if (demotesAdmin || blocksAccount) {
+          await lockSuperAdminGuard(tx)
+          if (await wouldRemoveLastActiveSuperAdmin(tx, id)) {
+            throw Object.assign(new Error('LAST_SUPER_ADMIN'), { code: 'LAST_SUPER_ADMIN' })
+          }
+        }
+        const before = await tx.user.findUnique({
+          where: { id },
+          select: { displayName: true, accountStatus: true, globalRole: true, visibleInColleagueSearch: true },
+        })
+        const updated = await tx.user.update({
+          where: { id },
+          data: {
+            ...result.data,
+            // An admin explicitly setting the role marks it MANUAL so directory
+            // sync will not later downgrade it.
+            ...(result.data.globalRole !== undefined ? { globalRoleSource: RoleSource.MANUAL } : {}),
+          },
+          select: {
+            id: true,
+            email: true,
+            displayName: true,
+            provider: true,
+            accountStatus: true,
+            globalRole: true,
+            visibleInColleagueSearch: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        })
+        await recordAuditLog(tx, {
+          actorId: request.user.id,
+          action: result.data.accountStatus === 'BLOCKED' ? 'user.suspended' : 'user.updated',
+          resourceType: 'User',
+          resourceId: id,
+          before,
+          after: { displayName: updated.displayName, accountStatus: updated.accountStatus, globalRole: updated.globalRole, visibleInColleagueSearch: updated.visibleInColleagueSearch },
+          ipAddress: request.ip,
+        }, request.log)
+        return updated
       })
 
       if (result.data.accountStatus === 'BLOCKED') {
@@ -298,7 +372,13 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       return reply.status(200).send({ data: updated })
-    } catch {
+    } catch (err: unknown) {
+      const e = err as { code?: string }
+      if (e?.code === 'LAST_SUPER_ADMIN') {
+        return reply.status(409).send({
+          error: { message: 'Cannot remove the last active super admin', code: 'LAST_SUPER_ADMIN' },
+        })
+      }
       return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })
     }
   })
@@ -309,7 +389,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       where: { id: request.user.id },
       select: { notificationPreferences: true },
     })
-    const preferences = (user?.notificationPreferences ?? {}) as Record<string, { email?: boolean; inApp?: boolean }>
+    const preferences = (user?.notificationPreferences ?? {}) as Record<string, { email?: boolean; inApp?: boolean; push?: boolean }>
     return reply.status(200).send({ data: { preferences } })
   })
 
@@ -322,10 +402,20 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
+    const before = await prisma.user.findUnique({ where: { id: request.user.id }, select: { notificationPreferences: true } })
     await prisma.user.update({
       where: { id: request.user.id },
       data: { notificationPreferences: result.data.preferences },
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'user.notification_preferences_updated',
+      resourceType: 'User',
+      resourceId: request.user.id,
+      before: before?.notificationPreferences ?? null,
+      after: result.data.preferences,
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(200).send({ data: { ok: true } })
   })
@@ -361,6 +451,14 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       where: { id: request.user.id },
       data: { passwordHash: newHash, passwordChangedAt: new Date() },
     })
+    // Never log password hashes — only the fact that a change happened.
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'user.password_changed',
+      resourceType: 'User',
+      resourceId: request.user.id,
+      ipAddress: request.ip,
+    }, request.log)
 
     // requireAuth now rejects any token issued before passwordChangedAt, which
     // would otherwise also log the caller out of the session they just used to
@@ -416,6 +514,14 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
         where: { id },
         data: { passwordHash: newHash, passwordChangedAt: new Date() },
       })
+      // Never log password hashes — only that an admin reset this user's password.
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user.password_reset_by_admin',
+        resourceType: 'User',
+        resourceId: id,
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     },
   )
@@ -534,6 +640,10 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     const [bookings, total] = await Promise.all([
       prisma.booking.findMany({
         where: { userId: id },
+        // guestCheckInToken is a bare, unauthenticated credential — never
+        // surfaced outside the invite email actually sent to the guest,
+        // not even to an admin looking up this user's own booking history.
+        omit: { guestCheckInToken: true },
         include: {
           asset: {
             include: {
@@ -583,22 +693,52 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
         })
       }
 
-      try {
-        const role = await prisma.userResourceRole.create({
-          data: {
-            userId: id,
-            role: result.data.role,
-            scopeType: result.data.scopeType,
-            buildingId: result.data.buildingId ?? null,
-            floorId: result.data.floorId ?? null,
-          },
-        })
-        return reply.status(201).send({ data: role })
-      } catch {
+      // The unique index on UserResourceRole is (userId, scopeType, buildingId,
+      // floorId), but a BUILDING-scope row always has floorId NULL and a
+      // FLOOR-scope row always has buildingId NULL — Postgres treats NULL <>
+      // NULL for uniqueness, so that constraint never actually fires for
+      // either scope and the same user could be assigned the same role twice.
+      // POST /buildings/:id/managers already guards its equivalent case with
+      // this same explicit findFirst (see its own comment) — this generic
+      // endpoint (the *only* grant path for FLOOR_MANAGER; there is no
+      // POST /floors/:id/managers) never had it. Without this, revoking one
+      // of the two duplicate grants via DELETE below (which deletes exactly
+      // the row id given, correctly for a single grant) left the other
+      // grant — and therefore the access — silently in place, looking to the
+      // admin like a successful, complete revocation.
+      const existing = await prisma.userResourceRole.findFirst({
+        where: {
+          userId: id,
+          role: result.data.role,
+          scopeType: result.data.scopeType,
+          buildingId: result.data.buildingId ?? null,
+          floorId: result.data.floorId ?? null,
+        },
+      })
+      if (existing) {
         return reply.status(409).send({
           error: { message: 'Role already assigned', code: 'ALREADY_EXISTS' },
         })
       }
+
+      const role = await prisma.userResourceRole.create({
+        data: {
+          userId: id,
+          role: result.data.role,
+          scopeType: result.data.scopeType,
+          buildingId: result.data.buildingId ?? null,
+          floorId: result.data.floorId ?? null,
+        },
+      })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user_resource_role.granted',
+        resourceType: 'UserResourceRole',
+        resourceId: role.id,
+        after: { userId: id, role: role.role, scopeType: role.scopeType, buildingId: role.buildingId, floorId: role.floorId },
+        ipAddress: request.ip,
+      }, request.log)
+      return reply.status(201).send({ data: role })
     },
   )
 
@@ -610,9 +750,17 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       const { id, roleId } = request.params as { id: string; roleId: string }
 
       try {
-        await prisma.userResourceRole.delete({
+        const deleted = await prisma.userResourceRole.delete({
           where: { id: roleId, userId: id },
         })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'user_resource_role.revoked',
+          resourceType: 'UserResourceRole',
+          resourceId: roleId,
+          before: { userId: deleted.userId, role: deleted.role, scopeType: deleted.scopeType, buildingId: deleted.buildingId, floorId: deleted.floorId },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: { ok: true } })
       } catch {
         return reply.status(404).send({ error: { message: 'Role not found', code: 'NOT_FOUND' } })
@@ -623,9 +771,12 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /users/bulk-import — CSV user import with optional group assignments (SUPER_ADMIN)
   // Body: { rows: Array<{ email, display_name, password?, global_role?, access_groups?, send_welcome_email? }> }
   // access_groups: semicolon-separated group names (looked up by name, case-insensitive)
+  // Tighter than the single-create limit above: one call here can already
+  // create hundreds of users (and WELCOME emails) at once, so the
+  // legitimate use case needs far fewer repeated calls than 30/15min.
   fastify.post(
     '/bulk-import',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)], config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } },
     async (request, reply) => {
       const body = userImportBodySchema.safeParse(request.body)
       if (!body.success) {
@@ -690,20 +841,27 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
             // column defaults every row to 'USER' (see userImportRowSchema), so
             // an "all employees" import that happens to include the org's sole
             // super admin would otherwise silently demote them and lock the org
-            // out with no path back except direct DB access.
-            let nextGlobalRole: typeof existing.globalRole = row.global_role as typeof existing.globalRole
-            if (existing.globalRole === GlobalRole.SUPER_ADMIN && existing.accountStatus === 'ACTIVE' && nextGlobalRole !== GlobalRole.SUPER_ADMIN) {
-              const otherActiveAdmins = await prisma.user.count({
-                where: { id: { not: existing.id }, globalRole: GlobalRole.SUPER_ADMIN, accountStatus: 'ACTIVE' },
-              })
-              if (otherActiveAdmins === 0) {
-                nextGlobalRole = existing.globalRole
-                errors.push({ row: index + 2, message: `Cannot demote ${row.email} — they are the last active super admin; role left unchanged` })
+            // out with no path back except direct DB access. lockSuperAdminGuard
+            // serialises this against the other three guarded paths (PATCH
+            // /users/:id, IdP group-mapping sync, SCIM) so a concurrent request
+            // demoting a different admin can't race this row past the check.
+            const couldDemote = existing.globalRole === GlobalRole.SUPER_ADMIN
+              && existing.accountStatus === 'ACTIVE'
+              && (row.global_role as typeof existing.globalRole) !== GlobalRole.SUPER_ADMIN
+
+            await prisma.$transaction(async (tx) => {
+              let nextGlobalRole: typeof existing.globalRole = row.global_role as typeof existing.globalRole
+              if (couldDemote) {
+                await lockSuperAdminGuard(tx)
+                if (await wouldRemoveLastActiveSuperAdmin(tx, existing.id)) {
+                  nextGlobalRole = existing.globalRole
+                  errors.push({ row: index + 2, message: `Cannot demote ${row.email} — they are the last active super admin; role left unchanged` })
+                }
               }
-            }
-            await prisma.user.update({
-              where: { email: row.email },
-              data: { displayName: row.display_name, globalRole: nextGlobalRole },
+              await tx.user.update({
+                where: { email: row.email },
+                data: { displayName: row.display_name, globalRole: nextGlobalRole },
+              })
             })
             userId = existing.id
             updated++
@@ -716,6 +874,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
             })
             userId = user.id
             created++
+            dispatchWebhook('user.created', { id: userId, email: row.email, displayName: row.display_name, globalRole: row.global_role as GlobalRole }).catch(() => {})
             if (row.send_welcome_email) {
               enqueueNotification({ type: NotificationType.WELCOME, userId }).catch(() => {})
             }
@@ -738,6 +897,17 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
           errors.push({ row: index + 2, message: err instanceof Error ? err.message : 'Unknown error' })
         }
       }
+
+      // One summary row for the whole batch, not one per imported user — this
+      // can create/update hundreds of rows in a single call.
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user.bulk_imported',
+        resourceType: 'User',
+        resourceId: crypto.randomUUID(),
+        after: { createdCount: created, updatedCount: updated, errorCount: errors.length, totalRows: validRows.length },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(200).send({ data: { created, updated, errors } })
     },

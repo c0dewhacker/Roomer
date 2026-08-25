@@ -7,6 +7,7 @@ import { requireGlobalRole } from '../middleware/requireRole.js'
 import { GlobalRole } from '@roomer/shared'
 import { WEBHOOK_EVENTS, assertPublicWebhookUrl, dispatchPing } from '../lib/webhook.js'
 import { encrypt } from '../lib/encryption.js'
+import { recordAuditLog } from '../lib/audit.js'
 
 const createEndpointSchema = z.object({
   url: z.string().url(),
@@ -36,7 +37,7 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/', { preHandler: adminGuard }, async (_req, reply) => {
     const endpoints = await prisma.webhookEndpoint.findMany({
       orderBy: { createdAt: 'asc' },
-      select: { id: true, url: true, events: true, enabled: true, createdAt: true, updatedAt: true },
+      select: { id: true, url: true, events: true, enabled: true, consecutiveFailures: true, lastSuccessAt: true, createdAt: true, updatedAt: true },
     })
     return reply.send({ data: endpoints })
   })
@@ -61,8 +62,18 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
         events: result.data.events,
         enabled: result.data.enabled ?? true,
       },
-      select: { id: true, url: true, events: true, enabled: true, createdAt: true, updatedAt: true },
+      select: { id: true, url: true, events: true, enabled: true, consecutiveFailures: true, lastSuccessAt: true, createdAt: true, updatedAt: true },
     })
+    // The signing secret is never logged, plaintext or encrypted — same
+    // reasoning as every other secret in this codebase's audit trail.
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'webhook_endpoint.created',
+      resourceType: 'WebhookEndpoint',
+      resourceId: endpoint.id,
+      after: { url: endpoint.url, events: endpoint.events, enabled: endpoint.enabled },
+      ipAddress: request.ip,
+    }, request.log)
     // Return the plaintext secret exactly once so the admin can configure the receiver.
     return reply.status(201).send({ data: { ...endpoint, secret } })
   })
@@ -90,8 +101,17 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
     const endpoint = await prisma.webhookEndpoint.update({
       where: { id },
       data: { ...rest, ...(secret !== undefined ? { secret: encrypt(secret) } : {}) },
-      select: { id: true, url: true, events: true, enabled: true, createdAt: true, updatedAt: true },
+      select: { id: true, url: true, events: true, enabled: true, consecutiveFailures: true, lastSuccessAt: true, createdAt: true, updatedAt: true },
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'webhook_endpoint.updated',
+      resourceType: 'WebhookEndpoint',
+      resourceId: id,
+      before: { url: existing.url, events: existing.events, enabled: existing.enabled },
+      after: { url: endpoint.url, events: endpoint.events, enabled: endpoint.enabled, secretRotated: secret !== undefined },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.send({ data: endpoint })
   })
 
@@ -101,17 +121,39 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
     const existing = await prisma.webhookEndpoint.findUnique({ where: { id } })
     if (!existing) return reply.status(404).send({ error: { message: 'Webhook endpoint not found', code: 'NOT_FOUND' } })
     await prisma.webhookEndpoint.delete({ where: { id } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'webhook_endpoint.deleted',
+      resourceType: 'WebhookEndpoint',
+      resourceId: id,
+      before: { url: existing.url, events: existing.events, enabled: existing.enabled },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.send({ data: { ok: true } })
   })
 
-  // POST /webhooks/:id/ping — send a test ping to this endpoint only
-  fastify.post('/:id/ping', { preHandler: adminGuard }, async (request, reply) => {
+  // POST /webhooks/:id/ping — send a test ping to this endpoint only. Rate
+  // limited like other admin actions that make a real outbound request to an
+  // admin-chosen URL (see floor-plan upload) — SSRF protection already makes
+  // this safe against reaching internal addresses, but nothing previously
+  // bounded how many real requests a session could fire at one external URL.
+  fastify.post('/:id/ping', { preHandler: adminGuard, config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { id } = request.params as { id: string }
     const existing = await prisma.webhookEndpoint.findUnique({ where: { id } })
     if (!existing) return reply.status(404).send({ error: { message: 'Webhook endpoint not found', code: 'NOT_FOUND' } })
     // Deliver a ping to exactly this endpoint — does not touch enabled state and
     // does not fan out to other endpoints.
     await dispatchPing(id)
+    // Every other action here (create/update/delete) is audited — a ping is a
+    // real outbound request to an admin-chosen URL and was the one action on
+    // this resource left with no audit trail at all.
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'webhook_endpoint.pinged',
+      resourceType: 'WebhookEndpoint',
+      resourceId: id,
+      ipAddress: request.ip,
+    }, request.log)
     return reply.send({ data: { ok: true } })
   })
 

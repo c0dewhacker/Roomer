@@ -1,8 +1,39 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { checkGroupAccess } from './groups.js'
+import { recordAuditLog } from '../lib/audit.js'
+
+const subscriptionInclude = {
+  floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
+  zones: { include: { zone: { select: { id: true, name: true, colour: true } } } },
+} as const
+
+// Replaces a subscription's zone set atomically. Wrapping delete+recreate in
+// a transaction alone is not enough: under READ COMMITTED, neither
+// transaction's INSERT conflicts with the other's DELETE, so two concurrent
+// replace requests for the same subscription can still interleave (A
+// deletes, B deletes, B inserts, A inserts) and leave the union of both zone
+// sets instead of either one. Explicitly locking the parent row first forces
+// the second transaction to wait for the first to fully commit before it
+// reads/deletes/inserts anything, so the result is always a clean replace.
+async function replaceSubscriptionZones(subscriptionId: string, zoneIds: string[]) {
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "FloorSubscription" WHERE id = ${subscriptionId} FOR UPDATE`
+    await tx.floorSubscriptionZone.deleteMany({ where: { subscriptionId } })
+    if (zoneIds.length > 0) {
+      await tx.floorSubscriptionZone.createMany({
+        data: zoneIds.map((zoneId) => ({ subscriptionId, zoneId })),
+      })
+    }
+    return tx.floorSubscription.findUniqueOrThrow({
+      where: { id: subscriptionId },
+      include: subscriptionInclude,
+    })
+  })
+}
 
 const createSchema = z.object({
   floorId: z.string().min(1),
@@ -20,10 +51,7 @@ export async function subscriptionRoutes(fastify: FastifyInstance): Promise<void
   fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
     const subs = await prisma.floorSubscription.findMany({
       where: { userId: request.user.id },
-      include: {
-        floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
-        zones: { include: { zone: { select: { id: true, name: true, colour: true } } } },
-      },
+      include: subscriptionInclude,
       orderBy: { createdAt: 'asc' },
     })
     return reply.status(200).send({ data: subs })
@@ -68,40 +96,64 @@ export async function subscriptionRoutes(fastify: FastifyInstance): Promise<void
       where: { userId_floorId: { userId: request.user.id, floorId } },
     })
 
-    let sub
     if (existing) {
-      // Delete existing zones and replace
-      await prisma.floorSubscriptionZone.deleteMany({ where: { subscriptionId: existing.id } })
-      if (zoneIds && zoneIds.length > 0) {
-        await prisma.floorSubscriptionZone.createMany({
-          data: zoneIds.map((zoneId) => ({ subscriptionId: existing.id, zoneId })),
-        })
-      }
-      sub = await prisma.floorSubscription.findUnique({
-        where: { id: existing.id },
-        include: {
-          floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
-          zones: { include: { zone: { select: { id: true, name: true, colour: true } } } },
-        },
-      })
+      const sub = await replaceSubscriptionZones(existing.id, zoneIds ?? [])
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'floor_subscription.updated',
+        resourceType: 'FloorSubscription',
+        resourceId: existing.id,
+        after: { floorId, zoneIds: zoneIds ?? [] },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: sub })
     }
 
-    sub = await prisma.floorSubscription.create({
-      data: {
-        userId: request.user.id,
-        floorId,
-        zones: zoneIds && zoneIds.length > 0
-          ? { create: zoneIds.map((zoneId) => ({ zoneId })) }
-          : undefined,
-      },
-      include: {
-        floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
-        zones: { include: { zone: { select: { id: true, name: true, colour: true } } } },
-      },
-    })
+    let created
+    try {
+      created = await prisma.floorSubscription.create({
+        data: {
+          userId: request.user.id,
+          floorId,
+          zones: zoneIds && zoneIds.length > 0
+            ? { create: zoneIds.map((zoneId) => ({ zoneId })) }
+            : undefined,
+        },
+        include: subscriptionInclude,
+      })
+    } catch (err) {
+      // Two concurrent first-time subscribes for the same user+floor both see
+      // `existing === null` and both attempt create — the second hits the
+      // userId_floorId unique constraint. Treat it the same as the existing-
+      // subscription branch above rather than surfacing a raw 500.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        const raced = await prisma.floorSubscription.findUniqueOrThrow({
+          where: { userId_floorId: { userId: request.user.id, floorId } },
+        })
+        const sub = await replaceSubscriptionZones(raced.id, zoneIds ?? [])
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'floor_subscription.updated',
+          resourceType: 'FloorSubscription',
+          resourceId: raced.id,
+          after: { floorId, zoneIds: zoneIds ?? [] },
+          ipAddress: request.ip,
+        }, request.log)
+        return reply.status(200).send({ data: sub })
+      }
+      throw err
+    }
 
-    return reply.status(201).send({ data: sub })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'floor_subscription.created',
+      resourceType: 'FloorSubscription',
+      resourceId: created.id,
+      after: { floorId, zoneIds: zoneIds ?? [] },
+      ipAddress: request.ip,
+    }, request.log)
+
+    return reply.status(201).send({ data: created })
   })
 
   // PUT /subscriptions/:id — update zone selection
@@ -136,20 +188,15 @@ export async function subscriptionRoutes(fastify: FastifyInstance): Promise<void
       }
     }
 
-    await prisma.floorSubscriptionZone.deleteMany({ where: { subscriptionId: id } })
-    if (zoneIds.length > 0) {
-      await prisma.floorSubscriptionZone.createMany({
-        data: zoneIds.map((zoneId) => ({ subscriptionId: id, zoneId })),
-      })
-    }
-
-    const updated = await prisma.floorSubscription.findUnique({
-      where: { id },
-      include: {
-        floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
-        zones: { include: { zone: { select: { id: true, name: true, colour: true } } } },
-      },
-    })
+    const updated = await replaceSubscriptionZones(id, zoneIds)
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'floor_subscription.updated',
+      resourceType: 'FloorSubscription',
+      resourceId: id,
+      after: { zoneIds },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: updated })
   })
 
@@ -166,6 +213,14 @@ export async function subscriptionRoutes(fastify: FastifyInstance): Promise<void
     }
 
     await prisma.floorSubscription.delete({ where: { id } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'floor_subscription.deleted',
+      resourceType: 'FloorSubscription',
+      resourceId: id,
+      before: { floorId: sub.floorId },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 }

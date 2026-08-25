@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { User, Mail, Shield, Building2, Layers, Users, KeyRound, Bell, BellOff, MapPin, EyeOff } from 'lucide-react'
+import { User, Mail, Shield, Building2, Layers, Users, KeyRound, Bell, BellOff, MapPin, EyeOff, Smartphone } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { usersApi } from '@/lib/api'
@@ -15,6 +15,21 @@ import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { useFloorSubscriptions, useUnsubscribeFromFloor } from '@/hooks/useSubscriptions'
+import { useMyManagerRequests, useWithdrawManagerRequest } from '@/hooks/useManagerRequests'
+import { usePushSubscription } from '@/hooks/usePushSubscription'
+import type { ManagerRequestStatus } from '@/types'
+
+// Kept in sync with PUSH_ELIGIBLE_TYPES in apps/api/src/lib/queue.ts — the
+// backend silently ignores a push preference for any type outside this set,
+// so there's no point offering a toggle for the other 18.
+const PUSH_ELIGIBLE_TYPES: Array<{ key: string; label: string }> = [
+  { key: 'QUEUE_PROMOTED', label: 'Promoted from waitlist' },
+  { key: 'BOOKING_REMINDER', label: 'Booking reminder' },
+  { key: 'FLOOR_AVAILABLE', label: 'Floor availability alert' },
+  { key: 'BOOKING_TRANSFER_REQUESTED', label: 'Someone wants to transfer you a booking' },
+  { key: 'BOOKING_SWAP_REQUESTED', label: 'Someone wants to swap desks with you' },
+  { key: 'QUEUE_CLAIM_EXPIRING', label: 'Claim expiring soon' },
+]
 
 const profileSchema = z.object({
   displayName: z.string().min(2, 'Name must be at least 2 characters'),
@@ -45,7 +60,7 @@ const PROVIDER_COLOURS: Record<string, string> = {
   SAML: 'bg-violet-100 text-violet-700',
 }
 
-type NotifPref = { email?: boolean; inApp?: boolean }
+type NotifPref = { email?: boolean; inApp?: boolean; push?: boolean }
 
 const NOTIFICATION_GROUPS: Array<{ label: string; types: Array<{ key: string; label: string }> }> = [
   {
@@ -73,6 +88,60 @@ const NOTIFICATION_GROUPS: Array<{ label: string; types: Array<{ key: string; la
       { key: 'ASSET_ASSIGNED', label: 'Asset assigned to you' },
     ],
   },
+  // Transfers/swaps/manager-requests were added to NotificationType well
+  // after this list was first written and never got their own groups —
+  // the backend (queue.ts's processSendNotification) has always respected
+  // a per-user preference for all 24 types uniformly, but 12 of them had no
+  // toggle anywhere in the product, so they were silently non-optional.
+  {
+    label: 'Booking transfers',
+    types: [
+      { key: 'BOOKING_TRANSFER_REQUESTED', label: 'Someone wants to transfer you a booking' },
+      { key: 'BOOKING_TRANSFER_ACCEPTED', label: 'Your transfer was accepted' },
+      { key: 'BOOKING_TRANSFER_DECLINED', label: 'Your transfer was declined' },
+      { key: 'BOOKING_TRANSFER_EXPIRED', label: 'Your transfer request expired' },
+    ],
+  },
+  {
+    label: 'Desk swaps',
+    types: [
+      { key: 'BOOKING_SWAP_REQUESTED', label: 'Someone wants to swap desks with you' },
+      { key: 'BOOKING_SWAP_ACCEPTED', label: 'Your swap was accepted' },
+      { key: 'BOOKING_SWAP_DECLINED', label: 'Your swap was declined' },
+      { key: 'BOOKING_SWAP_EXPIRED', label: 'Your swap request expired' },
+    ],
+  },
+  {
+    label: 'Manager requests',
+    types: [
+      { key: 'MANAGER_REQUEST_SUBMITTED', label: 'Someone requested floor manager access' },
+      { key: 'MANAGER_REQUEST_APPROVED', label: 'Your access request was approved' },
+      { key: 'MANAGER_REQUEST_REJECTED', label: 'Your access request was declined' },
+      { key: 'MANAGER_REQUEST_EXPIRED', label: 'Your access request expired' },
+    ],
+  },
+  {
+    label: 'Leases',
+    types: [
+      { key: 'LEASE_EXPIRING', label: 'Lease expiring within 90 days' },
+      { key: 'LEASE_EXPIRED', label: 'Lease expired' },
+    ],
+  },
+  {
+    label: 'Booking approvals',
+    types: [
+      { key: 'BOOKING_PENDING_APPROVAL', label: 'Someone requested a booking that needs your approval' },
+      { key: 'BOOKING_APPROVED', label: 'Your booking request was approved' },
+      { key: 'BOOKING_REJECTED', label: 'Your booking request was declined' },
+    ],
+  },
+  {
+    label: 'Ballots',
+    types: [
+      { key: 'BALLOT_WON', label: 'You won a ballot' },
+      { key: 'BALLOT_LOST', label: 'Ballot results (not selected)' },
+    ],
+  },
   {
     label: 'Other',
     types: [
@@ -82,12 +151,13 @@ const NOTIFICATION_GROUPS: Array<{ label: string; types: Array<{ key: string; la
   },
 ]
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ checked, onChange, ariaLabel }: { checked: boolean; onChange: (v: boolean) => void; ariaLabel: string }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={ariaLabel}
       onClick={() => onChange(!checked)}
       className={`
         relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full
@@ -174,13 +244,16 @@ export default function ProfilePage() {
     onError: (err: Error) => toast.error(err.message),
   })
 
-  const handleToggle = (key: string, channel: 'email' | 'inApp', value: boolean) => {
+  const handleToggle = (key: string, channel: 'email' | 'inApp' | 'push', value: boolean) => {
     const next = { ...prefs, [key]: { ...prefs[key], [channel]: value } }
     setLocalPrefs(next)
   }
 
   const { data: subscriptions } = useFloorSubscriptions()
+  const { data: managerRequests } = useMyManagerRequests()
+  const withdrawManagerRequest = useWithdrawManagerRequest()
   const unsubscribe = useUnsubscribeFromFloor()
+  const push = usePushSubscription()
 
   if (!user) return null
 
@@ -450,10 +523,10 @@ export default function ProfilePage() {
                   <div key={key} className="grid grid-cols-[1fr_56px_56px] items-center gap-2">
                     <span className="text-sm">{label}</span>
                     <div className="flex justify-center">
-                      <Toggle checked={emailOn} onChange={(v) => handleToggle(key, 'email', v)} />
+                      <Toggle checked={emailOn} onChange={(v) => handleToggle(key, 'email', v)} ariaLabel={`Email notifications for ${label}`} />
                     </div>
                     <div className="flex justify-center">
-                      <Toggle checked={inAppOn} onChange={(v) => handleToggle(key, 'inApp', v)} />
+                      <Toggle checked={inAppOn} onChange={(v) => handleToggle(key, 'inApp', v)} ariaLabel={`In-app notifications for ${label}`} />
                     </div>
                   </div>
                 )
@@ -482,6 +555,79 @@ export default function ProfilePage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Push notifications — hidden entirely when unsupported by this
+          browser or not configured on this deployment (no VAPID keys set),
+          rather than showing a toggle that can never do anything. */}
+      {push.status !== 'unsupported' && push.status !== 'unconfigured' && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <Smartphone className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-base">Push notifications</CardTitle>
+            </div>
+            <CardDescription>Get time-sensitive alerts on this device, even when Roomer isn't open</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">This device</p>
+                <p className="text-xs text-muted-foreground">
+                  {push.status === 'subscribed' ? 'Enabled' : push.status === 'checking' ? 'Checking…' : 'Not enabled'}
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant={push.status === 'subscribed' ? 'outline' : 'default'}
+                disabled={push.busy || push.status === 'checking'}
+                onClick={() => (push.status === 'subscribed' ? push.unsubscribe() : push.subscribe())}
+              >
+                {push.status === 'subscribed' ? 'Disable' : 'Enable'}
+              </Button>
+            </div>
+
+            {push.status === 'subscribed' && (
+              <>
+                <Separator />
+                <div className="grid grid-cols-[1fr_56px] gap-2 pb-1 border-b">
+                  <span className="text-xs font-medium text-muted-foreground">Push for</span>
+                  <span className="text-xs font-medium text-muted-foreground text-center">On</span>
+                </div>
+                {PUSH_ELIGIBLE_TYPES.map(({ key, label }) => {
+                  const pushOn = (prefs[key] ?? {}).push !== false
+                  return (
+                    <div key={key} className="grid grid-cols-[1fr_56px] items-center gap-2">
+                      <span className="text-sm">{label}</span>
+                      <div className="flex justify-center">
+                        <Toggle checked={pushOn} onChange={(v) => handleToggle(key, 'push', v)} ariaLabel={`Push notifications for ${label}`} />
+                      </div>
+                    </div>
+                  )
+                })}
+                {localPrefs && (
+                  <div className="flex gap-2 pt-2">
+                    <Button
+                      size="sm"
+                      onClick={() => updatePreferences.mutate(localPrefs)}
+                      disabled={updatePreferences.isPending}
+                    >
+                      {updatePreferences.isPending ? 'Saving…' : 'Save preferences'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setLocalPrefs(null)}
+                      disabled={updatePreferences.isPending}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                )}
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Floor notification subscriptions */}
       {subscriptions && subscriptions.length > 0 && (
@@ -519,6 +665,58 @@ export default function ProfilePage() {
                 </Button>
               </div>
             ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Floor manager access requests */}
+      {managerRequests && managerRequests.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <Shield className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-base">Manager access requests</CardTitle>
+            </div>
+            <CardDescription>Your requests for floor manager access</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {managerRequests.map((r) => {
+              const statusClass: Record<ManagerRequestStatus, string> = {
+                PENDING: 'bg-yellow-100 text-yellow-800 border-yellow-200',
+                APPROVED: 'bg-green-100 text-green-800 border-green-200',
+                REJECTED: 'bg-red-100 text-red-700 border-red-200',
+                CANCELLED: 'bg-slate-100 text-slate-600 border-slate-200',
+                EXPIRED: 'bg-slate-100 text-slate-500 border-slate-200',
+              }
+              return (
+                <div key={r.id} className="flex items-center justify-between rounded-md border px-3 py-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium truncate">
+                      {r.floor?.building.name} — {r.floor?.name}
+                    </p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <Badge variant="outline" className={`text-xs border ${statusClass[r.status]}`}>
+                        {r.status === 'REJECTED' ? 'Declined' : r.status === 'CANCELLED' ? 'Withdrawn' : r.status.charAt(0) + r.status.slice(1).toLowerCase()}
+                      </Badge>
+                      {r.status === 'REJECTED' && r.reviewNote && (
+                        <span className="text-xs text-muted-foreground truncate">{r.reviewNote}</span>
+                      )}
+                    </div>
+                  </div>
+                  {r.status === 'PENDING' && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="shrink-0 ml-2 text-muted-foreground hover:text-destructive"
+                      onClick={() => withdrawManagerRequest.mutate(r.id)}
+                      disabled={withdrawManagerRequest.isPending}
+                    >
+                      Withdraw
+                    </Button>
+                  )}
+                </div>
+              )
+            })}
           </CardContent>
         </Card>
       )}

@@ -62,7 +62,7 @@ function AddAllowListDialog({
 
   const { data: users } = useQuery({
     queryKey: ['users', 'search', search],
-    queryFn: () => usersApi.list({ q: search, limit: 20 }),
+    queryFn: () => usersApi.search(search),
     select: (r) => r.data,
     enabled: search.length >= 2,
   })
@@ -146,7 +146,7 @@ function AddAssignmentDialog({
 
   const { data: users } = useQuery({
     queryKey: ['users', 'search', search],
-    queryFn: () => usersApi.list({ q: search, limit: 20 }),
+    queryFn: () => usersApi.search(search),
     select: (r) => r.data,
     enabled: search.length >= 2,
   })
@@ -517,11 +517,22 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   const [isRecurring, setIsRecurring] = useState(false)
   const [recurringFrequency, setRecurringFrequency] = useState<'DAILY' | 'WEEKLY' | 'MONTHLY'>('WEEKLY')
   const [recurringLastDate, setRecurringLastDate] = useState('')
+  const [attendeeCount, setAttendeeCount] = useState('')
+  const [isGuestBooking, setIsGuestBooking] = useState(false)
+  const [guestName, setGuestName] = useState('')
+  const [guestEmail, setGuestEmail] = useState('')
 
   // Keep endDate in sync when the floor page navigates to a different day
   useEffect(() => { setEndDate(date) }, [date])
   // Reset recurring state when a different asset is selected
   useEffect(() => { setIsRecurring(false); setRecurringFrequency('WEEKLY'); setRecurringLastDate('') }, [desk?.id])
+  // Reset the attendee count too — it's meaningless carried over to a
+  // different asset (and a previous room's headcount silently attaching to a
+  // newly-selected desk would be a confusing, wrong default).
+  useEffect(() => { setAttendeeCount('') }, [desk?.id])
+  // Same reasoning for the visitor fields — a different asset means a fresh
+  // booking, not "still booking for the same visitor as before".
+  useEffect(() => { setIsGuestBooking(false); setGuestName(''); setGuestEmail('') }, [desk?.id])
   const [showAdmin, setShowAdmin] = useState(false)
   const [editAssetOpen, setEditAssetOpen] = useState(false)
   const [addAllowListOpen, setAddAllowListOpen] = useState(false)
@@ -629,47 +640,28 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
     mutationFn: () => {
       const { startTime, endTime } = getRecurringTimes()
 
-      // The API has no concept of the booker's timezone — it takes startTime/
-      // endTime/dayOfWeek/firstDate and combines them as UTC wall-clock values
-      // (see buildSlotDatetime on the backend), unlike the regular one-off
-      // booking flow above, which sends real Date-derived instants that the
-      // browser converts to UTC automatically. Sending the raw local "HH:MM"
-      // here as if it were already UTC silently booked the wrong hours — often
-      // by several hours — for any deployment not running in UTC. Build a real
-      // local Date for the chosen start instant and read its UTC wall-clock
-      // components back instead, and re-derive firstDate/dayOfWeek from that
-      // same UTC-adjusted instant in case the conversion rolled onto a
-      // different UTC calendar day (e.g. an early-morning local start in a
-      // UTC+ timezone falls on the previous UTC date).
-      //
-      // Known residual limitation: if the local start/end range straddles the
-      // UTC day boundary (common for business hours in timezones far from UTC,
-      // e.g. Australia/NZ/Pacific), the API will reject it ("startTime must be
-      // before endTime") since it has no way to know endsAt lands on the next
-      // UTC date. Properly fixing that needs the API to accept timezone-aware
-      // instants rather than separate date+time-string fields — that's the
-      // proper scope of the already-tracked multi-timezone support work
-      // (issue #72), not something to paper over here.
-      const [startH, startM] = startTime.split(':').map(Number)
-      const [endH, endM] = endTime.split(':').map(Number)
-      const localStart = new Date(date)
-      localStart.setHours(startH, startM, 0, 0)
-      const localEnd = new Date(date)
-      localEnd.setHours(endH, endM, 0, 0)
-
+      // startTime/endTime/firstDate/dayOfWeek are sent as plain wall-clock
+      // values, unconverted — the API now interprets them as local time in
+      // the asset's own building (Building.timezone, falling back to the org
+      // default), not the browser's timezone, and does the DST-aware UTC
+      // conversion itself (see #72). This is a deliberate design choice, not
+      // an oversight: booking "9am every Monday" on a desk in a different
+      // office should mean 9am *there*, regardless of which timezone the
+      // person doing the booking happens to be sitting in — mirroring how a
+      // one-off booking on the same desk already resolves against that
+      // building via the floor page the booker is looking at.
       const pad = (n: number) => String(n).padStart(2, '0')
-      const utcStartTime = `${pad(localStart.getUTCHours())}:${pad(localStart.getUTCMinutes())}`
-      const utcEndTime = `${pad(localEnd.getUTCHours())}:${pad(localEnd.getUTCMinutes())}`
-      const utcFirstDate = `${localStart.getUTCFullYear()}-${pad(localStart.getUTCMonth() + 1)}-${pad(localStart.getUTCDate())}`
+      const firstDateStr = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 
       return recurringBookingsApi.create({
         assetId: desk?.id ?? '',
         frequency: recurringFrequency,
-        ...(recurringFrequency === 'WEEKLY' ? { dayOfWeek: localStart.getUTCDay() } : {}),
-        startTime: utcStartTime,
-        endTime: utcEndTime,
-        firstDate: utcFirstDate,
+        ...(recurringFrequency === 'WEEKLY' ? { dayOfWeek: date.getDay() } : {}),
+        startTime,
+        endTime,
+        firstDate: firstDateStr,
         lastDate: recurringLastDate,
+        attendeeCount: attendeeCount ? Number(attendeeCount) : undefined,
       })
     },
     onSuccess: () => {
@@ -715,11 +707,18 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
       toast.error('This time slot has already passed')
       return
     }
+    if (isGuestBooking && !guestName.trim()) {
+      toast.error("Enter your visitor's name")
+      return
+    }
     try {
       await createBooking.mutateAsync({
         assetId: desk.id,
         startsAt: start.toISOString(),
         endsAt: end.toISOString(),
+        attendeeCount: attendeeCount ? Number(attendeeCount) : undefined,
+        guestName: isGuestBooking ? guestName.trim() : undefined,
+        guestEmail: isGuestBooking && guestEmail.trim() ? guestEmail.trim() : undefined,
       })
       onBookingCreated()
     } catch {
@@ -762,6 +761,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   const statusLabel: Record<string, string> = {
     available: 'Available',
     mine: 'Your booking',
+    mine_pending: 'Pending approval',
     booked: 'Booked',
     assigned: 'Assigned',
     restricted: 'Restricted',
@@ -774,6 +774,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   const statusVariant: Record<string, 'default' | 'secondary' | 'destructive' | 'outline'> = {
     available: 'default',
     mine: 'secondary',
+    mine_pending: 'outline',
     booked: 'destructive',
     assigned: 'secondary',
     restricted: 'outline',
@@ -967,6 +968,30 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                   </div>
                 )}
 
+                {!!desk.capacity && desk.capacity > 1 && (
+                  <div>
+                    <Label htmlFor="attendeeCount" className="text-xs">
+                      Attendees <span className="text-muted-foreground font-normal">(optional — this room seats {desk.capacity})</span>
+                    </Label>
+                    <Input
+                      id="attendeeCount"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={attendeeCount}
+                      onChange={(e) => setAttendeeCount(e.target.value)}
+                      className="mt-1"
+                      placeholder="e.g. 6"
+                    />
+                    {!!attendeeCount && Number(attendeeCount) > desk.capacity && (
+                      <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
+                        <AlertCircle className="h-3 w-3 shrink-0" />
+                        This is more people than the room seats ({desk.capacity}) — you can still book it.
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 {/* Recurring toggle — always visible */}
                 <div className="space-y-3 pt-1">
                   <div className="flex items-center gap-2">
@@ -1020,36 +1045,106 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                   )}
                 </div>
 
+                {/* Visitor/guest booking (#79) — single bookings only, not recurring series */}
+                {!isRecurring && (
+                  <div className="space-y-3 pt-1">
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="book-for-visitor"
+                        type="checkbox"
+                        checked={isGuestBooking}
+                        onChange={(e) => setIsGuestBooking(e.target.checked)}
+                        className="h-4 w-4 rounded border-border"
+                      />
+                      <Label htmlFor="book-for-visitor" className="cursor-pointer text-sm flex items-center gap-1.5">
+                        <UserPlus className="h-3.5 w-3.5 text-muted-foreground" />
+                        Book for a visitor
+                      </Label>
+                    </div>
+                    {isGuestBooking && (
+                      <div className="rounded-md border border-dashed px-3 py-3 space-y-3">
+                        <div>
+                          <Label htmlFor="guest-name" className="text-xs">Visitor name *</Label>
+                          <Input
+                            id="guest-name"
+                            value={guestName}
+                            onChange={(e) => setGuestName(e.target.value)}
+                            className="mt-1"
+                            placeholder="e.g. Jane Doe"
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="guest-email" className="text-xs">Visitor email (optional)</Label>
+                          <Input
+                            id="guest-email"
+                            type="email"
+                            value={guestEmail}
+                            onChange={(e) => setGuestEmail(e.target.value)}
+                            className="mt-1"
+                            placeholder="jane@example.com"
+                          />
+                          <p className="text-xs text-muted-foreground mt-1">
+                            If provided, your visitor gets an email with a check-in link. This booking won't count toward your own booking limit.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {desk.requiresApproval && (
+                  <p className="text-xs text-amber-600 bg-amber-50 rounded-md p-2">
+                    This booking will need approval from a Super Admin, building admin, or floor manager before it's confirmed. The slot is reserved for you while you wait.
+                  </p>
+                )}
+
                 <Button
                   onClick={isRecurring ? () => createRecurring.mutate() : handleBook}
                   disabled={
                     isRecurring
                       ? createRecurring.isPending || !recurringLastDate
-                      : createBooking.isPending
+                      : createBooking.isPending || (isGuestBooking && !guestName.trim())
                   }
                   className="w-full"
                 >
                   <CheckCircle className="mr-2 h-4 w-4" />
                   {(isRecurring ? createRecurring : createBooking).isPending
-                    ? 'Booking…'
-                    : isRecurring
-                      ? `Book recurring ${categoryName}`
-                      : `Book ${categoryName}`
+                    ? (desk.requiresApproval ? 'Requesting…' : 'Booking…')
+                    : desk.requiresApproval
+                      ? (isRecurring ? `Request recurring ${categoryName}` : `Request ${categoryName}`)
+                      : isRecurring
+                        ? `Book recurring ${categoryName}`
+                        : isGuestBooking
+                          ? `Book ${categoryName} for visitor`
+                          : `Book ${categoryName}`
                   }
                 </Button>
               </div>
             )}
 
-            {/* Mine: show booking details + cancel */}
-            {desk.bookingStatus === 'mine' && desk.currentBooking && (
+            {/* Mine / mine_pending: show booking details + cancel/withdraw */}
+            {(desk.bookingStatus === 'mine' || desk.bookingStatus === 'mine_pending') && desk.currentBooking && (
               <div className="space-y-3">
-                <div className="rounded-md bg-blue-50 p-3">
-                  <p className="text-sm font-medium text-blue-800">Your booking</p>
-                  <p className="text-xs text-blue-600 mt-1">
-                    {formatDateRange(desk.currentBooking.startsAt, desk.currentBooking.endsAt)}
+                <div className={desk.bookingStatus === 'mine_pending' ? 'rounded-md bg-amber-50 p-3' : 'rounded-md bg-blue-50 p-3'}>
+                  <p className={desk.bookingStatus === 'mine_pending' ? 'text-sm font-medium text-amber-800' : 'text-sm font-medium text-blue-800'}>
+                    {desk.bookingStatus === 'mine_pending' ? 'Awaiting approval' : 'Your booking'}
                   </p>
+                  <p className={desk.bookingStatus === 'mine_pending' ? 'text-xs text-amber-600 mt-1' : 'text-xs text-blue-600 mt-1'}>
+                    {formatDateRange(desk.currentBooking.startsAt, desk.currentBooking.endsAt, desk.resolvedTimezone)}
+                  </p>
+                  {desk.bookingStatus === 'mine_pending' && (
+                    <p className="text-xs text-amber-600 mt-1">
+                      This slot is reserved while a manager reviews your request. You'll be notified once it's approved or declined.
+                    </p>
+                  )}
                   {desk.currentBooking.notes && (
-                    <p className="text-xs text-blue-600 mt-1">{desk.currentBooking.notes}</p>
+                    <p className={desk.bookingStatus === 'mine_pending' ? 'text-xs text-amber-600 mt-1' : 'text-xs text-blue-600 mt-1'}>{desk.currentBooking.notes}</p>
+                  )}
+                  {!!desk.currentBooking.attendeeCount && (
+                    <p className={desk.bookingStatus === 'mine_pending' ? 'text-xs text-amber-600 mt-1 flex items-center gap-1' : 'text-xs text-blue-600 mt-1 flex items-center gap-1'}>
+                      <Users className="h-3 w-3" />
+                      {desk.currentBooking.attendeeCount} attendee{desk.currentBooking.attendeeCount === 1 ? '' : 's'}
+                    </p>
                   )}
                 </div>
                 <AlertDialog>
@@ -1060,24 +1155,27 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                       className="w-full"
                     >
                       <XCircle className="mr-2 h-4 w-4" />
-                      {cancelBooking.isPending ? 'Cancelling…' : 'Cancel Booking'}
+                      {cancelBooking.isPending
+                        ? (desk.bookingStatus === 'mine_pending' ? 'Withdrawing…' : 'Cancelling…')
+                        : (desk.bookingStatus === 'mine_pending' ? 'Withdraw Request' : 'Cancel Booking')}
                     </Button>
                   </AlertDialogTrigger>
                   <AlertDialogContent>
                     <AlertDialogHeader>
-                      <AlertDialogTitle>Cancel booking?</AlertDialogTitle>
+                      <AlertDialogTitle>{desk.bookingStatus === 'mine_pending' ? 'Withdraw booking request?' : 'Cancel booking?'}</AlertDialogTitle>
                       <AlertDialogDescription>
-                        Cancel your booking for <strong>{desk.name}</strong>? This action cannot
-                        be undone. Anyone in the queue will be notified.
+                        {desk.bookingStatus === 'mine_pending'
+                          ? <>Withdraw your pending request for <strong>{desk.name}</strong>? This action cannot be undone.</>
+                          : <>Cancel your booking for <strong>{desk.name}</strong>? This action cannot be undone. Anyone in the queue will be notified.</>}
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
-                      <AlertDialogCancel>Keep booking</AlertDialogCancel>
+                      <AlertDialogCancel>{desk.bookingStatus === 'mine_pending' ? 'Keep request' : 'Keep booking'}</AlertDialogCancel>
                       <AlertDialogAction
                         onClick={() => cancelBooking.mutate(desk.currentBooking!.id)}
                         className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                       >
-                        Cancel booking
+                        {desk.bookingStatus === 'mine_pending' ? 'Withdraw request' : 'Cancel booking'}
                       </AlertDialogAction>
                     </AlertDialogFooter>
                   </AlertDialogContent>

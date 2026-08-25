@@ -18,6 +18,15 @@ import type {
   UserGroup,
   FloorSubscription,
   RecurringBookingRule,
+  BookingTransfer,
+  BookingSwap,
+  FloorManagerRequest,
+  ManagerRequestStatus,
+  QrCheckInMode,
+  Ballot,
+  BallotRun,
+  BallotEntry,
+  AuditLogEntry,
 } from '../types'
 
 const BASE = '/api/v1'
@@ -107,7 +116,7 @@ export const buildingsApi = {
   get: (id: string) => api.get<{ data: Building & { floors: Floor[] } }>(`/buildings/${id}`),
   create: (body: { name: string; address?: string }) =>
     api.post<{ data: Building }>('/buildings', body),
-  update: (id: string, body: Partial<{ name: string; address: string; noShowReleaseEnabled: boolean | null }>) =>
+  update: (id: string, body: Partial<{ name: string; address: string; noShowReleaseEnabled: boolean | null; qrCheckInMode: QrCheckInMode | null; requiresApproval: boolean | null; timezone: string | null; workingHoursStart: string | null; workingHoursEnd: string | null }>) =>
     api.put<{ data: Building }>(`/buildings/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/buildings/${id}`),
   getAccessGroups: (id: string) =>
@@ -146,12 +155,12 @@ export const buildingsApi = {
 // --- Floors ---
 export const floorsApi = {
   get: (id: string) =>
-    api.get<{ data: Floor & { zones: Array<{ id: string; name: string; colour: string; zoneGroupId: string | null; assets: Asset[] }>; zoneGroups: Array<{ id: string; name: string; floorId: string }>; floorPlan: { id: string; floorId: string; fileType: 'IMAGE' | 'PDF' | 'DXF'; renderedPath: string; thumbnailPath?: string; width: number; height: number; displayScale: number; updatedAt: string } | null } }>(
+    api.get<{ data: Omit<Floor, 'zones'> & { zones: Array<{ id: string; name: string; colour: string; zoneGroupId: string | null; requiresApproval: boolean | null; assets: Array<Asset & { isPrimaryZone?: boolean }> }>; zoneGroups: Array<{ id: string; name: string; floorId: string }>; floorPlan: { id: string; floorId: string; fileType: 'IMAGE' | 'PDF' | 'DXF'; renderedPath: string; thumbnailPath?: string; width: number; height: number; displayScale: number; updatedAt: string } | null } }>(
       `/floors/${id}`,
     ),
   create: (body: { buildingId: string; name: string; level?: number }) =>
     api.post<{ data: Floor }>('/floors', body),
-  update: (id: string, body: Partial<{ name: string; level: number; noShowReleaseEnabled: boolean | null }>) =>
+  update: (id: string, body: Partial<{ name: string; level: number; noShowReleaseEnabled: boolean | null; qrCheckInMode: QrCheckInMode | null }>) =>
     api.put<{ data: Floor }>(`/floors/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/floors/${id}`),
   uploadFloorPlan: (id: string, file: File) => {
@@ -163,7 +172,7 @@ export const floorsApi = {
     )
   },
   getAvailability: (id: string, date: string) =>
-    api.get<{ data: { floorId: string; date: string; zones: Array<{ id: string; name: string; colour: string; assets: AssetWithStatus[] }> } }>(`/floors/${id}/availability?date=${date}`),
+    api.get<{ data: { floorId: string; date: string; zones: Array<{ id: string; name: string; colour: string; assets: AssetWithStatus[] }>; resolvedTimezone: string } }>(`/floors/${id}/availability?date=${date}`),
   getManagers: (id: string) =>
     api.get<{ data: Array<{ roleId: string; id: string; displayName: string; email: string }> }>(
       `/floors/${id}/managers`,
@@ -188,7 +197,7 @@ export const floorsApi = {
 export const zonesApi = {
   create: (body: { floorId: string; name: string; colour: string; zoneGroupId?: string }) =>
     api.post<{ data: { id: string; floorId: string; name: string; colour: string } }>('/zones', body),
-  update: (id: string, body: Partial<{ name: string; colour: string; zoneGroupId: string | null }>) =>
+  update: (id: string, body: Partial<{ name: string; colour: string; zoneGroupId: string | null; requiresApproval: boolean | null }>) =>
     api.put<{ data: { id: string; floorId: string; name: string; colour: string } }>(`/zones/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/zones/${id}`),
 }
@@ -197,6 +206,8 @@ export const zonesApi = {
 export const zoneGroupsApi = {
   create: (body: { floorId: string; name: string }) =>
     api.post<{ data: { id: string; floorId: string; name: string } }>('/zone-groups', body),
+  update: (id: string, body: { name: string }) =>
+    api.put<{ data: { id: string; floorId: string; name: string } }>(`/zone-groups/${id}`, body),
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/zone-groups/${id}`),
 }
 
@@ -362,11 +373,27 @@ export const assetsApi = {
     api.post<{ data: { ok: true; favourited: boolean } }>(`/assets/${id}/favourite`),
   removeFavourite: (id: string) =>
     api.delete<{ data: { ok: true; favourited: boolean } }>(`/assets/${id}/favourite`),
+  // "Suggested for you" — ranked available desks for a date, for the booking flow
+  suggestions: (date: string) =>
+    api.get<{ data: FavouriteAsset[] }>(`/assets/suggestions?date=${date}`),
   // Recurring weekday availability (assigned desks)
   getAvailabilityRules: (id: string) =>
     api.get<{ data: { weekdays: number[] } }>(`/assets/${id}/availability-rules`),
   setAvailabilityRules: (id: string, weekdays: number[]) =>
     api.put<{ data: { weekdays: number[] } }>(`/assets/${id}/availability-rules`, { weekdays }),
+  // QR-scan landing data — see routes/assets.ts's GET /:id/qr-status
+  qrStatus: (id: string) =>
+    api.get<{
+      data: {
+        qrCheckInMode: QrCheckInMode
+        asset: { id: string; name: string; bookingLabel: string | null; floorName: string | null; buildingName: string | null }
+        canBookNow: boolean
+        deniedReason?: string | null
+        proposedStartsAt?: string
+        proposedEndsAt?: string
+        currentBooking: { id: string | null; isOwnBooking: boolean; startsAt: string; endsAt: string; checkedInAt: string | null } | null
+      }
+    }>(`/assets/${id}/qr-status`),
 }
 
 // --- Bookings ---
@@ -376,12 +403,70 @@ export const bookingsApi = {
       `/bookings${status ? `?status=${status}` : ''}`,
     ),
   get: (id: string) => api.get<{ data: Booking }>(`/bookings/${id}`),
-  create: (body: { assetId: string; startsAt: string; endsAt: string; notes?: string }) =>
+  create: (body: { assetId: string; startsAt: string; endsAt: string; notes?: string; attendeeCount?: number; guestName?: string; guestEmail?: string }) =>
     api.post<{ data: Booking }>('/bookings', body),
-  update: (id: string, body: Partial<{ startsAt: string; endsAt: string; notes: string }>) =>
+  update: (id: string, body: Partial<{ startsAt: string; endsAt: string; notes: string; attendeeCount: number | null }>) =>
     api.patch<{ data: Booking }>(`/bookings/${id}`, body),
   cancel: (id: string) => api.delete<{ data: { ok: true } }>(`/bookings/${id}`),
   checkIn: (id: string) => api.post<{ data: { id: string; checkedInAt: string } }>(`/bookings/${id}/check-in`),
+  guestCheckInByToken: (token: string) =>
+    api.post<{ data: { guestName: string | null; checkedInAt: string } }>('/bookings/guest-check-in-by-token', { token }),
+  pendingApprovals: () =>
+    api.get<{ data: Array<Booking & { user: { id: string; displayName: string; email: string }; asset: { id: string; name: string; floor?: { id: string; name: string; building: { id: string; name: string } } } }> }>(
+      '/bookings/pending-approvals',
+    ),
+  approve: (id: string) => api.post<{ data: { ok: true; approvedCount: number } }>(`/bookings/${id}/approve`),
+  reject: (id: string, note?: string) => api.post<{ data: { ok: true; rejectedCount: number } }>(`/bookings/${id}/reject`, { note }),
+  report: (params: {
+    from?: string
+    to?: string
+    userId?: string
+    assetId?: string
+    floorId?: string
+    buildingId?: string
+    status?: 'CONFIRMED' | 'CANCELLED' | 'COMPLETED'
+    page?: number
+    limit?: number
+  }) => {
+    const qs = new URLSearchParams()
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== '') qs.set(k, String(v))
+    }
+    return api.get<{ data: Booking[]; meta: { page: number; limit: number; total: number; totalPages: number } }>(
+      `/bookings/report${qs.toString() ? `?${qs}` : ''}`,
+    )
+  },
+  // Transfer — hand a booking to a colleague
+  transfer: (id: string, toUserId: string) =>
+    api.post<{ data: BookingTransfer }>(`/bookings/${id}/transfer`, { toUserId }),
+  listTransfers: () =>
+    api.get<{ data: { sent: BookingTransfer[]; received: BookingTransfer[] } }>('/bookings/transfers'),
+  acceptTransfer: (id: string) =>
+    api.post<{ data: { ok: true } }>(`/bookings/transfers/${id}/accept`),
+  declineTransfer: (id: string) =>
+    api.post<{ data: { ok: true } }>(`/bookings/transfers/${id}/decline`),
+  cancelTransfer: (id: string) =>
+    api.delete<{ data: { ok: true } }>(`/bookings/transfers/${id}`),
+  // Swap — two users trade bookings at the same time
+  swapCandidate: (bookingId: string, userId: string) =>
+    api.get<{ data: BookingSummaryMatch | null }>(`/bookings/${bookingId}/swap-candidate?userId=${encodeURIComponent(userId)}`),
+  swapRequest: (bookingId: string, withBookingId: string) =>
+    api.post<{ data: BookingSwap }>(`/bookings/${bookingId}/swap-request`, { withBookingId }),
+  listSwaps: () =>
+    api.get<{ data: { sent: BookingSwap[]; received: BookingSwap[] } }>('/bookings/swaps'),
+  acceptSwap: (id: string) =>
+    api.post<{ data: { ok: true } }>(`/bookings/swaps/${id}/accept`),
+  declineSwap: (id: string) =>
+    api.post<{ data: { ok: true } }>(`/bookings/swaps/${id}/decline`),
+  cancelSwap: (id: string) =>
+    api.delete<{ data: { ok: true } }>(`/bookings/swaps/${id}`),
+}
+
+interface BookingSummaryMatch {
+  id: string
+  startsAt: string
+  endsAt: string
+  asset: { id: string; name: string }
 }
 
 // --- Queue ---
@@ -418,6 +503,9 @@ export const usersApi = {
     )
   },
   get: (id: string) => api.get<{ data: User }>(`/users/${id}`),
+  // Colleague picker for any authenticated user (transfer/swap/allow-list) —
+  // unlike list() above, not SUPER_ADMIN-gated, and returns only id/displayName/email.
+  search: (q: string) => api.get<{ data: Pick<User, 'id' | 'displayName' | 'email'>[] }>(`/users/search?q=${encodeURIComponent(q)}`),
   create: (body: { email: string; displayName: string; password: string; globalRole?: string }) =>
     api.post<{ data: User }>('/users', body),
   update: (id: string, body: Partial<User>) =>
@@ -434,10 +522,10 @@ export const usersApi = {
       { rows },
     ),
   getNotificationPreferences: () =>
-    api.get<{ data: { preferences: Record<string, { email?: boolean; inApp?: boolean }> } }>(
+    api.get<{ data: { preferences: Record<string, { email?: boolean; inApp?: boolean; push?: boolean }> } }>(
       '/users/me/notification-preferences',
     ),
-  updateNotificationPreferences: (preferences: Record<string, { email?: boolean; inApp?: boolean }>) =>
+  updateNotificationPreferences: (preferences: Record<string, { email?: boolean; inApp?: boolean; push?: boolean }>) =>
     api.patch<{ data: { ok: boolean } }>('/users/me/notification-preferences', { preferences }),
   changePassword: (body: { currentPassword: string; newPassword: string }) =>
     api.post<{ data: { ok: boolean } }>('/users/me/password', body),
@@ -445,6 +533,15 @@ export const usersApi = {
     api.post<{ data: { ok: boolean } }>(`/users/${id}/password/reset`, body),
   effectiveAccess: (id: string) =>
     api.get<{ data: EffectiveAccess }>(`/users/${id}/effective-access`),
+}
+
+// --- Web Push ---
+export const pushApi = {
+  vapidPublicKey: () => api.get<{ data: { publicKey: string | null } }>('/push/vapid-public-key'),
+  subscribe: (subscription: { endpoint: string; keys: { p256dh: string; auth: string } }) =>
+    api.post<{ data: { ok: true } }>('/push/subscribe', subscription),
+  unsubscribe: (endpoint: string) =>
+    api.post<{ data: { ok: true } }>('/push/unsubscribe', { endpoint }),
 }
 
 // --- RBAC inspection types ---
@@ -492,6 +589,18 @@ type OrgSettings = {
   dateFormat: string
   noShowReleaseEnabled?: boolean
   checkInGraceMinutes?: number
+  qrCheckInMode?: QrCheckInMode
+  weeklyReportEnabled?: boolean
+  requiresApproval?: boolean
+  approvalWindowHours?: number
+  defaultTimezone?: string
+  workingHoursStart?: string
+  workingHoursEnd?: string
+  enforceWorkingHours?: boolean
+  ballotWeightingEnabled?: boolean
+  ballotWeightIncrement?: number
+  ballotWeightCapStreak?: number
+  ballotWeightScope?: 'PER_BALLOT' | 'GLOBAL'
 }
 
 export interface BrandingBanner {
@@ -700,6 +809,16 @@ export type DepartmentAnalyticsPoint = {
   departmentId: string; departmentName: string
   bookingCount: number; deskDays: number; memberCount: number
 }
+export type CapacityPlanningPoint = {
+  buildingId: string; buildingName: string
+  currentDeskCount: number; peakDailyAttendance: number; averageDailyAttendance: number
+  recommendedDeskCount: number; spareCapacity: number
+}
+export type UtilisationTrendPoint = { month: string; bookingCount: number; utilisationPct: number }
+export type CostPerSeatPoint = {
+  buildingId: string; buildingName: string
+  monthlyRent: number; currency: string; deskCount: number; costPerSeatPerDay: number
+}
 
 export const analyticsApi = {
   summary: (params?: AnalyticsParams) =>
@@ -723,6 +842,12 @@ export const analyticsApi = {
     const sep = qs ? '&' : '?'
     return api.get<{ data: ManagerRollup }>(`/analytics/manager-rollup${qs}${sep}userId=${encodeURIComponent(userId)}`)
   },
+  capacityPlanning: (params?: AnalyticsParams) =>
+    api.get<{ data: CapacityPlanningPoint[] }>(`/analytics/capacity-planning${analyticsQs(params)}`),
+  utilisationTrend: (params?: AnalyticsParams) =>
+    api.get<{ data: UtilisationTrendPoint[] }>(`/analytics/utilisation-trend${analyticsQs(params)}`),
+  costPerSeat: (params?: AnalyticsParams) =>
+    api.get<{ data: CostPerSeatPoint[] }>(`/analytics/cost-per-seat${analyticsQs(params)}`),
 }
 
 export type ManagerRollupBranch = { rootId: string; rootName: string; peopleCount: number; bookingCount: number; deskDays: number }
@@ -785,7 +910,10 @@ export const recurringBookingsApi = {
     endTime: string
     firstDate: string
     lastDate: string
+    attendeeCount?: number
   }) => api.post<{ data: RecurringBookingRule }>('/recurring-bookings', body),
+  update: (id: string, body: { lastDate: string }) =>
+    api.patch<{ data: RecurringBookingRule }>(`/recurring-bookings/${id}`, body),
   cancel: (id: string) => api.delete<{ data: { ok: true } }>(`/recurring-bookings/${id}`),
 }
 
@@ -795,6 +923,8 @@ export interface WebhookEndpoint {
   url: string
   events: string[]
   enabled: boolean
+  consecutiveFailures: number
+  lastSuccessAt: string | null
   createdAt: string
   updatedAt: string
 }
@@ -890,10 +1020,12 @@ export interface WhereaboutsLocation {
   floorName: string | null
   buildingId: string | null
   buildingName: string | null
+  buildingTimezone: string | null
 }
 export interface WhereaboutsPerson {
   user: { id: string; displayName: string; email: string }
-  today: (WhereaboutsLocation & { startsAt: string; endsAt: string })[]
+  /** resolvedTimezone (see #72) — the building's own timezone, falling back to the org default. */
+  today: (WhereaboutsLocation & { resolvedTimezone: string; startsAt: string; endsAt: string })[]
   assignedDesks: (WhereaboutsLocation & { isPrimary: boolean })[]
 }
 export const directoryApi = {
@@ -905,6 +1037,82 @@ export const directoryApi = {
     if (params?.floorId) qs.set('floorId', params.floorId)
     return api.get<{ data: WhereaboutsPerson[]; meta: { total: number; date: string } }>(
       `/directory/whereabouts${qs.toString() ? `?${qs}` : ''}`,
+    )
+  },
+}
+
+// --- Self-service floor manager access requests ---
+export const managerRequestsApi = {
+  create: (floorId: string, note?: string) =>
+    api.post<{ data: FloorManagerRequest }>('/manager-requests', { floorId, note }),
+  mine: () => api.get<{ data: FloorManagerRequest[] }>('/manager-requests/mine'),
+  // Admin dashboard — scoped server-side to what the caller can review (Super Admin: all, Building Admin: their buildings only).
+  list: (status?: ManagerRequestStatus | 'all') =>
+    api.get<{ data: FloorManagerRequest[] }>(`/manager-requests${status ? `?status=${status}` : ''}`),
+  approve: (id: string) => api.post<{ data: { ok: true } }>(`/manager-requests/${id}/approve`, {}),
+  reject: (id: string, reviewNote?: string) =>
+    api.post<{ data: { ok: true } }>(`/manager-requests/${id}/reject`, { reviewNote }),
+  withdraw: (id: string) => api.delete<{ data: { ok: true } }>(`/manager-requests/${id}`),
+}
+
+// --- Booking ballots (see #159) ---
+export interface CreateBallotBody {
+  name: string
+  buildingIds: string[]
+  floorIds: string[]
+  // Org-wide scope that stays current as buildings are added later, unlike
+  // buildingIds/floorIds (a snapshot frozen at creation time). SUPER_ADMIN
+  // only.
+  scopeAllBuildings?: boolean
+  assetCategoryIds: string[]
+  frequency: BallotFrequency
+  dayOfWeek?: number
+  dayOfMonth?: number
+  registrationWindowHours: number
+  slotStartTime: string
+  slotEndTime: string
+  slotLeadDays: number
+  slotDurationDays: number
+}
+type BallotFrequency = 'ONCE' | 'WEEKLY' | 'MONTHLY'
+
+export const ballotsApi = {
+  // Admin: template CRUD
+  create: (body: CreateBallotBody) => api.post<{ data: Ballot }>('/ballots', body),
+  list: () => api.get<{ data: Ballot[] }>('/ballots'),
+  get: (id: string) => api.get<{ data: Ballot }>(`/ballots/${id}`),
+  update: (id: string, body: Partial<CreateBallotBody & { status: 'ACTIVE' | 'PAUSED' | 'CANCELLED' }>) =>
+    api.patch<{ data: Ballot }>(`/ballots/${id}`, body),
+  remove: (id: string) => api.delete<{ data: { ok: true } }>(`/ballots/${id}`),
+  runs: (id: string) => api.get<{ data: BallotRun[] }>(`/ballots/${id}/runs`),
+  triggerRun: (id: string) => api.post<{ data: { ok: true } }>(`/ballots/${id}/runs/trigger`, {}),
+  runDetail: (runId: string) => api.get<{ data: BallotRun }>(`/ballots/runs/${runId}`),
+  forceDraw: (runId: string) => api.post<{ data: { ok: true } }>(`/ballots/runs/${runId}/draw`, {}),
+  // User-facing
+  available: () => api.get<{ data: BallotRun[] }>('/ballots/available'),
+  enter: (runId: string) => api.post<{ data: BallotEntry }>(`/ballots/runs/${runId}/enter`, {}),
+  withdraw: (runId: string) => api.delete<{ data: { ok: true } }>(`/ballots/runs/${runId}/enter`),
+  myEntries: () => api.get<{ data: BallotEntry[] }>('/ballots/my-entries'),
+  decline: (entryId: string) => api.post<{ data: { ok: true } }>(`/ballots/entries/${entryId}/decline`, {}),
+}
+
+export const auditLogApi = {
+  list: (params: {
+    actorId?: string
+    resourceType?: string
+    resourceId?: string
+    action?: string
+    from?: string
+    to?: string
+    page?: number
+    limit?: number
+  }) => {
+    const qs = new URLSearchParams()
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== '') qs.set(k, String(v))
+    }
+    return api.get<{ data: AuditLogEntry[]; meta: { page: number; limit: number; total: number; totalPages: number } }>(
+      `/audit-log${qs.toString() ? `?${qs}` : ''}`,
     )
   },
 }

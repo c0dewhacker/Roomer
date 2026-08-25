@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { settingsApi } from '@/lib/api'
 import { DATE_FORMAT_OPTIONS } from '@/lib/dateFormat'
+import { IANA_TIMEZONES } from '@/lib/timezones'
 import {
   Select,
   SelectContent,
@@ -27,6 +28,18 @@ const orgSchema = z.object({
   dateFormat: z.string().min(1),
   noShowReleaseEnabled: z.boolean(),
   checkInGraceMinutes: z.coerce.number().int().min(5).max(240),
+  qrCheckInMode: z.enum(['DISABLED', 'OPTIONAL', 'MANDATORY']),
+  weeklyReportEnabled: z.boolean(),
+  requiresApproval: z.boolean(),
+  approvalWindowHours: z.coerce.number().int().min(1).max(168),
+  defaultTimezone: z.string().min(1),
+  workingHoursStart: z.string().regex(/^\d{2}:\d{2}$/),
+  workingHoursEnd: z.string().regex(/^\d{2}:\d{2}$/),
+  enforceWorkingHours: z.boolean(),
+  ballotWeightingEnabled: z.boolean(),
+  ballotWeightIncrement: z.coerce.number().min(0).max(5),
+  ballotWeightCapStreak: z.coerce.number().int().min(1).max(50),
+  ballotWeightScope: z.enum(['PER_BALLOT', 'GLOBAL']),
 })
 type OrgForm = z.infer<typeof orgSchema>
 
@@ -43,6 +56,18 @@ export function OrgSettingsCard() {
       dateFormat: 'dd/MM/yyyy',
       noShowReleaseEnabled: false,
       checkInGraceMinutes: 30,
+      qrCheckInMode: 'DISABLED',
+      weeklyReportEnabled: false,
+      requiresApproval: false,
+      approvalWindowHours: 24,
+      defaultTimezone: 'UTC',
+      workingHoursStart: '07:00',
+      workingHoursEnd: '19:00',
+      enforceWorkingHours: false,
+      ballotWeightingEnabled: false,
+      ballotWeightIncrement: 0.2,
+      ballotWeightCapStreak: 5,
+      ballotWeightScope: 'PER_BALLOT',
     },
   })
 
@@ -63,6 +88,18 @@ export function OrgSettingsCard() {
         dateFormat: orgData.dateFormat ?? 'dd/MM/yyyy',
         noShowReleaseEnabled: orgData.noShowReleaseEnabled ?? false,
         checkInGraceMinutes: orgData.checkInGraceMinutes ?? 30,
+        qrCheckInMode: orgData.qrCheckInMode ?? 'DISABLED',
+        weeklyReportEnabled: orgData.weeklyReportEnabled ?? false,
+        requiresApproval: orgData.requiresApproval ?? false,
+        approvalWindowHours: orgData.approvalWindowHours ?? 24,
+        defaultTimezone: orgData.defaultTimezone ?? 'UTC',
+        workingHoursStart: orgData.workingHoursStart ?? '07:00',
+        workingHoursEnd: orgData.workingHoursEnd ?? '19:00',
+        enforceWorkingHours: orgData.enforceWorkingHours ?? false,
+        ballotWeightingEnabled: orgData.ballotWeightingEnabled ?? false,
+        ballotWeightIncrement: orgData.ballotWeightIncrement ?? 0.2,
+        ballotWeightCapStreak: orgData.ballotWeightCapStreak ?? 5,
+        ballotWeightScope: orgData.ballotWeightScope ?? 'PER_BALLOT',
       })
     }
   }, [orgData, reset])
@@ -71,7 +108,7 @@ export function OrgSettingsCard() {
     mutationFn: (data: OrgForm) => settingsApi.updateOrg(data),
     onSuccess: (res) => {
       toast.success('Settings saved')
-      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4, dateFormat: res.data.dateFormat ?? 'dd/MM/yyyy', noShowReleaseEnabled: res.data.noShowReleaseEnabled ?? false, checkInGraceMinutes: res.data.checkInGraceMinutes ?? 30 })
+      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4, dateFormat: res.data.dateFormat ?? 'dd/MM/yyyy', noShowReleaseEnabled: res.data.noShowReleaseEnabled ?? false, checkInGraceMinutes: res.data.checkInGraceMinutes ?? 30, qrCheckInMode: res.data.qrCheckInMode ?? 'DISABLED', weeklyReportEnabled: res.data.weeklyReportEnabled ?? false, requiresApproval: res.data.requiresApproval ?? false, approvalWindowHours: res.data.approvalWindowHours ?? 24, defaultTimezone: res.data.defaultTimezone ?? 'UTC', workingHoursStart: res.data.workingHoursStart ?? '07:00', workingHoursEnd: res.data.workingHoursEnd ?? '19:00', enforceWorkingHours: res.data.enforceWorkingHours ?? false, ballotWeightingEnabled: res.data.ballotWeightingEnabled ?? false, ballotWeightIncrement: res.data.ballotWeightIncrement ?? 0.2, ballotWeightCapStreak: res.data.ballotWeightCapStreak ?? 5, ballotWeightScope: res.data.ballotWeightScope ?? 'PER_BALLOT' })
       qc.invalidateQueries({ queryKey: ['settings', 'organisation'] })
       qc.invalidateQueries({ queryKey: ['settings', 'public'] })
     },
@@ -139,6 +176,164 @@ export function OrgSettingsCard() {
               <p className="text-xs text-destructive mt-1">{errors.checkInGraceMinutes.message}</p>
             )}
           </div>
+        </div>
+        <div className="rounded-md border p-3">
+          <Label htmlFor="qrCheckInMode" className="text-sm font-medium">QR desk check-in</Label>
+          <p className="text-xs text-muted-foreground mb-2">
+            Scan-to-book / check-in via a QR code on desks. Optional lets QR sit alongside the "I'm here" button; mandatory hides that button and always applies no-show release, whether or not it's enabled above. Buildings and floors can override this default.
+          </p>
+          <Select value={watch('qrCheckInMode')} onValueChange={(v) => setValue('qrCheckInMode', v as OrgForm['qrCheckInMode'], { shouldDirty: true })}>
+            <SelectTrigger id="qrCheckInMode" className="w-56"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="DISABLED">Disabled</SelectItem>
+              <SelectItem value="OPTIONAL">Optional</SelectItem>
+              <SelectItem value="MANDATORY">Mandatory</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="rounded-md border p-3 space-y-3">
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4"
+              checked={watch('requiresApproval')}
+              onChange={(e) => setValue('requiresApproval', e.target.checked, { shouldDirty: true })}
+            />
+            <span>
+              <span className="text-sm font-medium">Require booking approval</span>
+              <span className="block text-xs text-muted-foreground">
+                New bookings need sign-off from a Super Admin, building admin, or floor manager before they're confirmed. The slot is reserved immediately while pending. Buildings and zones can override this default.
+              </span>
+            </span>
+          </label>
+          <div className="max-w-[200px]">
+            <Label htmlFor="approvalWindow" className="text-xs">Auto-reject after (hours)</Label>
+            <Input id="approvalWindow" type="number" min={1} max={168} {...register('approvalWindowHours')} className="mt-1.5" disabled={!watch('requiresApproval')} />
+            {errors.approvalWindowHours && (
+              <p className="text-xs text-destructive mt-1">{errors.approvalWindowHours.message}</p>
+            )}
+          </div>
+        </div>
+        <div className="rounded-md border p-3">
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4"
+              checked={watch('weeklyReportEnabled')}
+              onChange={(e) => setValue('weeklyReportEnabled', e.target.checked, { shouldDirty: true })}
+            />
+            <span>
+              <span className="text-sm font-medium">Weekly utilisation email</span>
+              <span className="block text-xs text-muted-foreground">
+                Send a weekly desk-utilisation summary to every active Super Admin, every Monday.
+              </span>
+            </span>
+          </label>
+        </div>
+        <div className="rounded-md border p-3 space-y-3">
+          <div>
+            <Label htmlFor="defaultTimezone" className="text-sm font-medium">Default timezone</Label>
+            <p className="text-xs text-muted-foreground mb-2">
+              Used to render and validate booking times for any building without its own timezone override. Bookings are always stored in UTC — changing this only affects display and working-hours validation, never reinterprets existing bookings.
+            </p>
+            <Select value={watch('defaultTimezone')} onValueChange={(v) => setValue('defaultTimezone', v, { shouldDirty: true })}>
+              <SelectTrigger id="defaultTimezone" className="w-72"><SelectValue /></SelectTrigger>
+              <SelectContent className="max-h-72">
+                {IANA_TIMEZONES.map((tz) => (
+                  <SelectItem key={tz} value={tz}>{tz}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-4 max-w-sm">
+            <div>
+              <Label htmlFor="workingHoursStart" className="text-xs">Working hours start</Label>
+              <Input id="workingHoursStart" type="time" {...register('workingHoursStart')} className="mt-1.5" />
+            </div>
+            <div>
+              <Label htmlFor="workingHoursEnd" className="text-xs">Working hours end</Label>
+              <Input id="workingHoursEnd" type="time" {...register('workingHoursEnd')} className="mt-1.5" />
+            </div>
+          </div>
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4"
+              checked={watch('enforceWorkingHours')}
+              onChange={(e) => setValue('enforceWorkingHours', e.target.checked, { shouldDirty: true })}
+            />
+            <span>
+              <span className="text-sm font-medium">Enforce working hours</span>
+              <span className="block text-xs text-muted-foreground">
+                Block bookings outside the hours above. Off by default — the hours can be configured ahead of turning this on. Buildings can override the hours themselves, but this on/off switch is org-wide.
+              </span>
+            </span>
+          </label>
+        </div>
+        <div className="rounded-md border p-3 space-y-3">
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4"
+              checked={watch('ballotWeightingEnabled')}
+              onChange={(e) => setValue('ballotWeightingEnabled', e.target.checked, { shouldDirty: true })}
+            />
+            <span>
+              <span className="text-sm font-medium">Weighted ballot priority</span>
+              <span className="block text-xs text-muted-foreground">
+                Give someone who's lost recent ballot draws a better chance next time, so nobody can lose the same recurring ballot indefinitely with no improving odds. Still fully random for everyone — a higher weight improves odds, it never guarantees a win. Resets to zero the moment they win.
+              </span>
+            </span>
+          </label>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-xl">
+            <div>
+              <Label htmlFor="ballotWeightIncrement" className="text-xs">Weight per consecutive loss</Label>
+              <Input
+                id="ballotWeightIncrement"
+                type="number"
+                min={0}
+                max={5}
+                step={0.05}
+                {...register('ballotWeightIncrement')}
+                className="mt-1.5"
+                disabled={!watch('ballotWeightingEnabled')}
+              />
+              {errors.ballotWeightIncrement && (
+                <p className="text-xs text-destructive mt-1">{errors.ballotWeightIncrement.message}</p>
+              )}
+            </div>
+            <div>
+              <Label htmlFor="ballotWeightCapStreak" className="text-xs">Cap (consecutive losses)</Label>
+              <Input
+                id="ballotWeightCapStreak"
+                type="number"
+                min={1}
+                max={50}
+                {...register('ballotWeightCapStreak')}
+                className="mt-1.5"
+                disabled={!watch('ballotWeightingEnabled')}
+              />
+              {errors.ballotWeightCapStreak && (
+                <p className="text-xs text-destructive mt-1">{errors.ballotWeightCapStreak.message}</p>
+              )}
+            </div>
+            <div>
+              <Label htmlFor="ballotWeightScope" className="text-xs">Streak scope</Label>
+              <Select
+                value={watch('ballotWeightScope')}
+                onValueChange={(v) => setValue('ballotWeightScope', v as OrgForm['ballotWeightScope'], { shouldDirty: true })}
+              >
+                <SelectTrigger id="ballotWeightScope" className="mt-1.5" disabled={!watch('ballotWeightingEnabled')}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="PER_BALLOT">Per ballot</SelectItem>
+                  <SelectItem value="GLOBAL">Global (org-wide)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Per ballot: losing "Weekly Parking" repeatedly only improves your odds there, not in an unrelated ballot. Global: any ballot loss raises your odds everywhere, and any win resets you to zero everywhere.
+          </p>
         </div>
         <div>
           <Label htmlFor="dateFormat">Date format</Label>

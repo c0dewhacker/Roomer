@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Group, Circle, Text, Arc, Image as KonvaImage } from 'react-konva'
+import { Group, Circle, Rect, Text, Arc, Image as KonvaImage } from 'react-konva'
 import useImage from 'use-image'
 import type { KonvaEventObject } from 'konva/lib/Node'
 import type { AssetWithStatus } from '@/types'
@@ -22,6 +22,7 @@ const CATEGORY_ICONS: Record<string, string> = {
 const STATUS_COLOURS: Record<string, string> = {
   available: '#22c55e',
   mine: '#3b82f6',
+  mine_pending: '#f59e0b',
   booked: '#f87171',
   restricted: '#fb923c',
   assigned: '#8b5cf6',
@@ -34,6 +35,7 @@ const STATUS_COLOURS: Record<string, string> = {
 const STATUS_HOVER: Record<string, string> = {
   available: '#16a34a',
   mine: '#2563eb',
+  mine_pending: '#d97706',
   booked: '#ef4444',
   restricted: '#ea580c',
   assigned: '#7c3aed',
@@ -47,6 +49,7 @@ const STATUS_HOVER: Record<string, string> = {
 const STATUS_LIGHT: Record<string, string> = {
   available: '#4ade80',
   mine: '#60a5fa',
+  mine_pending: '#fbbf24',
   booked: '#fca5a5',
   restricted: '#fdba74',
   assigned: '#c4b5fd',
@@ -143,6 +146,18 @@ export function AssetShape({
   const cx = pixelW / 2
   const cy = pixelH / 2
 
+  // A room/shared space (capacity set, >1) draws its actual footprint as a
+  // rectangle instead of the desk marker's inscribed circle — at a glance a
+  // 12-person boardroom shouldn't look like just another desk icon, and its
+  // real width/height on the floor plan is meaningful (unlike a desk's,
+  // which is mostly just an icon-sized hit target).
+  const isRoom = !!asset.capacity && asset.capacity > 1
+  const roomInset = 4
+  const roomCornerRadius = Math.max(4, Math.min(pixelW, pixelH) * 0.1)
+  const roomIconSize = Math.max(14, Math.min(28, Math.min(pixelW, pixelH) * 0.32))
+  const roomLabelText = asset.name.length > 16 ? asset.name.slice(0, 15) + '…' : asset.name
+  const roomLabelFontSize = Math.max(9, Math.min(13, pixelW * 0.07))
+
   const isBookable = asset.isBookable !== false
 
   // Non-bookable assets: always grey, never clickable
@@ -206,103 +221,213 @@ export function AssetShape({
         }
       }}
     >
-      {/* Drop shadow */}
-      <Circle
-        x={cx}
-        y={cy + (hovered ? 3 : 2)}
-        radius={radius + 5}
-        fill="rgba(0,0,0,0.18)"
-        listening={false}
-      />
+      {isRoom ? (
+        <>
+          {/* Drop shadow */}
+          <Rect
+            x={0}
+            y={hovered ? 3 : 2}
+            width={pixelW}
+            height={pixelH}
+            cornerRadius={roomCornerRadius}
+            fill="rgba(0,0,0,0.18)"
+            listening={false}
+          />
 
-      {/* Zone colour ring (or muted ring for non-bookable) */}
-      <Circle
-        x={cx}
-        y={cy}
-        radius={radius + 5}
-        fill={ringColour}
-        listening={false}
-      />
+          {/* Zone colour border (or muted border for non-bookable) */}
+          <Rect
+            x={0}
+            y={0}
+            width={pixelW}
+            height={pixelH}
+            cornerRadius={roomCornerRadius}
+            fill={ringColour}
+            listening={false}
+          />
 
-      {/* Main circle */}
-      <Circle
-        x={cx}
-        y={cy}
-        radius={radius}
-        fill={fillColour}
-        stroke={hovered ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.45)'}
-        strokeWidth={hovered ? 2.5 : 1.5}
-      />
+          {/* Inner fill, inset from the border */}
+          <Rect
+            x={roomInset}
+            y={roomInset}
+            width={Math.max(0, pixelW - roomInset * 2)}
+            height={Math.max(0, pixelH - roomInset * 2)}
+            cornerRadius={Math.max(2, roomCornerRadius - roomInset * 0.5)}
+            fill={fillColour}
+            stroke={hovered ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.45)'}
+            strokeWidth={hovered ? 2.5 : 1.5}
+          />
 
-      {/* Inner highlight arc (top-left quadrant) — only for bookable */}
-      {isBookable && (
-        <Arc
-          x={cx}
-          y={cy}
-          innerRadius={radius * 0.55}
-          outerRadius={radius * 0.88}
-          angle={160}
-          rotation={-130}
-          fill={lightColour}
-          opacity={0.25}
-          listening={false}
-        />
-      )}
+          {/* Room name */}
+          <Text
+            x={4}
+            y={6}
+            width={pixelW - 8}
+            align="center"
+            text={roomLabelText}
+            fontSize={roomLabelFontSize}
+            fontStyle="bold"
+            fill="#fff"
+            shadowColor="rgba(0,0,0,0.4)"
+            shadowBlur={2}
+            shadowOffsetY={1}
+            listening={false}
+          />
 
-      {/* Category icon — uploaded image takes priority, then emoji, then name label */}
-      {iconUrl ? (
-        <CategoryIconImage
-          url={iconUrl}
-          cx={cx}
-          cy={cy}
-          size={iconSize}
-          fallbackChar={iconChar}
-          fallbackFontSize={iconFontSize}
-        />
-      ) : iconChar ? (
-        <Text
-          x={cx - radius}
-          y={cy - iconFontSize / 2}
-          width={radius * 2}
-          align="center"
-          text={iconChar}
-          fontSize={iconFontSize}
-          fill="#fff"
-          shadowColor="rgba(0,0,0,0.4)"
-          shadowBlur={2}
-          shadowOffsetX={0}
-          shadowOffsetY={1}
-          listening={false}
-        />
+          {/* Category icon — uploaded image takes priority, then emoji */}
+          {iconUrl ? (
+            <CategoryIconImage
+              url={iconUrl}
+              cx={cx}
+              cy={cy + roomLabelFontSize * 0.3}
+              size={roomIconSize}
+              fallbackChar={iconChar}
+              fallbackFontSize={roomIconSize * 0.7}
+            />
+          ) : iconChar ? (
+            <Text
+              x={0}
+              y={cy - roomIconSize / 2 + roomLabelFontSize * 0.3}
+              width={pixelW}
+              align="center"
+              text={iconChar}
+              fontSize={roomIconSize}
+              fill="#fff"
+              shadowColor="rgba(0,0,0,0.4)"
+              shadowBlur={2}
+              shadowOffsetY={1}
+              listening={false}
+            />
+          ) : null}
+
+          {/* Capacity badge — bottom-right corner */}
+          <Text
+            x={0}
+            y={pixelH - roomLabelFontSize - 7}
+            width={pixelW - 6}
+            align="right"
+            text={`👥 ${asset.capacity}`}
+            fontSize={roomLabelFontSize}
+            fill="#fff"
+            shadowColor="rgba(0,0,0,0.4)"
+            shadowBlur={2}
+            shadowOffsetY={1}
+            listening={false}
+          />
+
+          {/* Assigned user indicator — blue dot at top-left (bookable assets only) */}
+          {isBookable && asset.assignedUsers && asset.assignedUsers.length > 0 && (
+            <Circle
+              x={10}
+              y={10}
+              radius={Math.max(3.5, roomLabelFontSize * 0.4)}
+              fill="#3b82f6"
+              stroke="#fff"
+              strokeWidth={1.5}
+              listening={false}
+            />
+          )}
+        </>
       ) : (
-        <Text
-          x={cx - radius}
-          y={cy - fontSize / 2 - 1}
-          width={radius * 2}
-          align="center"
-          text={labelText}
-          fontSize={fontSize}
-          fill="#fff"
-          fontStyle="bold"
-          shadowColor="rgba(0,0,0,0.4)"
-          shadowBlur={2}
-          shadowOffsetX={0}
-          shadowOffsetY={1}
-          listening={false}
-        />
-      )}
+        <>
+          {/* Drop shadow */}
+          <Circle
+            x={cx}
+            y={cy + (hovered ? 3 : 2)}
+            radius={radius + 5}
+            fill="rgba(0,0,0,0.18)"
+            listening={false}
+          />
 
-      {/* Assigned user indicator — blue dot at top-left (bookable assets only) */}
-      {isBookable && asset.assignedUsers && asset.assignedUsers.length > 0 && (
-        <Circle
-          x={cx - dotOffset}
-          y={cy - dotOffset}
-          radius={dotRadius}
-          fill="#3b82f6"
-          stroke="#fff"
-          strokeWidth={1.5}
-          listening={false}
-        />
+          {/* Zone colour ring (or muted ring for non-bookable) */}
+          <Circle
+            x={cx}
+            y={cy}
+            radius={radius + 5}
+            fill={ringColour}
+            listening={false}
+          />
+
+          {/* Main circle */}
+          <Circle
+            x={cx}
+            y={cy}
+            radius={radius}
+            fill={fillColour}
+            stroke={hovered ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.45)'}
+            strokeWidth={hovered ? 2.5 : 1.5}
+          />
+
+          {/* Inner highlight arc (top-left quadrant) — only for bookable */}
+          {isBookable && (
+            <Arc
+              x={cx}
+              y={cy}
+              innerRadius={radius * 0.55}
+              outerRadius={radius * 0.88}
+              angle={160}
+              rotation={-130}
+              fill={lightColour}
+              opacity={0.25}
+              listening={false}
+            />
+          )}
+
+          {/* Category icon — uploaded image takes priority, then emoji, then name label */}
+          {iconUrl ? (
+            <CategoryIconImage
+              url={iconUrl}
+              cx={cx}
+              cy={cy}
+              size={iconSize}
+              fallbackChar={iconChar}
+              fallbackFontSize={iconFontSize}
+            />
+          ) : iconChar ? (
+            <Text
+              x={cx - radius}
+              y={cy - iconFontSize / 2}
+              width={radius * 2}
+              align="center"
+              text={iconChar}
+              fontSize={iconFontSize}
+              fill="#fff"
+              shadowColor="rgba(0,0,0,0.4)"
+              shadowBlur={2}
+              shadowOffsetX={0}
+              shadowOffsetY={1}
+              listening={false}
+            />
+          ) : (
+            <Text
+              x={cx - radius}
+              y={cy - fontSize / 2 - 1}
+              width={radius * 2}
+              align="center"
+              text={labelText}
+              fontSize={fontSize}
+              fill="#fff"
+              fontStyle="bold"
+              shadowColor="rgba(0,0,0,0.4)"
+              shadowBlur={2}
+              shadowOffsetX={0}
+              shadowOffsetY={1}
+              listening={false}
+            />
+          )}
+
+          {/* Assigned user indicator — blue dot at top-left (bookable assets only) */}
+          {isBookable && asset.assignedUsers && asset.assignedUsers.length > 0 && (
+            <Circle
+              x={cx - dotOffset}
+              y={cy - dotOffset}
+              radius={dotRadius}
+              fill="#3b82f6"
+              stroke="#fff"
+              strokeWidth={1.5}
+              listening={false}
+            />
+          )}
+        </>
       )}
     </Group>
   )

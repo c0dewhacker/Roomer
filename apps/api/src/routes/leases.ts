@@ -4,7 +4,9 @@ import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { isBuildingManagerForBuilding, getManagedBuildingIds } from '../middleware/requireRole.js'
+import { resolveBuildingTimezone, calendarDaysUntil } from '../lib/timezone.js'
 import { resolveStoragePath, checkFileMagic } from '../lib/storage.js'
+import { recordAuditLog } from '../lib/audit.js'
 import path from 'path'
 import { z } from 'zod'
 
@@ -131,6 +133,14 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
         documents: true,
       },
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'building_lease.created',
+      resourceType: 'BuildingLease',
+      resourceId: lease.id,
+      after: { buildingId: lease.buildingId, name: lease.name, startDate: lease.startDate, endDate: lease.endDate, landlord: lease.landlord, rentAmount: lease.rentAmount, currency: lease.currency },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(201).send({ data: lease })
   })
@@ -171,7 +181,7 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
       })
     }
 
-    const existing = await prisma.buildingLease.findUnique({ where: { id }, select: { buildingId: true, startDate: true, endDate: true } })
+    const existing = await prisma.buildingLease.findUnique({ where: { id }, select: { buildingId: true, name: true, startDate: true, endDate: true, landlord: true, rentAmount: true, currency: true } })
     if (!existing) {
       return reply.status(404).send({ error: { message: 'Lease not found', code: 'NOT_FOUND' } })
     }
@@ -194,6 +204,33 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(400).send({ error: { message: 'startDate must be before endDate', code: 'VALIDATION_ERROR' } })
     }
 
+    // If endDate is actually changing, clear whichever expiry-notification
+    // flag(s) no longer apply to the new date — otherwise a lease edited back
+    // out of the expiring-soon window (or renewed past its old expiry) would
+    // never re-notify if it later re-enters either state, since
+    // handleLeaseExpiry only ever looks at leases where the flag is still
+    // null. Only touched when endDate is part of this request; editing e.g.
+    // just the rent amount must not reset either flag.
+    //
+    // endDate is a date-only value (UTC midnight of the picked calendar day),
+    // not a real instant — classified via calendarDaysUntil against the
+    // building's own timezone, the same fix already applied to the
+    // lease-expiry cron (queue.ts) for this exact field. Comparing it as a
+    // raw instant against `now` (as this used to) flips the classification a
+    // day early/late depending on the building's UTC offset.
+    let notifiedResets: { expiringNotifiedAt?: null; expiredNotifiedAt?: null } = {}
+    if (result.data.endDate !== undefined) {
+      const now = new Date()
+      const tz = await resolveBuildingTimezone(prisma, existing.buildingId)
+      const days = effectiveEndDate !== null ? calendarDaysUntil(effectiveEndDate, now, tz) : null
+      const inExpiringWindow = days !== null && days >= 0 && days <= 90
+      const isPast = days !== null && days < 0
+      notifiedResets = {
+        ...(!inExpiringWindow && { expiringNotifiedAt: null }),
+        ...(!isPast && { expiredNotifiedAt: null }),
+      }
+    }
+
     try {
       const lease = await prisma.buildingLease.update({
         where: { id },
@@ -203,12 +240,22 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
           endDate: result.data.endDate !== undefined
             ? (result.data.endDate ? new Date(result.data.endDate) : null)
             : undefined,
+          ...notifiedResets,
         },
         include: {
           building: { select: { id: true, name: true } },
           documents: { select: { id: true, filename: true, sizeBytes: true, mimeType: true, uploadedAt: true } },
         },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'building_lease.updated',
+        resourceType: 'BuildingLease',
+        resourceId: id,
+        before: existing,
+        after: { name: lease.name, startDate: lease.startDate, endDate: lease.endDate, landlord: lease.landlord, rentAmount: lease.rentAmount, currency: lease.currency },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: lease })
     } catch {
       return reply.status(404).send({ error: { message: 'Lease not found', code: 'NOT_FOUND' } })
@@ -246,6 +293,14 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     await prisma.buildingLease.delete({ where: { id } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'building_lease.deleted',
+      resourceType: 'BuildingLease',
+      resourceId: id,
+      before: { buildingId: lease.buildingId, name: lease.name, startDate: lease.startDate, endDate: lease.endDate, landlord: lease.landlord, rentAmount: lease.rentAmount, currency: lease.currency },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 
@@ -317,6 +372,14 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
         sizeBytes: buffer.length,
       },
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'lease_document.uploaded',
+      resourceType: 'LeaseDocument',
+      resourceId: doc.id,
+      after: { leaseId: id, filename: doc.filename, mimeType: doc.mimeType, sizeBytes: doc.sizeBytes },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(201).send({ data: doc })
   })
@@ -380,6 +443,14 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
     try { await fs.promises.unlink(absPath) } catch { /* ignore */ }
 
     await prisma.leaseDocument.delete({ where: { id: docId } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'lease_document.deleted',
+      resourceType: 'LeaseDocument',
+      resourceId: docId,
+      before: { leaseId: doc.leaseId, filename: doc.filename, mimeType: doc.mimeType, sizeBytes: doc.sizeBytes },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 }

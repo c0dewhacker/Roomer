@@ -6,11 +6,27 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole, getManagedFloorIds, getManagedBuildingIds, isFloorManagerForFloor } from '../middleware/requireRole.js'
 import { enqueueNotification, fanOutFloorAvailable, cancelFutureBookingsForAssets } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
-import { lockAssetForBooking, lockAssetForQueue, hasConfirmedOverlap, isOverlapConstraintViolation } from '../lib/booking.js'
+import { lockAssetForBooking, lockAssetForQueue, lockUserForBookingQuota, hasBlockingOverlap, checkZoneGroupOverlap, isOverlapConstraintViolation, assertBookable, assertUnderBookingQuota, isWithinAdvanceBookingWindow } from '../lib/booking.js'
+import { resolveQrCheckInMode } from '../lib/qr.js'
+import { resolveBuildingTimezone, zonedWallClockToUtc } from '../lib/timezone.js'
+import { toZonedTime } from 'date-fns-tz'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { checkGroupAccess } from './groups.js'
 import { saveCategoryIcon, deleteFile, resolveStoragePath } from '../lib/storage.js'
+import { recordAuditLog } from '../lib/audit.js'
+
+// Same "capped, not paginated" contract as audit-log.ts's CSV_EXPORT_LIMIT —
+// this export has no page/limit query param (it's meant to return everything
+// matching the filter), so it needs its own upper bound instead.
+const ASSET_EXPORT_LIMIT = 10_000
+
+class ZoneGroupConflictError extends Error {
+  constructor(public readonly code: string, message: string) {
+    super(message)
+    this.name = 'ZoneGroupConflictError'
+  }
+}
 
 const createCategorySchema = z.object({
   name: z.string().min(1).max(255),
@@ -41,6 +57,8 @@ const createAssetSchema = z.object({
   width: z.number().positive().optional(),
   height: z.number().positive().optional(),
   rotation: z.number().min(-360).max(360).optional(),
+  // Occupant capacity — a room/shared space sets this, a desk leaves it unset.
+  capacity: z.number().int().positive().max(1000).optional(),
 })
 
 const updateAssetSchema = z.object({
@@ -65,6 +83,7 @@ const updateAssetSchema = z.object({
   width: z.number().positive().nullable().optional(),
   height: z.number().positive().nullable().optional(),
   rotation: z.number().min(-360).max(360).nullable().optional(),
+  capacity: z.number().int().positive().max(1000).nullable().optional(),
 })
 
 const addToAllowListSchema = z.object({
@@ -180,6 +199,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
             },
           })
           created.push({ id: asset.id, name: asset.name })
+          dispatchWebhook('asset.created', { id: asset.id, name: asset.name, categoryId: asset.categoryId }).catch(() => {})
         } catch (err) {
           errors.push({
             row: index + 1,
@@ -188,6 +208,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           })
         }
       }
+
+      // One summary row for the whole batch, not one per created asset — this
+      // can create up to 500 rows in a single call.
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset.bulk_imported',
+        resourceType: 'Asset',
+        resourceId: randomUUID(),
+        after: { floorId, createdCount: created.length, errorCount: errors.length, totalRows: assets.length },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(200).send({ data: { created: created.length, errors } })
     },
@@ -237,6 +268,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           }),
         ),
       )
+      // One summary row for the whole batch, not one per moved asset.
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset.positions_updated',
+        resourceType: 'Asset',
+        resourceId: randomUUID(),
+        after: { assetIds: result.data.assets.map((a) => a.id), count: updates.length },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(200).send({ data: updates })
     },
@@ -360,6 +400,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
       try {
         const category = await prisma.assetCategory.create({ data: result.data })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'asset_category.created',
+          resourceType: 'AssetCategory',
+          resourceId: category.id,
+          after: { name: category.name, defaultIsBookable: category.defaultIsBookable, colour: category.colour },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(201).send({ data: category })
       } catch {
         return reply.status(409).send({
@@ -386,7 +434,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(400).send({ error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() } })
       }
       try {
+        const before = await prisma.assetCategory.findUnique({ where: { id }, select: { name: true, description: true, defaultIsBookable: true, defaultIcon: true, colour: true } })
         const category = await prisma.assetCategory.update({ where: { id }, data: result.data })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'asset_category.updated',
+          resourceType: 'AssetCategory',
+          resourceId: id,
+          before,
+          after: { name: category.name, description: category.description, defaultIsBookable: category.defaultIsBookable, defaultIcon: category.defaultIcon, colour: category.colour },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: category })
       } catch {
         return reply.status(404).send({ error: { message: 'Category not found', code: 'NOT_FOUND' } })
@@ -431,6 +489,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       // genuinely need the old file cleaned up separately.)
       // Store the relative storage path — the serve URL is /assets/categories/:id/icon
       const category = await prisma.assetCategory.update({ where: { id }, data: { iconUrl: relPath } })
+      // Icon binary content is never logged — only that one was set/replaced.
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: existing.iconUrl ? 'asset_category.icon_replaced' : 'asset_category.icon_uploaded',
+        resourceType: 'AssetCategory',
+        resourceId: id,
+        ipAddress: request.ip,
+      }, request.log)
       // Return with the serve URL so the client can use it immediately
       return reply.status(200).send({ data: { ...category, iconUrl: `/api/v1/assets/categories/${id}/icon` } })
     },
@@ -480,7 +546,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       if (existing.iconUrl) await deleteFile(existing.iconUrl).catch(() => {})
-      await prisma.assetCategory.delete({ where: { id } })
+      const deleted = await prisma.assetCategory.delete({ where: { id } })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset_category.deleted',
+        resourceType: 'AssetCategory',
+        resourceId: id,
+        before: { name: deleted.name, description: deleted.description, colour: deleted.colour },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     },
   )
@@ -523,7 +597,16 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       orderBy: { createdAt: 'desc' },
       include: {
         asset: {
-          include: {
+          // Explicit select, not include — internal inventory/management
+          // fields (serialNumber, assetTag, notes, physical status,
+          // purchaseDate, warrantyExpiry) are gated to SUPER_ADMIN/assignee/
+          // floor-manager on GET /assets/:id; this endpoint is reachable by
+          // any authenticated user who's favourited an asset, so it must not
+          // leak them via a bare `include` the way it previously did.
+          select: {
+            id: true, name: true, bookingLabel: true, isBookable: true,
+            bookingStatus: true, amenities: true, capacity: true,
+            x: true, y: true, width: true, height: true, rotation: true,
             category: { select: { id: true, name: true } },
             floor: {
               select: { id: true, name: true, building: { select: { id: true, name: true } } },
@@ -575,6 +658,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       create: { userId: request.user.id, assetId: id },
       update: {},
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'user_favourite_asset.added',
+      resourceType: 'UserFavouriteAsset',
+      resourceId: `${request.user.id}:${id}`,
+      after: { userId: request.user.id, assetId: id },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true, favourited: true } })
   })
 
@@ -582,7 +673,137 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.delete('/:id/favourite', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
     await prisma.userFavouriteAsset.deleteMany({ where: { userId: request.user.id, assetId: id } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'user_favourite_asset.removed',
+      resourceType: 'UserFavouriteAsset',
+      resourceId: `${request.user.id}:${id}`,
+      before: { userId: request.user.id, assetId: id },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true, favourited: false } })
+  })
+
+  // GET /assets/suggestions?date=YYYY-MM-DD — ranked "suggested for you" desks
+  // for the booking flow (registered before /:id for the same reason as
+  // /favourites above). Ranking, highest weight first:
+  //   1. Assets this user has booked most in the last 30 days.
+  //   2. Other assets in a zone this user has booked into before (all-time) —
+  //      excluding ones already scored by (1), so this surfaces alternatives
+  //      in a zone they clearly like rather than just re-ranking the same desks.
+  //   3. Assets colleagues (same department, per User.departmentId) have
+  //      booked in the last 30 days.
+  // Candidates are walked highest-scored first and filtered through the same
+  // assertBookable gate every other booking-creating path uses, plus a same-day
+  // overlap check — a desk this user usually sits at is a bad suggestion if
+  // their access was revoked or someone else already has it that day.
+  fastify.get('/suggestions', { preHandler: [requireAuth] }, async (request, reply) => {
+    const queryResult = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).safeParse(request.query)
+    if (!queryResult.success) {
+      return reply.status(400).send({ error: { message: 'date query param required (YYYY-MM-DD)', code: 'INVALID_DATE' } })
+    }
+    const { date } = queryResult.data
+    const dayStart = new Date(`${date}T00:00:00.000Z`)
+    const dayEnd = new Date(`${date}T23:59:59.999Z`)
+    const userId = request.user.id
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+
+    const score = new Map<string, number>()
+    const bump = (assetId: string, n: number) => score.set(assetId, (score.get(assetId) ?? 0) + n)
+
+    // Tier 1 — most frequently booked by this user, past 30 days
+    const myRecent = await prisma.booking.groupBy({
+      by: ['assetId'],
+      where: { userId, status: { in: ['CONFIRMED', 'COMPLETED'] }, startsAt: { gte: thirtyDaysAgo } },
+      _count: { assetId: true },
+    })
+    for (const row of myRecent) bump(row.assetId, row._count.assetId * 10)
+
+    // Tier 2 — other bookable assets in a zone this user has booked into before
+    const myPastAssets = await prisma.booking.findMany({
+      where: { userId, status: { in: ['CONFIRMED', 'COMPLETED'] } },
+      select: { asset: { select: { primaryZoneId: true } } },
+      distinct: ['assetId'],
+    })
+    const myZoneIds = [...new Set(myPastAssets.map((b) => b.asset.primaryZoneId).filter((z): z is string => !!z))]
+    if (myZoneIds.length > 0) {
+      // Capped — every match in this tier gets the same flat score, so which
+      // ones get cut off doesn't bias the ranking, but leaving it unbounded
+      // meant a user who's ever booked into a large open-plan zone (hundreds
+      // of desks) would push the same number of candidates through the
+      // per-candidate assertBookable gate below, one sequential await at a
+      // time, for every suggestions request.
+      const zoneAssets = await prisma.asset.findMany({
+        where: { primaryZoneId: { in: myZoneIds }, isBookable: true, id: { notIn: myRecent.map((r) => r.assetId) } },
+        select: { id: true },
+        take: 50,
+      })
+      for (const a of zoneAssets) bump(a.id, 3)
+    }
+
+    // Tier 3 — assets colleagues (same department) have booked recently
+    const me = await prisma.user.findUnique({ where: { id: userId }, select: { departmentId: true } })
+    if (me?.departmentId) {
+      const colleagueBookings = await prisma.booking.groupBy({
+        by: ['assetId'],
+        where: {
+          status: { in: ['CONFIRMED', 'COMPLETED'] },
+          startsAt: { gte: thirtyDaysAgo },
+          userId: { not: userId },
+          user: { departmentId: me.departmentId },
+        },
+        _count: { assetId: true },
+      })
+      for (const row of colleagueBookings) bump(row.assetId, row._count.assetId)
+    }
+
+    if (score.size === 0) {
+      return reply.status(200).send({ data: [] })
+    }
+
+    const rankedIds = [...score.entries()].sort((a, b) => b[1] - a[1]).map(([assetId]) => assetId)
+
+    // Explicit select, not include — same reasoning as GET /assets/favourites:
+    // internal inventory/management fields must not leak to every
+    // authenticated user just because their booking history scored a desk
+    // highly.
+    const candidates = await prisma.asset.findMany({
+      where: { id: { in: rankedIds }, isBookable: true },
+      select: {
+        id: true, name: true, bookingLabel: true, isBookable: true,
+        bookingStatus: true, amenities: true, capacity: true,
+        x: true, y: true, width: true, height: true, rotation: true,
+        category: { select: { id: true, name: true } },
+        floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
+        primaryZone: { select: { id: true, name: true } },
+        bookings: {
+          // PENDING_APPROVAL reserves the slot exactly like CONFIRMED (#74)
+          // — hasBlockingOverlap (lib/booking.ts), the floor-plan occupancy
+          // query, and the DB's own overlap exclusion constraint all treat
+          // it that way. This was the one place still only checking
+          // CONFIRMED, so a desk someone else had already requested (but
+          // not yet had approved) could still be suggested here, only to
+          // fail with ASSET_CONFLICT the moment the user tried to book it.
+          where: { status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { lt: dayEnd }, endsAt: { gt: dayStart } },
+          select: { id: true },
+        },
+      },
+    })
+    const candidatesById = new Map(candidates.map((a) => [a.id, a]))
+
+    const SUGGESTION_LIMIT = 3
+    const suggestions: Array<Omit<(typeof candidates)[number], 'bookings'>> = []
+    for (const assetId of rankedIds) {
+      if (suggestions.length >= SUGGESTION_LIMIT) break
+      const asset = candidatesById.get(assetId)
+      if (!asset || asset.bookings.length > 0) continue
+      const gate = await assertBookable(prisma, request.user, assetId, dayStart, dayEnd)
+      if (!gate.ok) continue
+      const { bookings: _bookings, ...rest } = asset
+      suggestions.push(rest)
+    }
+
+    return reply.status(200).send({ data: suggestions })
   })
 
   // POST /assets/:id/availability-windows — create an availability window
@@ -617,6 +838,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     const window = await prisma.assetAvailabilityWindow.create({
       data: { assetId: id, ownerId: request.user.id, startsAt, endsAt, note: body.note ?? null },
     })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'asset_availability_window.created',
+      resourceType: 'AssetAvailabilityWindow',
+      resourceId: window.id,
+      after: { assetId: id, startsAt: window.startsAt, endsAt: window.endsAt },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(201).send({ data: window })
   })
 
@@ -659,6 +888,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     await prisma.assetAvailabilityWindow.delete({ where: { id: windowId } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'asset_availability_window.deleted',
+      resourceType: 'AssetAvailabilityWindow',
+      resourceId: windowId,
+      before: { assetId: id, startsAt: window.startsAt, endsAt: window.endsAt },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 
@@ -695,12 +932,22 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
     }
 
+    const before = await prisma.assetAvailabilityRule.findMany({ where: { assetId: id }, select: { weekday: true } })
     await prisma.$transaction([
       prisma.assetAvailabilityRule.deleteMany({ where: { assetId: id } }),
       prisma.assetAvailabilityRule.createMany({
         data: weekdays.map((weekday) => ({ assetId: id, ownerId: request.user.id, weekday })),
       }),
     ])
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'asset_availability_rule.replaced',
+      resourceType: 'Asset',
+      resourceId: id,
+      before: { weekdays: before.map((r) => r.weekday).sort((a, b) => a - b) },
+      after: { weekdays: weekdays.sort((a, b) => a - b) },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { weekdays: weekdays.sort((a, b) => a - b) } })
   })
 
@@ -731,7 +978,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     const waiting = await prisma.queueEntry.findMany({
       where: { assetId: id, status: 'WAITING', wantedStartsAt: { gt: new Date() } },
       orderBy: { position: 'asc' },
-      include: { user: { select: { id: true, email: true, displayName: true } } },
+      include: { user: { select: { id: true, email: true, displayName: true, globalRole: true } } },
     })
 
     if (waiting.length === 0) {
@@ -747,13 +994,53 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     const first = waiting[0]
 
     if (waiting.length === 1) {
-      // Single waiter — confirm booking immediately. Serialise against all other
-      // booking-creating paths and re-check overlap so this cannot double-book.
+      // Single waiter — confirm booking immediately (skips the claim step the
+      // multi-waiter branch below requires, since there's no one to race).
+      // Still re-validate bookability and quota at confirmation time, same as
+      // the claim-by-token/claim routes (queue.ts) — the allow list,
+      // bookingStatus, or the waiter's group access may have changed since
+      // they joined the queue, and this branch bypassing that check would let
+      // someone obtain a CONFIRMED booking they're no longer permitted to make.
+      const gate = await assertBookable(prisma, first.user, id, first.wantedStartsAt, first.wantedEndsAt)
+      if (!gate.ok) {
+        return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
+      }
+
+      // A queue entry isn't itself a booking commitment (see the comment on
+      // isWithinAdvanceBookingWindow), but auto-confirming one here creates a
+      // real CONFIRMED booking exactly like POST /bookings does, so it must
+      // pass the same advance-booking cap the queue-claim routes now also
+      // enforce at their own commitment point.
+      if (first.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const org = await prisma.organisation.findFirst({ select: { maxAdvanceBookingDays: true } })
+        if (!isWithinAdvanceBookingWindow(first.wantedStartsAt, org?.maxAdvanceBookingDays)) {
+          return reply.status(400).send({
+            error: { message: `Bookings cannot be made more than ${org?.maxAdvanceBookingDays} days in advance`, code: 'MAX_ADVANCE_EXCEEDED' },
+          })
+        }
+      }
+
+      const quota = await assertUnderBookingQuota(prisma, first.userId, first.user.globalRole === GlobalRole.SUPER_ADMIN)
+      if (!quota.ok) {
+        return reply.status(quota.status).send({ error: { message: quota.message, code: quota.code } })
+      }
+
+      // Serialise against all other booking-creating paths and re-check overlap
+      // so this cannot double-book.
       let booking: Awaited<ReturnType<typeof prisma.booking.create>> | null
       try {
         booking = await prisma.$transaction(async (tx) => {
           await lockAssetForBooking(tx, id)
-          if (await hasConfirmedOverlap(tx, id, first.wantedStartsAt, first.wantedEndsAt)) return null
+          if (await hasBlockingOverlap(tx, id, first.wantedStartsAt, first.wantedEndsAt)) return null
+
+          // ZoneGroup conflicts are scoped per-user, not per-asset, so they
+          // need this lock too — same rule every other booking-creating path
+          // (POST /bookings, reschedule, recurring, queue claim) enforces.
+          await lockUserForBookingQuota(tx, first.userId)
+          if (await checkZoneGroupOverlap(tx, first.userId, id, first.wantedStartsAt, first.wantedEndsAt)) {
+            throw new ZoneGroupConflictError('ZONE_GROUP_CONFLICT', 'This user already has a booking in the same zone group for this time')
+          }
+
           const created = await tx.booking.create({
             data: {
               userId: first.userId,
@@ -768,7 +1055,9 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         })
       } catch (err) {
         if (isOverlapConstraintViolation(err)) booking = null
-        else throw err
+        else if (err instanceof ZoneGroupConflictError) {
+          return reply.status(409).send({ error: { message: err.message, code: err.code } })
+        } else throw err
       }
 
       if (!booking) {
@@ -780,6 +1069,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         userId: first.userId,
         bookingId: booking.id,
       })
+      dispatchWebhook('queue.claimed', { id: first.id, userId: first.userId, assetId: id, bookingId: booking.id }).catch(() => {})
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset.made_available',
+        resourceType: 'Booking',
+        resourceId: booking.id,
+        after: { assetId: id, userId: first.userId, startsAt: booking.startsAt, endsAt: booking.endsAt, outcome: 'auto_confirmed' },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(200).send({ data: { queued: 1, action: 'auto_confirmed', userId: first.userId } })
     }
@@ -808,6 +1106,24 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         where: { id: current.id },
         data: { status: 'PROMOTED', claimDeadline, claimToken: randomUUID() },
       })
+
+      // Same compaction promoteNextQueueEntry (lib/queue.ts) and the leave-queue
+      // route both do — without it, everyone still WAITING behind `current` in
+      // its window keeps a stale position number forever, and since position is
+      // only unique within an overlapping-window cohort (not asset-wide), a
+      // later joiner's freshly-counted position can collide with a stale one,
+      // leaving promotion order for a tie undefined.
+      await tx.queueEntry.updateMany({
+        where: {
+          assetId: id,
+          status: 'WAITING',
+          position: { gt: current.position },
+          wantedStartsAt: { lt: current.wantedEndsAt },
+          wantedEndsAt: { gt: current.wantedStartsAt },
+        },
+        data: { position: { decrement: 1 } },
+      })
+
       return { id: current.id, userId: current.userId, claimDeadline }
     })
 
@@ -823,6 +1139,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       queueEntryId: promoted.id,
       claimDeadline: promoted.claimDeadline.toISOString(),
     })
+    dispatchWebhook('queue.promoted', { id: promoted.id, userId: promoted.userId, assetId: id, claimDeadline: promoted.claimDeadline.toISOString() }).catch(() => {})
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'asset.made_available',
+      resourceType: 'QueueEntry',
+      resourceId: promoted.id,
+      after: { assetId: id, userId: promoted.userId, outcome: 'promoted', claimDeadline: promoted.claimDeadline },
+      ipAddress: request.ip,
+    }, request.log)
 
     return reply.status(200).send({ data: { queued: waiting.length, action: 'promoted', userId: promoted.userId, claimDeadline: promoted.claimDeadline } })
   })
@@ -864,6 +1189,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           ),
         )
       }
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset_user_assignment.cleared_by_floor',
+        resourceType: 'AssetUserAssignment',
+        resourceId: floorId,
+        before: { floorId, assetIds },
+        after: { clearedCount: count },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { cleared: count } })
     },
   )
@@ -985,6 +1319,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
+      // One summary row for the whole batch, not one per assigned row — this
+      // can touch up to 5000 rows in a single call.
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset_user_assignment.bulk_assigned',
+        resourceType: 'AssetUserAssignment',
+        resourceId: randomUUID(),
+        after: { assignedCount: assigned, errorCount: errors.length, totalRows: rows.length },
+        ipAddress: request.ip,
+      }, request.log)
+
       return reply.status(200).send({ data: { assigned, errors } })
     },
   )
@@ -1013,17 +1358,29 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           whereClause = { floor: { buildingId: { in: managedBuildingIds } } }
         }
       }
-      const assets = await prisma.asset.findMany({
-        where: whereClause,
-        select: {
-          id: true,
-          name: true,
-          userAssignments: {
-            include: { user: { select: { email: true } } },
+      // Every other export path in this codebase caps its query (audit-log.ts's
+      // CSV_EXPORT_LIMIT, the analytics CSV exports) — this one had no upper
+      // bound at all, an unbounded query for an org with a very large asset
+      // inventory (or a super admin omitting buildingId to span the whole org).
+      const [assets, totalAssetCount] = await Promise.all([
+        prisma.asset.findMany({
+          where: whereClause,
+          select: {
+            id: true,
+            name: true,
+            userAssignments: {
+              include: { user: { select: { email: true } } },
+            },
           },
-        },
-        orderBy: { name: 'asc' },
-      })
+          orderBy: { name: 'asc' },
+          take: ASSET_EXPORT_LIMIT,
+        }),
+        prisma.asset.count({ where: whereClause }),
+      ])
+      if (totalAssetCount > ASSET_EXPORT_LIMIT) {
+        reply.header('X-Export-Truncated', 'true')
+        reply.header('X-Export-Total-Matching', String(totalAssetCount))
+      }
       const rows = assets.flatMap((a) =>
         a.userAssignments.length > 0
           ? a.userAssignments.map((ua) => ({
@@ -1103,8 +1460,16 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         if (!floor) return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
       }
       if (result.data.primaryZoneId) {
-        const zone = await prisma.zone.findUnique({ where: { id: result.data.primaryZoneId }, select: { id: true } })
+        const zone = await prisma.zone.findUnique({ where: { id: result.data.primaryZoneId }, select: { id: true, floorId: true } })
         if (!zone) return reply.status(404).send({ error: { message: 'Zone not found', code: 'NOT_FOUND' } })
+        // A zone belongs to exactly one floor — an asset placed in a zone
+        // from a different floor than its own `floorId` would show up on
+        // the wrong floor plan (or neither) with no way to notice from the
+        // response alone. The admin UI always derives primaryZoneId from
+        // the chosen floor's own zones, but nothing server-side enforced it.
+        if (result.data.floorId && zone.floorId !== result.data.floorId) {
+          return reply.status(400).send({ error: { message: 'That zone does not belong to the selected floor', code: 'VALIDATION_ERROR' } })
+        }
       }
 
       try {
@@ -1125,6 +1490,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           include: { category: true },
         })
         dispatchWebhook('asset.created', { id: asset.id, name: asset.name, categoryId: asset.categoryId }).catch(() => {})
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'asset.created',
+          resourceType: 'Asset',
+          resourceId: asset.id,
+          after: { name: asset.name, categoryId: asset.categoryId, floorId: asset.floorId, primaryZoneId: asset.primaryZoneId, isBookable: asset.isBookable, bookingStatus: asset.bookingStatus },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(201).send({ data: asset })
       } catch (err) {
         // assetTag is the only unique constraint on Asset, so P2002 always
@@ -1159,17 +1532,55 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
       // Authorization: super admin can edit any asset; floor managers and building admins can edit assets on their floors
       const isAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
+      const existing = await prisma.asset.findUnique({ where: { id }, select: { floorId: true, primaryZoneId: true, name: true, categoryId: true, status: true, bookingStatus: true, isBookable: true } })
+      if (!existing) {
+        return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+      }
       if (!isAdmin) {
-        const existing = await prisma.asset.findUnique({ where: { id }, select: { floorId: true } })
-        if (!existing) {
-          return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
-        }
         if (!existing.floorId) {
           return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
         }
         const canManage = await isFloorManagerForFloor(request.user.id, existing.floorId)
         if (!canManage) {
           return reply.status(403).send({ error: { message: 'Forbidden', code: 'FORBIDDEN' } })
+        }
+        // A caller is only ever checked against the asset's CURRENT floor
+        // above — reassigning `floorId` to a DIFFERENT floor otherwise moves
+        // the asset with zero authorization check on the destination, and a
+        // floor manager for Floor A could relocate any of their assets onto
+        // Floor B (or beyond) regardless of whether they manage Floor B at
+        // all. Mirrors the same-caller-must-manage-both-ends check
+        // POST /:id/zones already applies to secondary zone assignment.
+        if (result.data.floorId !== undefined && result.data.floorId !== null && result.data.floorId !== existing.floorId) {
+          const canManageTarget = await isFloorManagerForFloor(request.user.id, result.data.floorId)
+          if (!canManageTarget) {
+            return reply.status(403).send({ error: { message: 'You do not manage the destination floor', code: 'FORBIDDEN' } })
+          }
+        }
+      }
+
+      // Existence + cross-consistency checks — POST / already does the
+      // equivalent for asset creation; PATCH previously did neither, so a
+      // bogus id either silently no-oped (Prisma ignores an unknown
+      // relation-id assignment target down to an FK violation surfacing as
+      // an opaque 500) or, for primaryZoneId, could point at a zone on a
+      // completely different floor with nothing to catch it.
+      if (result.data.categoryId !== undefined) {
+        const category = await prisma.assetCategory.findUnique({ where: { id: result.data.categoryId }, select: { id: true } })
+        if (!category) return reply.status(404).send({ error: { message: 'Category not found', code: 'NOT_FOUND' } })
+      }
+      if (result.data.floorId !== undefined && result.data.floorId !== null) {
+        const floor = await prisma.floor.findUnique({ where: { id: result.data.floorId }, select: { id: true } })
+        if (!floor) return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+      }
+      if (result.data.primaryZoneId !== undefined && result.data.primaryZoneId !== null) {
+        const zone = await prisma.zone.findUnique({ where: { id: result.data.primaryZoneId }, select: { id: true, floorId: true } })
+        if (!zone) return reply.status(404).send({ error: { message: 'Zone not found', code: 'NOT_FOUND' } })
+        // The effective floor after this update: the new one if it's being
+        // changed in the same request, otherwise the asset's current floor.
+        const effectiveFloorId = result.data.floorId !== undefined ? result.data.floorId : existing.floorId
+        if (effectiveFloorId && zone.floorId !== effectiveFloorId) {
+          return reply.status(400).send({ error: { message: 'That zone does not belong to this asset\'s floor', code: 'VALIDATION_ERROR' } })
         }
       }
 
@@ -1194,6 +1605,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         } else {
           dispatchWebhook('asset.updated', { id: asset.id, name: asset.name }).catch(() => {})
         }
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: statusChanged ? 'asset.status_changed' : 'asset.updated',
+          resourceType: 'Asset',
+          resourceId: id,
+          before: existing,
+          after: { name: asset.name, categoryId: asset.categoryId, floorId: asset.floorId, primaryZoneId: asset.primaryZoneId, status: asset.status, bookingStatus: asset.bookingStatus, isBookable: asset.isBookable },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: asset })
       } catch (err) {
         if ((err as { code?: string }).code === 'P2025') {
@@ -1226,14 +1646,25 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       // same reasoning cancelFutureBookingsForFloors already documents for
       // floor/building deletion. This only cancels+notifies; the cascade still
       // does the actual row deletion once the asset itself is removed below.
-      await cancelFutureBookingsForAssets([id])
+      // skipQueuePromotion: the asset is about to be destroyed, not just
+      // unplaced, so there's no slot left for anyone to be promoted into.
+      await cancelFutureBookingsForAssets([id], { skipQueuePromotion: true })
 
+      const before = await prisma.asset.findUnique({ where: { id }, select: { name: true, categoryId: true, floorId: true, primaryZoneId: true } })
       try {
         await prisma.asset.delete({ where: { id } })
-        return reply.status(200).send({ data: { ok: true } })
       } catch {
         return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
       }
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset.deleted',
+        resourceType: 'Asset',
+        resourceId: id,
+        before,
+        ipAddress: request.ip,
+      }, request.log)
+      return reply.status(200).send({ data: { ok: true } })
     },
   )
 
@@ -1326,6 +1757,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       if (!wasAlreadyAssigned) {
         await enqueueNotification({ type: NotificationType.ASSET_ASSIGNED, userId: result.data.userId, assetId: id })
       }
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset_user_assignment.added',
+        resourceType: 'AssetUserAssignment',
+        resourceId: `${id}:${result.data.userId}`,
+        after: { assetId: id, userId: result.data.userId, isPrimary: assignment.isPrimary },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(201).send({ data: { ...assignment.user, isPrimary: assignment.isPrimary } })
     },
   )
@@ -1344,9 +1783,17 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         if (!canManage) return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
       try {
-        await prisma.assetUserAssignment.delete({
+        const deleted = await prisma.assetUserAssignment.delete({
           where: { assetId_userId: { assetId: id, userId } },
         })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'asset_user_assignment.removed',
+          resourceType: 'AssetUserAssignment',
+          resourceId: `${id}:${userId}`,
+          before: { assetId: id, userId, isPrimary: deleted.isPrimary },
+          ipAddress: request.ip,
+        }, request.log)
         const remaining = await prisma.assetUserAssignment.count({ where: { assetId: id } })
         if (remaining === 0) {
           // Restore whatever bookingStatus the desk had before it became
@@ -1397,6 +1844,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
           data: { isPrimary: true },
         }),
       ])
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'asset_user_assignment.primary_set',
+        resourceType: 'AssetUserAssignment',
+        resourceId: `${id}:${userId}`,
+        after: { assetId: id, userId, isPrimary: true },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     },
   )
@@ -1433,6 +1888,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         const entry = await prisma.assetAllowList.create({
           data: { assetId: id, userId: result.data.userId },
         })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'asset_allow_list.added',
+          resourceType: 'AssetAllowList',
+          resourceId: `${id}:${result.data.userId}`,
+          after: { assetId: id, userId: result.data.userId },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(201).send({ data: entry })
       } catch {
         return reply.status(409).send({
@@ -1461,6 +1924,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         await prisma.assetAllowList.delete({
           where: { assetId_userId: { assetId: id, userId } },
         })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'asset_allow_list.removed',
+          resourceType: 'AssetAllowList',
+          resourceId: `${id}:${userId}`,
+          before: { assetId: id, userId },
+          ipAddress: request.ip,
+        }, request.log)
         return reply.status(200).send({ data: { ok: true } })
       } catch {
         return reply.status(404).send({
@@ -1561,6 +2032,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
       try {
         await prisma.assetZone.create({ data: { assetId: id, zoneId: result.data.zoneId } })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'asset_zone.added',
+          resourceType: 'AssetZone',
+          resourceId: `${id}:${result.data.zoneId}`,
+          after: { assetId: id, zoneId: result.data.zoneId },
+          ipAddress: request.ip,
+        }, request.log)
       } catch {
         return reply.status(409).send({ error: { message: 'Asset already in this zone', code: 'ALREADY_EXISTS' } })
       }
@@ -1591,6 +2070,14 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
       try {
         await prisma.assetZone.delete({ where: { assetId_zoneId: { assetId: id, zoneId } } })
+        await recordAuditLog(prisma, {
+          actorId: request.user.id,
+          action: 'asset_zone.removed',
+          resourceType: 'AssetZone',
+          resourceId: `${id}:${zoneId}`,
+          before: { assetId: id, zoneId },
+          ipAddress: request.ip,
+        }, request.log)
       } catch {
         return reply.status(404).send({ error: { message: 'Zone membership not found', code: 'NOT_FOUND' } })
       }
@@ -1633,10 +2120,99 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
     const bookings = await prisma.booking.findMany({
       where,
+      // Any user with floor access can view an asset's booking history —
+      // guestCheckInToken (a bare, unauthenticated credential) must not
+      // leak here even though guestName/guestEmail are fine to show.
+      omit: { guestCheckInToken: true },
       include: { user: { select: { id: true, displayName: true, email: true } } },
       orderBy: { startsAt: 'asc' },
     })
 
     return reply.status(200).send({ data: bookings })
+  })
+
+  // GET /:id/qr-status — landing-page data for a scanned desk QR code.
+  // Read-only: the actual book/check-in actions reuse the existing POST
+  // /bookings and POST /bookings/:id/check-in endpoints (and their full
+  // validation) rather than duplicating that logic here.
+  fastify.get('/:id/qr-status', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string }
+
+    const asset = await prisma.asset.findUnique({
+      where: { id },
+      select: { id: true, name: true, bookingLabel: true, floor: { select: { name: true, buildingId: true, building: { select: { name: true } } } } },
+    })
+    if (!asset) {
+      return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+    }
+
+    const qrCheckInMode = await resolveQrCheckInMode(id)
+    const assetInfo = {
+      id: asset.id,
+      name: asset.name,
+      bookingLabel: asset.bookingLabel,
+      floorName: asset.floor?.name ?? null,
+      buildingName: asset.floor?.building?.name ?? null,
+    }
+    if (qrCheckInMode === 'DISABLED') {
+      return reply.status(200).send({ data: { qrCheckInMode, asset: assetInfo, canBookNow: false, currentBooking: null } })
+    }
+
+    const now = new Date()
+    // Includes PENDING_APPROVAL alongside CONFIRMED — it reserves the slot
+    // exactly like CONFIRMED (#74, see assertBookable/hasBlockingOverlap
+    // below, which already correctly treat it that way for canBookNow).
+    // CONFIRMED-only here meant a desk with a same-day pending request still
+    // displayed "no current booking" even though scanning in was correctly
+    // blocked a moment later by the gate — a misleading, if not exploitable,
+    // inconsistency between what this screen shows and what it then does.
+    const active = await prisma.booking.findFirst({
+      where: { assetId: id, status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { lte: now }, endsAt: { gt: now } },
+      select: { id: true, userId: true, startsAt: true, endsAt: true, checkedInAt: true },
+    })
+
+    if (active) {
+      const isOwnBooking = active.userId === request.user.id
+      return reply.status(200).send({
+        data: {
+          qrCheckInMode,
+          asset: assetInfo,
+          canBookNow: false,
+          // Only the caller's own booking details are exposed — someone
+          // else's booking just reads as "occupied" (matches the existing
+          // "who's in" / colleague-visibility privacy posture elsewhere).
+          currentBooking: isOwnBooking
+            ? { id: active.id, isOwnBooking, startsAt: active.startsAt, endsAt: active.endsAt, checkedInAt: active.checkedInAt }
+            : { id: null, isOwnBooking, startsAt: active.startsAt, endsAt: active.endsAt, checkedInAt: null },
+        },
+      })
+    }
+
+    const org = await prisma.organisation.findFirst({ select: { defaultBookingDurationHours: true } })
+    const durationMs = (org?.defaultBookingDurationHours ?? 8) * 60 * 60 * 1000
+    // setHours() mutates in the server process's own runtime timezone, not
+    // the scanned desk's building timezone (no TZ=UTC pin exists in this
+    // repo — same hazard already fixed in bookings.ts's GET / day-boundary
+    // calculation). If the two diverge enough — a UTC-hosted server, a desk
+    // in a building materially offset from it — "end of day" could already
+    // be in the past relative to `now`, making proposedEndsAt < proposedStartsAt
+    // and silently breaking the primary "scan and book" QR flow.
+    const tz = await resolveBuildingTimezone(prisma, asset.floor?.buildingId)
+    const zonedNow = toZonedTime(now, tz)
+    const endOfDay = zonedWallClockToUtc(zonedNow.getFullYear(), zonedNow.getMonth() + 1, zonedNow.getDate(), 23, 59, tz)
+    const proposedEndsAt = new Date(Math.min(now.getTime() + durationMs, endOfDay.getTime()))
+
+    const gate = await assertBookable(prisma, request.user, id, now, proposedEndsAt)
+    return reply.status(200).send({
+      data: {
+        qrCheckInMode,
+        asset: assetInfo,
+        canBookNow: gate.ok,
+        deniedReason: gate.ok ? null : gate.message,
+        proposedStartsAt: now,
+        proposedEndsAt,
+        currentBooking: null,
+      },
+    })
   })
 }

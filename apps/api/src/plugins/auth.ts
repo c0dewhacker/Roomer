@@ -30,7 +30,11 @@ async function authPlugin(fastify: FastifyInstance): Promise<void> {
   })
 
   await fastify.register(fastifySession, {
-    secret: env.SESSION_SECRET,
+    // Separate from the JWT-signing secret when COOKIE_SESSION_SECRET is set
+    // (falls back to SESSION_SECRET otherwise, matching every existing
+    // deployment's current behaviour) — see env.ts's comment for why sharing
+    // one secret across two independent signing schemes is worth avoiding.
+    secret: env.COOKIE_SESSION_SECRET ?? env.SESSION_SECRET,
     saveUninitialized: false,
     cookie: {
       // OIDC state sessions are short-lived (just the redirect round-trip)

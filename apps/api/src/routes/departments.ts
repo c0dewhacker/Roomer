@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma.js'
 import { createDepartmentSchema, updateDepartmentSchema, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole } from '../middleware/requireRole.js'
+import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
 export async function departmentRoutes(fastify: FastifyInstance): Promise<void> {
@@ -29,14 +30,41 @@ export async function departmentRoutes(fastify: FastifyInstance): Promise<void> 
     const org = await prisma.organisation.findFirst({ select: { id: true } })
     if (!org) return reply.status(500).send({ error: { message: 'No organisation found', code: 'NO_ORGANISATION' } })
 
+    // Case-insensitive check — the @@unique constraint below is exact-match
+    // only (Department.name has no case-insensitive collation), so "Sales"
+    // and "sales" would otherwise create two rows that read as the same
+    // department everywhere they're displayed, without ever tripping the
+    // P2002 catch below.
+    const existing = await prisma.department.findFirst({
+      where: { organisationId: org.id, name: { equals: result.data.name, mode: 'insensitive' } },
+    })
+    if (existing) {
+      return reply.status(409).send({ error: { message: 'A department with this name already exists', code: 'ALREADY_EXISTS' } })
+    }
+
     try {
       const department = await prisma.department.create({
         data: { organisationId: org.id, name: result.data.name },
         include: { _count: { select: { members: true } } },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'department.created',
+        resourceType: 'Department',
+        resourceId: department.id,
+        after: { name: department.name },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(201).send({ data: department })
-    } catch {
-      return reply.status(409).send({ error: { message: 'A department with this name already exists', code: 'ALREADY_EXISTS' } })
+    } catch (err) {
+      // Narrowed to the actual unique-constraint violation, same as PUT
+      // above — a blanket catch here mislabels any other failure (a
+      // transient DB error) as "already exists" instead of surfacing it as
+      // the real error it is.
+      if ((err as { code?: string }).code === 'P2002') {
+        return reply.status(409).send({ error: { message: 'A department with this name already exists', code: 'ALREADY_EXISTS' } })
+      }
+      throw err
     }
   })
 
@@ -64,11 +92,32 @@ export async function departmentRoutes(fastify: FastifyInstance): Promise<void> 
     }
 
     try {
+      const before = await prisma.department.findUnique({ where: { id }, select: { name: true, organisationId: true } })
+      // Same case-insensitive check as POST above, scoped to this
+      // department's own org and excluding itself (renaming to the same
+      // name, same casing or not, is a no-op, not a collision).
+      if (before && result.data.name) {
+        const existing = await prisma.department.findFirst({
+          where: { organisationId: before.organisationId, id: { not: id }, name: { equals: result.data.name, mode: 'insensitive' } },
+        })
+        if (existing) {
+          return reply.status(409).send({ error: { message: 'A department with this name already exists', code: 'ALREADY_EXISTS' } })
+        }
+      }
       const department = await prisma.department.update({
         where: { id },
         data: result.data,
         include: { _count: { select: { members: true } } },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'department.updated',
+        resourceType: 'Department',
+        resourceId: id,
+        before,
+        after: { name: department.name },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: department })
     } catch (err) {
       // Renaming to a name that collides with another department in the org
@@ -88,7 +137,15 @@ export async function departmentRoutes(fastify: FastifyInstance): Promise<void> 
   fastify.delete('/:id', { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] }, async (request, reply) => {
     const { id } = request.params as { id: string }
     try {
-      await prisma.department.delete({ where: { id } })
+      const deleted = await prisma.department.delete({ where: { id } })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'department.deleted',
+        resourceType: 'Department',
+        resourceId: id,
+        before: { name: deleted.name },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     } catch {
       return reply.status(404).send({ error: { message: 'Department not found', code: 'NOT_FOUND' } })
@@ -133,6 +190,14 @@ export async function departmentRoutes(fastify: FastifyInstance): Promise<void> 
     if (!user) return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })
 
     await prisma.user.update({ where: { id: user.id }, data: { departmentId: id } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'user.department_assigned',
+      resourceType: 'User',
+      resourceId: user.id,
+      after: { departmentId: id },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 
@@ -144,6 +209,14 @@ export async function departmentRoutes(fastify: FastifyInstance): Promise<void> 
     if (!user) return reply.status(404).send({ error: { message: 'User is not a member of this department', code: 'NOT_FOUND' } })
 
     await prisma.user.update({ where: { id: userId }, data: { departmentId: null } })
+    await recordAuditLog(prisma, {
+      actorId: request.user.id,
+      action: 'user.department_removed',
+      resourceType: 'User',
+      resourceId: userId,
+      before: { departmentId: id },
+      ipAddress: request.ip,
+    }, request.log)
     return reply.status(200).send({ data: { ok: true } })
   })
 }

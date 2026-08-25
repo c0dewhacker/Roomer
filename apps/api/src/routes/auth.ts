@@ -5,8 +5,12 @@ import { loginSchema } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { authenticateWithLdap, getLdapConfig } from '../lib/ldap.js'
 import { applyGroupMappings, recordLastIdpGroups } from '../lib/group-mapping.js'
+import { recordManagerRef, resolveManagerForUser } from '../lib/manager.js'
+import { findOrCreateDepartment } from '../lib/department.js'
 import { signAccessToken, verifyAccessToken, TOKEN_COOKIE, TOKEN_COOKIE_OPTS, TOKEN_MAX_AGE, MAX_SESSION_SECONDS } from '../lib/jwt.js'
 import { blockToken, isTokenBlocked } from '../lib/token-blocklist.js'
+import { isLoginThrottled, recordFailedLogin, clearFailedLogins } from '../lib/login-throttle.js'
+import { recordAuditLog } from '../lib/audit.js'
 
 // A valid bcrypt hash (cost 12) of a random string, used to equalise response
 // timing when an account has no local password (non-existent user or SSO-only).
@@ -27,6 +31,15 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     const { email, password } = result.data
+
+    // Per-account throttle, independent of the IP-keyed rate limits above —
+    // see login-throttle.ts for why those alone aren't enough. Checked before
+    // any DB/LDAP/bcrypt work so an already-throttled account fails fast.
+    if (isLoginThrottled(email)) {
+      return reply.status(429).send({
+        error: { message: 'Too many failed login attempts for this account. Try again later.', code: 'ACCOUNT_LOGIN_THROTTLED' },
+      })
+    }
 
     // Case-insensitive: email creation is not normalised to lowercase
     // everywhere (LDAP sync lowercases; an admin manually creating a local
@@ -61,27 +74,58 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
                 passwordHash: null,
               },
             })
+        // actorId: null — this is IdP-driven JIT provisioning triggered by the
+        // user's own login, not a human admin action, same reasoning as SCIM's
+        // actorId: null (users.ts/scim.ts, Batch A). A distinguishing
+        // ldap_-prefixed action name lets a reviewer tell provenance apart.
+        await recordAuditLog(prisma, {
+          actorId: null,
+          action: existingLdapUser ? 'user.ldap_updated' : 'user.ldap_created',
+          resourceType: 'User',
+          resourceId: user.id,
+          after: { email: user.email, displayName: user.displayName, externalId: user.externalId },
+          ipAddress: request.ip,
+        }, request.log)
         await recordLastIdpGroups(user.id, ldapResult.groups)
         const ldapCfg = await getLdapConfig()
         const mappings = ldapCfg?.groupMappings ?? []
-        if (ldapResult.groups.length && mappings.length) {
+        // Deliberately does NOT also require ldapResult.groups.length: an
+        // empty array is exactly the "user was removed from every mapped
+        // group" signal that must reach applyGroupMappings so its sync=true
+        // eviction/demotion logic can run — gating this on a non-empty group
+        // list silently skipped revocation for a fully-deprovisioned
+        // directory entry. Mirrors lib/ldap.ts's full sync and
+        // auth-enterprise.ts's OIDC/SAML JIT paths, which already avoid this
+        // exact gate for this exact reason — this interactive-login path was
+        // the one caller still doing it wrong.
+        if (mappings.length) {
           await applyGroupMappings(user.id, ldapResult.groups, mappings, true)
         }
         if (ldapResult.department) {
           const org = await prisma.organisation.findFirst({ select: { id: true } })
           if (org) {
-            const dept = await prisma.department.upsert({
-              where: { organisationId_name: { organisationId: org.id, name: ldapResult.department } },
-              create: { organisationId: org.id, name: ldapResult.department },
-              update: {},
-            })
+            const dept = await findOrCreateDepartment(org.id, ldapResult.department)
             await prisma.user.update({ where: { id: user.id }, data: { departmentId: dept.id } })
           }
         }
+        // Same manager-attribute handling the admin-triggered LDAP directory
+        // sync already does (see runLdapSync/reconcileAllManagers) — an org
+        // that authenticates via interactive LDAP bind rather than routinely
+        // running that separate, manual sync would otherwise never populate
+        // manager data at all, no matter how many times a user logs in.
+        if (ldapCfg?.managerAttribute) {
+          await recordManagerRef(user.id, ldapResult.manager)
+        }
+        await resolveManagerForUser(user.id)
       } else if (!user || !user.passwordHash) {
         // Run a dummy bcrypt comparison so this path takes a similar amount of
         // time to the local-password path — avoids account-enumeration via timing.
         await bcryptjs.compare(password, DUMMY_PASSWORD_HASH)
+        // Recorded identically for "no such user" and "wrong password" (see
+        // the other branch below) — the response is already identical for
+        // both, so the throttle must be too, or its own timing/state becomes
+        // a second account-existence side channel.
+        recordFailedLogin(email)
         return reply.status(401).send({
           error: { message: 'Invalid email or password', code: 'INVALID_CREDENTIALS' },
         })
@@ -90,6 +134,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
       // Local password auth
       const passwordValid = await bcryptjs.compare(password, user.passwordHash)
       if (!passwordValid) {
+        recordFailedLogin(email)
         return reply.status(401).send({
           error: { message: 'Invalid email or password', code: 'INVALID_CREDENTIALS' },
         })
@@ -101,6 +146,10 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         error: { message: 'Your account has been suspended', code: 'ACCOUNT_BLOCKED' },
       })
     }
+
+    // Valid credentials — any prior failed-attempt history for this account
+    // no longer reflects an ongoing guessing attempt.
+    clearFailedLogins(email)
 
     // Issue a signed JWT. The `role` claim is embedded and protected by HS256 —
     // any client-side modification of the payload invalidates the signature.

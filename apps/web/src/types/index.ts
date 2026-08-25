@@ -2,9 +2,9 @@ export type GlobalRole = 'SUPER_ADMIN' | 'USER'
 export type BookableStatus = 'OPEN' | 'RESTRICTED' | 'ASSIGNED' | 'DISABLED'
 /** @deprecated Use BookableStatus instead */
 export type DeskStatus = BookableStatus
-export type BookingStatus = 'CONFIRMED' | 'CANCELLED' | 'COMPLETED'
+export type BookingStatus = 'CONFIRMED' | 'CANCELLED' | 'COMPLETED' | 'PENDING_APPROVAL'
 export type QueueEntryStatus = 'WAITING' | 'PROMOTED' | 'CLAIMED' | 'EXPIRED' | 'CANCELLED'
-export type AssetBookingStatus = 'available' | 'mine' | 'booked' | 'restricted' | 'assigned' | 'disabled' | 'queued' | 'promoted' | 'zone_conflict'
+export type AssetBookingStatus = 'available' | 'mine' | 'mine_pending' | 'booked' | 'restricted' | 'assigned' | 'disabled' | 'queued' | 'promoted' | 'zone_conflict'
 /** @deprecated Use AssetBookingStatus instead */
 export type DeskBookingStatus = AssetBookingStatus
 export type ResourceRoleType = 'FLOOR_MANAGER' | 'BUILDING_ADMIN'
@@ -54,6 +54,8 @@ export interface User {
   groupMemberships?: UserGroupMembership[]
 }
 
+export type QrCheckInMode = 'DISABLED' | 'OPTIONAL' | 'MANDATORY'
+
 export interface Building {
   id: string
   name: string
@@ -61,6 +63,14 @@ export interface Building {
   organisationId: string
   /** null = inherit org default; true/false = explicit override */
   noShowReleaseEnabled?: boolean | null
+  /** null = inherit org default; explicit override otherwise */
+  qrCheckInMode?: QrCheckInMode | null
+  /** null = inherit org default; true/false = explicit override */
+  requiresApproval?: boolean | null
+  /** null = inherit org default (see #72) */
+  timezone?: string | null
+  workingHoursStart?: string | null
+  workingHoursEnd?: string | null
 }
 
 export interface Floor {
@@ -73,6 +83,8 @@ export interface Floor {
   zones?: Zone[]
   /** null = inherit (floor → building → org) */
   noShowReleaseEnabled?: boolean | null
+  /** null = inherit (floor → building → org) */
+  qrCheckInMode?: QrCheckInMode | null
 }
 
 export interface FloorPlan {
@@ -91,6 +103,9 @@ export interface Zone {
   name: string
   colour: string
   assets: Asset[]
+  zoneGroupId?: string | null
+  /** null = inherit (zone → building → org) */
+  requiresApproval?: boolean | null
 }
 
 export interface AssetAssignedUser {
@@ -115,6 +130,8 @@ export interface Asset {
   isBookable?: boolean
   bookingLabel?: string
   bookingStatus?: BookableStatus
+  /** Occupant capacity. Unset = single-occupant (a desk); >1 = a room/shared space. */
+  capacity?: number | null
   primaryZoneId?: string
   floorId?: string
   x?: number
@@ -140,8 +157,14 @@ export interface AssetWithStatus extends Omit<Asset, 'bookingStatus'> {
   bookedBy?: Array<{ userId: string; displayName: string }>
   zoneColour: string
   zoneName: string
+  /** False when this entry came from a secondary (AssetZone) membership rather than the asset's primary zone. */
+  isPrimaryZone?: boolean
   assignedUsers?: AssetAssignedUser[]
   queueDepth?: number
+  /** Resolved zone → building → org override chain — see #74. */
+  requiresApproval?: boolean
+  /** Resolved building IANA timezone (building → org, see #72) — every asset on a floor shares one value. */
+  resolvedTimezone?: string
 }
 /** @deprecated Use AssetWithStatus instead */
 export type DeskWithStatus = AssetWithStatus
@@ -172,6 +195,67 @@ export interface RecurringBookingRule {
   _count?: { bookings: number }
 }
 
+export type BallotFrequency = 'ONCE' | 'WEEKLY' | 'MONTHLY'
+export type BallotStatus = 'ACTIVE' | 'PAUSED' | 'CANCELLED'
+export type BallotRunStatus = 'OPEN' | 'DRAWN' | 'CANCELLED'
+export type BallotEntryStatus = 'ENTERED' | 'WON' | 'DECLINED' | 'LOST'
+
+/** A recurring or one-off random-allocation draw for scarce assets — see #159. */
+export interface Ballot {
+  id: string
+  name: string
+  createdByUserId: string
+  buildingIds: string[]
+  floorIds: string[]
+  scopeAllBuildings: boolean
+  assetCategoryIds: string[]
+  frequency: BallotFrequency
+  dayOfWeek: number | null
+  dayOfMonth: number | null
+  registrationWindowHours: number
+  slotStartTime: string
+  slotEndTime: string
+  slotLeadDays: number
+  slotDurationDays: number
+  status: BallotStatus
+  createdAt: string
+  updatedAt: string
+  _count?: { runs: number }
+}
+
+/** One concrete occurrence of a Ballot — its own registration window, draw, and results. */
+export interface BallotRun {
+  id: string
+  ballotId: string
+  registrationOpensAt: string
+  registrationClosesAt: string
+  slotStartsAt: string
+  slotEndsAt: string
+  status: BallotRunStatus
+  drawnAt: string | null
+  createdAt: string
+  ballot?: Ballot
+  myEntry?: BallotEntry | null
+  _count?: { entries: number }
+  poolSize?: number
+  entries?: BallotEntry[]
+}
+
+/** One user's opt-in entry for one BallotRun. */
+export interface BallotEntry {
+  id: string
+  runId: string
+  userId: string
+  status: BallotEntryStatus
+  assetId: string | null
+  bookingId: string | null
+  createdAt: string
+  run?: BallotRun & { ballot: { id: string; name: string } }
+  user?: { id: string; displayName: string; email: string }
+  asset?: { id: string; name: string } | null
+  booking?: { id: string; startsAt: string; endsAt: string; status: BookingStatus } | null
+}
+
 export interface Booking {
   id: string
   userId: string
@@ -180,8 +264,16 @@ export interface Booking {
   endsAt: string
   status: BookingStatus
   notes?: string
+  /** Declared group size for a room/shared-space booking. Informational only. */
+  attendeeCount?: number | null
   checkedInAt?: string | null
   recurringRuleId?: string | null
+  approvalExpiresAt?: string | null
+  approvedAt?: string | null
+  rejectionNote?: string | null
+  /** Visitor/guest booking (#79) — set when this booking was made on behalf of an external visitor. */
+  guestName?: string | null
+  guestEmail?: string | null
   user?: User
   asset?: Asset & {
     floor?: Floor & { building?: Building }
@@ -204,6 +296,55 @@ export interface Booking {
       }
     }
   }
+  /** Resolved (floor → building → org), only present on the GET /bookings list response. */
+  qrCheckInMode?: QrCheckInMode
+  /** Resolved building IANA timezone (floor → building → org, see #72), only present on the GET /bookings list response. */
+  resolvedTimezone?: string
+}
+
+export type TransferRequestStatus = 'PENDING' | 'ACCEPTED' | 'DECLINED' | 'CANCELLED' | 'EXPIRED'
+
+interface BookingSummary {
+  id: string
+  startsAt: string
+  endsAt: string
+  asset: { name: string }
+}
+
+interface UserRef {
+  id: string
+  displayName: string
+  email: string
+}
+
+export interface BookingTransfer {
+  id: string
+  bookingId: string
+  fromUserId: string
+  toUserId: string
+  status: TransferRequestStatus
+  expiresAt: string
+  respondedAt?: string | null
+  createdAt: string
+  booking?: BookingSummary
+  fromUser?: UserRef
+  toUser?: UserRef
+}
+
+export interface BookingSwap {
+  id: string
+  bookingAId: string
+  bookingBId: string
+  initiatorUserId: string
+  recipientUserId: string
+  status: TransferRequestStatus
+  expiresAt: string
+  respondedAt?: string | null
+  createdAt: string
+  bookingA?: BookingSummary
+  bookingB?: BookingSummary
+  initiator?: UserRef
+  recipient?: UserRef
 }
 
 export interface QueueEntry {
@@ -352,4 +493,36 @@ export interface TopUserDataPoint {
   displayName: string
   email: string
   bookingCount: number
+}
+
+export type ManagerRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED' | 'EXPIRED'
+
+export interface FloorManagerRequest {
+  id: string
+  userId: string
+  floorId: string
+  status: ManagerRequestStatus
+  note: string | null
+  reviewedById: string | null
+  reviewedAt: string | null
+  reviewNote: string | null
+  expiresAt: string
+  createdAt: string
+  updatedAt: string
+  user?: { id: string; displayName: string; email: string }
+  floor?: { id: string; name: string; building: { id: string; name: string } }
+  reviewedBy?: { id: string; displayName: string } | null
+}
+
+export interface AuditLogEntry {
+  id: string
+  actorId: string | null
+  action: string
+  resourceType: string
+  resourceId: string
+  before: unknown
+  after: unknown
+  ipAddress: string | null
+  createdAt: string
+  actor: { id: string; displayName: string; email: string } | null
 }

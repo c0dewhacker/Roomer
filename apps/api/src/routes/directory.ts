@@ -3,6 +3,7 @@ import type { User } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
+import { zonedWallClockToUtc } from '../lib/timezone.js'
 import { z } from 'zod'
 
 const querySchema = z.object({
@@ -87,14 +88,14 @@ const assetLocationSelect = {
   id: true,
   name: true,
   primaryZone: { select: { id: true, name: true } },
-  floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
+  floor: { select: { id: true, name: true, building: { select: { id: true, name: true, timezone: true } } } },
 } as const
 
 type AssetLocation = {
   id: string
   name: string
   primaryZone: { id: string; name: string } | null
-  floor: { id: string; name: string; building: { id: string; name: string } } | null
+  floor: { id: string; name: string; building: { id: string; name: string; timezone: string | null } } | null
 }
 
 function locationOf(asset: AssetLocation) {
@@ -107,6 +108,7 @@ function locationOf(asset: AssetLocation) {
     floorName: asset.floor?.name ?? null,
     buildingId: asset.floor?.building?.id ?? null,
     buildingName: asset.floor?.building?.name ?? null,
+    buildingTimezone: asset.floor?.building?.timezone ?? null,
   }
 }
 
@@ -125,12 +127,21 @@ export async function directoryRoutes(fastify: FastifyInstance): Promise<void> {
     }
     const search = parsed.data.search && parsed.data.search.length > 0 ? parsed.data.search : undefined
     const dateStr = parsed.data.date ?? new Date().toISOString().slice(0, 10)
-    const dayStart = new Date(`${dateStr}T00:00:00.000Z`)
-    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000)
+    const [year, month, day] = dateStr.split('-').map(Number)
+    // Widened DB pre-filter only — "who's in on this date" spans buildings in
+    // different timezones at once, so no single fixed UTC window can
+    // correctly represent "today" for all of them simultaneously (unlike a
+    // single-building calculation such as lease-expiry's calendarDaysUntil).
+    // ±14h covers every real-world UTC offset; the precise per-building
+    // local-day check happens per booking below, after each row's own
+    // resolvedTimezone is known.
+    const dayStartApprox = new Date(Date.UTC(year, month - 1, day) - 14 * 60 * 60 * 1000)
+    const dayEndApprox = new Date(Date.UTC(year, month - 1, day) + 24 * 60 * 60 * 1000 + 14 * 60 * 60 * 1000)
 
-    const [accessible, accessibleFloors] = await Promise.all([
+    const [accessible, accessibleFloors, orgDefaultTimezone] = await Promise.all([
       accessibleBuildingIds(request.user),
       accessibleFloorIds(request.user),
+      prisma.organisation.findFirst({ select: { defaultTimezone: true } }).then((o) => o?.defaultTimezone ?? 'UTC'),
     ])
     if (
       (accessible !== 'ALL' && accessible.length === 0) ||
@@ -167,11 +178,11 @@ export async function directoryRoutes(fastify: FastifyInstance): Promise<void> {
         ] }] }
       : visibility
 
-    const bookings = await prisma.booking.findMany({
+    const bookingsCandidates = await prisma.booking.findMany({
       where: {
         status: 'CONFIRMED',
-        startsAt: { lt: dayEnd },
-        endsAt: { gt: dayStart },
+        startsAt: { lt: dayEndApprox },
+        endsAt: { gt: dayStartApprox },
         asset: assetWhere,
         user: userWhere,
       },
@@ -180,8 +191,27 @@ export async function directoryRoutes(fastify: FastifyInstance): Promise<void> {
         user: { select: { id: true, displayName: true, email: true } },
         asset: { select: assetLocationSelect },
       },
-      take: PER_QUERY_CAP,
+      // Over-fetch relative to PER_QUERY_CAP since the ±14h DB window is
+      // deliberately wider than any single building's actual local day —
+      // trimmed back down to PER_QUERY_CAP after the precise per-booking
+      // filter below.
+      take: PER_QUERY_CAP * 2,
     })
+
+    // Precise filter: does this booking overlap the REQUESTED calendar date
+    // in ITS OWN building's timezone (same buildingTimezone ?? org-default
+    // resolution order used for display below, so the filter and the
+    // resolvedTimezone shown to the user always agree)? A fixed UTC window
+    // alone can't do this correctly across buildings in different
+    // timezones — see the ±14h DB pre-filter comment above for why.
+    const bookings = bookingsCandidates
+      .filter((b) => {
+        const tz = b.asset.floor?.building?.timezone ?? orgDefaultTimezone
+        const localDayStart = zonedWallClockToUtc(year, month, day, 0, 0, tz)
+        const localDayEnd = new Date(localDayStart.getTime() + 24 * 60 * 60 * 1000)
+        return b.startsAt < localDayEnd && b.endsAt > localDayStart
+      })
+      .slice(0, PER_QUERY_CAP)
 
     const bookedUserIds = [...new Set(bookings.map((b) => b.user.id))]
 
@@ -211,7 +241,7 @@ export async function directoryRoutes(fastify: FastifyInstance): Promise<void> {
       // an afternoon meeting room; the app supports AM/PM/custom time-slot
       // bookings) rendered as two identical, unlabelled "Booked" rows with no
       // way to tell which one is current.
-      today: (ReturnType<typeof locationOf> & { startsAt: Date; endsAt: Date })[]
+      today: (ReturnType<typeof locationOf> & { resolvedTimezone: string; startsAt: Date; endsAt: Date })[]
       assignedDesks: (ReturnType<typeof locationOf> & { isPrimary: boolean })[]
     }
     const people = new Map<string, Person>()
@@ -222,7 +252,13 @@ export async function directoryRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     for (const b of bookings) {
-      ensure(b.user).today.push({ ...locationOf(b.asset), startsAt: b.startsAt, endsAt: b.endsAt })
+      const location = locationOf(b.asset)
+      ensure(b.user).today.push({
+        ...location,
+        resolvedTimezone: location.buildingTimezone ?? orgDefaultTimezone,
+        startsAt: b.startsAt,
+        endsAt: b.endsAt,
+      })
     }
     for (const a of assignments) {
       ensure(a.user).assignedDesks.push({ ...locationOf(a.asset), isPrimary: a.isPrimary })

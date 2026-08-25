@@ -17,6 +17,8 @@ export const updateZoneSchema = z.object({
     .regex(/^#[0-9a-fA-F]{6}$/, 'Colour must be a valid hex colour')
     .optional(),
   zoneGroupId: z.string().min(1).nullable().optional(),
+  // Per-zone booking-approval override. null = inherit the building/org default.
+  requiresApproval: z.boolean().nullable().optional(),
 })
 
 export const createZoneGroupSchema = z.object({
@@ -24,6 +26,11 @@ export const createZoneGroupSchema = z.object({
   name: z.string().min(1, 'Zone group name is required').max(255),
 })
 
+export const updateZoneGroupSchema = z.object({
+  name: z.string().min(1, 'Zone group name is required').max(255),
+})
+
 export type CreateZoneInput = z.infer<typeof createZoneSchema>
 export type UpdateZoneInput = z.infer<typeof updateZoneSchema>
 export type CreateZoneGroupInput = z.infer<typeof createZoneGroupSchema>
+export type UpdateZoneGroupInput = z.infer<typeof updateZoneGroupSchema>

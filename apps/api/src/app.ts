@@ -26,14 +26,31 @@ import { importRoutes } from './routes/import.js'
 import { scimRoutes } from './routes/scim.js'
 import { departmentRoutes } from './routes/departments.js'
 import { subscriptionRoutes } from './routes/subscriptions.js'
+import { pushRoutes } from './routes/push.js'
+import { ballotRoutes } from './routes/ballots.js'
+import { auditLogRoutes } from './routes/audit-log.js'
 import { recurringBookingRoutes } from './routes/recurring.js'
 import { webhookRoutes } from './routes/webhooks.js'
 import { directoryRoutes } from './routes/directory.js'
 import { orgRoutes } from './routes/org.js'
+import { managerRequestRoutes } from './routes/manager-requests.js'
 import { getBoss } from './lib/queue.js'
 import { prisma } from './lib/prisma.js'
 import { register, httpRequestDuration, setupMetrics } from './lib/metrics.js'
 import { randomUUID } from 'crypto'
+
+// @fastify/rate-limit throws whatever this returns (`throw
+// params.errorResponseBuilder(...)`, not `reply.send(...)`), so it must be a
+// real Error with `.statusCode` set — a plain `{ error: { message, code } }`
+// object has neither, and fell through setErrorHandler's `if
+// (fastifyError.statusCode)` branch straight to a generic 500 on every
+// rate-limited request across the whole API, both this global limiter and
+// every route-level `config.rateLimit` override (they all share this same
+// builder). setErrorHandler rebuilds the actual response body from
+// `.message`/`.statusCode`, so only those two need to be right here.
+function rateLimitError(): Error & { statusCode: number } {
+  return Object.assign(new Error('Too many requests, please try again later'), { statusCode: 429 })
+}
 
 export async function buildApp(): Promise<FastifyInstance> {
   const fastify = Fastify({
@@ -69,8 +86,14 @@ export async function buildApp(): Promise<FastifyInstance> {
       // Only surface the original message for 4xx client errors.
       // For 5xx, use a generic message to avoid leaking internal details.
       const message = fastifyError.statusCode < 500 ? fastifyError.message : 'Internal server error'
+      // @fastify/rate-limit's errorResponseBuilder result is thrown as-is
+      // (see index.js: `throw params.errorResponseBuilder(...)`) and lands
+      // here like any other error — 429 has exactly one meaning in this API,
+      // so it's worth a specific code rather than the generic REQUEST_ERROR
+      // every other 4xx/5xx gets.
+      const code = fastifyError.statusCode === 429 ? 'RATE_LIMITED' : 'REQUEST_ERROR'
       return reply.status(fastifyError.statusCode).send({
-        error: { message, code: 'REQUEST_ERROR' },
+        error: { message, code },
       })
     }
 
@@ -99,6 +122,17 @@ export async function buildApp(): Promise<FastifyInstance> {
       },
     } : false,
     referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    // Unlike CSP above, this had no explicit setting at all, so helmet's
+    // default (max-age=1yr, includeSubDomains) was active unconditionally —
+    // sent even over plain HTTP in local dev. A host that's ever reached
+    // once over HTTPS on a shared parent domain (a self-signed cert
+    // click-through, a staging box behind a TLS-terminating proxy sharing a
+    // domain with an HTTP-only dev subdomain) has the browser cache a
+    // 1-year forced-HTTPS-with-subdomains policy, silently breaking any
+    // later plain-HTTP access to that subdomain until the browser's cached
+    // HSTS entry is manually cleared. Only meaningful once the app is
+    // actually served over HTTPS in production.
+    hsts: env.NODE_ENV === 'production',
   })
 
   await fastify.register(cors, {
@@ -201,9 +235,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     // routes (login, refresh, SSO callbacks) is already handled by the
     // separate, tighter, IP-keyed limiter on the auth sub-context below.
     keyGenerator: (req) => req.ip,
-    errorResponseBuilder: () => ({
-      error: { message: 'Too many requests, please try again later', code: 'RATE_LIMITED' },
-    }),
+    errorResponseBuilder: rateLimitError,
   })
 
   // ─── Rate limiting on auth endpoints ───────────────────────────────────────
@@ -220,9 +252,7 @@ export async function buildApp(): Promise<FastifyInstance> {
           const path = request.url.replace(/\?.*$/, '')
           return path.endsWith('/me') || path.endsWith('/providers')
         },
-        errorResponseBuilder: () => ({
-          error: { message: 'Too many requests, please try again later', code: 'RATE_LIMITED' },
-        }),
+        errorResponseBuilder: rateLimitError,
       })
       await authFastify.register(authRoutes)
       await authFastify.register(enterpriseAuthRoutes)
@@ -275,12 +305,16 @@ export async function buildApp(): Promise<FastifyInstance> {
   await fastify.register(settingsRoutes, { prefix: '/api/v1/settings' })
   await fastify.register(importRoutes, { prefix: '/api/v1/import' })
   await fastify.register(subscriptionRoutes, { prefix: '/api/v1/subscriptions' })
+  await fastify.register(pushRoutes, { prefix: '/api/v1/push' })
   await fastify.register(recurringBookingRoutes, { prefix: '/api/v1/recurring-bookings' })
+  await fastify.register(managerRequestRoutes, { prefix: '/api/v1/manager-requests' })
   await fastify.register(scimRoutes, { prefix: '/scim/v2' })
   await fastify.register(departmentRoutes, { prefix: '/api/v1/departments' })
   await fastify.register(orgRoutes, { prefix: '/api/v1/org' })
   await fastify.register(webhookRoutes, { prefix: '/api/v1/webhooks' })
   await fastify.register(directoryRoutes, { prefix: '/api/v1/directory' })
+  await fastify.register(ballotRoutes, { prefix: '/api/v1/ballots' })
+  await fastify.register(auditLogRoutes, { prefix: '/api/v1/audit-log' })
 
   // ─── Health checks ─────────────────────────────────────────────────────────
   // /health/live — process is running (Kubernetes liveness probe)

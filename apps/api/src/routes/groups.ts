@@ -1,8 +1,10 @@
 import type { FastifyInstance } from 'fastify'
+import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole } from '../middleware/requireRole.js'
+import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
 const globalRoleEnum = z.enum([GlobalRole.USER, GlobalRole.SUPER_ADMIN])
@@ -69,6 +71,14 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
           floorAccess: { include: { floor: { select: { id: true, name: true } } } },
         },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user_group.created',
+        resourceType: 'UserGroup',
+        resourceId: group.id,
+        after: { name: group.name, description: group.description, globalRole: group.globalRole },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(201).send({ data: group })
     } catch {
       return reply.status(409).send({ error: { message: 'Group name already exists', code: 'ALREADY_EXISTS' } })
@@ -113,6 +123,7 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     try {
+      const before = await prisma.userGroup.findUnique({ where: { id }, select: { name: true, description: true, globalRole: true } })
       const group = await prisma.userGroup.update({
         where: { id },
         data: result.data,
@@ -122,6 +133,15 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
           floorAccess: { include: { floor: { select: { id: true, name: true } } } },
         },
       })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user_group.updated',
+        resourceType: 'UserGroup',
+        resourceId: id,
+        before,
+        after: { name: group.name, description: group.description, globalRole: group.globalRole },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: group })
     } catch {
       return reply.status(404).send({ error: { message: 'Group not found', code: 'NOT_FOUND' } })
@@ -132,7 +152,15 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.delete('/:id', { preHandler: adminHandlers }, async (request, reply) => {
     const { id } = request.params as { id: string }
     try {
-      await prisma.userGroup.delete({ where: { id } })
+      const deleted = await prisma.userGroup.delete({ where: { id } })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user_group.deleted',
+        resourceType: 'UserGroup',
+        resourceId: id,
+        before: { name: deleted.name, description: deleted.description, globalRole: deleted.globalRole },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     } catch {
       return reply.status(404).send({ error: { message: 'Group not found', code: 'NOT_FOUND' } })
@@ -158,8 +186,23 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
 
     try {
       await prisma.userGroupMember.create({ data: { groupId: id, userId } })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user_group_member.added',
+        resourceType: 'UserGroupMember',
+        resourceId: `${id}:${userId}`,
+        after: { groupId: id, userId },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(201).send({ data: { groupId: id, userId } })
-    } catch {
+    } catch (err) {
+      // group/user existed moments ago (checked above) but create() can still
+      // throw an FK violation (P2003) if either was deleted in the window
+      // between that check and this write — a bare catch previously reported
+      // "already exists" (409) for that case too, which is simply wrong.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') {
+        return reply.status(404).send({ error: { message: 'Group or user no longer exists', code: 'NOT_FOUND' } })
+      }
       return reply.status(409).send({ error: { message: 'User already in group', code: 'ALREADY_EXISTS' } })
     }
   })
@@ -170,6 +213,14 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
 
     try {
       await prisma.userGroupMember.delete({ where: { groupId_userId: { groupId: id, userId } } })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user_group_member.removed',
+        resourceType: 'UserGroupMember',
+        resourceId: `${id}:${userId}`,
+        before: { groupId: id, userId },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     } catch {
       return reply.status(404).send({ error: { message: 'Member not found', code: 'NOT_FOUND' } })
@@ -195,8 +246,23 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
 
     try {
       await prisma.groupBuildingAccess.create({ data: { groupId: id, buildingId } })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'group_building_access.granted',
+        resourceType: 'GroupBuildingAccess',
+        resourceId: `${id}:${buildingId}`,
+        after: { groupId: id, buildingId },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(201).send({ data: { groupId: id, buildingId } })
-    } catch {
+    } catch (err) {
+      // See POST /:id/members — group/building existed moments ago (checked
+      // above) but create() can still throw an FK violation (P2003) if
+      // either was deleted in the window since, which a bare catch
+      // previously misreported as "already exists".
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') {
+        return reply.status(404).send({ error: { message: 'Group or building no longer exists', code: 'NOT_FOUND' } })
+      }
       return reply.status(409).send({ error: { message: 'Access rule already exists', code: 'ALREADY_EXISTS' } })
     }
   })
@@ -207,6 +273,14 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
 
     try {
       await prisma.groupBuildingAccess.delete({ where: { groupId_buildingId: { groupId: id, buildingId } } })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'group_building_access.revoked',
+        resourceType: 'GroupBuildingAccess',
+        resourceId: `${id}:${buildingId}`,
+        before: { groupId: id, buildingId },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     } catch {
       return reply.status(404).send({ error: { message: 'Access rule not found', code: 'NOT_FOUND' } })
@@ -232,8 +306,23 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
 
     try {
       await prisma.groupFloorAccess.create({ data: { groupId: id, floorId } })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'group_floor_access.granted',
+        resourceType: 'GroupFloorAccess',
+        resourceId: `${id}:${floorId}`,
+        after: { groupId: id, floorId },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(201).send({ data: { groupId: id, floorId } })
-    } catch {
+    } catch (err) {
+      // See POST /:id/members — group/floor existed moments ago (checked
+      // above) but create() can still throw an FK violation (P2003) if
+      // either was deleted in the window since, which a bare catch
+      // previously misreported as "already exists".
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') {
+        return reply.status(404).send({ error: { message: 'Group or floor no longer exists', code: 'NOT_FOUND' } })
+      }
       return reply.status(409).send({ error: { message: 'Access rule already exists', code: 'ALREADY_EXISTS' } })
     }
   })
@@ -244,6 +333,14 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
 
     try {
       await prisma.groupFloorAccess.delete({ where: { groupId_floorId: { groupId: id, floorId } } })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'group_floor_access.revoked',
+        resourceType: 'GroupFloorAccess',
+        resourceId: `${id}:${floorId}`,
+        before: { groupId: id, floorId },
+        ipAddress: request.ip,
+      }, request.log)
       return reply.status(200).send({ data: { ok: true } })
     } catch {
       return reply.status(404).send({ error: { message: 'Access rule not found', code: 'NOT_FOUND' } })

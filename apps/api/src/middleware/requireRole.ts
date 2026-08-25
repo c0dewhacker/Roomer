@@ -83,6 +83,30 @@ export async function getManagedBuildingIds(userId: string): Promise<string[]> {
 }
 
 /**
+ * Returns the userIds of everyone who holds BUILDING_ADMIN access on the
+ * given building — the inverse of getManagedBuildingIds. Used to notify the
+ * right people about something building-scoped (e.g. a floor manager access
+ * request) without needing a separate per-admin loop over every building.
+ */
+export async function getBuildingAdminUserIds(buildingId: string): Promise<string[]> {
+  const [direct, via] = await Promise.all([
+    prisma.userResourceRole.findMany({
+      where: { scopeType: 'BUILDING', buildingId, role: 'BUILDING_ADMIN' },
+      select: { userId: true },
+    }),
+    prisma.groupResourceRole.findMany({
+      where: { scopeType: 'BUILDING', buildingId, role: 'BUILDING_ADMIN' },
+      select: { group: { select: { members: { select: { userId: true } } } } },
+    }),
+  ])
+  const ids = [
+    ...direct.map((r) => r.userId),
+    ...via.flatMap((r) => r.group.members.map((m) => m.userId)),
+  ]
+  return [...new Set(ids)]
+}
+
+/**
  * Returns true if the user holds FLOOR_MANAGER access on the given floor,
  * either via a direct UserResourceRole or through a GroupResourceRole.
  * Building admins inherit floor manager permissions for all floors in their building.
@@ -108,6 +132,33 @@ export async function isFloorManagerForFloor(userId: string, floorId: string): P
   const floor = await prisma.floor.findUnique({ where: { id: floorId }, select: { buildingId: true } })
   if (!floor) return false
   return isBuildingManagerForBuilding(userId, floor.buildingId)
+}
+
+/**
+ * Returns the userIds of everyone who holds FLOOR_MANAGER access on the given
+ * floor — the inverse of isFloorManagerForFloor. Deliberately does NOT also
+ * include inherited building admins (unlike isFloorManagerForFloor's access
+ * check) — callers that want the full approver audience combine this with
+ * getBuildingAdminUserIds separately, so inheriting here would just produce
+ * duplicate ids that get deduped anyway, at the cost of an extra building
+ * lookup this function doesn't otherwise need.
+ */
+export async function getFloorManagerUserIds(floorId: string): Promise<string[]> {
+  const [direct, via] = await Promise.all([
+    prisma.userResourceRole.findMany({
+      where: { scopeType: 'FLOOR', floorId, role: 'FLOOR_MANAGER' },
+      select: { userId: true },
+    }),
+    prisma.groupResourceRole.findMany({
+      where: { scopeType: 'FLOOR', floorId, role: 'FLOOR_MANAGER' },
+      select: { group: { select: { members: { select: { userId: true } } } } },
+    }),
+  ])
+  const ids = [
+    ...direct.map((r) => r.userId),
+    ...via.flatMap((r) => r.group.members.map((m) => m.userId)),
+  ]
+  return [...new Set(ids)]
 }
 
 /**

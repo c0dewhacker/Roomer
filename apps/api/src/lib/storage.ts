@@ -110,16 +110,27 @@ export async function saveFloorPlan(
 
   await fs.promises.writeFile(originalAbsPath, buffer)
 
-  if (fileType === FloorPlanFileType.IMAGE) {
-    return saveImageFloorPlan(originalAbsPath, originalRelPath, filename)
+  // Everything past this point can still fail (a PNG with valid magic bytes
+  // but corrupt/truncated pixel data throws in sharp's metadata() call, for
+  // instance) — without this try/catch, the file written above is orphaned
+  // on disk with no FloorPlan row ever created and nothing to clean it up,
+  // while the route handler sees an unrecognised error and 500s instead of
+  // reporting a normal validation failure. DXF failures don't hit this path
+  // (saveDxfFloorPlan already catches its own parse errors and degrades
+  // gracefully instead of throwing), so only IMAGE/PDF land here today.
+  try {
+    if (fileType === FloorPlanFileType.IMAGE) {
+      return await saveImageFloorPlan(originalAbsPath, originalRelPath, filename)
+    }
+    if (fileType === FloorPlanFileType.PDF) {
+      return await savePdfFloorPlan(originalRelPath)
+    }
+    // DXF — convert to SVG for rendering
+    return await saveDxfFloorPlan(originalAbsPath, originalRelPath, filename)
+  } catch (err) {
+    await fs.promises.unlink(originalAbsPath).catch(() => {})
+    throw Object.assign(new Error('File could not be processed as the declared type'), { code: 'INVALID_MAGIC', cause: err })
   }
-
-  if (fileType === FloorPlanFileType.PDF) {
-    return savePdfFloorPlan(originalRelPath)
-  }
-
-  // DXF — convert to SVG for rendering
-  return saveDxfFloorPlan(originalAbsPath, originalRelPath, filename)
 }
 
 async function saveImageFloorPlan(
@@ -277,7 +288,13 @@ export async function saveBrandingImage(
   slot: 'logo' | 'favicon',
 ): Promise<string> {
   await fs.promises.mkdir(path.join(env.FILE_STORAGE_PATH, BRANDING_DIR), { recursive: true })
-  const relPath = path.join(BRANDING_DIR, `${slot}.png`)
+  // Unique per upload (not a fixed `${slot}.png`) so the stored logoPath/
+  // faviconPath value actually changes on replace — every <img>/<link> in
+  // the app cache-busts with `?t=${branding.logoPath}`, which is a no-op
+  // when the path never varies. Combined with the 5-minute Cache-Control on
+  // the serving route, a replaced logo/favicon kept showing the old image
+  // for up to 5 minutes (indefinitely in an already-open tab) with no error.
+  const relPath = path.join(BRANDING_DIR, `${slot}-${Date.now()}-${randomBytes(4).toString('hex')}.png`)
   const absPath = resolveStoragePath(relPath)
 
   const buffer = await file.toBuffer()

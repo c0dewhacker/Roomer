@@ -9,8 +9,10 @@ import {
   AlertCircle, CheckCircle2, Shield,
 } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { floorsApi, assetsApi, zonesApi, usersApi, groupsApi } from '@/lib/api'
-import { NoShowOverrideControl } from '@/components/admin/NoShowOverrideControl'
+import { floorsApi, assetsApi, zonesApi, zoneGroupsApi, usersApi, groupsApi } from '@/lib/api'
+import { NoShowOverrideControl, ApprovalOverrideControl } from '@/components/admin/NoShowOverrideControl'
+import { QrCheckInModeControl } from '@/components/admin/QrCheckInModeControl'
+import type { QrCheckInMode } from '@/types'
 import { toast } from 'sonner'
 import { FloorPlanCanvas } from '@/components/floor-plan/FloorPlanCanvas'
 import { Button } from '@/components/ui/button'
@@ -33,7 +35,8 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type ZoneData = { id: string; name: string; colour: string; zoneGroupId: string | null; assets: AssetData[] }
+type ZoneData = { id: string; name: string; colour: string; zoneGroupId: string | null; requiresApproval: boolean | null; assets: AssetData[] }
+type ZoneGroupData = { id: string; name: string; floorId: string }
 type AssetData = { id: string; name: string; status: string; amenities: string[]; isBookable?: boolean }
 /** @deprecated use AssetData */
 type DeskData = AssetData
@@ -51,21 +54,28 @@ const STATUS_VARIANTS: Record<string, 'default' | 'secondary' | 'outline' | 'des
 const zoneSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   colour: z.string().min(4, 'Colour required'),
+  zoneGroupId: z.string().nullable(),
+  requiresApproval: z.boolean().nullable(),
 })
 type ZoneForm = z.infer<typeof zoneSchema>
 
 function ZoneDialog({
-  open, onClose, floorId, existing,
-}: { open: boolean; onClose: () => void; floorId: string; existing?: ZoneData }) {
+  open, onClose, floorId, existing, zoneGroups,
+}: { open: boolean; onClose: () => void; floorId: string; existing?: ZoneData; zoneGroups: ZoneGroupData[] }) {
   const qc = useQueryClient()
   const { register, handleSubmit, formState: { errors }, watch, setValue } = useForm<ZoneForm>({
     resolver: zodResolver(zoneSchema),
-    defaultValues: { name: existing?.name ?? '', colour: existing?.colour ?? '#6366f1' },
+    defaultValues: {
+      name: existing?.name ?? '', colour: existing?.colour ?? '#6366f1',
+      zoneGroupId: existing?.zoneGroupId ?? null, requiresApproval: existing?.requiresApproval ?? null,
+    },
   })
   const colour = watch('colour')
+  const zoneGroupId = watch('zoneGroupId')
+  const requiresApproval = watch('requiresApproval')
 
   const create = useMutation({
-    mutationFn: (d: ZoneForm) => zonesApi.create({ floorId, ...d }),
+    mutationFn: (d: ZoneForm) => zonesApi.create({ floorId, name: d.name, colour: d.colour, zoneGroupId: d.zoneGroupId ?? undefined }),
     onSuccess: () => { toast.success('Zone created'); qc.invalidateQueries({ queryKey: ['floors', floorId] }); onClose() },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -104,6 +114,33 @@ function ZoneDialog({
               <div className="h-7 w-7 rounded border" style={{ backgroundColor: colour }} />
             </div>
           </div>
+          <div>
+            <Label htmlFor="zgroup">Zone group</Label>
+            <p className="text-xs text-muted-foreground mb-1.5">
+              Optional — clusters zones together for reporting rollup (e.g. several team zones under one department).
+            </p>
+            <Select value={zoneGroupId ?? 'none'} onValueChange={(v) => setValue('zoneGroupId', v === 'none' ? null : v)}>
+              <SelectTrigger id="zgroup"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">No group</SelectItem>
+                {zoneGroups.map((g) => (
+                  <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {existing && (
+            // Only shown when editing — creation doesn't accept an approval
+            // override yet (createZoneSchema has no requiresApproval field),
+            // so surfacing this control before the zone exists would silently
+            // no-op the choice with no error, which is worse than not
+            // offering it until the zone can actually be edited.
+            <ApprovalOverrideControl
+              scope="zone"
+              value={requiresApproval}
+              onChange={(v) => setValue('requiresApproval', v)}
+            />
+          )}
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
             <Button type="submit" disabled={isPending}>
@@ -113,6 +150,144 @@ function ZoneDialog({
         </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+// ─── Zone Groups ──────────────────────────────────────────────────────────────
+// Clusters zones together for reporting rollup (e.g. several team zones under
+// one department, or a public/high-security split) — see #224. Backend CRUD
+// already existed; this panel was the missing piece that made it usable at
+// all (previously zoneGroupsApi had zero call sites anywhere in the app).
+
+function ZoneGroupDialog({
+  open, onClose, floorId, existing,
+}: { open: boolean; onClose: () => void; floorId: string; existing?: ZoneGroupData }) {
+  const qc = useQueryClient()
+  const [name, setName] = useState(existing?.name ?? '')
+
+  const create = useMutation({
+    mutationFn: () => zoneGroupsApi.create({ floorId, name }),
+    onSuccess: () => { toast.success('Zone group created'); qc.invalidateQueries({ queryKey: ['floors', floorId] }); onClose() },
+    onError: (err: Error) => toast.error(err.message),
+  })
+  const update = useMutation({
+    mutationFn: () => zoneGroupsApi.update(existing!.id, { name }),
+    onSuccess: () => { toast.success('Zone group updated'); qc.invalidateQueries({ queryKey: ['floors', floorId] }); onClose() },
+    onError: (err: Error) => toast.error(err.message),
+  })
+  const isPending = create.isPending || update.isPending
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent aria-describedby={undefined}>
+        <DialogHeader><DialogTitle>{existing ? 'Rename Zone Group' : 'Add Zone Group'}</DialogTitle></DialogHeader>
+        <form onSubmit={(e) => { e.preventDefault(); if (existing) update.mutate(); else create.mutate() }} className="space-y-4">
+          <div>
+            <Label htmlFor="zgname">Name *</Label>
+            <Input id="zgname" value={name} onChange={(e) => setName(e.target.value)} className="mt-1.5" placeholder="e.g. Data Branch" autoFocus />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={isPending || !name.trim()}>
+              {isPending ? 'Saving…' : existing ? 'Save changes' : 'Create group'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function ZoneGroupsPanel({ floorId, zoneGroups, zones }: { floorId: string; zoneGroups: ZoneGroupData[]; zones: ZoneData[] }) {
+  const qc = useQueryClient()
+  const [dialogState, setDialogState] = useState<'add' | ZoneGroupData | null>(null)
+  const [deleting, setDeleting] = useState<ZoneGroupData | null>(null)
+
+  const remove = useMutation({
+    mutationFn: (id: string) => zoneGroupsApi.delete(id),
+    onSuccess: () => { toast.success('Zone group deleted'); qc.invalidateQueries({ queryKey: ['floors', floorId] }); setDeleting(null) },
+    onError: (err: Error) => toast.error(err.message),
+  })
+
+  const zoneCountByGroup = new Map<string, number>()
+  for (const z of zones) {
+    if (!z.zoneGroupId) continue
+    zoneCountByGroup.set(z.zoneGroupId, (zoneCountByGroup.get(z.zoneGroupId) ?? 0) + 1)
+  }
+
+  if (zoneGroups.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed p-4 flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">No zone groups yet — cluster zones together for reporting rollup.</p>
+        <Button variant="outline" size="sm" onClick={() => setDialogState('add')}>
+          <Plus className="mr-1.5 h-3.5 w-3.5" /> Add zone group
+        </Button>
+        {dialogState && (
+          <ZoneGroupDialog
+            open
+            floorId={floorId}
+            existing={dialogState === 'add' ? undefined : dialogState}
+            onClose={() => setDialogState(null)}
+          />
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-lg border p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Zone groups</p>
+        <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setDialogState('add')}>
+          <Plus className="mr-1 h-3 w-3" /> Add
+        </Button>
+      </div>
+      <div className="space-y-1">
+        {zoneGroups.map((g) => (
+          <div key={g.id} className="flex items-center justify-between rounded px-2 py-1.5 hover:bg-muted/50">
+            <span className="text-sm">
+              {g.name} <span className="text-xs text-muted-foreground">({zoneCountByGroup.get(g.id) ?? 0} zone{(zoneCountByGroup.get(g.id) ?? 0) === 1 ? '' : 's'})</span>
+            </span>
+            <div className="flex items-center gap-1">
+              <Button size="icon" variant="ghost" className="h-7 w-7" title="Rename" onClick={() => setDialogState(g)}>
+                <Pencil className="h-3.5 w-3.5" />
+              </Button>
+              <Button size="icon" variant="ghost" className="h-7 w-7 hover:text-destructive" title="Delete" onClick={() => setDeleting(g)}>
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {dialogState && (
+        <ZoneGroupDialog
+          open
+          floorId={floorId}
+          existing={dialogState === 'add' ? undefined : dialogState}
+          onClose={() => setDialogState(null)}
+        />
+      )}
+
+      <AlertDialog open={!!deleting} onOpenChange={(o) => !o && setDeleting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete zone group?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleting && (zoneCountByGroup.get(deleting.id) ?? 0) > 0
+                ? `"${deleting.name}" has ${zoneCountByGroup.get(deleting.id)} zone(s) assigned. They'll become ungrouped, not deleted.`
+                : `Delete "${deleting?.name}"? This can't be undone.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => deleting && remove.mutate(deleting.id)} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
   )
 }
 
@@ -562,8 +737,8 @@ function BulkImportDialog({
 // ─── Zone Section ─────────────────────────────────────────────────────────────
 
 function ZoneSection({
-  zone, floorId, zones,
-}: { zone: ZoneData; floorId: string; zones: ZoneData[] }) {
+  zone, floorId, zones, zoneGroups,
+}: { zone: ZoneData; floorId: string; zones: ZoneData[]; zoneGroups: ZoneGroupData[] }) {
   const qc = useQueryClient()
   const [expanded, setExpanded] = useState(true)
   const [editZone, setEditZone] = useState(false)
@@ -599,12 +774,12 @@ function ZoneSection({
             onClick={() => setAddAsset(true)}>
             <Plus className="h-3 w-3" /> Add asset
           </Button>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setEditZone(true)}>
+          <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit zone" onClick={() => setEditZone(true)}>
             <Pencil className="h-3.5 w-3.5" />
           </Button>
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive">
+              <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" title="Delete zone">
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
             </AlertDialogTrigger>
@@ -652,7 +827,7 @@ function ZoneSection({
                     </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
-                    <Button variant="ghost" size="icon" className="h-7 w-7"
+                    <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit desk"
                       onClick={() => setEditAsset({ ...asset, zoneId: zone.id })}>
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
@@ -688,7 +863,7 @@ function ZoneSection({
       )}
 
       {editZone && (
-        <ZoneDialog open floorId={floorId} existing={zone} onClose={() => setEditZone(false)} />
+        <ZoneDialog open floorId={floorId} existing={zone} zoneGroups={zoneGroups} onClose={() => setEditZone(false)} />
       )}
       {addAsset && (
         <AddAssetToFloorDialog open floorId={floorId} zones={zones} defaultZoneId={zone.id} onClose={() => setAddAsset(false)} />
@@ -718,7 +893,7 @@ function FloorManagersPanel({ floorId, floorName }: { floorId: string; floorName
 
   const { data: searchResults } = useQuery({
     queryKey: ['users', 'search', search],
-    queryFn: () => usersApi.list({ q: search, limit: 20 }),
+    queryFn: () => usersApi.search(search),
     select: (r) => r.data,
     enabled: search.length >= 2,
   })
@@ -1019,6 +1194,12 @@ export default function FloorAdminPage() {
     onError: (err: Error) => toast.error(err.message),
   })
 
+  const saveQrMode = useMutation({
+    mutationFn: (v: QrCheckInMode | null) => floorsApi.update(floorId!, { qrCheckInMode: v }),
+    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['floors', floorId] }) },
+    onError: (err: Error) => toast.error(err.message),
+  })
+
   const upload = useMutation({
     mutationFn: (file: File) => floorsApi.uploadFloorPlan(floorId!, file),
     onSuccess: () => {
@@ -1058,6 +1239,7 @@ export default function FloorAdminPage() {
   const buildingId = floor?.building?.id
   const buildingName = floor?.building?.name
   const zones: ZoneData[] = (floor?.zones ?? []) as ZoneData[]
+  const zoneGroups: ZoneGroupData[] = (floor?.zoneGroups ?? []) as ZoneGroupData[]
   const totalDesks = zones.reduce((s, z) => s + (z.assets?.length ?? 0), 0)
 
   return (
@@ -1138,8 +1320,9 @@ export default function FloorAdminPage() {
       <div className="flex-1 overflow-hidden">
         {view === 'managers' ? (
           <div className="h-full overflow-y-auto">
-            <div className="p-4 max-w-sm">
+            <div className="p-4 max-w-sm space-y-3">
               <NoShowOverrideControl scope="floor" value={floor?.noShowReleaseEnabled} onChange={(v) => saveNoShow.mutate(v)} disabled={saveNoShow.isPending} />
+              <QrCheckInModeControl scope="floor" value={floor?.qrCheckInMode} onChange={(v) => saveQrMode.mutate(v)} disabled={saveQrMode.isPending} />
             </div>
             <FloorManagersPanel floorId={floorId!} floorName={floor?.name} />
           </div>
@@ -1178,6 +1361,8 @@ export default function FloorAdminPage() {
                 </div>
               </div>
 
+              {!isLoading && <ZoneGroupsPanel floorId={floorId!} zoneGroups={zoneGroups} zones={zones} />}
+
               {isLoading ? (
                 <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20" />)}</div>
               ) : zones.length === 0 ? (
@@ -1189,7 +1374,7 @@ export default function FloorAdminPage() {
                 </div>
               ) : (
                 zones.map((zone) => (
-                  <ZoneSection key={zone.id} zone={zone} floorId={floorId!} zones={zones} />
+                  <ZoneSection key={zone.id} zone={zone} floorId={floorId!} zones={zones} zoneGroups={zoneGroups} />
                 ))
               )}
             </div>
@@ -1198,7 +1383,7 @@ export default function FloorAdminPage() {
       </div>
 
       {addZoneOpen && (
-        <ZoneDialog open floorId={floorId!} onClose={() => setAddZoneOpen(false)} />
+        <ZoneDialog open floorId={floorId!} zoneGroups={zoneGroups} onClose={() => setAddZoneOpen(false)} />
       )}
       {addAssetOpen && (
         <AddAssetToFloorDialog open floorId={floorId!} zones={zones} onClose={() => setAddAssetOpen(false)} />

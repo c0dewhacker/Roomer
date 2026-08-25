@@ -6,8 +6,10 @@ import LoginPage from './pages/LoginPage'
 import BookingsPage from './pages/BookingsPage'
 import QueuePage from './pages/QueuePage'
 import QueueClaimPage from './pages/QueueClaimPage'
+import GuestCheckInPage from './pages/GuestCheckInPage'
 import ProfilePage from './pages/ProfilePage'
 import WhosInPage from './pages/WhosInPage'
+import BallotsPage from './pages/BallotsPage'
 import BuildingsAdminPage from './pages/admin/BuildingsAdminPage'
 import BuildingDetailAdminPage from './pages/admin/BuildingDetailAdminPage'
 import UsersAdminPage from './pages/admin/UsersAdminPage'
@@ -25,6 +27,10 @@ import LeasesAdminPage from './pages/admin/LeasesAdminPage'
 import GroupsAdminPage from './pages/admin/GroupsAdminPage'
 import DepartmentsAdminPage from './pages/admin/DepartmentsAdminPage'
 import WebhooksAdminPage from './pages/admin/WebhooksAdminPage'
+import ManagerRequestsAdminPage from './pages/admin/ManagerRequestsAdminPage'
+import ApprovalsAdminPage from './pages/admin/ApprovalsAdminPage'
+import BallotsAdminPage from './pages/admin/BallotsAdminPage'
+import QrScanPage from './pages/QrScanPage'
 import { Loader2 } from 'lucide-react'
 
 // Lazy-load pages that pull in large dependencies (pdfjs-dist, react-konva, recharts)
@@ -33,6 +39,8 @@ const FloorPage = lazy(() => import('./pages/FloorPage'))
 const OrgChartPage = lazy(() => import('./pages/admin/OrgChartPage'))
 const FloorAdminPage = lazy(() => import('./pages/admin/FloorAdminPage'))
 const ReportsAdminPage = lazy(() => import('./pages/admin/ReportsAdminPage'))
+const BookingsReportPage = lazy(() => import('./pages/admin/BookingsReportPage'))
+const AuditLogAdminPage = lazy(() => import('./pages/admin/AuditLogAdminPage'))
 
 function PageLoader() {
   return (
@@ -164,12 +172,17 @@ export function AppRouter() {
       <Route path="/" element={<RootRedirect />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/queue/claim" element={<QueueClaimPage />} />
+      <Route path="/guest-check-in" element={<GuestCheckInPage />} />
 
       <Route element={<ProtectedRoute />}>
+        {/* No <Layout /> chrome — a scanned desk QR code should land on a
+            focused, single-purpose page, not the full app shell. */}
+        <Route path="/qr/:assetId" element={<QrScanPage />} />
         <Route element={<Layout />}>
           <Route path="/floors/:floorId" element={<Suspense fallback={<PageLoader />}><FloorPage /></Suspense>} />
           <Route path="/bookings" element={<BookingsPage />} />
           <Route path="/whos-in" element={<WhosInPage />} />
+          <Route path="/ballots" element={<BallotsPage />} />
           <Route path="/queue" element={<QueuePage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/assets" element={<AssetsPage />} />
@@ -192,6 +205,7 @@ export function AppRouter() {
             <Route path="/admin/departments" element={<DepartmentsAdminPage />} />
             <Route path="/admin/org-chart" element={<Suspense fallback={<PageLoader />}><OrgChartPage /></Suspense>} />
             <Route path="/admin/webhooks" element={<WebhooksAdminPage />} />
+            <Route path="/admin/audit-log" element={<Suspense fallback={<PageLoader />}><AuditLogAdminPage /></Suspense>} />
           </Route>
 
           {/* SUPER_ADMIN, BUILDING_ADMIN, or FLOOR_MANAGER routes — backend has real floor-scoped support */}
@@ -199,12 +213,16 @@ export function AppRouter() {
             <Route path="/admin/buildings/:buildingId" element={<BuildingDetailAdminPage />} />
             <Route path="/admin/floors/:floorId" element={<Suspense fallback={<PageLoader />}><FloorAdminPage /></Suspense>} />
             <Route path="/admin/assets" element={<AssetsAdminPage />} />
+            <Route path="/admin/manager-requests" element={<ManagerRequestsAdminPage />} />
+            <Route path="/admin/approvals" element={<ApprovalsAdminPage />} />
+            <Route path="/admin/ballots" element={<BallotsAdminPage />} />
           </Route>
 
           {/* SUPER_ADMIN or BUILDING_ADMIN only — no floor-scoped backend support exists for these */}
           <Route element={<BuildingAdminOnlyRoute />}>
             <Route path="/admin/leases" element={<LeasesAdminPage />} />
             <Route path="/admin/reports" element={<Suspense fallback={<PageLoader />}><ReportsAdminPage /></Suspense>} />
+            <Route path="/admin/bookings-report" element={<Suspense fallback={<PageLoader />}><BookingsReportPage /></Suspense>} />
           </Route>
         </Route>
       </Route>

@@ -209,6 +209,7 @@ function DepartmentDetailSheet({ department, onClose }: { department: Department
                           className="h-7 w-7 hover:text-destructive"
                           onClick={() => removeMember.mutate(m.id)}
                           disabled={removeMember.isPending}
+                          aria-label={`Remove ${m.displayName} from department`}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
@@ -296,7 +297,7 @@ export default function DepartmentsAdminPage() {
                   <CardTitle className="text-base">{dept.name}</CardTitle>
                   <AlertDialog>
                     <AlertDialogTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive -mt-1 -mr-1" onClick={(e) => e.stopPropagation()}>
+                      <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive -mt-1 -mr-1" onClick={(e) => e.stopPropagation()} aria-label={`Delete ${dept.name} department`}>
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </AlertDialogTrigger>

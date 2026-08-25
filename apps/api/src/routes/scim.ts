@@ -3,9 +3,14 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
 import { cancelFutureBookingsForUser, cancelQueueEntriesForUser, releaseAssetAssignmentsForUser } from '../lib/queue.js'
+import { lockSuperAdminGuard, wouldRemoveLastActiveSuperAdmin } from '../lib/group-mapping.js'
+import { dispatchWebhook } from '../lib/webhook.js'
+import { recordManagerRef, resolveManagerForUser } from '../lib/manager.js'
+import { findOrCreateDepartment } from '../lib/department.js'
+import { recordAuditLog } from '../lib/audit.js'
 import {
   userToScim, groupToScim, scimError, listResponse, parseScimFilter,
-  applyUserPatchOps, applyGroupPatchOps, hashScimToken,
+  applyUserPatchOps, applyGroupPatchOps, hashScimToken, coerceScimActive, lockScimEmail,
   SCIM_SCHEMAS,
 } from '../lib/scim-helpers.js'
 import { env } from '../env.js'
@@ -32,23 +37,6 @@ async function isGroupPrivileged(groupId: string): Promise<boolean> {
   return group.globalRole === GlobalRole.SUPER_ADMIN || group._count.groupResourceRoles > 0
 }
 
-/**
- * True if deactivating this user would leave the org with zero active
- * SUPER_ADMINs, locking everyone out of the admin UI with no way back in
- * except direct DB surgery. Every other path that can block/demote a user
- * (PATCH /users/:id, bulk CSV import, IdP group-mapping sync) already guards
- * against this — SCIM's PUT/PATCH/DELETE never inherited the same check,
- * even though routine directory offboarding is exactly the kind of automated
- * action this is meant to protect against.
- */
-async function blocksLastActiveSuperAdmin(userId: string): Promise<boolean> {
-  const target = await prisma.user.findUnique({ where: { id: userId }, select: { globalRole: true, accountStatus: true } })
-  if (target?.globalRole !== GlobalRole.SUPER_ADMIN || target.accountStatus !== 'ACTIVE') return false
-  const otherActiveAdmins = await prisma.user.count({
-    where: { id: { not: userId }, globalRole: GlobalRole.SUPER_ADMIN, accountStatus: 'ACTIVE' },
-  })
-  return otherActiveAdmins === 0
-}
 
 const SCIM_CONTENT_TYPE = 'application/scim+json'
 
@@ -63,6 +51,18 @@ const SCIM_CONTENT_TYPE = 'application/scim+json'
 const SCIM_EMAIL_REGEX = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,64}$/
 function isValidScimEmail(email: string): boolean {
   return email.length <= 254 && SCIM_EMAIL_REGEX.test(email)
+}
+
+// EnterpriseUser's `manager` sub-attribute is an object ({ value, $ref,
+// displayName }) per RFC 7643 §4.1.2, not a plain string like department;
+// accept a bare string too since not every IdP is spec-strict about it.
+function extractScimManagerRef(enterpriseExt: Record<string, unknown> | undefined): string | undefined {
+  const mgr = enterpriseExt?.manager
+  if (typeof mgr === 'string') return mgr.trim() || undefined
+  if (mgr && typeof mgr === 'object' && typeof (mgr as Record<string, unknown>).value === 'string') {
+    return ((mgr as Record<string, unknown>).value as string).trim() || undefined
+  }
+  return undefined
 }
 
 async function scimAuth(request: FastifyRequest, reply: FastifyReply): Promise<void> {
@@ -192,9 +192,20 @@ function registerUsers(fastify: FastifyInstance): void {
     const email = (body.userName as string) ?? ((body.emails as Array<{ value: string }>)?.[0]?.value)
     const displayName = (body.displayName as string) ?? email
     const externalId = body.externalId as string | undefined
-    const active = body.active !== false
+    // SCIM defaults `active` to true when omitted entirely, but a value that
+    // IS present and isn't recognisably a boolean (see coerceScimActive) must
+    // be rejected rather than silently treated as active — a naive
+    // `body.active !== false` check let the STRING "false" (sent by some
+    // real-world IdPs despite the spec requiring a JSON boolean) create the
+    // account as ACTIVE instead of BLOCKED.
+    if (body.active !== undefined && coerceScimActive(body.active) === undefined) {
+      return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(400, 'active must be a boolean'))
+    }
+    const active = body.active === undefined ? true : coerceScimActive(body.active)!
     const enterpriseExt = body[SCIM_SCHEMAS.ENTERPRISE_USER] as Record<string, unknown> | undefined
     const incomingDeptName = typeof enterpriseExt?.department === 'string' ? enterpriseExt.department.trim() : undefined
+    const managerRef = extractScimManagerRef(enterpriseExt)
 
     if (!email) {
       return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
@@ -206,39 +217,72 @@ function registerUsers(fastify: FastifyInstance): void {
         .send(scimError(400, 'userName must be a valid email address'))
     }
 
-    // Case-insensitive — see the GET /Users filter above for why. Without this,
-    // a differently-cased userName for an account that already exists creates
-    // a duplicate rather than hitting the 409 conflict.
-    const existing = await prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } }, select: userSelect })
-    if (existing) {
-      return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
-        .send(scimError(409, `User ${email} already exists`))
-    }
-
     let departmentId: string | undefined
     if (incomingDeptName) {
       const org = await prisma.organisation.findFirst({ select: { id: true } })
       if (org) {
-        const dept = await prisma.department.upsert({
-          where: { organisationId_name: { organisationId: org.id, name: incomingDeptName } },
-          create: { organisationId: org.id, name: incomingDeptName },
-          update: {},
-        })
+        const dept = await findOrCreateDepartment(org.id, incomingDeptName)
         departmentId = dept.id
       }
     }
 
-    const user = await prisma.user.create({
-      data: {
-        email,
-        displayName,
-        externalId: externalId ?? null,
-        accountStatus: active ? 'ACTIVE' : 'BLOCKED',
-        provider: 'OIDC',
-        ...(departmentId ? { departmentId } : {}),
-      },
-      select: userSelect,
-    })
+    // The case-insensitive collision check and the create itself run inside
+    // one transaction, holding a per-email advisory lock — email's DB unique
+    // constraint is case-sensitive, so without a lock two concurrent creates
+    // for emails differing only by case (e.g. "Bob@x.com" vs "bob@x.com")
+    // can both pass this findFirst before either commits, leaving two live
+    // accounts that every case-insensitive lookup elsewhere (login, SSO,
+    // this same check) can no longer tell apart. See lockScimEmail.
+    let user
+    try {
+      user = await prisma.$transaction(async (tx) => {
+        await lockScimEmail(tx, email)
+        const existing = await tx.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } }, select: { id: true } })
+        if (existing) throw Object.assign(new Error('EMAIL_TAKEN'), { code: 'EMAIL_TAKEN' })
+        return tx.user.create({
+          data: {
+            email,
+            displayName,
+            externalId: externalId ?? null,
+            accountStatus: active ? 'ACTIVE' : 'BLOCKED',
+            provider: 'OIDC',
+            ...(departmentId ? { departmentId } : {}),
+          },
+          select: userSelect,
+        })
+      })
+    } catch (err) {
+      if ((err as { code?: string })?.code === 'EMAIL_TAKEN') {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, `User ${email} already exists`))
+      }
+      throw err
+    }
+    // Same manager-attribute handling LDAP/OIDC/SAML already do on login —
+    // SCIM's own department handling above had no equivalent asymmetry, but
+    // manager did: recordManagerRef stores the raw ref for later fuzzy
+    // matching, resolveManagerForUser both resolves this user's own manager
+    // now (if already provisioned) and picks up any existing users whose
+    // pending forward reference points at this one.
+    if (managerRef) {
+      await recordManagerRef(user.id, managerRef)
+    }
+    await resolveManagerForUser(user.id)
+    // SCIM never sets globalRole (not part of its data model) — provisioned
+    // users always start at the schema default, GlobalRole.USER, same as the
+    // admin-console create route this mirrors (users.ts POST /).
+    dispatchWebhook('user.created', { id: user.id, email: user.email, displayName: user.displayName, globalRole: GlobalRole.USER }).catch(() => {})
+    // actorId: null and a scim_-prefixed action distinguish IdP-driven
+    // provisioning from a human admin using the console (users.ts POST /) —
+    // both create a User row, but the provenance matters to a reviewer.
+    await recordAuditLog(prisma, {
+      actorId: null,
+      action: 'user.scim_created',
+      resourceType: 'User',
+      resourceId: user.id,
+      after: { email: user.email, displayName: user.displayName, externalId: user.externalId },
+      ipAddress: request.ip,
+    }, request.log)
 
     reply.status(201).header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
   })
@@ -261,52 +305,113 @@ function registerUsers(fastify: FastifyInstance): void {
     const email = (body.userName as string) ?? ((body.emails as Array<{ value: string }>)?.[0]?.value)
     const displayName = body.displayName as string | undefined
     const externalId = body.externalId as string | undefined
-    const active = body.active as boolean | undefined
+    // See POST /Users — a value present but not recognisably a boolean (e.g.
+    // the string "false", which some real-world IdPs send despite the spec
+    // requiring a JSON boolean) must be rejected, not silently truthy-cast to
+    // ACTIVE.
+    if (body.active !== undefined && coerceScimActive(body.active) === undefined) {
+      return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(400, 'active must be a boolean'))
+    }
+    const active = coerceScimActive(body.active)
     const enterpriseExt = body[SCIM_SCHEMAS.ENTERPRISE_USER] as Record<string, unknown> | undefined
     const incomingDeptName = typeof enterpriseExt?.department === 'string' ? enterpriseExt.department.trim() : undefined
+    const managerRef = extractScimManagerRef(enterpriseExt)
 
     if (email && !isValidScimEmail(email)) {
       return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
         .send(scimError(400, 'userName must be a valid email address'))
     }
-
     let departmentId: string | null | undefined
     if (incomingDeptName) {
       const org = await prisma.organisation.findFirst({ select: { id: true } })
       if (org) {
-        const dept = await prisma.department.upsert({
-          where: { organisationId_name: { organisationId: org.id, name: incomingDeptName } },
-          create: { organisationId: org.id, name: incomingDeptName },
-          update: {},
-        })
+        const dept = await findOrCreateDepartment(org.id, incomingDeptName)
         departmentId = dept.id
       }
     } else if (incomingDeptName === '') {
       departmentId = null
     }
 
-    if (active === false) {
-      const blocked = await blocksLastActiveSuperAdmin(id)
-      if (blocked) {
+    try {
+      const user = await prisma.$transaction(async (tx) => {
+        if (email) {
+          // The collision check and the update itself now run inside the
+          // same transaction, holding a per-email advisory lock first —
+          // email's DB unique constraint is case-sensitive, but every lookup
+          // that matters (login, SSO, this same SCIM upsert path) matches
+          // case-insensitively. Without the lock, two concurrent renames to
+          // emails differing only by case (e.g. "Bob@x.com" vs "bob@x.com")
+          // can both pass this check before either commits, leaving two
+          // accounts those case-insensitive lookups can no longer tell
+          // apart. A same-case collision is still a real P2002 the generic
+          // catch below reports as 404 — this only closes the
+          // different-case race the DB constraint can't catch on its own.
+          await lockScimEmail(tx, email)
+          const collision = await tx.user.findFirst({
+            where: { email: { equals: email, mode: 'insensitive' }, id: { not: id } },
+            select: { id: true },
+          })
+          if (collision) throw Object.assign(new Error('EMAIL_TAKEN'), { code: 'EMAIL_TAKEN' })
+        }
+        if (active === false) {
+          await lockSuperAdminGuard(tx)
+          if (await wouldRemoveLastActiveSuperAdmin(tx, id)) {
+            throw Object.assign(new Error('LAST_SUPER_ADMIN'), { code: 'LAST_SUPER_ADMIN' })
+          }
+        }
+        const before = await tx.user.findUnique({ where: { id }, select: userSelect })
+        const updated = await tx.user.update({
+          where: { id },
+          data: {
+            ...(email ? { email } : {}),
+            ...(displayName ? { displayName } : {}),
+            ...(externalId !== undefined ? { externalId } : {}),
+            ...(active !== undefined ? { accountStatus: active ? 'ACTIVE' : 'BLOCKED' } : {}),
+            ...(departmentId !== undefined ? { departmentId } : {}),
+          },
+          select: userSelect,
+        })
+        await recordAuditLog(tx, {
+          actorId: null,
+          action: active === false ? 'user.scim_suspended' : 'user.scim_updated',
+          resourceType: 'User',
+          resourceId: id,
+          before,
+          after: { email: updated.email, displayName: updated.displayName, externalId: updated.externalId, accountStatus: updated.accountStatus },
+          ipAddress: request.ip,
+        }, request.log)
+        return updated
+      })
+      // Same cleanup PATCH and DELETE below already do on this exact transition
+      // — without it, a user deactivated via PUT (some SCIM clients send a
+      // full-replace PUT rather than a PATCH for offboarding) keeps their
+      // future CONFIRMED bookings, queue entries, and permanent desk
+      // assignments intact under an account that can no longer log in to
+      // release them itself.
+      if (active === false) {
+        await cancelFutureBookingsForUser(user.id)
+        await cancelQueueEntriesForUser(user.id)
+        await releaseAssetAssignmentsForUser(user.id)
+        dispatchWebhook('user.suspended', { id: user.id, email: user.email }).catch(() => {})
+      } else {
+        dispatchWebhook('user.updated', { id: user.id, email: user.email, displayName: user.displayName }).catch(() => {})
+      }
+      if (managerRef !== undefined) {
+        await recordManagerRef(user.id, managerRef)
+      }
+      await resolveManagerForUser(user.id)
+      reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
+    } catch (err: unknown) {
+      const e = err as { code?: string }
+      if (e?.code === 'LAST_SUPER_ADMIN') {
         return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
           .send(scimError(409, 'Cannot deactivate the last active super admin'))
       }
-    }
-
-    try {
-      const user = await prisma.user.update({
-        where: { id },
-        data: {
-          ...(email ? { email } : {}),
-          ...(displayName ? { displayName } : {}),
-          ...(externalId !== undefined ? { externalId } : {}),
-          ...(active !== undefined ? { accountStatus: active ? 'ACTIVE' : 'BLOCKED' } : {}),
-          ...(departmentId !== undefined ? { departmentId } : {}),
-        },
-        select: userSelect,
-      })
-      reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
-    } catch {
+      if (e?.code === 'EMAIL_TAKEN') {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, `userName ${email} is already in use`))
+      }
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
     }
   })
@@ -317,8 +422,8 @@ function registerUsers(fastify: FastifyInstance): void {
     const body = request.body as { Operations?: Array<{ op: string; path?: string; value?: unknown }> }
     const ops = body.Operations ?? []
 
-    const { departmentName, ...userPatch } = applyUserPatchOps(ops)
-    if (Object.keys(userPatch).length === 0 && !departmentName) {
+    const { departmentName, managerRef, ...userPatch } = applyUserPatchOps(ops)
+    if (Object.keys(userPatch).length === 0 && !departmentName && !managerRef) {
       const user = await prisma.user.findUnique({ where: { id }, select: userSelect })
       if (!user) return reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
       return reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
@@ -328,41 +433,75 @@ function registerUsers(fastify: FastifyInstance): void {
       return reply.status(400).header('Content-Type', SCIM_CONTENT_TYPE)
         .send(scimError(400, 'userName must be a valid email address'))
     }
-
     let departmentId: string | undefined
     if (departmentName) {
       const org = await prisma.organisation.findFirst({ select: { id: true } })
       if (org) {
-        const dept = await prisma.department.upsert({
-          where: { organisationId_name: { organisationId: org.id, name: departmentName } },
-          create: { organisationId: org.id, name: departmentName },
-          update: {},
-        })
+        const dept = await findOrCreateDepartment(org.id, departmentName)
         departmentId = dept.id
       }
     }
 
-    if (userPatch.accountStatus === 'BLOCKED') {
-      const blocked = await blocksLastActiveSuperAdmin(id)
-      if (blocked) {
-        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
-          .send(scimError(409, 'Cannot deactivate the last active super admin'))
-      }
-    }
-
     try {
-      const user = await prisma.user.update({
-        where: { id },
-        data: { ...userPatch, ...(departmentId !== undefined ? { departmentId } : {}) },
-        select: userSelect,
+      const user = await prisma.$transaction(async (tx) => {
+        if (userPatch.email) {
+          // Same case-insensitive collision race PUT closes, for the same
+          // reason — moved inside the transaction and behind a per-email
+          // advisory lock so a concurrent rename to the same (case-
+          // insensitive) email can't pass this check before either commits.
+          await lockScimEmail(tx, userPatch.email)
+          const collision = await tx.user.findFirst({
+            where: { email: { equals: userPatch.email, mode: 'insensitive' }, id: { not: id } },
+            select: { id: true },
+          })
+          if (collision) throw Object.assign(new Error('EMAIL_TAKEN'), { code: 'EMAIL_TAKEN' })
+        }
+        if (userPatch.accountStatus === 'BLOCKED') {
+          await lockSuperAdminGuard(tx)
+          if (await wouldRemoveLastActiveSuperAdmin(tx, id)) {
+            throw Object.assign(new Error('LAST_SUPER_ADMIN'), { code: 'LAST_SUPER_ADMIN' })
+          }
+        }
+        const before = await tx.user.findUnique({ where: { id }, select: userSelect })
+        const updated = await tx.user.update({
+          where: { id },
+          data: { ...userPatch, ...(departmentId !== undefined ? { departmentId } : {}) },
+          select: userSelect,
+        })
+        await recordAuditLog(tx, {
+          actorId: null,
+          action: userPatch.accountStatus === 'BLOCKED' ? 'user.scim_suspended' : 'user.scim_updated',
+          resourceType: 'User',
+          resourceId: id,
+          before,
+          after: { email: updated.email, displayName: updated.displayName, externalId: updated.externalId, accountStatus: updated.accountStatus },
+          ipAddress: request.ip,
+        }, request.log)
+        return updated
       })
       if (userPatch.accountStatus === 'BLOCKED') {
         await cancelFutureBookingsForUser(user.id)
         await cancelQueueEntriesForUser(user.id)
         await releaseAssetAssignmentsForUser(user.id)
+        dispatchWebhook('user.suspended', { id: user.id, email: user.email }).catch(() => {})
+      } else {
+        dispatchWebhook('user.updated', { id: user.id, email: user.email, displayName: user.displayName }).catch(() => {})
+      }
+      if (managerRef) {
+        await recordManagerRef(user.id, managerRef)
+        await resolveManagerForUser(user.id)
       }
       reply.header('Content-Type', SCIM_CONTENT_TYPE).send(userToScim(user))
-    } catch {
+    } catch (err: unknown) {
+      const e = err as { code?: string }
+      if (e?.code === 'LAST_SUPER_ADMIN') {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, 'Cannot deactivate the last active super admin'))
+      }
+      if (e?.code === 'EMAIL_TAKEN') {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, `userName ${userPatch.email} is already in use`))
+      }
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
     }
   })
@@ -371,19 +510,36 @@ function registerUsers(fastify: FastifyInstance): void {
   fastify.delete('/Users/:id', { preHandler: [scimAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
 
-    const blocked = await blocksLastActiveSuperAdmin(id)
-    if (blocked) {
-      return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
-        .send(scimError(409, 'Cannot deactivate the last active super admin'))
-    }
-
     try {
-      await prisma.user.update({ where: { id }, data: { accountStatus: 'BLOCKED' } })
+      const user = await prisma.$transaction(async (tx) => {
+        await lockSuperAdminGuard(tx)
+        if (await wouldRemoveLastActiveSuperAdmin(tx, id)) {
+          throw Object.assign(new Error('LAST_SUPER_ADMIN'), { code: 'LAST_SUPER_ADMIN' })
+        }
+        const before = await tx.user.findUnique({ where: { id }, select: { accountStatus: true } })
+        const updated = await tx.user.update({ where: { id }, data: { accountStatus: 'BLOCKED' }, select: { id: true, email: true } })
+        await recordAuditLog(tx, {
+          actorId: null,
+          action: 'user.scim_deprovisioned',
+          resourceType: 'User',
+          resourceId: id,
+          before,
+          after: { accountStatus: 'BLOCKED' },
+          ipAddress: request.ip,
+        }, request.log)
+        return updated
+      })
       await cancelFutureBookingsForUser(id)
       await cancelQueueEntriesForUser(id)
       await releaseAssetAssignmentsForUser(id)
+      dispatchWebhook('user.suspended', { id: user.id, email: user.email }).catch(() => {})
       reply.status(204).send()
-    } catch {
+    } catch (err: unknown) {
+      const e = err as { code?: string }
+      if (e?.code === 'LAST_SUPER_ADMIN') {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, 'Cannot deactivate the last active super admin'))
+      }
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
     }
   })
@@ -455,6 +611,14 @@ function registerGroups(fastify: FastifyInstance): void {
         data: { name: body.displayName, organisationId: org.id },
         select: groupSelect,
       })
+      await recordAuditLog(prisma, {
+        actorId: null,
+        action: 'user_group.scim_created',
+        resourceType: 'UserGroup',
+        resourceId: group.id,
+        after: { name: group.name },
+        ipAddress: request.ip,
+      }, request.log)
       reply.status(201).header('Content-Type', SCIM_CONTENT_TYPE).send(groupToScim(group, []))
     } catch {
       reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(409, `Group ${body.displayName} already exists`))
@@ -501,16 +665,45 @@ function registerGroups(fastify: FastifyInstance): void {
 
     if (patch.displayName) {
       await prisma.userGroup.update({ where: { id }, data: { name: patch.displayName } })
+      await recordAuditLog(prisma, {
+        actorId: null,
+        action: 'user_group.scim_updated',
+        resourceType: 'UserGroup',
+        resourceId: id,
+        before: { name: group.name },
+        after: { name: patch.displayName },
+        ipAddress: request.ip,
+      }, request.log)
     }
     for (const userId of patch.addMemberIds) {
-      await prisma.userGroupMember.upsert({
+      const added = await prisma.userGroupMember.upsert({
         where: { groupId_userId: { groupId: id, userId } },
         create: { groupId: id, userId },
         update: {},
-      }).catch(() => { /* user may not exist */ })
+      }).catch(() => null) // user may not exist
+      if (added) {
+        await recordAuditLog(prisma, {
+          actorId: null,
+          action: 'user_group_member.scim_added',
+          resourceType: 'UserGroupMember',
+          resourceId: `${id}:${userId}`,
+          after: { groupId: id, userId },
+          ipAddress: request.ip,
+        }, request.log)
+      }
     }
     for (const userId of patch.removeMemberIds) {
-      await prisma.userGroupMember.deleteMany({ where: { groupId: id, userId } })
+      const removed = await prisma.userGroupMember.deleteMany({ where: { groupId: id, userId } })
+      if (removed.count > 0) {
+        await recordAuditLog(prisma, {
+          actorId: null,
+          action: 'user_group_member.scim_removed',
+          resourceType: 'UserGroupMember',
+          resourceId: `${id}:${userId}`,
+          before: { groupId: id, userId },
+          ipAddress: request.ip,
+        }, request.log)
+      }
     }
 
     reply.status(204).send()
@@ -524,7 +717,15 @@ function registerGroups(fastify: FastifyInstance): void {
         .send(scimError(403, 'SCIM cannot delete a group that grants admin or manager privileges'))
     }
     try {
-      await prisma.userGroup.delete({ where: { id } })
+      const deleted = await prisma.userGroup.delete({ where: { id } })
+      await recordAuditLog(prisma, {
+        actorId: null,
+        action: 'user_group.scim_deleted',
+        resourceType: 'UserGroup',
+        resourceId: id,
+        before: { name: deleted.name },
+        ipAddress: request.ip,
+      }, request.log)
       reply.status(204).send()
     } catch {
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `Group ${id} not found`))

@@ -1,6 +1,8 @@
 import ldap from 'ldapjs'
 import { prisma, findAuthConfig } from './prisma.js'
 import type { GroupMapping } from './group-mapping.js'
+import { lockSuperAdminGuard } from './group-mapping.js'
+import { GlobalRole } from '@roomer/shared'
 import { dispatchWebhook } from './webhook.js'
 import { decryptStringMaybe } from './encryption.js'
 import { cancelFutureBookingsForUser, cancelQueueEntriesForUser, releaseAssetAssignmentsForUser } from './queue.js'
@@ -116,6 +118,8 @@ export interface LdapAuthResult {
   groups: string[]
   /** Department attribute value, if departmentAttribute is configured */
   department?: string
+  /** Raw manager attribute value (a DN, email, or UPN), if managerAttribute is configured */
+  manager?: string
 }
 
 // Guards against a second admin (or a second tab) triggering an overlapping
@@ -209,17 +213,19 @@ async function runLdapSync(cfg: LdapConfig): Promise<LdapSyncResult> {
         }
 
         const userId = existing?.id ?? (await prisma.user.findUnique({ where: { email }, select: { id: true } }))!.id
-        if (cfg.groupMappings?.length && groups.length) {
+        // Deliberately does NOT also require groups.length: an empty array is
+        // exactly the "user was removed from every mapped group" signal that
+        // must reach applyGroupMappings so its sync=true eviction/demotion
+        // logic can run — gating this on a non-empty group list silently
+        // skipped revocation for a fully-deprovisioned directory entry.
+        if (cfg.groupMappings?.length) {
           const { applyGroupMappings } = await import('./group-mapping.js')
           await applyGroupMappings(userId, groups, cfg.groupMappings, true)
         }
 
         if (departmentName && orgId) {
-          const dept = await prisma.department.upsert({
-            where: { organisationId_name: { organisationId: orgId, name: departmentName } },
-            create: { organisationId: orgId, name: departmentName },
-            update: {},
-          })
+          const { findOrCreateDepartment } = await import('./department.js')
+          const dept = await findOrCreateDepartment(orgId, departmentName)
           await prisma.user.update({ where: { id: userId }, data: { departmentId: dept.id } })
         }
       } catch (err) {
@@ -233,20 +239,61 @@ async function runLdapSync(cfg: LdapConfig): Promise<LdapSyncResult> {
       // count alone doesn't tell us WHICH users to release bookings/desks for.
       const toDeactivate = await prisma.user.findMany({
         where: { provider: 'LDAP', accountStatus: 'ACTIVE', email: { notIn: [...seenEmails] } },
-        select: { id: true },
+        select: { id: true, email: true, globalRole: true },
       })
       if (toDeactivate.length > 0) {
-        await prisma.user.updateMany({
-          where: { id: { in: toDeactivate.map((u) => u.id) } },
-          data: { accountStatus: 'BLOCKED' },
+        // Blocking a user is functionally identical to demoting them for
+        // last-active-super-admin purposes (requireAuth rejects a BLOCKED
+        // user's every request, same as a non-SUPER_ADMIN's) — every other
+        // path that can flip accountStatus to BLOCKED (PATCH /users/:id, CSV
+        // bulk import, SCIM PUT/PATCH/DELETE, the IdP group-mapping globalRole
+        // demotion) serialises against SUPER_ADMIN_GUARD_LOCK_CLASS and
+        // refuses to zero out active admins. This directory-driven mass
+        // deactivation is reachable the exact same way (an admin's LDAP entry
+        // ages out of the sync filter, or is deleted upstream) and previously
+        // had no such guard — silently locking an org out of its own admin UI
+        // with no recovery path short of direct DB access.
+        const safeToDeactivate = await prisma.$transaction(async (tx) => {
+          await lockSuperAdminGuard(tx)
+          const candidateIds = toDeactivate.map((u) => u.id)
+          const activeSuperAdminIds = new Set(
+            (await tx.user.findMany({
+              where: { globalRole: GlobalRole.SUPER_ADMIN, accountStatus: 'ACTIVE' },
+              select: { id: true },
+            })).map((u) => u.id),
+          )
+          const superAdminsInBatch = candidateIds.filter((id) => activeSuperAdminIds.has(id))
+          // Deactivating this whole batch would leave zero active super
+          // admins — protect ALL of them rather than arbitrarily sparing one;
+          // an automated directory sync shouldn't be the thing deciding which
+          // admin account survives.
+          const wouldZeroOutAdmins = superAdminsInBatch.length > 0 && superAdminsInBatch.length === activeSuperAdminIds.size
+          const safe = wouldZeroOutAdmins
+            ? toDeactivate.filter((u) => !superAdminsInBatch.includes(u.id))
+            : toDeactivate
+
+          if (safe.length > 0) {
+            await tx.user.updateMany({
+              where: { id: { in: safe.map((u) => u.id) } },
+              data: { accountStatus: 'BLOCKED' },
+            })
+          }
+          return safe
         })
-        for (const { id: userId } of toDeactivate) {
+
+        for (const u of toDeactivate) {
+          if (!safeToDeactivate.some((s) => s.id === u.id)) {
+            result.errors.push({ dn: u.email, message: 'Skipped deactivation — would leave the organisation with no active Super Admin' })
+          }
+        }
+
+        for (const { id: userId } of safeToDeactivate) {
           await cancelFutureBookingsForUser(userId)
           await cancelQueueEntriesForUser(userId)
           await releaseAssetAssignmentsForUser(userId)
         }
+        result.deactivated = safeToDeactivate.length
       }
-      result.deactivated = toDeactivate.length
     }
   } finally {
     unbind(client)
@@ -291,9 +338,11 @@ export async function authenticateWithLdap(
     const nameAttr = cfg.displayNameAttribute ?? 'displayName'
     const groupAttr = cfg.groupAttribute ?? 'memberOf'
     const deptAttr = cfg.departmentAttribute
+    const managerAttr = cfg.managerAttribute
 
     const searchAttrs = ['dn', emailAttr, nameAttr, groupAttr]
     if (deptAttr) searchAttrs.push(deptAttr)
+    if (managerAttr) searchAttrs.push(managerAttr)
 
     const entries = await searchAsync(adminClient, cfg.searchBase, {
       filter,
@@ -316,6 +365,7 @@ export async function authenticateWithLdap(
     // Group values are trimmed to avoid whitespace issues in DN comparisons
     const groups = (getAttr(groupAttr)?.values ?? []).map((g) => g.trim().toLowerCase())
     const department = deptAttr ? getAttr(deptAttr)?.values[0]?.trim() : undefined
+    const manager = managerAttr ? getAttr(managerAttr)?.values[0]?.trim() : undefined
 
     // 3. Try binding as the user to verify password
     const userClient = createLdapClient(cfg)
@@ -327,7 +377,7 @@ export async function authenticateWithLdap(
       return null
     }
 
-    return { email: userEmail, displayName: userDisplayName, dn: userDn, groups, department }
+    return { email: userEmail, displayName: userDisplayName, dn: userDn, groups, department, manager }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code ?? 'unknown'
     const message = err instanceof Error ? err.message : 'Unknown error'

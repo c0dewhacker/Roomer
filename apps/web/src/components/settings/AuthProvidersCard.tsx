@@ -4,7 +4,7 @@ import { toast } from 'sonner'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { settingsApi } from '@/lib/api'
+import { settingsApi, ApiError } from '@/lib/api'
 import { CollapsibleCard } from './CollapsibleCard'
 import { OidcConfigForm } from './OidcConfigForm'
 import { SamlConfigForm } from './SamlConfigForm'
@@ -82,7 +82,16 @@ export function AuthProvidersCard() {
       qc.invalidateQueries({ queryKey: ['settings', 'auth-config'] })
       qc.invalidateQueries({ queryKey: ['auth-providers'] })
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err: Error) => {
+      // Backend field-level errors (e.g. LDAP's "must be ldap:// or ldaps://",
+      // SAML's production-signature refine, OIDC's redirectUri origin check)
+      // live in error.details.fieldErrors, not the generic top-level message
+      // ("Merged config is invalid" / "Invalid config") — same fix already
+      // applied to EmailSettingsCard/WebhooksAdminPage, missed here. Without
+      // it, an admin got no indication of which field was wrong or why.
+      const details = err instanceof ApiError ? (err.fieldErrors ?? err.message) : err.message
+      toast.error(details || 'Failed to save')
+    },
   })
 
   function toggle(provider: 'oidc' | 'saml' | 'ldap', enabled: boolean) {
