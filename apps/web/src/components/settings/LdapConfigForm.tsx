@@ -129,8 +129,13 @@ export function LdapConfigForm({
     }
     if (bindCredentials) cfg.bindCredentials = bindCredentials
     cfg.syncBase = syncBase.trim() || null
-    if (departmentAttribute.trim()) cfg.departmentAttribute = departmentAttribute.trim()
-    if (managerAttribute.trim()) cfg.managerAttribute = managerAttribute.trim()
+    // null (not omitted) so a cleared field actually unsets a previously-
+    // saved mapping, matching syncBase above — see OidcConfigForm/
+    // SamlConfigForm for the same fix. (departmentAttribute has no backend
+    // schema field for LDAP today — this keeps parity with the other two
+    // providers' forms without changing that separately.)
+    cfg.departmentAttribute = departmentAttribute.trim() || null
+    cfg.managerAttribute = managerAttribute.trim() || null
     onSave(cfg)
   }
 

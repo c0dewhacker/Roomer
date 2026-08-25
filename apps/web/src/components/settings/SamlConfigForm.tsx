@@ -40,8 +40,11 @@ export function SamlConfigForm({
 
   function handleSave() {
     const cfg: Record<string, unknown> = { entryPoint, issuer, cert, callbackUrl, label, groupAttribute, groupMappings, wantAuthnResponseSigned, wantAssertionsSigned, allowClockSkewMs }
-    if (departmentAttribute.trim()) cfg.departmentAttribute = departmentAttribute.trim()
-    if (managerAttribute.trim()) cfg.managerAttribute = managerAttribute.trim()
+    // null (not omitted) so a cleared field actually unsets a previously-
+    // saved mapping — omitting the key here left the old value in place,
+    // since the backend's merge logic treats a missing key the same as ''.
+    cfg.departmentAttribute = departmentAttribute.trim() || null
+    cfg.managerAttribute = managerAttribute.trim() || null
     onSave(cfg)
   }
 

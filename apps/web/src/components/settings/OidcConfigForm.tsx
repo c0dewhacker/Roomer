@@ -31,7 +31,12 @@ export function OidcConfigForm({
 
   function handleSave() {
     const cfg: Record<string, unknown> = {
-      issuerUrl, clientId, redirectUri, scope, label, groupsClaimName, departmentClaimName, managerClaimName, groupMappings,
+      issuerUrl, clientId, redirectUri, scope, label, groupsClaimName, groupMappings,
+      // null (not '') so a cleared field actually unsets a previously-saved
+      // mapping — the backend's merge logic treats '' as "leave unchanged",
+      // same as omitting the key entirely, only null clears it.
+      departmentClaimName: departmentClaimName.trim() || null,
+      managerClaimName: managerClaimName.trim() || null,
     }
     if (clientSecret) cfg.clientSecret = clientSecret
     onSave(cfg)

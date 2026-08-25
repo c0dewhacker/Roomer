@@ -167,8 +167,12 @@ const oidcConfigSchema = z.object({
   scope: z.string().optional(),
   label: z.string().optional(),
   groupsClaimName: z.string().optional(),
-  departmentClaimName: z.string().optional(),
-  managerClaimName: z.string().optional(),
+  // nullish (not just optional) so the UI can explicitly clear a
+  // previously-set mapping — see the merge logic below (null → delete the
+  // key, '' → skip, matching ldapConfigSchema's syncBase/syncFilter, the
+  // one pair that already got this right).
+  departmentClaimName: z.string().nullish(),
+  managerClaimName: z.string().nullish(),
   groupMappings: z.array(groupMappingSchema).optional(),
 })
 
@@ -181,8 +185,10 @@ const samlConfigSchema = z.object({
   label: z.string().optional(),
   groupAttribute: z.string().optional(),
   groupMappings: z.array(groupMappingSchema).optional(),
-  departmentAttribute: z.string().optional(),
-  managerAttribute: z.string().optional(),
+  // nullish so the UI can explicitly clear a previously-set mapping — same
+  // fix as oidcConfigSchema's departmentClaimName/managerClaimName above.
+  departmentAttribute: z.string().nullish(),
+  managerAttribute: z.string().nullish(),
   // Refuse to disable signature verification in production — disabling either flag
   // turns SAML into an unauthenticated identity assertion (signature-stripping attack).
   wantAuthnResponseSigned: z.boolean()
@@ -210,7 +216,9 @@ const ldapConfigSchema = z.object({
   tlsRejectUnauthorized: z.boolean().optional(),
   groupAttribute: z.string().optional(),
   groupMappings: z.array(groupMappingSchema).optional(),
-  managerAttribute: z.string().optional(),
+  // nullish so the UI can explicitly clear a previously-set mapping — same
+  // fix as oidcConfigSchema/samlConfigSchema's department/manager fields.
+  managerAttribute: z.string().nullish(),
   // Directory sync settings — nullish so the UI can explicitly clear them
   syncBase: z.string().nullish(),
   syncFilter: z.string().nullish(),
