@@ -4,7 +4,7 @@ import crypto from 'crypto'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole, ResourceRoleType, ResourceScopeType, RoleSource } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { requireGlobalRole } from '../middleware/requireRole.js'
+import { requireGlobalRole, RESOURCE_ROLE_GRANT_LOCK_CLASS } from '../middleware/requireRole.js'
 import { enqueueNotification, cancelFutureBookingsForUser, cancelQueueEntriesForUser, releaseAssetAssignmentsForUser } from '../lib/queue.js'
 import { lockSuperAdminGuard, wouldRemoveLastActiveSuperAdmin } from '../lib/group-mapping.js'
 import { dispatchWebhook } from '../lib/webhook.js'
@@ -717,38 +717,47 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       // FLOOR-scope row always has buildingId NULL — Postgres treats NULL <>
       // NULL for uniqueness, so that constraint never actually fires for
       // either scope and the same user could be assigned the same role twice.
-      // POST /buildings/:id/managers already guards its equivalent case with
-      // this same explicit findFirst (see its own comment) — this generic
-      // endpoint (the *only* grant path for FLOOR_MANAGER; there is no
-      // POST /floors/:id/managers) never had it. Without this, revoking one
-      // of the two duplicate grants via DELETE below (which deletes exactly
-      // the row id given, correctly for a single grant) left the other
-      // grant — and therefore the access — silently in place, looking to the
-      // admin like a successful, complete revocation.
-      const existing = await prisma.userResourceRole.findFirst({
-        where: {
-          userId: id,
-          role: result.data.role,
-          scopeType: result.data.scopeType,
-          buildingId: result.data.buildingId ?? null,
-          floorId: result.data.floorId ?? null,
-        },
+      // The findFirst pre-check alone only closes the sequential-request
+      // case — two concurrent grants for the same user+scope both pass it
+      // before either commits, same as GroupResourceRole's equivalent (now
+      // fixed the same way in buildings.ts/floors.ts's group-manager grant
+      // routes). Without the lock, revoking one of the resulting duplicate
+      // grants via DELETE below left the other grant — and therefore the
+      // access — silently in place, looking to the admin like a successful,
+      // complete revocation.
+      const lockKey = `${id}:${result.data.scopeType}:${result.data.buildingId ?? result.data.floorId ?? ''}:${result.data.role}`
+      const role = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${RESOURCE_ROLE_GRANT_LOCK_CLASS}, hashtext(${lockKey}))`
+        const existing = await tx.userResourceRole.findFirst({
+          where: {
+            userId: id,
+            role: result.data.role,
+            scopeType: result.data.scopeType,
+            buildingId: result.data.buildingId ?? null,
+            floorId: result.data.floorId ?? null,
+          },
+        })
+        if (existing) {
+          throw Object.assign(new Error('ALREADY_EXISTS'), { code: 'ALREADY_EXISTS' })
+        }
+        return tx.userResourceRole.create({
+          data: {
+            userId: id,
+            role: result.data.role,
+            scopeType: result.data.scopeType,
+            buildingId: result.data.buildingId ?? null,
+            floorId: result.data.floorId ?? null,
+          },
+        })
+      }).catch((err) => {
+        if ((err as { code?: string })?.code === 'ALREADY_EXISTS') return null
+        throw err
       })
-      if (existing) {
+      if (!role) {
         return reply.status(409).send({
           error: { message: 'Role already assigned', code: 'ALREADY_EXISTS' },
         })
       }
-
-      const role = await prisma.userResourceRole.create({
-        data: {
-          userId: id,
-          role: result.data.role,
-          scopeType: result.data.scopeType,
-          buildingId: result.data.buildingId ?? null,
-          floorId: result.data.floorId ?? null,
-        },
-      })
       await recordAuditLog(prisma, {
         actorId: request.user.id,
         action: 'user_resource_role.granted',
@@ -768,22 +777,29 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { id, roleId } = request.params as { id: string; roleId: string }
 
-      try {
-        const deleted = await prisma.userResourceRole.delete({
-          where: { id: roleId, userId: id },
-        })
-        await recordAuditLog(prisma, {
-          actorId: request.user.id,
-          action: 'user_resource_role.revoked',
-          resourceType: 'UserResourceRole',
-          resourceId: roleId,
-          before: { userId: deleted.userId, role: deleted.role, scopeType: deleted.scopeType, buildingId: deleted.buildingId, floorId: deleted.floorId },
-          ipAddress: request.ip,
-        }, request.log)
-        return reply.status(200).send({ data: { ok: true } })
-      } catch {
+      const target = await prisma.userResourceRole.findUnique({ where: { id: roleId, userId: id } })
+      if (!target) {
         return reply.status(404).send({ error: { message: 'Role not found', code: 'NOT_FOUND' } })
       }
+
+      // deleteMany on the full scope filter, not delete-by-id — the grant
+      // side's unique constraint never actually fires (see
+      // RESOURCE_ROLE_GRANT_LOCK_CLASS), so a race could have left more than
+      // one row for this exact user+scope+role. Deleting only the given
+      // roleId left any duplicate siblings (and therefore the access)
+      // silently in place despite an apparently successful revoke.
+      await prisma.userResourceRole.deleteMany({
+        where: { userId: id, role: target.role, scopeType: target.scopeType, buildingId: target.buildingId, floorId: target.floorId },
+      })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user_resource_role.revoked',
+        resourceType: 'UserResourceRole',
+        resourceId: roleId,
+        before: { userId: target.userId, role: target.role, scopeType: target.scopeType, buildingId: target.buildingId, floorId: target.floorId },
+        ipAddress: request.ip,
+      }, request.log)
+      return reply.status(200).send({ data: { ok: true } })
     },
   )
 

@@ -5,7 +5,7 @@ import type { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { createFloorSchema, updateFloorSchema, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { isFloorManagerForFloor, isBuildingManagerForBuilding, requireGlobalRole } from '../middleware/requireRole.js'
+import { isFloorManagerForFloor, isBuildingManagerForBuilding, requireGlobalRole, RESOURCE_ROLE_GRANT_LOCK_CLASS } from '../middleware/requireRole.js'
 import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage.js'
 import { checkGroupAccess } from './groups.js'
 import { cancelFutureBookingsForFloors } from '../lib/queue.js'
@@ -249,16 +249,27 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(404).send({ error: { message: 'Group not found', code: 'NOT_FOUND' } })
       }
 
-      const existing = await prisma.groupResourceRole.findFirst({
-        where: { groupId, scopeType: 'FLOOR', floorId: id },
+      // See RESOURCE_ROLE_GRANT_LOCK_CLASS's doc comment — the find-then-create
+      // below needs a lock, not just the pre-check, since GroupResourceRole's
+      // unique constraint never actually fires for either scope.
+      const role = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${RESOURCE_ROLE_GRANT_LOCK_CLASS}, hashtext(${`${groupId}:FLOOR:${id}`}))`
+        const existing = await tx.groupResourceRole.findFirst({
+          where: { groupId, scopeType: 'FLOOR', floorId: id },
+        })
+        if (existing) {
+          throw Object.assign(new Error('ALREADY_EXISTS'), { code: 'ALREADY_EXISTS' })
+        }
+        return tx.groupResourceRole.create({
+          data: { groupId, role: 'FLOOR_MANAGER', scopeType: 'FLOOR', floorId: id },
+        })
+      }).catch((err) => {
+        if ((err as { code?: string })?.code === 'ALREADY_EXISTS') return null
+        throw err
       })
-      if (existing) {
+      if (!role) {
         return reply.status(409).send({ error: { message: 'Group is already a floor manager', code: 'ALREADY_EXISTS' } })
       }
-
-      const role = await prisma.groupResourceRole.create({
-        data: { groupId, role: 'FLOOR_MANAGER', scopeType: 'FLOOR', floorId: id },
-      })
       await recordAuditLog(prisma, {
         actorId: request.user.id,
         action: 'group_resource_role.granted',
@@ -292,7 +303,9 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(404).send({ error: { message: 'Group role not found', code: 'NOT_FOUND' } })
       }
 
-      await prisma.groupResourceRole.delete({ where: { id: role.id } })
+      // deleteMany on the full scope filter, not delete-by-id — see the
+      // matching comment in buildings.ts's DELETE /group-managers/:groupId.
+      await prisma.groupResourceRole.deleteMany({ where: { groupId, scopeType: 'FLOOR', floorId: id } })
       await recordAuditLog(prisma, {
         actorId: request.user.id,
         action: 'group_resource_role.revoked',

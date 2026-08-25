@@ -3,6 +3,25 @@ import { GlobalRole } from '@roomer/shared'
 import { prisma } from '../lib/prisma.js'
 
 /**
+ * Serialises grant of a UserResourceRole/GroupResourceRole for a given
+ * (subject, scope) pair. Both models' unique constraints are
+ * (subjectId, scopeType, buildingId, floorId) with buildingId/floorId
+ * nullable — exactly one is ever set per row, so Postgres's NULL<>NULL
+ * uniqueness semantics mean that constraint never actually fires for
+ * either scope. Without this lock, two concurrent grant requests for the
+ * same subject+scope both pass their pre-check (findFirst) before either
+ * commits, creating duplicate rows — and since the corresponding revoke
+ * endpoints used to delete only the one row they were given, an admin's
+ * "remove access" action left the other duplicate (and therefore the
+ * access) silently in place. Distinct integer from every other
+ * pg_advisory_xact_lock class in this codebase (4242-4248 are taken —
+ * note 4247 is currently reused by three unrelated call sites, a
+ * pre-existing naming collision this doesn't need to fix to be correct,
+ * since none of them lock this same key).
+ */
+export const RESOURCE_ROLE_GRANT_LOCK_CLASS = 4249
+
+/**
  * Numeric hierarchy for GlobalRole values.
  * A SUPER_ADMIN has a higher level than USER so requireGlobalRole(GlobalRole.USER)
  * admits both USER and SUPER_ADMIN — i.e. "at least this role", not "exactly this role".
