@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { Monitor } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
@@ -70,7 +71,11 @@ interface DeskMarkerProps {
   dimmed?: boolean
 }
 
-export function DeskMarker({
+// Memoized — Stage's onDragMove (canvas panning) updates stageX/stageY on
+// every pointer-move tick; without this every DeskMarker (a real DOM
+// element with Tailwind classes + a tooltip wrapper) re-renders on every
+// tick of a pan gesture, visibly janky with many desks placed.
+export const DeskMarker = memo(function DeskMarker({
   desk,
   bgWidth,
   bgHeight,
@@ -281,4 +286,4 @@ export function DeskMarker({
       </TooltipProvider>
     </div>
   )
-}
+})

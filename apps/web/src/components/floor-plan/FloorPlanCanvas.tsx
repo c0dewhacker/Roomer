@@ -151,6 +151,25 @@ export function FloorPlanCanvas({
     Record<string, { x: number; y: number }>
   >({})
 
+  // Throttles pan updates to at most one React state update (and therefore
+  // one re-render of every AssetShape/DeskMarker on the floor) per animation
+  // frame, instead of one per raw pointer-move event — some browsers/input
+  // devices fire pointer-move far more often than the display refreshes,
+  // which otherwise made panning visibly janky on a floor with many desks.
+  // Always stores the latest position in the ref so a frame that runs after
+  // several pointer-moves still applies the most recent one, not a stale
+  // in-between value.
+  const pendingPanFrame = useRef<number | null>(null)
+  const latestPanPosition = useRef<{ x: number; y: number } | null>(null)
+  const setPositionThrottled = useCallback((next: { x: number; y: number }) => {
+    latestPanPosition.current = next
+    if (pendingPanFrame.current !== null) return
+    pendingPanFrame.current = requestAnimationFrame(() => {
+      pendingPanFrame.current = null
+      if (latestPanPosition.current) setPosition(latestPanPosition.current)
+    })
+  }, [])
+
   const { data: floorData, isLoading: floorLoading } = useFloorData(floorId)
   const { data: availabilityData, isLoading: availLoading } = useFloorAvailability(floorId, date)
 
@@ -417,12 +436,20 @@ export function FloorPlanCanvas({
         }}
         onDragMove={(e) => {
           if (e.target === e.target.getStage()) {
-            setPosition({ x: e.target.x(), y: e.target.y() })
+            setPositionThrottled({ x: e.target.x(), y: e.target.y() })
           }
         }}
         onDragEnd={(e) => {
           if (containerRef.current) containerRef.current.style.cursor = 'grab'
           if (e.target === e.target.getStage()) {
+            // Commit the final position synchronously, bypassing the rAF
+            // throttle — cancel any still-pending frame first so it can't
+            // fire afterward and stomp this authoritative value with a
+            // slightly-stale one.
+            if (pendingPanFrame.current !== null) {
+              cancelAnimationFrame(pendingPanFrame.current)
+              pendingPanFrame.current = null
+            }
             setPosition({ x: e.target.x(), y: e.target.y() })
           }
         }}

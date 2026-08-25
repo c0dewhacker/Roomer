@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { Group, Circle, Rect, Text, Arc, Image as KonvaImage } from 'react-konva'
 import useImage from 'use-image'
 import type { KonvaEventObject } from 'konva/lib/Node'
@@ -120,7 +120,11 @@ interface AssetShapeProps {
   onDragEnd?: (x: number, y: number) => void
 }
 
-export function AssetShape({
+// Memoized — Stage's onDragMove (canvas panning) updates the stage position
+// on every pointer-move tick, which otherwise re-renders every AssetShape on
+// the floor (not just the one being interacted with) on every tick of a pan
+// gesture, visibly janky with many desks placed.
+export const AssetShape = memo(function AssetShape({
   asset,
   stageWidth,
   stageHeight,
@@ -431,4 +435,4 @@ export function AssetShape({
       )}
     </Group>
   )
-}
+})
