@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
 import { createBuildingSchema, updateBuildingSchema, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { requireGlobalRole, getManagedBuildingIds } from '../middleware/requireRole.js'
+import { requireGlobalRole, getManagedBuildingIds, isBuildingManagerForBuilding } from '../middleware/requireRole.js'
 import { canUserAccessBuilding } from './groups.js'
 import { cancelFutureBookingsForFloors } from '../lib/queue.js'
 import { deleteFile } from '../lib/storage.js'
@@ -504,12 +504,27 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // PUT /buildings/:id — update building (SUPER_ADMIN)  
+  // PUT /buildings/:id — update building (SUPER_ADMIN or building admin for
+  // this building). updateBuildingSchema's fields (name/address plus the
+  // noShowReleaseEnabled/qrCheckInMode/requiresApproval/timezone/working-
+  // hours overrides) are exactly what BuildingDetailAdminPage renders for a
+  // building admin, routed to them via BuildingManagerOrAdminRoute — this
+  // was still SUPER_ADMIN-only, so a building admin could never save any of
+  // it for their own building. PUT /floors/:id already gets this right via
+  // isFloorManagerForFloor; mirrors that here.
   fastify.put(
     '/:id',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+
       const result = updateBuildingSchema.safeParse(request.body)
       if (!result.success) {
         return reply.status(400).send({
