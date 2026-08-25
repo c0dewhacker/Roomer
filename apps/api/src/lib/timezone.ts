@@ -90,16 +90,31 @@ export async function resolveWorkingHours(client: Prisma.TransactionClient, buil
  * a DST transition (the UTC instant shifts, not the local wall-clock — see
  * #72's confirmed design) rather than assuming a fixed UTC offset.
  *
- * `new Date(year, month0, day, hour, minute)` sets fields via the runtime's
- * local getters/setters — safe here (regardless of the server process's own
- * TZ) because `fromZonedTime` reads those same local getters back and
- * reinterprets them as wall-clock time in `timeZone`. Do not swap this for a
- * UTC-parsed ISO string; that would desynchronise the write/read side and
- * make the conversion depend on the server's TZ again.
+ * Passed as a naive ISO-like string (no offset/Z suffix), not a `Date`
+ * object — date-fns-tz's `fromZonedTime` handles the two differently. A
+ * string with no timezone marker is parsed by date-fns-tz's own
+ * regex-based `toDate` (fully deterministic, reading the literal y/m/d/h/mi
+ * digits, independent of anything OS-level). A `Date` object instead goes
+ * through `date.getFullYear()/getMonth()/.../getMinutes()` — the runtime's
+ * *native local* getters, tied to the server process's own system
+ * timezone, not `timeZone`. The previous implementation
+ * (`new Date(year, month0, day, hour, minute)`, then handed to
+ * fromZonedTime as a Date) round-trips correctly for the overwhelming
+ * majority of dates, since local-construct-then-local-read is normally
+ * self-consistent — but breaks whenever the requested wall-clock instant
+ * happens to fall in the *server host's own* DST gap/repeated-hour, for
+ * ANY target `timeZone`, entirely unrelated to whether the target zone
+ * itself observes DST that day. Verified live: with the server's system TZ
+ * set to a zone with an October DST transition, requesting a wall-clock
+ * time in a *non-DST* target zone (Europe/London) on that same calendar
+ * date came back a full hour off. The string form sidesteps this
+ * entirely — no native local Date construction/extraction is ever
+ * involved.
  */
 export function zonedWallClockToUtc(year: number, month1to12: number, day: number, hour: number, minute: number, timeZone: string): Date {
-  const localWallClock = new Date(year, month1to12 - 1, day, hour, minute, 0, 0)
-  return fromZonedTime(localWallClock, timeZone)
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  const naiveIso = `${year}-${pad(month1to12)}-${pad(day)}T${pad(hour)}:${pad(minute)}:00`
+  return fromZonedTime(naiveIso, timeZone)
 }
 
 /**
