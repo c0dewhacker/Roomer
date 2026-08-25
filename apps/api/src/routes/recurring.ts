@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { enqueueNotification, promoteNextQueueEntry, fanOutFloorAvailable } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { assertBookable, isWithinAdvanceBookingWindow, lockAssetForBooking, lockUserForBookingQuota, checkZoneGroupOverlap, isOverlapConstraintViolation, resolveRequiresApproval } from '../lib/booking.js'
-import { resolveBuildingTimezone, zonedWallClockToUtc } from '../lib/timezone.js'
+import { resolveBuildingTimezone, zonedWallClockToUtc, localDateStr } from '../lib/timezone.js'
 import { getBuildingAdminUserIds, getFloorManagerUserIds } from '../middleware/requireRole.js'
 import { recordAuditLog } from '../lib/audit.js'
 
@@ -644,7 +644,7 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
         // path previously skipped entirely, so floor subscribers never heard
         // about a slot freed by shortening or cancelling a recurring series.
         const droppedAsset = outcome.droppedBookings.length > 0
-          ? await prisma.asset.findUnique({ where: { id: rule.assetId }, select: { floorId: true, primaryZoneId: true } })
+          ? await prisma.asset.findUnique({ where: { id: rule.assetId }, select: { floorId: true, primaryZoneId: true, floor: { select: { buildingId: true } } } })
           : null
 
         for (const b of outcome.droppedBookings) {
@@ -659,7 +659,8 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
             })
             dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
           } else if (droppedAsset?.floorId) {
-            const slotDate = b.startsAt.toISOString().slice(0, 10)
+            const tz = await resolveBuildingTimezone(prisma, droppedAsset.floor?.buildingId ?? null)
+            const slotDate = localDateStr(b.startsAt, tz)
             await fanOutFloorAvailable(b.assetId, droppedAsset.floorId, droppedAsset.primaryZoneId, slotDate, rule.userId).catch(() => {})
           }
         }
@@ -818,7 +819,7 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
     // path previously never called it, so floor subscribers never heard about
     // a slot freed by cancelling a recurring series.
     const cancelledAsset = futureBookings.length > 0
-      ? await prisma.asset.findUnique({ where: { id: rule.assetId }, select: { floorId: true, primaryZoneId: true } })
+      ? await prisma.asset.findUnique({ where: { id: rule.assetId }, select: { floorId: true, primaryZoneId: true, floor: { select: { buildingId: true } } } })
       : null
 
     for (const b of futureBookings) {
@@ -833,7 +834,8 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
         })
         dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
       } else if (cancelledAsset?.floorId) {
-        const slotDate = b.startsAt.toISOString().slice(0, 10)
+        const tz = await resolveBuildingTimezone(prisma, cancelledAsset.floor?.buildingId ?? null)
+        const slotDate = localDateStr(b.startsAt, tz)
         await fanOutFloorAvailable(b.assetId, cancelledAsset.floorId, cancelledAsset.primaryZoneId, slotDate, rule.userId).catch(() => {})
       }
     }

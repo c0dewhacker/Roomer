@@ -12,7 +12,7 @@ import { buildBookingIcs } from '../lib/ical.js'
 import { sendEmail, renderGuestBookingInvite, renderGuestBookingCancelled } from '../lib/mailer.js'
 import { checkGroupAccess } from './groups.js'
 import { assertBookable, assertUnderBookingQuota, hasBlockingOverlap, checkZoneGroupOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, lockUserForBookingQuota, isOverlapConstraintViolation, resolveRequiresApproval } from '../lib/booking.js'
-import { resolveBuildingTimezone } from '../lib/timezone.js'
+import { resolveBuildingTimezone, localDateStr } from '../lib/timezone.js'
 import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
@@ -976,10 +976,11 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     // Notify floor subscribers of the newly-freed slot
     const cancelledAsset = await prisma.asset.findUnique({
       where: { id: booking.assetId },
-      select: { floorId: true, primaryZoneId: true },
+      select: { floorId: true, primaryZoneId: true, floor: { select: { buildingId: true } } },
     })
     if (cancelledAsset?.floorId) {
-      const slotDate = booking.startsAt.toISOString().slice(0, 10)
+      const tz = await resolveBuildingTimezone(prisma, cancelledAsset.floor?.buildingId ?? null)
+      const slotDate = localDateStr(booking.startsAt, tz)
       await fanOutFloorAvailable(
         booking.assetId,
         cancelledAsset.floorId,
@@ -1009,9 +1010,10 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       })
       dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
     }
-    const asset = await prisma.asset.findUnique({ where: { id: assetId }, select: { floorId: true, primaryZoneId: true } })
+    const asset = await prisma.asset.findUnique({ where: { id: assetId }, select: { floorId: true, primaryZoneId: true, floor: { select: { buildingId: true } } } })
     if (asset?.floorId) {
-      const slotDate = startsAt.toISOString().slice(0, 10)
+      const tz = await resolveBuildingTimezone(prisma, asset.floor?.buildingId ?? null)
+      const slotDate = localDateStr(startsAt, tz)
       await fanOutFloorAvailable(assetId, asset.floorId, asset.primaryZoneId, slotDate, requesterUserId)
         .catch((err) => fastify.log.warn({ err }, '[bookings] floor fan-out error'))
     }

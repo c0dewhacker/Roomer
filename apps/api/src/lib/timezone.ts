@@ -44,6 +44,23 @@ export function calendarDaysUntil(endDateUtcMidnight: Date, now: Date, timeZone:
   return Math.round((endMs - nowMs) / (24 * 60 * 60 * 1000))
 }
 
+/**
+ * A real instant (e.g. a booking's startsAt) as a YYYY-MM-DD calendar-date
+ * string in `timeZone`'s local wall-clock time — for the FLOOR_AVAILABLE
+ * notification's slotDate (both the message body and the deep-link
+ * `?date=` param), which previously used `startsAt.toISOString().slice(0,
+ * 10)` (the raw UTC date) regardless of the freed desk's building's
+ * timezone, misdating the notification for any booking near local midnight
+ * in a non-UTC building.
+ */
+export function localDateStr(instant: Date, timeZone: string): string {
+  const zoned = toZonedTime(instant, timeZone)
+  const y = zoned.getFullYear()
+  const m = String(zoned.getMonth() + 1).padStart(2, '0')
+  const d = String(zoned.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
 export interface WorkingHours {
   start: string
   end: string

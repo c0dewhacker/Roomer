@@ -8,7 +8,7 @@ import { pruneExpiredBlocklistEntries } from './token-blocklist.js'
 import { NotificationType } from '@roomer/shared'
 import { dispatchWebhook } from './webhook.js'
 import { lockAssetForQueue } from './booking.js'
-import { resolveBuildingTimezone, calendarDaysUntil } from './timezone.js'
+import { resolveBuildingTimezone, calendarDaysUntil, localDateStr } from './timezone.js'
 import { toZonedTime } from 'date-fns-tz'
 import { getBuildingAdminUserIds } from '../middleware/requireRole.js'
 import { sendPushNotification } from './push.js'
@@ -111,6 +111,7 @@ type CancellableBooking = {
   assetName: string
   assetFloorId: string | null
   assetPrimaryZoneId: string | null
+  assetBuildingId: string | null
   startsAt: Date
   endsAt: Date
   icsSequence: number
@@ -194,7 +195,8 @@ async function cancelBookingsAndPromoteQueues(
         })
         dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
       } else if (opts.fanOutOnFree && b.assetFloorId) {
-        const slotDate = b.startsAt.toISOString().slice(0, 10)
+        const tz = await resolveBuildingTimezone(prisma, b.assetBuildingId)
+        const slotDate = localDateStr(b.startsAt, tz)
         await fanOutFloorAvailable(b.assetId, b.assetFloorId, b.assetPrimaryZoneId, slotDate, b.userId).catch(() => {})
       }
     }
@@ -222,10 +224,10 @@ export async function cancelFutureBookingsForFloors(floorIds: string[]): Promise
     // and notifying the same as a confirmed one, otherwise it's silently
     // deleted by the Booking->Asset cascade with no cancellation email at all.
     where: { status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { gt: now }, asset: { floorId: { in: floorIds } } },
-    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true, floorId: true, primaryZoneId: true } } },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true, floorId: true, primaryZoneId: true, floor: { select: { buildingId: true } } } } },
   })
   await cancelBookingsAndPromoteQueues(
-    bookings.map((b) => ({ ...b, assetName: b.asset.name, assetFloorId: b.asset.floorId, assetPrimaryZoneId: b.asset.primaryZoneId })),
+    bookings.map((b) => ({ ...b, assetName: b.asset.name, assetFloorId: b.asset.floorId, assetPrimaryZoneId: b.asset.primaryZoneId, assetBuildingId: b.asset.floor?.buildingId ?? null })),
     '[queue] Cancelled bookings on deleted floor(s)',
   )
 }
@@ -250,10 +252,10 @@ export async function cancelFutureBookingsForAssets(assetIds: string[], opts: { 
     // exactly like CONFIRMED (#74), so it needs releasing here too, not just
     // silently cascade-deleted with the asset (e.g. DELETE /assets/:id).
     where: { status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { gt: now }, assetId: { in: assetIds } },
-    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true, floorId: true, primaryZoneId: true } } },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true, floorId: true, primaryZoneId: true, floor: { select: { buildingId: true } } } } },
   })
   await cancelBookingsAndPromoteQueues(
-    bookings.map((b) => ({ ...b, assetName: b.asset.name, assetFloorId: b.asset.floorId, assetPrimaryZoneId: b.asset.primaryZoneId })),
+    bookings.map((b) => ({ ...b, assetName: b.asset.name, assetFloorId: b.asset.floorId, assetPrimaryZoneId: b.asset.primaryZoneId, assetBuildingId: b.asset.floor?.buildingId ?? null })),
     '[queue] Cancelled bookings on unplaced asset(s)',
     opts,
   )
@@ -273,10 +275,10 @@ export async function cancelFutureBookingsForUser(userId: string): Promise<void>
     // slot under an account nobody can manage, and would still confirm into
     // a real booking if a manager later approved it.
     where: { status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { gt: now }, userId },
-    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true, floorId: true, primaryZoneId: true } } },
+    select: { id: true, userId: true, assetId: true, startsAt: true, endsAt: true, recurringRuleId: true, icsSequence: true, asset: { select: { name: true, floorId: true, primaryZoneId: true, floor: { select: { buildingId: true } } } } },
   })
   await cancelBookingsAndPromoteQueues(
-    bookings.map((b) => ({ ...b, assetName: b.asset.name, assetFloorId: b.asset.floorId, assetPrimaryZoneId: b.asset.primaryZoneId })),
+    bookings.map((b) => ({ ...b, assetName: b.asset.name, assetFloorId: b.asset.floorId, assetPrimaryZoneId: b.asset.primaryZoneId, assetBuildingId: b.asset.floor?.buildingId ?? null })),
     '[queue] Cancelled bookings for blocked user',
     { fanOutOnFree: true },
   )
@@ -1524,9 +1526,10 @@ async function handleReleaseNoShows(): Promise<void> {
       }])
       dispatchWebhook('queue.promoted', { id: next.id, userId: next.userId, assetId: next.assetId, claimDeadline: next.claimDeadline.toISOString() }).catch(() => {})
     } else {
-      const asset = await prisma.asset.findUnique({ where: { id: b.assetId }, select: { floorId: true, primaryZoneId: true } })
+      const asset = await prisma.asset.findUnique({ where: { id: b.assetId }, select: { floorId: true, primaryZoneId: true, floor: { select: { buildingId: true } } } })
       if (asset?.floorId) {
-        const slotDate = b.startsAt.toISOString().slice(0, 10)
+        const tz = await resolveBuildingTimezone(prisma, asset.floor?.buildingId ?? null)
+        const slotDate = localDateStr(b.startsAt, tz)
         await fanOutFloorAvailable(b.assetId, asset.floorId, asset.primaryZoneId, slotDate, b.userId).catch(() => {})
       }
     }
@@ -1737,9 +1740,10 @@ async function handleAutoRejectPendingApprovals(): Promise<void> {
       })
       dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
     }
-    const asset = await prisma.asset.findUnique({ where: { id: b.assetId }, select: { floorId: true, primaryZoneId: true } })
+    const asset = await prisma.asset.findUnique({ where: { id: b.assetId }, select: { floorId: true, primaryZoneId: true, floor: { select: { buildingId: true } } } })
     if (asset?.floorId) {
-      const slotDate = b.startsAt.toISOString().slice(0, 10)
+      const tz = await resolveBuildingTimezone(prisma, asset.floor?.buildingId ?? null)
+      const slotDate = localDateStr(b.startsAt, tz)
       await fanOutFloorAvailable(b.assetId, asset.floorId, asset.primaryZoneId, slotDate, b.userId)
         .catch((err) => process.stderr.write(JSON.stringify({ level: 'warn', msg: '[queue] floor fan-out error', err: String(err) }) + '\n'))
     }

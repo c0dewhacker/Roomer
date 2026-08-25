@@ -1,7 +1,7 @@
 import { prisma } from './prisma.js'
 import { NotificationType } from '@roomer/shared'
 import { lockAssetForBooking, hasBlockingOverlap } from './booking.js'
-import { resolveBuildingTimezone, zonedWallClockToUtc } from './timezone.js'
+import { resolveBuildingTimezone, zonedWallClockToUtc, localDateStr } from './timezone.js'
 import { checkGroupAccess } from '../routes/groups.js'
 import { enqueueNotification, promoteNextQueueEntry, fanOutFloorAvailable, getBoss } from './queue.js'
 import { dispatchWebhook } from './webhook.js'
@@ -425,7 +425,8 @@ export async function declineBallotEntry(entryId: string, userId: string): Promi
       dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
     }
     if (asset?.floorId) {
-      const slotDate = booking.startsAt.toISOString().slice(0, 10)
+      const tz = await resolveBuildingTimezone(prisma, asset.floor?.buildingId ?? null)
+      const slotDate = localDateStr(booking.startsAt, tz)
       await fanOutFloorAvailable(assetId, asset.floorId, null, slotDate, entry.userId).catch(() => {})
     }
   }
