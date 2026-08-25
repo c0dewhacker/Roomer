@@ -15,17 +15,48 @@ import { cn } from '@/lib/utils'
 // to a list page, not a per-entity detail route — this app doesn't have one
 // for bookings/queue/assets — so routing only needs the notification's type,
 // not the bookingId/queueEntryId in its metadata.
+//
+// This map only ever covered 12 of the NotificationType enum's 29 values —
+// clicking any of the other ~17 (ballot results, booking transfer/swap,
+// manager-request decisions, pending-approval, lease expiry) silently did
+// nothing but dim the unread dot. Each target below is chosen to match who
+// actually receives that type (verified against the enqueueNotification call
+// sites): approver-facing types go to the admin queue/list that handles
+// them, requester-facing types go back to the requester's own view.
 const NOTIFICATION_ROUTES: Record<string, string> = {
   BOOKING_CONFIRMED: '/bookings',
   BOOKING_CANCELLED: '/bookings',
   BOOKING_CANCELLED_BY_ADMIN: '/bookings',
   BOOKING_NO_SHOW: '/bookings',
   BOOKING_REMINDER: '/bookings',
+  BOOKING_APPROVED: '/bookings',
+  BOOKING_REJECTED: '/bookings',
+  BOOKING_TRANSFER_REQUESTED: '/bookings',
+  BOOKING_TRANSFER_ACCEPTED: '/bookings',
+  BOOKING_TRANSFER_DECLINED: '/bookings',
+  BOOKING_TRANSFER_EXPIRED: '/bookings',
+  BOOKING_SWAP_REQUESTED: '/bookings',
+  BOOKING_SWAP_ACCEPTED: '/bookings',
+  BOOKING_SWAP_DECLINED: '/bookings',
+  BOOKING_SWAP_EXPIRED: '/bookings',
   QUEUE_JOINED: '/queue',
   QUEUE_PROMOTED: '/queue',
   QUEUE_EXPIRED: '/queue',
   QUEUE_CLAIM_EXPIRING: '/queue',
   ASSET_ASSIGNED: '/assets',
+  BALLOT_WON: '/ballots',
+  BALLOT_LOST: '/ballots',
+  // Sent to the approver (building admin / floor manager), not the requester.
+  BOOKING_PENDING_APPROVAL: '/admin/approvals',
+  MANAGER_REQUEST_SUBMITTED: '/admin/manager-requests',
+  // Sent back to the requester.
+  MANAGER_REQUEST_APPROVED: '/profile',
+  MANAGER_REQUEST_REJECTED: '/profile',
+  MANAGER_REQUEST_EXPIRED: '/profile',
+  // Sent to SUPER_ADMIN + the building's admins.
+  LEASE_EXPIRING: '/admin/leases',
+  LEASE_EXPIRED: '/admin/leases',
+  // WELCOME has no natural destination — informational only.
 }
 
 // FLOOR_AVAILABLE is the one type worth a real deep link rather than a list
