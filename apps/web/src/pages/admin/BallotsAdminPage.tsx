@@ -24,6 +24,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
+import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
@@ -48,11 +49,93 @@ const emptyForm: CreateBallotBody = {
   slotDurationDays: 1,
 }
 
+/**
+ * Proper multi-select for ballot building scope — buildings often need
+ * grouping by physical/geographic proximity (e.g. advertise a ballot to
+ * buildings A and B, but not C and D, because they draw from different
+ * pools of people), which the old "pick one from a dropdown, click +,
+ * repeat" flow technically supported (buildingIds was always an arbitrary
+ * array) but didn't read as an actual multi-select. A searchable checklist
+ * in a popover is the more obviously-correct interaction for "choose any
+ * subset of a list", especially once an org has more than a handful of
+ * buildings.
+ */
+function BuildingMultiSelect({
+  buildings,
+  selectedIds,
+  onChange,
+}: {
+  buildings: Array<{ id: string; name: string }>
+  selectedIds: string[]
+  onChange: (ids: string[]) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const filtered = buildings.filter((b) => b.name.toLowerCase().includes(search.toLowerCase()))
+  const toggle = (id: string) => {
+    onChange(selectedIds.includes(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id])
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full justify-between font-normal"
+        >
+          <span className={selectedIds.length === 0 ? 'text-muted-foreground' : ''}>
+            {selectedIds.length === 0 ? 'Select buildings…' : `${selectedIds.length} building${selectedIds.length === 1 ? '' : 's'} selected`}
+          </span>
+          <ChevronDown className="h-4 w-4 opacity-50 shrink-0" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72 p-0" align="start">
+        <div className="p-2 border-b">
+          <Input
+            placeholder="Search buildings…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="h-8"
+            autoFocus
+          />
+        </div>
+        <div className="max-h-64 overflow-y-auto p-1">
+          {filtered.length === 0 && (
+            <p className="text-xs text-muted-foreground px-2 py-3 text-center">No buildings match</p>
+          )}
+          {filtered.map((b) => (
+            <label key={b.id} className="flex items-center gap-2 px-2 py-1.5 rounded-sm hover:bg-accent cursor-pointer text-sm">
+              <input
+                type="checkbox"
+                checked={selectedIds.includes(b.id)}
+                onChange={() => toggle(b.id)}
+                className="h-4 w-4 rounded border-border"
+              />
+              {b.name}
+            </label>
+          ))}
+        </div>
+        {selectedIds.length > 0 && (
+          <div className="border-t p-1">
+            <button
+              type="button"
+              className="text-xs text-muted-foreground hover:text-foreground w-full text-left px-2 py-1"
+              onClick={() => onChange([])}
+            >
+              Clear all
+            </button>
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function CreateBallotDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [form, setForm] = useState<CreateBallotBody>(emptyForm)
   const [floorBuildingId, setFloorBuildingId] = useState('')
   const [floorId, setFloorId] = useState('')
-  const [buildingToAdd, setBuildingToAdd] = useState('')
   const create = useCreateBallot()
   const isSuperAdmin = useAuthStore((s) => s.user?.globalRole === 'SUPER_ADMIN')
 
@@ -71,7 +154,6 @@ function CreateBallotDialog({ open, onClose }: { open: boolean; onClose: () => v
     setForm(emptyForm)
     setFloorBuildingId('')
     setFloorId('')
-    setBuildingToAdd('')
   }
 
   return (
@@ -106,22 +188,12 @@ function CreateBallotDialog({ open, onClose }: { open: boolean; onClose: () => v
             <>
               <div>
                 <Label>Buildings (every floor in scope)</Label>
-                <div className="flex gap-2 mt-1.5">
-                  <Select value={buildingToAdd} onValueChange={setBuildingToAdd}>
-                    <SelectTrigger className="flex-1"><SelectValue placeholder="Add a building…" /></SelectTrigger>
-                    <SelectContent>
-                      {(buildings ?? []).filter((b) => !form.buildingIds.includes(b.id)).map((b) => (
-                        <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button
-                    size="sm"
-                    disabled={!buildingToAdd}
-                    onClick={() => { setForm({ ...form, buildingIds: [...form.buildingIds, buildingToAdd] }); setBuildingToAdd('') }}
-                  >
-                    <Plus className="h-4 w-4" />
-                  </Button>
+                <div className="mt-1.5">
+                  <BuildingMultiSelect
+                    buildings={buildings ?? []}
+                    selectedIds={form.buildingIds}
+                    onChange={(ids) => setForm({ ...form, buildingIds: ids })}
+                  />
                 </div>
                 <div className="flex flex-wrap gap-1.5 mt-2">
                   {form.buildingIds.map((id) => (
