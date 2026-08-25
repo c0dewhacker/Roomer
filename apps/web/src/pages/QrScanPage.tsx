@@ -32,20 +32,34 @@ export default function QrScanPage() {
   async function bookNow() {
     if (!assetId || !status?.proposedStartsAt || !status?.proposedEndsAt) return
     setAction('booking')
+    let created: Awaited<ReturnType<typeof bookingsApi.create>>
     try {
-      const created = await bookingsApi.create({
+      created = await bookingsApi.create({
         assetId,
         startsAt: status.proposedStartsAt,
         endsAt: status.proposedEndsAt,
       })
+    } catch (err) {
+      setErrorMessage(err instanceof ApiError ? err.message : 'Failed to book this desk')
+      setAction('idle')
+      return
+    }
+    try {
       // Standing at the desk right now — check in immediately rather than
       // making them scan again, mirroring how QUEUE_PROMOTED-style instant
       // actions in this app avoid a second round trip where possible.
       await bookingsApi.checkIn(created.data.id)
       setAction('done')
     } catch (err) {
-      setErrorMessage(err instanceof ApiError ? err.message : 'Failed to book this desk')
+      // The booking itself already succeeded — only check-in failed (a
+      // network blip, a one-shot 5xx). Reporting "failed to book" here would
+      // be wrong (the desk is now booked), and leaving `status` stale would
+      // still show canBookNow: true, inviting a redundant booking attempt on
+      // a desk the user already holds. Reload so the "this is your booking,
+      // check in" path renders instead, letting them retry check-in cleanly.
+      setErrorMessage(err instanceof ApiError ? `Desk booked, but check-in failed: ${err.message}` : 'Desk booked, but check-in failed — confirm you’re here below')
       setAction('idle')
+      load()
     }
   }
 

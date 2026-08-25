@@ -8,6 +8,8 @@ import { enqueueNotification, fanOutFloorAvailable, cancelFutureBookingsForAsset
 import { dispatchWebhook } from '../lib/webhook.js'
 import { lockAssetForBooking, lockAssetForQueue, lockUserForBookingQuota, hasBlockingOverlap, checkZoneGroupOverlap, isOverlapConstraintViolation, assertBookable, assertUnderBookingQuota, isWithinAdvanceBookingWindow } from '../lib/booking.js'
 import { resolveQrCheckInMode } from '../lib/qr.js'
+import { resolveBuildingTimezone, zonedWallClockToUtc } from '../lib/timezone.js'
+import { toZonedTime } from 'date-fns-tz'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { checkGroupAccess } from './groups.js'
@@ -2138,7 +2140,7 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
     const asset = await prisma.asset.findUnique({
       where: { id },
-      select: { id: true, name: true, bookingLabel: true, floor: { select: { name: true, building: { select: { name: true } } } } },
+      select: { id: true, name: true, bookingLabel: true, floor: { select: { name: true, buildingId: true, building: { select: { name: true } } } } },
     })
     if (!asset) {
       return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
@@ -2188,8 +2190,16 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
 
     const org = await prisma.organisation.findFirst({ select: { defaultBookingDurationHours: true } })
     const durationMs = (org?.defaultBookingDurationHours ?? 8) * 60 * 60 * 1000
-    const endOfDay = new Date(now)
-    endOfDay.setHours(23, 59, 59, 999)
+    // setHours() mutates in the server process's own runtime timezone, not
+    // the scanned desk's building timezone (no TZ=UTC pin exists in this
+    // repo — same hazard already fixed in bookings.ts's GET / day-boundary
+    // calculation). If the two diverge enough — a UTC-hosted server, a desk
+    // in a building materially offset from it — "end of day" could already
+    // be in the past relative to `now`, making proposedEndsAt < proposedStartsAt
+    // and silently breaking the primary "scan and book" QR flow.
+    const tz = await resolveBuildingTimezone(prisma, asset.floor?.buildingId)
+    const zonedNow = toZonedTime(now, tz)
+    const endOfDay = zonedWallClockToUtc(zonedNow.getFullYear(), zonedNow.getMonth() + 1, zonedNow.getDate(), 23, 59, tz)
     const proposedEndsAt = new Date(Math.min(now.getTime() + durationMs, endOfDay.getTime()))
 
     const gate = await assertBookable(prisma, request.user, id, now, proposedEndsAt)
