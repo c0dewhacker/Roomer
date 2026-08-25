@@ -20,21 +20,29 @@ import { recordAuditLog } from './audit.js'
 export async function resolveBallotAssetPool(ballot: {
   buildingIds: string[]
   floorIds: string[]
+  scopeAllBuildings: boolean
   assetCategoryIds: string[]
 }): Promise<Array<{ id: string; floorId: string; buildingId: string }>> {
-  if (ballot.buildingIds.length === 0 && ballot.floorIds.length === 0) return []
+  if (!ballot.scopeAllBuildings && ballot.buildingIds.length === 0 && ballot.floorIds.length === 0) return []
 
   const assets = await prisma.asset.findMany({
     where: {
       isBookable: true,
       bookingStatus: 'OPEN',
       ...(ballot.assetCategoryIds.length > 0 ? { categoryId: { in: ballot.assetCategoryIds } } : {}),
-      floor: {
-        OR: [
-          ...(ballot.floorIds.length > 0 ? [{ id: { in: ballot.floorIds } }] : []),
-          ...(ballot.buildingIds.length > 0 ? [{ buildingId: { in: ballot.buildingIds } }] : []),
-        ],
-      },
+      // scopeAllBuildings ignores buildingIds/floorIds entirely and pulls
+      // every floor org-wide — unlike the explicit lists (a snapshot frozen
+      // at ballot-creation time), this stays current automatically as
+      // buildings/floors are added later, with no `floor: {...}` filter at
+      // all needed to express "everything".
+      ...(ballot.scopeAllBuildings ? {} : {
+        floor: {
+          OR: [
+            ...(ballot.floorIds.length > 0 ? [{ id: { in: ballot.floorIds } }] : []),
+            ...(ballot.buildingIds.length > 0 ? [{ buildingId: { in: ballot.buildingIds } }] : []),
+          ],
+        },
+      }),
     },
     select: { id: true, floorId: true, floor: { select: { buildingId: true } } },
   })
@@ -52,6 +60,79 @@ function shuffle<T>(items: T[]): T[] {
     ;[arr[i], arr[j]] = [arr[j], arr[i]]
   }
   return arr
+}
+
+/**
+ * Weighted-random draw order (without replacement): repeatedly picks one
+ * remaining item with probability proportional to its weight — the
+ * intuitive "drawing tickets from a hat, more tickets for a higher weight"
+ * model of a weighted lottery. A higher weight improves an entrant's odds
+ * of an earlier pick (and therefore of getting an asset before the pool
+ * runs out), it never guarantees one — everyone with weight > 0 always has
+ * some chance. Reduces to an unweighted uniform shuffle when every weight
+ * is equal (see runDrawForRun — this is always used, with weight 1 for
+ * everyone when ballot weighting is disabled org-wide, rather than
+ * branching between this and plain shuffle()).
+ *
+ * O(n²) — entrant counts for a single ballot run are realistically tens,
+ * not thousands, so this trades a little extra CPU for an implementation
+ * that's obviously correct and easy to verify, over a more clever O(n log n)
+ * weighted-reservoir algorithm.
+ */
+function weightedShuffle<T>(items: Array<{ item: T; weight: number }>): T[] {
+  const pool = [...items]
+  const result: T[] = []
+  while (pool.length > 0) {
+    const total = pool.reduce((sum, p) => sum + p.weight, 0)
+    let r = Math.random() * total
+    let idx = pool.length - 1
+    for (let i = 0; i < pool.length; i++) {
+      r -= pool[i].weight
+      if (r <= 0) { idx = i; break }
+    }
+    result.push(pool[idx].item)
+    pool.splice(idx, 1)
+  }
+  return result
+}
+
+/**
+ * Reset a user's ballot-loss streak to 0 on a win — PER_BALLOT (the
+ * default) resets only this ballot's streak in BallotUserStreak; GLOBAL
+ * resets the single org-wide counter on User, which any ballot win resets
+ * regardless of which ballot. See the schema comments on BallotUserStreak/
+ * User.ballotConsecutiveLosses for why these are two separate storage
+ * locations rather than one nullable-scoped table.
+ */
+async function resetBallotStreak(userId: string, ballotId: string, scope: 'PER_BALLOT' | 'GLOBAL'): Promise<void> {
+  if (scope === 'GLOBAL') {
+    await prisma.user.update({ where: { id: userId }, data: { ballotConsecutiveLosses: 0 } })
+  } else {
+    await prisma.ballotUserStreak.upsert({
+      where: { ballotId_userId: { ballotId, userId } },
+      update: { consecutiveLosses: 0 },
+      create: { ballotId, userId, consecutiveLosses: 0 },
+    })
+  }
+}
+
+/**
+ * Increment a user's ballot-loss streak on a loss — uncapped in storage
+ * (informational — "you've lost 8 times in a row" stays meaningful even
+ * past the point it stops improving your odds); only the weight calculation
+ * in runDrawForRun clamps to Organisation.ballotWeightCapStreak, so one very
+ * unlucky streak can't eventually dominate every future draw.
+ */
+async function incrementBallotStreak(userId: string, ballotId: string, scope: 'PER_BALLOT' | 'GLOBAL'): Promise<void> {
+  if (scope === 'GLOBAL') {
+    await prisma.user.update({ where: { id: userId }, data: { ballotConsecutiveLosses: { increment: 1 } } })
+  } else {
+    await prisma.ballotUserStreak.upsert({
+      where: { ballotId_userId: { ballotId, userId } },
+      update: { consecutiveLosses: { increment: 1 } },
+      create: { ballotId, userId, consecutiveLosses: 1 },
+    })
+  }
 }
 
 /** Extracts the UTC calendar-date components stored in a "date-only" DateTime column (see BallotRun.slotStartsAt/EndsAt). */
@@ -145,7 +226,43 @@ export async function runDrawForRun(runId: string, actorId: string | null = null
   // skipped it for lacking access, denying it to every later entrant even
   // though it was never actually assigned to anyone.
   const availableAssets = shuffle(pool)
-  const shuffledEntries = shuffle(run.entries)
+
+  // Weighted-priority draw order (see #270): an entrant who's lost recent
+  // ballots gets a better-than-even chance this time, so nobody can lose the
+  // same recurring ballot indefinitely with no improving odds. Off by
+  // default — weight 1 for everyone reduces weightedShuffle to a plain
+  // uniform shuffle, identical to the original unweighted behaviour.
+  const org = await prisma.organisation.findFirst({
+    select: { ballotWeightingEnabled: true, ballotWeightIncrement: true, ballotWeightCapStreak: true, ballotWeightScope: true },
+  })
+  const weightingEnabled = org?.ballotWeightingEnabled ?? false
+
+  // Each entrant's current streak, read fresh right before the draw — from
+  // the per-ballot table or the org-wide per-user counter depending on
+  // Organisation.ballotWeightScope.
+  const streakByUserId = new Map<string, number>()
+  if (weightingEnabled && run.entries.length > 0) {
+    if (org!.ballotWeightScope === 'GLOBAL') {
+      const users = await prisma.user.findMany({
+        where: { id: { in: run.entries.map((e) => e.userId) } },
+        select: { id: true, ballotConsecutiveLosses: true },
+      })
+      for (const u of users) streakByUserId.set(u.id, u.ballotConsecutiveLosses)
+    } else {
+      const streaks = await prisma.ballotUserStreak.findMany({
+        where: { ballotId: run.ballotId, userId: { in: run.entries.map((e) => e.userId) } },
+        select: { userId: true, consecutiveLosses: true },
+      })
+      for (const s of streaks) streakByUserId.set(s.userId, s.consecutiveLosses)
+    }
+  }
+  const weightFor = (userId: string): number => {
+    if (!weightingEnabled) return 1
+    const streak = Math.min(streakByUserId.get(userId) ?? 0, org!.ballotWeightCapStreak)
+    return 1 + streak * org!.ballotWeightIncrement
+  }
+
+  const shuffledEntries = weightedShuffle(run.entries.map((entry) => ({ item: entry, weight: weightFor(entry.userId) })))
 
   let wonCount = 0
   let lostCount = 0
@@ -167,6 +284,13 @@ export async function runDrawForRun(runId: string, actorId: string | null = null
         })
         dispatchWebhook('booking.created', { id: result.bookingId, userId: entry.userId, assetId: candidate.id, startsAt: result.startsAt, endsAt: result.endsAt }).catch(() => {})
         await enqueueNotification({ type: NotificationType.BALLOT_WON, userId: entry.userId, ballotEntryId: entry.id })
+        // Only touched when weighting is actually enabled — a losing streak
+        // accrued while weighting was off (and therefore never affected any
+        // draw) shouldn't need an explicit reset write it never needed in
+        // the first place, and if weighting is later re-enabled it should
+        // start counting losses from that point on, not from whatever state
+        // a stale row happened to be left in.
+        if (weightingEnabled) await resetBallotStreak(entry.userId, run.ballotId, org!.ballotWeightScope)
         wonCount++
         break
       }
@@ -179,6 +303,7 @@ export async function runDrawForRun(runId: string, actorId: string | null = null
     if (!assigned) {
       await prisma.ballotEntry.update({ where: { id: entry.id }, data: { status: 'LOST' } })
       await enqueueNotification({ type: NotificationType.BALLOT_LOST, userId: entry.userId, ballotEntryId: entry.id })
+      if (weightingEnabled) await incrementBallotStreak(entry.userId, run.ballotId, org!.ballotWeightScope)
       lostCount++
     }
   }

@@ -108,6 +108,14 @@ enum BallotEntryStatus {
   LOST
 }
 
+/// Whether a user's weighted-ballot consecutive-loss streak (see
+/// BallotUserStreak / User.ballotConsecutiveLosses) is tracked separately
+/// per ballot, or as one counter across every ballot they enter org-wide.
+enum BallotWeightScope {
+  PER_BALLOT
+  GLOBAL
+}
+
 enum QueueEntryStatus {
   WAITING
   PROMOTED
@@ -256,6 +264,29 @@ model Organisation {
   /// enforcing them. Default off — enabling this changes booking behaviour
   /// org-wide with no per-building opt-out.
   enforceWorkingHours          Boolean      @default(false)
+  /// Weighted-ballot priority: gives a user who's lost recent ballot draws a
+  /// better chance in future ones, so nobody can lose the same recurring
+  /// ballot indefinitely with no improving odds. Default off — purely
+  /// additive to the existing uniform-random draw when disabled. See
+  /// BallotUserStreak / User.ballotConsecutiveLosses for where the
+  /// underlying streak is tracked, and runDrawForRun (lib/ballot.ts) for how
+  /// it turns into a weighted-random (not deterministic-priority) draw.
+  ballotWeightingEnabled       Boolean      @default(false)
+  /// Added to a 1.0 baseline multiplier per consecutive loss, e.g. 3 losses
+  /// with the default 0.2 increment → 1.6x this entrant's draw weight
+  /// relative to a fresh entrant's 1.0x. Still fully probabilistic for
+  /// everyone — a higher weight improves odds, it never guarantees a win.
+  ballotWeightIncrement        Float        @default(0.2)
+  /// Caps how many consecutive losses count toward the weight multiplier,
+  /// so one very unlucky streak can't eventually dominate every draw. The
+  /// streak itself keeps incrementing past this in storage (informational),
+  /// only the multiplier calculation clamps to it.
+  ballotWeightCapStreak        Int          @default(5)
+  /// PER_BALLOT (default): each ballot tracks its own streak per user,
+  /// independently. GLOBAL: one streak per user across every ballot
+  /// org-wide — losing any ballot raises odds in all of them, winning any
+  /// one resets to 0 everywhere.
+  ballotWeightScope            BallotWeightScope @default(PER_BALLOT)
   createdAt                   DateTime     @default(now())
   updatedAt                   DateTime     @updatedAt
   buildings                   Building[]
@@ -628,6 +659,12 @@ model User {
   /// configuring mappings, and used by the mapping dry-run preview.
   lastIdpGroups            String[]      @default([])
   lastSsoLoginAt           DateTime?
+  /// Org-wide consecutive-ballot-loss streak, used only when
+  /// Organisation.ballotWeightScope = GLOBAL — incremented (capped at
+  /// ballotWeightCapStreak) on any ballot loss, reset to 0 on any ballot
+  /// win, regardless of which ballot. See BallotUserStreak for the
+  /// PER_BALLOT equivalent.
+  ballotConsecutiveLosses  Int           @default(0)
   createdAt                DateTime      @default(now())
   updatedAt                DateTime      @updatedAt
 
@@ -657,6 +694,7 @@ model User {
   bookingsApproved        Booking[]             @relation("BookingApprover")
   ballotsCreated          Ballot[]              @relation("BallotCreatedBy")
   ballotEntries           BallotEntry[]
+  ballotStreaks           BallotUserStreak[]
 
   @@index([email])
   @@index([provider, externalId])
@@ -957,6 +995,14 @@ model Ballot {
   /// intersection at draw time, it doesn't need active cleanup).
   buildingIds     String[]        @default([])
   floorIds        String[]        @default([])
+  /// When true, buildingIds/floorIds are ignored and the asset pool is
+  /// resolved fresh across every building in the org at draw/entry time —
+  /// unlike buildingIds/floorIds (a snapshot frozen at creation time that
+  /// never grows to include a building added afterward), this stays
+  /// current automatically. SUPER_ADMIN only (see canManageBallotScope) —
+  /// a building/floor manager's scope is inherently bounded to what they
+  /// manage, so org-wide reach isn't theirs to claim.
+  scopeAllBuildings Boolean        @default(false)
   /// Optional category filter — empty means every bookable asset in scope.
   assetCategoryIds String[]       @default([])
   frequency       BallotFrequency @default(WEEKLY)
@@ -980,6 +1026,7 @@ model Ballot {
 
   createdBy User        @relation("BallotCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
   runs      BallotRun[]
+  streaks   BallotUserStreak[]
 }
 
 /// One concrete occurrence of a Ballot — its own registration window, draw,
@@ -1035,6 +1082,33 @@ model BallotEntry {
   @@unique([runId, userId])
   @@index([userId])
   @@index([assetId])
+}
+
+/// Per-user, per-ballot consecutive-loss streak — used only when
+/// Organisation.ballotWeightScope = PER_BALLOT. (The GLOBAL mode instead
+/// uses User.ballotConsecutiveLosses, a single org-wide counter — kept as a
+/// separate field rather than a nullable ballotId row here, since Postgres
+/// treats NULL as distinct from NULL in unique constraints and a
+/// nullable-ballotId unique key wouldn't actually prevent duplicate "global"
+/// rows per user; see the identical reasoning already applied to
+/// UserResourceRole's BUILDING-scope rows.)
+///
+/// Incremented on LOST (capped at Organisation.ballotWeightCapStreak), reset
+/// to 0 on WON — only written to at all when Organisation.ballotWeightingEnabled
+/// is true, so a losing streak accrued while weighting was off never silently
+/// starts affecting draws once it's turned on.
+model BallotUserStreak {
+  id                String   @id @default(cuid())
+  ballotId          String
+  userId            String
+  consecutiveLosses Int      @default(0)
+  updatedAt         DateTime @updatedAt
+
+  ballot Ballot @relation(fields: [ballotId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([ballotId, userId])
+  @@index([userId])
 }
 
 model QueueEntry {

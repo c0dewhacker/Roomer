@@ -13,9 +13,20 @@ import { recordAuditLog } from '../lib/audit.js'
  * or a building/floor manager for every building/floor listed (not just some
  * of them — managing one of five buildings a ballot spans doesn't entitle you
  * to run a draw across the other four).
+ *
+ * scopeAllBuildings is SUPER_ADMIN only — a building/floor manager's scope is
+ * inherently bounded to what they manage, so org-wide reach isn't theirs to
+ * claim. This must be checked explicitly and short-circuit before the
+ * buildingIds/floorIds check below: when scopeAllBuildings is set,
+ * buildingIds/floorIds are typically empty (per the create/update schema,
+ * which allows an empty explicit scope only when scopeAllBuildings is true),
+ * and `[].every(...)` is vacuously true — without this guard, ANY
+ * non-super-admin caller would trivially pass the scope check for an
+ * org-wide ballot.
  */
-async function canManageBallotScope(userId: string, isSuperAdmin: boolean, buildingIds: string[], floorIds: string[]): Promise<boolean> {
+async function canManageBallotScope(userId: string, isSuperAdmin: boolean, buildingIds: string[], floorIds: string[], scopeAllBuildings: boolean): Promise<boolean> {
   if (isSuperAdmin) return true
+  if (scopeAllBuildings) return false
   const [managedBuildingIds, managedFloorIds] = await Promise.all([getManagedBuildingIds(userId), getManagedFloorIds(userId)])
   const buildingSet = new Set(managedBuildingIds)
   const floorSet = new Set(managedFloorIds)
@@ -29,7 +40,14 @@ async function canManageBallotScope(userId: string, isSuperAdmin: boolean, build
  * reach all of them" (unlike canManageBallotScope, which is about who may
  * *run* it).
  */
-async function hasBallotScopeAccess(userId: string, ballot: { buildingIds: string[]; floorIds: string[] }): Promise<boolean> {
+async function hasBallotScopeAccess(userId: string, ballot: { buildingIds: string[]; floorIds: string[]; scopeAllBuildings: boolean }): Promise<boolean> {
+  if (ballot.scopeAllBuildings) {
+    const floors = await prisma.floor.findMany({ select: { id: true, buildingId: true } })
+    for (const f of floors) {
+      if (await checkGroupAccess(userId, f.buildingId, f.id)) return true
+    }
+    return false
+  }
   for (const buildingId of ballot.buildingIds) {
     const floors = await prisma.floor.findMany({ where: { buildingId }, select: { id: true } })
     for (const f of floors) {
@@ -44,7 +62,7 @@ async function hasBallotScopeAccess(userId: string, ballot: { buildingIds: strin
 }
 
 const ballotSelect = {
-  id: true, name: true, createdByUserId: true, buildingIds: true, floorIds: true, assetCategoryIds: true,
+  id: true, name: true, createdByUserId: true, buildingIds: true, floorIds: true, scopeAllBuildings: true, assetCategoryIds: true,
   frequency: true, dayOfWeek: true, dayOfMonth: true, registrationWindowHours: true,
   slotStartTime: true, slotEndTime: true, slotLeadDays: true, slotDurationDays: true,
   status: true, createdAt: true, updatedAt: true,
@@ -63,7 +81,7 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(400).send({ error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() } })
     }
     const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
-    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, result.data.buildingIds, result.data.floorIds))) {
+    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, result.data.buildingIds, result.data.floorIds, result.data.scopeAllBuildings))) {
       return reply.status(403).send({ error: { message: 'Insufficient permissions for this scope', code: 'FORBIDDEN' } })
     }
 
@@ -104,7 +122,7 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
     const ballot = await prisma.ballot.findUnique({ where: { id }, select: ballotSelect })
     if (!ballot) return reply.status(404).send({ error: { message: 'Ballot not found', code: 'NOT_FOUND' } })
     const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
-    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, ballot.buildingIds, ballot.floorIds))) {
+    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, ballot.buildingIds, ballot.floorIds, ballot.scopeAllBuildings))) {
       return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
     }
     return reply.status(200).send({ data: ballot })
@@ -120,13 +138,14 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
     const existing = await prisma.ballot.findUnique({ where: { id } })
     if (!existing) return reply.status(404).send({ error: { message: 'Ballot not found', code: 'NOT_FOUND' } })
     const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
-    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, existing.buildingIds, existing.floorIds))) {
+    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, existing.buildingIds, existing.floorIds, existing.scopeAllBuildings))) {
       return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
     }
     // If the scope is being widened, the caller must also manage the NEW scope.
     const newBuildingIds = result.data.buildingIds ?? existing.buildingIds
     const newFloorIds = result.data.floorIds ?? existing.floorIds
-    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, newBuildingIds, newFloorIds))) {
+    const newScopeAllBuildings = result.data.scopeAllBuildings ?? existing.scopeAllBuildings
+    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, newBuildingIds, newFloorIds, newScopeAllBuildings))) {
       return reply.status(403).send({ error: { message: 'Insufficient permissions for the new scope', code: 'FORBIDDEN' } })
     }
 
@@ -149,7 +168,7 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
     const existing = await prisma.ballot.findUnique({ where: { id } })
     if (!existing) return reply.status(404).send({ error: { message: 'Ballot not found', code: 'NOT_FOUND' } })
     const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
-    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, existing.buildingIds, existing.floorIds))) {
+    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, existing.buildingIds, existing.floorIds, existing.scopeAllBuildings))) {
       return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
     }
     await prisma.ballot.delete({ where: { id } })
@@ -170,7 +189,7 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
     const ballot = await prisma.ballot.findUnique({ where: { id } })
     if (!ballot) return reply.status(404).send({ error: { message: 'Ballot not found', code: 'NOT_FOUND' } })
     const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
-    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, ballot.buildingIds, ballot.floorIds))) {
+    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, ballot.buildingIds, ballot.floorIds, ballot.scopeAllBuildings))) {
       return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
     }
     const runs = await prisma.ballotRun.findMany({
@@ -187,7 +206,7 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
     const ballot = await prisma.ballot.findUnique({ where: { id } })
     if (!ballot) return reply.status(404).send({ error: { message: 'Ballot not found', code: 'NOT_FOUND' } })
     const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
-    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, ballot.buildingIds, ballot.floorIds))) {
+    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, ballot.buildingIds, ballot.floorIds, ballot.scopeAllBuildings))) {
       return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
     }
     if (ballot.status !== 'ACTIVE') {
@@ -222,7 +241,7 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
     })
     if (!run) return reply.status(404).send({ error: { message: 'Run not found', code: 'NOT_FOUND' } })
     const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
-    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, run.ballot.buildingIds, run.ballot.floorIds))) {
+    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, run.ballot.buildingIds, run.ballot.floorIds, run.ballot.scopeAllBuildings))) {
       return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
     }
     const poolSize = (await resolveBallotAssetPool(run.ballot)).length
@@ -235,7 +254,7 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
     const run = await prisma.ballotRun.findUnique({ where: { id: runId }, include: { ballot: true } })
     if (!run) return reply.status(404).send({ error: { message: 'Run not found', code: 'NOT_FOUND' } })
     const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
-    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, run.ballot.buildingIds, run.ballot.floorIds))) {
+    if (!(await canManageBallotScope(request.user.id, isSuperAdmin, run.ballot.buildingIds, run.ballot.floorIds, run.ballot.scopeAllBuildings))) {
       return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
     }
     if (run.status !== 'OPEN') {

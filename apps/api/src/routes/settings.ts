@@ -112,6 +112,12 @@ const updateOrgSchema = z.object({
   workingHoursStart: z.string().regex(/^\d{2}:\d{2}$/).optional(),
   workingHoursEnd: z.string().regex(/^\d{2}:\d{2}$/).optional(),
   enforceWorkingHours: z.boolean().optional(),
+  // Weighted-ballot priority (see #270) — off by default, purely additive to
+  // the existing uniform-random draw when disabled.
+  ballotWeightingEnabled: z.boolean().optional(),
+  ballotWeightIncrement: z.number().min(0).max(5).optional(),
+  ballotWeightCapStreak: z.number().int().min(1).max(50).optional(),
+  ballotWeightScope: z.enum(['PER_BALLOT', 'GLOBAL']).optional(),
 })
 
 // The "Direct role" grant option in GroupMappingsEditor sends
@@ -270,6 +276,10 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
     workingHoursStart: true,
     workingHoursEnd: true,
     enforceWorkingHours: true,
+    ballotWeightingEnabled: true,
+    ballotWeightIncrement: true,
+    ballotWeightCapStreak: true,
+    ballotWeightScope: true,
     createdAt: true,
     updatedAt: true,
   } satisfies Prisma.OrganisationSelect

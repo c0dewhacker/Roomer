@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Dices, Plus, X, ChevronDown, ChevronUp, Play, Shuffle, Trash2, Pause } from 'lucide-react'
 import { buildingsApi, assetsApi } from '@/lib/api'
+import { useAuthStore } from '@/stores/auth'
 import {
   useBallots, useBallotRuns, useBallotRunDetail,
   useCreateBallot, useUpdateBallot, useDeleteBallot, useTriggerBallotRun, useForceDraw,
@@ -36,6 +37,7 @@ const emptyForm: CreateBallotBody = {
   name: '',
   buildingIds: [],
   floorIds: [],
+  scopeAllBuildings: false,
   assetCategoryIds: [],
   frequency: 'WEEKLY',
   dayOfWeek: 4,
@@ -52,6 +54,7 @@ function CreateBallotDialog({ open, onClose }: { open: boolean; onClose: () => v
   const [floorId, setFloorId] = useState('')
   const [buildingToAdd, setBuildingToAdd] = useState('')
   const create = useCreateBallot()
+  const isSuperAdmin = useAuthStore((s) => s.user?.globalRole === 'SUPER_ADMIN')
 
   const { data: buildings } = useQuery({ queryKey: ['buildings'], queryFn: () => buildingsApi.list(), select: (r) => r.data })
   const { data: categories } = useQuery({ queryKey: ['asset-categories'], queryFn: () => assetsApi.listCategories(), select: (r) => r.data })
@@ -81,76 +84,98 @@ function CreateBallotDialog({ open, onClose }: { open: boolean; onClose: () => v
             <Input id="ballotName" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="mt-1.5" placeholder="e.g. Weekly Parking Ballot" />
           </div>
 
-          <div>
-            <Label>Buildings (every floor in scope)</Label>
-            <div className="flex gap-2 mt-1.5">
-              <Select value={buildingToAdd} onValueChange={setBuildingToAdd}>
-                <SelectTrigger className="flex-1"><SelectValue placeholder="Add a building…" /></SelectTrigger>
-                <SelectContent>
-                  {(buildings ?? []).filter((b) => !form.buildingIds.includes(b.id)).map((b) => (
-                    <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button
-                size="sm"
-                disabled={!buildingToAdd}
-                onClick={() => { setForm({ ...form, buildingIds: [...form.buildingIds, buildingToAdd] }); setBuildingToAdd('') }}
-              >
-                <Plus className="h-4 w-4" />
-              </Button>
+          {isSuperAdmin && (
+            <div className="flex items-center gap-2 rounded-md border px-3 py-2.5">
+              <input
+                id="scopeAllBuildings"
+                type="checkbox"
+                checked={form.scopeAllBuildings ?? false}
+                onChange={(e) => setForm({ ...form, scopeAllBuildings: e.target.checked, buildingIds: [], floorIds: [] })}
+                className="h-4 w-4 rounded border-border"
+              />
+              <div>
+                <Label htmlFor="scopeAllBuildings" className="cursor-pointer">All buildings (org-wide)</Label>
+                <p className="text-xs text-muted-foreground">
+                  Always covers every building, including ones added after this ballot is created — unlike picking buildings/floors below, which is a fixed list.
+                </p>
+              </div>
             </div>
-            <div className="flex flex-wrap gap-1.5 mt-2">
-              {form.buildingIds.map((id) => (
-                <Badge key={id} variant="secondary" className="gap-1">
-                  {buildingNameById.get(id) ?? id}
-                  <button type="button" onClick={() => setForm({ ...form, buildingIds: form.buildingIds.filter((b) => b !== id) })}>
-                    <X className="h-3 w-3" />
-                  </button>
-                </Badge>
-              ))}
-            </div>
-          </div>
+          )}
 
-          <div>
-            <Label>Specific floors (optional, in addition to whole buildings above)</Label>
-            <div className="flex gap-2 mt-1.5">
-              <Select value={floorBuildingId} onValueChange={(v) => { setFloorBuildingId(v); setFloorId('') }}>
-                <SelectTrigger className="flex-1"><SelectValue placeholder="Building…" /></SelectTrigger>
-                <SelectContent>
-                  {(buildings ?? []).map((b) => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              <Select value={floorId} onValueChange={setFloorId} disabled={!floorBuildingId}>
-                <SelectTrigger className="flex-1"><SelectValue placeholder="Floor…" /></SelectTrigger>
-                <SelectContent>
-                  {(floorBuilding?.floors ?? []).filter((f) => !form.floorIds.includes(f.id)).map((f) => (
-                    <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+          {!form.scopeAllBuildings && (
+            <>
+              <div>
+                <Label>Buildings (every floor in scope)</Label>
+                <div className="flex gap-2 mt-1.5">
+                  <Select value={buildingToAdd} onValueChange={setBuildingToAdd}>
+                    <SelectTrigger className="flex-1"><SelectValue placeholder="Add a building…" /></SelectTrigger>
+                    <SelectContent>
+                      {(buildings ?? []).filter((b) => !form.buildingIds.includes(b.id)).map((b) => (
+                        <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    size="sm"
+                    disabled={!buildingToAdd}
+                    onClick={() => { setForm({ ...form, buildingIds: [...form.buildingIds, buildingToAdd] }); setBuildingToAdd('') }}
+                  >
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </div>
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {form.buildingIds.map((id) => (
+                    <Badge key={id} variant="secondary" className="gap-1">
+                      {buildingNameById.get(id) ?? id}
+                      <button type="button" onClick={() => setForm({ ...form, buildingIds: form.buildingIds.filter((b) => b !== id) })}>
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
                   ))}
-                </SelectContent>
-              </Select>
-              <Button
-                size="sm"
-                disabled={!floorId}
-                onClick={() => { setForm({ ...form, floorIds: [...form.floorIds, floorId] }); setFloorId('') }}
-              >
-                <Plus className="h-4 w-4" />
-              </Button>
-            </div>
-            <div className="flex flex-wrap gap-1.5 mt-2">
-              {form.floorIds.map((id) => {
-                const floor = floorBuilding?.floors.find((f) => f.id === id)
-                return (
-                  <Badge key={id} variant="secondary" className="gap-1">
-                    {floor?.name ?? id}
-                    <button type="button" onClick={() => setForm({ ...form, floorIds: form.floorIds.filter((f) => f !== id) })}>
-                      <X className="h-3 w-3" />
-                    </button>
-                  </Badge>
-                )
-              })}
-            </div>
-          </div>
+                </div>
+              </div>
+
+              <div>
+                <Label>Specific floors (optional, in addition to whole buildings above)</Label>
+                <div className="flex gap-2 mt-1.5">
+                  <Select value={floorBuildingId} onValueChange={(v) => { setFloorBuildingId(v); setFloorId('') }}>
+                    <SelectTrigger className="flex-1"><SelectValue placeholder="Building…" /></SelectTrigger>
+                    <SelectContent>
+                      {(buildings ?? []).map((b) => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Select value={floorId} onValueChange={setFloorId} disabled={!floorBuildingId}>
+                    <SelectTrigger className="flex-1"><SelectValue placeholder="Floor…" /></SelectTrigger>
+                    <SelectContent>
+                      {(floorBuilding?.floors ?? []).filter((f) => !form.floorIds.includes(f.id)).map((f) => (
+                        <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    size="sm"
+                    disabled={!floorId}
+                    onClick={() => { setForm({ ...form, floorIds: [...form.floorIds, floorId] }); setFloorId('') }}
+                  >
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </div>
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {form.floorIds.map((id) => {
+                    const floor = floorBuilding?.floors.find((f) => f.id === id)
+                    return (
+                      <Badge key={id} variant="secondary" className="gap-1">
+                        {floor?.name ?? id}
+                        <button type="button" onClick={() => setForm({ ...form, floorIds: form.floorIds.filter((f) => f !== id) })}>
+                          <X className="h-3 w-3" />
+                        </button>
+                      </Badge>
+                    )
+                  })}
+                </div>
+              </div>
+            </>
+          )}
 
           <div>
             <Label>Asset category filter (optional — empty means every bookable asset in scope)</Label>
@@ -237,7 +262,7 @@ function CreateBallotDialog({ open, onClose }: { open: boolean; onClose: () => v
         <DialogFooter>
           <Button variant="ghost" onClick={() => { reset(); onClose() }}>Cancel</Button>
           <Button
-            disabled={!form.name.trim() || (form.buildingIds.length === 0 && form.floorIds.length === 0) || create.isPending}
+            disabled={!form.name.trim() || (!form.scopeAllBuildings && form.buildingIds.length === 0 && form.floorIds.length === 0) || create.isPending}
             onClick={() => create.mutate(form, { onSuccess: () => { reset(); onClose() } })}
           >
             {create.isPending ? 'Creating…' : 'Create Ballot'}
@@ -365,7 +390,7 @@ export default function BallotsAdminPage() {
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">
                       {b.frequency === 'ONCE' ? 'One-off' : b.frequency === 'WEEKLY' ? `Weekly, ${DAY_NAMES[b.dayOfWeek ?? 0]}` : `Monthly, day ${b.dayOfMonth}`}
-                      {' · '}{b.buildingIds.length} building{b.buildingIds.length === 1 ? '' : 's'}, {b.floorIds.length} floor{b.floorIds.length === 1 ? '' : 's'}
+                      {' · '}{b.scopeAllBuildings ? 'All buildings' : `${b.buildingIds.length} building${b.buildingIds.length === 1 ? '' : 's'}, ${b.floorIds.length} floor${b.floorIds.length === 1 ? '' : 's'}`}
                       {' · '}{b._count?.runs ?? 0} run{b._count?.runs === 1 ? '' : 's'}
                     </p>
                   </div>

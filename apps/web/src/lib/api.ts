@@ -597,6 +597,10 @@ type OrgSettings = {
   workingHoursStart?: string
   workingHoursEnd?: string
   enforceWorkingHours?: boolean
+  ballotWeightingEnabled?: boolean
+  ballotWeightIncrement?: number
+  ballotWeightCapStreak?: number
+  ballotWeightScope?: 'PER_BALLOT' | 'GLOBAL'
 }
 
 export interface BrandingBanner {
@@ -1056,6 +1060,10 @@ export interface CreateBallotBody {
   name: string
   buildingIds: string[]
   floorIds: string[]
+  // Org-wide scope that stays current as buildings are added later, unlike
+  // buildingIds/floorIds (a snapshot frozen at creation time). SUPER_ADMIN
+  // only.
+  scopeAllBuildings?: boolean
   assetCategoryIds: string[]
   frequency: BallotFrequency
   dayOfWeek?: number

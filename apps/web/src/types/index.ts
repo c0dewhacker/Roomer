@@ -207,6 +207,7 @@ export interface Ballot {
   createdByUserId: string
   buildingIds: string[]
   floorIds: string[]
+  scopeAllBuildings: boolean
   assetCategoryIds: string[]
   frequency: BallotFrequency
   dayOfWeek: number | null

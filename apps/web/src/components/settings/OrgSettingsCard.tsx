@@ -36,6 +36,10 @@ const orgSchema = z.object({
   workingHoursStart: z.string().regex(/^\d{2}:\d{2}$/),
   workingHoursEnd: z.string().regex(/^\d{2}:\d{2}$/),
   enforceWorkingHours: z.boolean(),
+  ballotWeightingEnabled: z.boolean(),
+  ballotWeightIncrement: z.coerce.number().min(0).max(5),
+  ballotWeightCapStreak: z.coerce.number().int().min(1).max(50),
+  ballotWeightScope: z.enum(['PER_BALLOT', 'GLOBAL']),
 })
 type OrgForm = z.infer<typeof orgSchema>
 
@@ -60,6 +64,10 @@ export function OrgSettingsCard() {
       workingHoursStart: '07:00',
       workingHoursEnd: '19:00',
       enforceWorkingHours: false,
+      ballotWeightingEnabled: false,
+      ballotWeightIncrement: 0.2,
+      ballotWeightCapStreak: 5,
+      ballotWeightScope: 'PER_BALLOT',
     },
   })
 
@@ -88,6 +96,10 @@ export function OrgSettingsCard() {
         workingHoursStart: orgData.workingHoursStart ?? '07:00',
         workingHoursEnd: orgData.workingHoursEnd ?? '19:00',
         enforceWorkingHours: orgData.enforceWorkingHours ?? false,
+        ballotWeightingEnabled: orgData.ballotWeightingEnabled ?? false,
+        ballotWeightIncrement: orgData.ballotWeightIncrement ?? 0.2,
+        ballotWeightCapStreak: orgData.ballotWeightCapStreak ?? 5,
+        ballotWeightScope: orgData.ballotWeightScope ?? 'PER_BALLOT',
       })
     }
   }, [orgData, reset])
@@ -96,7 +108,7 @@ export function OrgSettingsCard() {
     mutationFn: (data: OrgForm) => settingsApi.updateOrg(data),
     onSuccess: (res) => {
       toast.success('Settings saved')
-      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4, dateFormat: res.data.dateFormat ?? 'dd/MM/yyyy', noShowReleaseEnabled: res.data.noShowReleaseEnabled ?? false, checkInGraceMinutes: res.data.checkInGraceMinutes ?? 30, qrCheckInMode: res.data.qrCheckInMode ?? 'DISABLED', weeklyReportEnabled: res.data.weeklyReportEnabled ?? false, requiresApproval: res.data.requiresApproval ?? false, approvalWindowHours: res.data.approvalWindowHours ?? 24, defaultTimezone: res.data.defaultTimezone ?? 'UTC', workingHoursStart: res.data.workingHoursStart ?? '07:00', workingHoursEnd: res.data.workingHoursEnd ?? '19:00', enforceWorkingHours: res.data.enforceWorkingHours ?? false })
+      reset({ name: res.data.name, defaultBookingDurationHours: res.data.defaultBookingDurationHours, maxAdvanceBookingDays: res.data.maxAdvanceBookingDays, maxBookingsPerUser: res.data.maxBookingsPerUser, queueClaimWindowHours: res.data.queueClaimWindowHours ?? 4, dateFormat: res.data.dateFormat ?? 'dd/MM/yyyy', noShowReleaseEnabled: res.data.noShowReleaseEnabled ?? false, checkInGraceMinutes: res.data.checkInGraceMinutes ?? 30, qrCheckInMode: res.data.qrCheckInMode ?? 'DISABLED', weeklyReportEnabled: res.data.weeklyReportEnabled ?? false, requiresApproval: res.data.requiresApproval ?? false, approvalWindowHours: res.data.approvalWindowHours ?? 24, defaultTimezone: res.data.defaultTimezone ?? 'UTC', workingHoursStart: res.data.workingHoursStart ?? '07:00', workingHoursEnd: res.data.workingHoursEnd ?? '19:00', enforceWorkingHours: res.data.enforceWorkingHours ?? false, ballotWeightingEnabled: res.data.ballotWeightingEnabled ?? false, ballotWeightIncrement: res.data.ballotWeightIncrement ?? 0.2, ballotWeightCapStreak: res.data.ballotWeightCapStreak ?? 5, ballotWeightScope: res.data.ballotWeightScope ?? 'PER_BALLOT' })
       qc.invalidateQueries({ queryKey: ['settings', 'organisation'] })
       qc.invalidateQueries({ queryKey: ['settings', 'public'] })
     },
@@ -257,6 +269,71 @@ export function OrgSettingsCard() {
               </span>
             </span>
           </label>
+        </div>
+        <div className="rounded-md border p-3 space-y-3">
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4"
+              checked={watch('ballotWeightingEnabled')}
+              onChange={(e) => setValue('ballotWeightingEnabled', e.target.checked, { shouldDirty: true })}
+            />
+            <span>
+              <span className="text-sm font-medium">Weighted ballot priority</span>
+              <span className="block text-xs text-muted-foreground">
+                Give someone who's lost recent ballot draws a better chance next time, so nobody can lose the same recurring ballot indefinitely with no improving odds. Still fully random for everyone — a higher weight improves odds, it never guarantees a win. Resets to zero the moment they win.
+              </span>
+            </span>
+          </label>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-xl">
+            <div>
+              <Label htmlFor="ballotWeightIncrement" className="text-xs">Weight per consecutive loss</Label>
+              <Input
+                id="ballotWeightIncrement"
+                type="number"
+                min={0}
+                max={5}
+                step={0.05}
+                {...register('ballotWeightIncrement')}
+                className="mt-1.5"
+                disabled={!watch('ballotWeightingEnabled')}
+              />
+              {errors.ballotWeightIncrement && (
+                <p className="text-xs text-destructive mt-1">{errors.ballotWeightIncrement.message}</p>
+              )}
+            </div>
+            <div>
+              <Label htmlFor="ballotWeightCapStreak" className="text-xs">Cap (consecutive losses)</Label>
+              <Input
+                id="ballotWeightCapStreak"
+                type="number"
+                min={1}
+                max={50}
+                {...register('ballotWeightCapStreak')}
+                className="mt-1.5"
+                disabled={!watch('ballotWeightingEnabled')}
+              />
+              {errors.ballotWeightCapStreak && (
+                <p className="text-xs text-destructive mt-1">{errors.ballotWeightCapStreak.message}</p>
+              )}
+            </div>
+            <div>
+              <Label htmlFor="ballotWeightScope" className="text-xs">Streak scope</Label>
+              <Select
+                value={watch('ballotWeightScope')}
+                onValueChange={(v) => setValue('ballotWeightScope', v as OrgForm['ballotWeightScope'], { shouldDirty: true })}
+              >
+                <SelectTrigger id="ballotWeightScope" className="mt-1.5" disabled={!watch('ballotWeightingEnabled')}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="PER_BALLOT">Per ballot</SelectItem>
+                  <SelectItem value="GLOBAL">Global (org-wide)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Per ballot: losing "Weekly Parking" repeatedly only improves your odds there, not in an unrelated ballot. Global: any ballot loss raises your odds everywhere, and any win resets you to zero everywhere.
+          </p>
         </div>
         <div>
           <Label htmlFor="dateFormat">Date format</Label>

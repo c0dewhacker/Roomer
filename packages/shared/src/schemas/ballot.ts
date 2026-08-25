@@ -2,11 +2,17 @@ import { z } from 'zod'
 
 export const createBallotSchema = z.object({
   name: z.string().min(1, 'Name is required').max(255),
-  // Scope: at least one building or floor required (validated below) — the
-  // asset pool is the union of assets on any listed floor, plus every floor
-  // of any listed building.
+  // Scope: at least one building or floor required, UNLESS scopeAllBuildings
+  // is set (validated below) — the asset pool is the union of assets on any
+  // listed floor, plus every floor of any listed building.
   buildingIds: z.array(z.string().min(1)).default([]),
   floorIds: z.array(z.string().min(1)).default([]),
+  // Org-wide scope that stays current as buildings are added later, unlike
+  // buildingIds/floorIds (a snapshot frozen at creation time) — see the
+  // Ballot.scopeAllBuildings schema comment. SUPER_ADMIN only, enforced in
+  // the route handler (a building/floor manager's scope is inherently
+  // bounded to what they manage).
+  scopeAllBuildings: z.boolean().default(false),
   // Empty = every bookable asset in scope, no category filter.
   assetCategoryIds: z.array(z.string().min(1)).default([]),
   frequency: z.enum(['ONCE', 'WEEKLY', 'MONTHLY']).default('WEEKLY'),
@@ -21,8 +27,8 @@ export const createBallotSchema = z.object({
   slotLeadDays: z.number().int().min(0).max(90).default(1),
   slotDurationDays: z.number().int().min(1).max(90).default(1),
 }).refine(
-  (d) => d.buildingIds.length > 0 || d.floorIds.length > 0,
-  { message: 'Select at least one building or floor', path: ['buildingIds'] },
+  (d) => d.scopeAllBuildings || d.buildingIds.length > 0 || d.floorIds.length > 0,
+  { message: 'Select at least one building or floor, or scope this ballot to all buildings', path: ['buildingIds'] },
 ).refine(
   (d) => d.frequency !== 'WEEKLY' || d.dayOfWeek !== undefined,
   { message: 'dayOfWeek is required for weekly ballots', path: ['dayOfWeek'] },
@@ -35,6 +41,7 @@ export const updateBallotSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   buildingIds: z.array(z.string().min(1)).optional(),
   floorIds: z.array(z.string().min(1)).optional(),
+  scopeAllBuildings: z.boolean().optional(),
   assetCategoryIds: z.array(z.string().min(1)).optional(),
   dayOfWeek: z.number().int().min(0).max(6).nullable().optional(),
   dayOfMonth: z.number().int().min(1).max(28).nullable().optional(),
