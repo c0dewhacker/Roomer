@@ -52,13 +52,24 @@ export default function FloorPage() {
   // "Request manager access" — hidden once the user is already a manager here
   // (directly or via a group role, same check DeskPanel's canManageDesk uses)
   // or a Super Admin (who already has full access everywhere), and while they
-  // already have a pending request open for this floor.
+  // already have a pending request open for this floor. Also hidden for a
+  // BUILDING_ADMIN of this floor's building — the backend's
+  // isFloorManagerForFloor already treats building admins as inheriting
+  // floor-manager access for every floor in their building, so without this
+  // check a building admin visiting their own building's floors saw the
+  // button and, on clicking it, hit an avoidable 409 ALREADY_MANAGER.
   const { user } = useAuthStore()
   const isSuperAdmin = user?.globalRole === 'SUPER_ADMIN'
   const isAlreadyManagerHere = !isSuperAdmin && (
-    (user?.resourceRoles ?? []).some((r) => r.scopeType === 'FLOOR' && r.floorId === floorId && r.role === 'FLOOR_MANAGER') ||
+    (user?.resourceRoles ?? []).some((r) =>
+      (r.scopeType === 'FLOOR' && r.floorId === floorId && r.role === 'FLOOR_MANAGER') ||
+      (r.scopeType === 'BUILDING' && r.buildingId === floor?.buildingId && r.role === 'BUILDING_ADMIN')
+    ) ||
     (user?.groupMemberships ?? []).some((m) =>
-      (m.group.groupResourceRoles ?? []).some((r) => r.scopeType === 'FLOOR' && r.floorId === floorId && r.role === 'FLOOR_MANAGER')
+      (m.group.groupResourceRoles ?? []).some((r) =>
+        (r.scopeType === 'FLOOR' && r.floorId === floorId && r.role === 'FLOOR_MANAGER') ||
+        (r.scopeType === 'BUILDING' && r.buildingId === floor?.buildingId && r.role === 'BUILDING_ADMIN')
+      )
     )
   )
   const { data: myManagerRequests } = useMyManagerRequests()

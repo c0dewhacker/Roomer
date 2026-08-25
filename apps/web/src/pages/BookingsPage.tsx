@@ -675,29 +675,6 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
-// The API stores startTime/endTime/dayOfWeek as UTC wall-clock values (see the
-// comment in DeskPanel's createRecurring) — displaying them as-is shows a
-// Sydney user's local 13:00–18:00 booking as "03:00–08:00", which reads as
-// wrong even though the underlying bookings are scheduled correctly. Anchor
-// each HH:MM to a UTC date matching the stored dayOfWeek (1970-01-04 was a UTC
-// Sunday) and read the local wall-clock fields back off that same instant —
-// this recovers the correct local time and day regardless of which direction
-// the UTC conversion shifted the calendar day.
-function utcRuleTimeToLocal(startTime: string, endTime: string, dayOfWeek?: number | null) {
-  const toDate = (t: string) => {
-    const [h, m] = t.split(':').map(Number)
-    return new Date(Date.UTC(1970, 0, 4 + (dayOfWeek ?? 0), h, m))
-  }
-  const start = toDate(startTime)
-  const end = toDate(endTime)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return {
-    start: `${pad(start.getHours())}:${pad(start.getMinutes())}`,
-    end: `${pad(end.getHours())}:${pad(end.getMinutes())}`,
-    dayOfWeek: dayOfWeek != null ? start.getDay() : null,
-  }
-}
-
 function EditRecurringEndDateDialog({
   rule,
   open,
@@ -828,7 +805,13 @@ function RecurringRuleCard({ rule }: { rule: RecurringBookingRule }) {
   const assetLabel = rule.asset?.bookingLabel ?? rule.asset?.name ?? 'Unknown asset'
   const location = [rule.asset?.floor?.building.name, rule.asset?.floor?.name].filter(Boolean).join(' › ')
   const upcomingCount = rule.bookings?.length ?? rule._count?.bookings ?? 0
-  const local = utcRuleTimeToLocal(rule.startTime, rule.endTime, rule.dayOfWeek)
+  // startTime/endTime/dayOfWeek are stored (and sent by DeskPanel's
+  // createRecurring) as plain wall-clock values in the asset's building's
+  // own timezone, unconverted — displayed as-is, not reinterpreted through
+  // the viewer's browser timezone, so "9am every Monday" reads as 9am in
+  // that building regardless of who's looking at this list (see #72 and
+  // DeskPanel's createRecurring comment for why that's the intended
+  // behaviour, not an oversight).
 
   return (
     <>
@@ -849,9 +832,9 @@ function RecurringRuleCard({ rule }: { rule: RecurringBookingRule }) {
               )}
               <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
                 <Repeat className="h-3 w-3 shrink-0" />
-                {rule.frequency === 'DAILY' && `Every day, ${local.start}–${local.end}`}
-                {rule.frequency === 'WEEKLY' && local.dayOfWeek != null && `Every ${DAY_NAMES[local.dayOfWeek]}, ${local.start}–${local.end}`}
-                {rule.frequency === 'MONTHLY' && `Monthly, ${local.start}–${local.end}`}
+                {rule.frequency === 'DAILY' && `Every day, ${rule.startTime}–${rule.endTime}`}
+                {rule.frequency === 'WEEKLY' && rule.dayOfWeek != null && `Every ${DAY_NAMES[rule.dayOfWeek]}, ${rule.startTime}–${rule.endTime}`}
+                {rule.frequency === 'MONTHLY' && `Monthly, ${rule.startTime}–${rule.endTime}`}
               </p>
               <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
                 <Calendar className="h-3 w-3 shrink-0" />
@@ -875,12 +858,13 @@ function RecurringRuleCard({ rule }: { rule: RecurringBookingRule }) {
                   size="icon"
                   className="h-8 w-8 text-muted-foreground hover:text-foreground"
                   onClick={() => setEditDateOpen(true)}
+                  aria-label="Edit series end date"
                 >
                   <Pencil className="h-4 w-4" />
                 </Button>
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive">
+                    <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" aria-label="Cancel recurring series">
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </AlertDialogTrigger>

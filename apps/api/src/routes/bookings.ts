@@ -195,20 +195,32 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
-    const bookings = await prisma.booking.findMany({
-      where,
-      // Same reasoning as GET /report — an approver reviewing a guest
-      // booking has no legitimate reason to read the guest's own
-      // check-in credential.
-      omit: { guestCheckInToken: true },
-      include: {
-        user: { select: { id: true, displayName: true, email: true } },
-        asset: { select: { id: true, name: true, floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } } } },
-      },
-      orderBy: { createdAt: 'asc' },
-    })
+    const [bookings, org] = await Promise.all([
+      prisma.booking.findMany({
+        where,
+        // Same reasoning as GET /report — an approver reviewing a guest
+        // booking has no legitimate reason to read the guest's own
+        // check-in credential.
+        omit: { guestCheckInToken: true },
+        include: {
+          user: { select: { id: true, displayName: true, email: true } },
+          asset: { select: { id: true, name: true, floor: { select: { id: true, name: true, building: { select: { id: true, name: true, timezone: true } } } } } },
+        },
+        orderBy: { createdAt: 'asc' },
+      }),
+      prisma.organisation.findFirst({ select: { defaultTimezone: true } }),
+    ])
 
-    return reply.status(200).send({ data: bookings })
+    // Same resolvedTimezone convention as GET /bookings (#72) — without it,
+    // an approver has no way to tell what time they're actually approving:
+    // startsAt/endsAt are UTC instants, and the admin UI has no other source
+    // for which building-local time they correspond to.
+    const data = bookings.map((b) => ({
+      ...b,
+      resolvedTimezone: b.asset.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC',
+    }))
+
+    return reply.status(200).send({ data })
   })
 
   // GET /bookings — current user's bookings

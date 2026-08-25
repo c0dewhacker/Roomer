@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ClipboardCheck, Check, X, Building2, Clock, Repeat } from 'lucide-react'
-import { formatDate } from '@/lib/utils'
+import { formatDateRange, formatDateTime } from '@/lib/utils'
 import { usePendingBookingApprovals, useApproveBooking, useRejectBooking } from '@/hooks/useBookingApprovals'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,7 @@ import type { Booking } from '@/types'
 type PendingBooking = Booking & {
   user: { id: string; displayName: string; email: string }
   asset: { id: string; name: string; floor?: { id: string; name: string; building: { id: string; name: string } } }
+  resolvedTimezone?: string
 }
 
 function RejectDialog({
@@ -115,12 +116,12 @@ export default function ApprovalsAdminPage() {
                     {b.asset.floor && ` · ${b.asset.floor.name}, ${b.asset.floor.building.name}`}
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    {formatDate(b.startsAt)} – {formatDate(b.endsAt)}
+                    {formatDateRange(b.startsAt, b.endsAt, b.resolvedTimezone)}
                   </p>
                   {b.notes && <p className="text-sm text-muted-foreground italic">"{b.notes}"</p>}
                   <p className="text-xs text-muted-foreground flex items-center gap-1">
                     <Clock className="h-3 w-3" />
-                    {b.approvalExpiresAt && `Auto-rejected if not reviewed by ${formatDate(b.approvalExpiresAt)}`}
+                    {b.approvalExpiresAt && `Auto-rejected if not reviewed by ${formatDateTime(b.approvalExpiresAt, b.resolvedTimezone)}`}
                   </p>
                 </div>
                 <div className="flex gap-2 shrink-0">
