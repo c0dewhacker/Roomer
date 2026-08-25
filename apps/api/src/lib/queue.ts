@@ -13,6 +13,7 @@ import { toZonedTime } from 'date-fns-tz'
 import { getBuildingAdminUserIds } from '../middleware/requireRole.js'
 import { sendPushNotification } from './push.js'
 import { recordAuditLog } from './audit.js'
+import { checkGroupAccess } from '../routes/groups.js'
 
 // Types worth interrupting someone's phone for — the rest stay in-app/email
 // only. Scoped per the #76 phase-2 design discussion: the 3 originally named
@@ -2112,6 +2113,16 @@ export async function fanOutFloorAvailable(
   const now = new Date()
   const cooldown = new Date(now.getTime() - 30 * 60000)
 
+  // A subscription outlives whatever group access made it possible to create
+  // — group membership, or the group's building/floor grant, can both be
+  // revoked afterward with nothing pruning the now-stale FloorSubscription
+  // row. Without re-checking here, a subscriber who's lost access still
+  // learns the identity of a freed desk/zone via this notification, even
+  // though GET /floors/:id and booking creation would both correctly 403
+  // them from acting on it.
+  const floor = await prisma.floor.findUnique({ where: { id: floorId }, select: { buildingId: true } })
+  if (!floor) return
+
   // Two desks on the same floor can become available within milliseconds of
   // each other (e.g. the no-show-release sweep processing several bookings on
   // one floor). Without a lock, two concurrent calls both read the same set of
@@ -2144,14 +2155,18 @@ export async function fanOutFloorAvailable(
       select: { id: true, userId: true },
     })
 
-    if (subs.length > 0) {
+    const accessible = (await Promise.all(
+      subs.map(async (s) => ({ sub: s, ok: await checkGroupAccess(s.userId, floor.buildingId, floorId) })),
+    )).filter((r) => r.ok).map((r) => r.sub)
+
+    if (accessible.length > 0) {
       await tx.floorSubscription.updateMany({
-        where: { id: { in: subs.map((s) => s.id) } },
+        where: { id: { in: accessible.map((s) => s.id) } },
         data: { lastNotifiedAt: now },
       })
     }
 
-    return subs
+    return accessible
   })
 
   if (subscriptions.length === 0) return
