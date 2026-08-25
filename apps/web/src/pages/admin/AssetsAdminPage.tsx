@@ -102,7 +102,15 @@ const assetSchema = z.object({
   bookingStatus: z.enum(['OPEN', 'RESTRICTED', 'ASSIGNED', 'DISABLED']).optional(),
   // Empty string = "not a room" (sent as undefined); otherwise a positive
   // occupant count. Kept as a string in the form so the input can be blank.
-  capacity: z.string().optional(),
+  // Mirrors the backend's z.number().int().positive().max(1000) — without
+  // this, 0/negative/decimal/>1000 all passed client-side and only failed
+  // server-side with a generic "Validation failed" toast and no indication
+  // of which field was wrong.
+  capacity: z.string().optional().refine((v) => {
+    if (!v) return true
+    const n = Number(v)
+    return Number.isInteger(n) && n >= 1 && n <= 1000
+  }, 'Capacity must be a whole number between 1 and 1000'),
   notes: z.string().optional(),
 })
 type AssetForm = z.infer<typeof assetSchema>
@@ -294,6 +302,7 @@ function AssetDialog({
                     className="mt-1.5"
                     placeholder="e.g. 8 for a meeting room"
                   />
+                  {errors.capacity && <p className="text-xs text-destructive mt-1">{errors.capacity.message}</p>}
                   <p className="text-xs text-muted-foreground mt-1">
                     Rooms with a capacity render as a rectangle on the floor plan and warn (but don't block) if a booking's attendee count is larger.
                   </p>
@@ -441,7 +450,11 @@ const categorySchema = z.object({
   description: z.string().optional(),
   defaultIsBookable: z.boolean().optional(),
   defaultIcon: z.string().optional(),
-  colour: z.string().optional(),
+  // Mirrors the backend's z.string().regex(/^#[0-9a-fA-F]{6}$/) — without
+  // this, free text typed into the colour field next to the picker (e.g.
+  // "red", or a 3-digit hex shorthand like "#fff") passed client-side and
+  // only failed server-side with a generic "Validation failed" toast.
+  colour: z.string().optional().refine((v) => !v || /^#[0-9a-fA-F]{6}$/.test(v), 'Must be a 6-digit hex colour, e.g. #6366f1'),
 })
 type CategoryForm = z.infer<typeof categorySchema>
 
@@ -558,12 +571,13 @@ function CategoryDialog({ open, onClose, existing }: { open: boolean; onClose: (
               />
               <Input
                 value={colour ?? ''}
-                onChange={(e) => setValue('colour', e.target.value)}
+                onChange={(e) => setValue('colour', e.target.value, { shouldValidate: true })}
                 className="w-32 font-mono"
                 placeholder="#6366f1"
               />
               <div className="h-7 w-7 rounded border" style={{ backgroundColor: colour ?? '#6366f1' }} />
             </div>
+            {errors.colour && <p className="text-xs text-destructive mt-1">{errors.colour.message}</p>}
           </div>
           <div>
             <Label>Custom Icon Image</Label>
@@ -622,6 +636,22 @@ function CategoryDialog({ open, onClose, existing }: { open: boolean; onClose: (
 // --- Assets Tab ---
 function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; isSuperAdmin: boolean }) {
   const qc = useQueryClient()
+  const user = useAuthStore((s) => s.user)
+  // Mirrors the backend's own DELETE /assets/:id authorization
+  // (isFloorManagerForFloor) — floor managers can legitimately delete an
+  // asset on their own floor, but this page only ever showed the Delete
+  // control to SUPER_ADMIN, leaving them with no UI path to an action the
+  // API would actually allow. Same floor-scoped pattern DeskPanel.tsx's own
+  // canManageDesk already uses (does not additionally check BUILDING_ADMIN
+  // inheritance — a separate, pre-existing gap in that same pattern, not
+  // introduced or fixed here).
+  const canManageAsset = (asset: Asset) =>
+    isSuperAdmin || (!!asset.floorId && (
+      (user?.resourceRoles ?? []).some((r) => r.scopeType === 'FLOOR' && r.floorId === asset.floorId && r.role === 'FLOOR_MANAGER') ||
+      (user?.groupMemberships ?? []).some((m) =>
+        (m.group.groupResourceRoles ?? []).some((r) => r.scopeType === 'FLOOR' && r.floorId === asset.floorId && r.role === 'FLOOR_MANAGER')
+      )
+    ))
   const [search, setSearch] = useState('')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Asset | undefined>()
@@ -808,10 +838,10 @@ function AssetsTab({ categories, isSuperAdmin }: { categories: AssetCategory[]; 
                             </Button>
                           )
                         )}
-                        {isSuperAdmin && (
+                        {canManageAsset(asset) && (
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
-                              <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive">
+                              <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive" title="Delete">
                                 <Trash2 className="h-4 w-4" />
                               </Button>
                             </AlertDialogTrigger>
@@ -943,12 +973,12 @@ function CategoriesTab() {
                   </div>
                 </div>
                 <div className="flex items-center gap-1">
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditTarget(cat); setDialogOpen(true) }}>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" title="Edit" onClick={() => { setEditTarget(cat); setDialogOpen(true) }}>
                     <Pencil className="h-4 w-4" />
                   </Button>
                   <AlertDialog>
                     <AlertDialogTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive">
+                      <Button variant="ghost" size="icon" className="h-8 w-8 hover:text-destructive" title="Delete">
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </AlertDialogTrigger>

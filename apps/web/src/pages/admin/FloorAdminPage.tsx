@@ -774,12 +774,12 @@ function ZoneSection({
             onClick={() => setAddAsset(true)}>
             <Plus className="h-3 w-3" /> Add asset
           </Button>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setEditZone(true)}>
+          <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit zone" onClick={() => setEditZone(true)}>
             <Pencil className="h-3.5 w-3.5" />
           </Button>
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive">
+              <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" title="Delete zone">
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
             </AlertDialogTrigger>
@@ -827,7 +827,7 @@ function ZoneSection({
                     </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
-                    <Button variant="ghost" size="icon" className="h-7 w-7"
+                    <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit desk"
                       onClick={() => setEditAsset({ ...asset, zoneId: zone.id })}>
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
