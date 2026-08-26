@@ -1151,9 +1151,23 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         deskCountByBuilding.set(buildingId, (deskCountByBuilding.get(buildingId) ?? 0) + d._count.id)
       }
 
+      // Days with zero bookings never produce a row from the GROUP BY query
+      // above, so `days` only holds counts for days that had ≥1 booking.
+      // The average must still be taken over the full requested range —
+      // dividing by `days.length` instead silently drops zero-booking days
+      // from the denominator too, overstating the average (a building
+      // booked only on weekdays would report its weekday-only average as
+      // if that were the whole period's average).
+      // Midnight-to-midnight on both ends (not calendarDateObjects, whose
+      // end value is 23:59:59.999 — mixing that with a midnight start would
+      // over-count by one day for any range).
+      const rangeStartMidnight = new Date(startDateStr + 'T00:00:00.000Z')
+      const rangeEndMidnight = new Date(endDateStr + 'T00:00:00.000Z')
+      const totalDaysInRange = Math.round((rangeEndMidnight.getTime() - rangeStartMidnight.getTime()) / 86_400_000) + 1
+
       const data = [...byBuilding.entries()].map(([buildingId, { buildingName, days }]) => {
         const peak = days.length > 0 ? Math.max(...days) : 0
-        const average = days.length > 0 ? Math.round((days.reduce((s, d) => s + d, 0) / days.length) * 10) / 10 : 0
+        const average = totalDaysInRange > 0 ? Math.round((days.reduce((s, d) => s + d, 0) / totalDaysInRange) * 10) / 10 : 0
         const currentDeskCount = deskCountByBuilding.get(buildingId) ?? 0
         return {
           buildingId,
