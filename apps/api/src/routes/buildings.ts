@@ -4,7 +4,7 @@ import { createBuildingSchema, updateBuildingSchema, GlobalRole } from '@roomer/
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole, getManagedBuildingIds, isBuildingManagerForBuilding, RESOURCE_ROLE_GRANT_LOCK_CLASS } from '../middleware/requireRole.js'
 import { canUserAccessBuilding } from './groups.js'
-import { cancelFutureBookingsForFloors } from '../lib/queue.js'
+import { cancelFutureBookingsForFloors, cancelQueueEntriesForFloors } from '../lib/queue.js'
 import { deleteFile } from '../lib/storage.js'
 import { recordAuditLog } from '../lib/audit.js'
 
@@ -586,6 +586,8 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       // no longer any way to find which bookings were on those floors.
       const floors = await prisma.floor.findMany({ where: { buildingId: id }, select: { id: true } })
       await cancelFutureBookingsForFloors(floors.map((f) => f.id))
+      // Same policy for queue entries — see floors.ts DELETE /:id.
+      await cancelQueueEntriesForFloors(floors.map((f) => f.id))
 
       // Also fetch before the delete — each floor's FloorPlan cascades away
       // with it, but the files on disk don't clean themselves up.

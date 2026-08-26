@@ -312,6 +312,53 @@ export async function cancelQueueEntriesForUser(userId: string): Promise<void> {
 }
 
 /**
+ * Cancel every WAITING/PROMOTED queue entry on the given assets — same shape
+ * as cancelQueueEntriesForUser, just scoped by asset instead of by user.
+ *
+ * QueueEntry.asset is onDelete: Cascade (same as Booking.asset — see
+ * cancelFutureBookingsForAssets's own doc comment), so without this a hard
+ * asset delete (assets.ts DELETE /:id) silently destroys every waiting-list
+ * entry on it with no status transition at all: a WAITING entry never
+ * becomes CANCELLED, and a PROMOTED entry holding a live claimToken (up to
+ * CLAIM_DEADLINE_MS left to claim) simply vanishes mid-window — a later
+ * POST /queue/:id/claim or /queue/claim-by-token just 404s with no
+ * indication the desk was deleted out from under them. Must be called
+ * before the asset delete, same as cancelFutureBookingsForAssets.
+ */
+export async function cancelQueueEntriesForAssets(assetIds: string[]): Promise<void> {
+  if (assetIds.length === 0) return
+  const entries = await prisma.queueEntry.findMany({
+    where: { assetId: { in: assetIds }, status: { in: ['WAITING', 'PROMOTED'] } },
+  })
+  for (const entry of entries) {
+    await prisma.queueEntry.update({ where: { id: entry.id }, data: { status: 'CANCELLED' } })
+    await prisma.queueEntry.updateMany({
+      where: {
+        assetId: entry.assetId,
+        status: 'WAITING',
+        position: { gt: entry.position },
+        wantedStartsAt: { lt: entry.wantedEndsAt },
+        wantedEndsAt: { gt: entry.wantedStartsAt },
+      },
+      data: { position: { decrement: 1 } },
+    })
+  }
+}
+
+/**
+ * Same as cancelQueueEntriesForAssets, scoped by floor instead of a direct
+ * asset id list — mirrors cancelFutureBookingsForFloors/
+ * cancelFutureBookingsForAssets' own floor-vs-asset split. Deleting a floor
+ * (or a building, which cascades floor deletion) hard-deletes every asset on
+ * it, cascading to QueueEntry the same way a direct asset delete does.
+ */
+export async function cancelQueueEntriesForFloors(floorIds: string[]): Promise<void> {
+  if (floorIds.length === 0) return
+  const assets = await prisma.asset.findMany({ where: { floorId: { in: floorIds } }, select: { id: true } })
+  await cancelQueueEntriesForAssets(assets.map((a) => a.id))
+}
+
+/**
  * Release every desk a user is permanently assigned to — same restore-prior-
  * bookingStatus behavior as the single unassign route (assets.ts DELETE
  * /:id/user-assignments/:userId), just applied to every assignment the user

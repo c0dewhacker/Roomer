@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma.js'
 import { GlobalRole, BookableStatus, bulkUpdateAssetPositionsSchema, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole, getManagedFloorIds, getManagedBuildingIds, isFloorManagerForFloor } from '../middleware/requireRole.js'
-import { enqueueNotification, fanOutFloorAvailable, cancelFutureBookingsForAssets } from '../lib/queue.js'
+import { enqueueNotification, fanOutFloorAvailable, cancelFutureBookingsForAssets, cancelQueueEntriesForAssets } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { lockAssetForBooking, lockAssetForQueue, lockUserForBookingQuota, hasBlockingOverlap, checkZoneGroupOverlap, isOverlapConstraintViolation, assertBookable, assertUnderBookingQuota, isWithinAdvanceBookingWindow } from '../lib/booking.js'
 import { resolveQrCheckInMode } from '../lib/qr.js'
@@ -1691,6 +1691,11 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       // skipQueuePromotion: the asset is about to be destroyed, not just
       // unplaced, so there's no slot left for anyone to be promoted into.
       await cancelFutureBookingsForAssets([id], { skipQueuePromotion: true })
+      // QueueEntry.asset is also onDelete:Cascade — without this, a WAITING
+      // entry never transitions to CANCELLED and a PROMOTED entry holding a
+      // live claimToken just vanishes mid-window (see
+      // cancelQueueEntriesForAssets's own doc comment).
+      await cancelQueueEntriesForAssets([id])
 
       const before = await prisma.asset.findUnique({ where: { id }, select: { name: true, categoryId: true, floorId: true, primaryZoneId: true } })
       try {

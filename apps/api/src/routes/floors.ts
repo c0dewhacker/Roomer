@@ -8,7 +8,7 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { isFloorManagerForFloor, isBuildingManagerForBuilding, requireGlobalRole, RESOURCE_ROLE_GRANT_LOCK_CLASS } from '../middleware/requireRole.js'
 import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage.js'
 import { checkGroupAccess } from './groups.js'
-import { cancelFutureBookingsForFloors } from '../lib/queue.js'
+import { cancelFutureBookingsForFloors, cancelQueueEntriesForFloors } from '../lib/queue.js'
 import { recordAuditLog } from '../lib/audit.js'
 import { zonedWallClockToUtc } from '../lib/timezone.js'
 import { z } from 'zod'
@@ -422,6 +422,10 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       // Must run before the delete: once the floor is gone, Asset.floorId is
       // SetNull and there's no longer any way to find which bookings were on it.
       await cancelFutureBookingsForFloors([id])
+      // Same policy for queue entries — a WAITING/PROMOTED entry on a desk
+      // about to become unplaced (and unreachable from any floor plan) is
+      // released the same way its bookings are, not left dangling.
+      await cancelQueueEntriesForFloors([id])
 
       // Also fetch before the delete — FloorPlan cascades away with the floor,
       // but its files on disk don't clean themselves up (same fix as the
