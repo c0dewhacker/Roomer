@@ -5,7 +5,7 @@ import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { getManagedBuildingIds } from '../middleware/requireRole.js'
 import { wantsCsv, sendCsv } from '../lib/csv.js'
-import { resolveBuildingTimezone, zonedWallClockToUtc, calendarDaysUntil } from '../lib/timezone.js'
+import { resolveBuildingTimezone, resolveWorkingHours, zonedWallClockToUtc, calendarDaysUntil } from '../lib/timezone.js'
 import { z } from 'zod'
 
 const analyticsQuerySchema = z.object({
@@ -109,6 +109,42 @@ async function localDayBoundsForBuilding(
   return bounds
 }
 
+/**
+ * Working-hours span in hours for a building (or the org default when
+ * buildingId is null), cached per building the same way
+ * localDayBoundsForBuilding is — a report can span floors across several
+ * differently-configured buildings at once. Used to convert desk-days into
+ * desk-HOURS capacity: the utilisation endpoints below previously divided a
+ * raw count of Booking rows by desk-days, silently assuming "1 booking = 1
+ * full desk-day" — wrong the moment hot-desking splits a day into several
+ * non-overlapping bookings (each one inflates the count, pushing reported
+ * utilisation past 100%) — and separately, the desk-days-style metrics in
+ * /departments and /manager-rollup divided booked hours by a hardcoded 8,
+ * ignoring the org/building's actual configured working hours (default
+ * 07:00-19:00, a 12-hour span, understating desk-days by 50% at default
+ * settings alone).
+ */
+async function workingHoursSpanForBuilding(
+  buildingId: string | null,
+  cache: Map<string | null, number>,
+): Promise<number> {
+  const cached = cache.get(buildingId)
+  if (cached !== undefined) return cached
+  const hours = await resolveWorkingHours(prisma, buildingId)
+  const [sh, sm] = hours.start.split(':').map(Number)
+  const [eh, em] = hours.end.split(':').map(Number)
+  const span = (eh * 60 + em - (sh * 60 + sm)) / 60
+  cache.set(buildingId, span > 0 ? span : 8)
+  return cache.get(buildingId)!
+}
+
+/** Hours of overlap between [aStart, aEnd) and [bStart, bEnd), never negative. */
+function overlapHours(aStart: Date, aEnd: Date, bStart: Date, bEnd: Date): number {
+  const start = aStart > bStart ? aStart : bStart
+  const end = aEnd < bEnd ? aEnd : bEnd
+  return Math.max(0, (end.getTime() - start.getTime()) / 3600000)
+}
+
 function countWorkingDays(start: Date, end: Date): number {
   // start/end are always parsed with an explicit UTC 'Z' suffix — use the UTC
   // variants throughout so both the weekday check and the day-by-day walk
@@ -199,7 +235,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
                       status: { in: ['CONFIRMED', 'COMPLETED'] },
                       startsAt: { gte: widenedStart, lte: widenedEnd },
                     },
-                    select: { id: true, startsAt: true },
+                    select: { id: true, startsAt: true, endsAt: true, assetId: true },
                   },
                 },
               },
@@ -209,17 +245,31 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       })
 
       const buildingDayBoundsCache = new Map<string | null, { start: Date; endExclusive: Date }>()
+      const workingHoursCache = new Map<string | null, number>()
       const data = (await Promise.all(floors.flatMap((floor) =>
         floor.zones.map(async (zone) => {
           const { start, endExclusive } = await localDayBoundsForBuilding(floor.building.id, startDateStr, endDateStr, buildingDayBoundsCache)
+          const hoursPerDay = await workingHoursSpanForBuilding(floor.building.id, workingHoursCache)
           const bookableDesks = zone.assets.filter((a) => a.bookingStatus === 'OPEN' || a.bookingStatus === 'RESTRICTED')
           const assignedDesks = zone.assets.filter((a) => a.bookingStatus === 'ASSIGNED')
           const disabledDesks = zone.assets.filter((a) => a.bookingStatus === 'DISABLED')
+          // Informational raw count — unrelated to the utilisation % below,
+          // which is hours-based (see workingHoursSpanForBuilding's comment).
           const bookingCount = zone.assets.reduce((sum, a) => sum + a.bookings.filter((b) => b.startsAt >= start && b.startsAt < endExclusive).length, 0)
           // Capacity = OPEN + RESTRICTED + ASSIGNED (non-disabled); DISABLED are out of service
           const activeDesks = bookableDesks.length + assignedDesks.length
-          const capacity = activeDesks * workingDays
-          const utilisation = capacity > 0 ? Math.round((bookingCount / capacity) * 100) : 0
+          // Booked hours only from currently-active (non-disabled) desks,
+          // matching the denominator — an asset that was heavily used before
+          // being disabled shouldn't drag this zone's utilisation toward 0%
+          // just because its own capacity is now excluded; its history is out
+          // of scope for a "current desk utilisation" figure the same way its
+          // capacity already is.
+          const activeAssetIds = new Set([...bookableDesks, ...assignedDesks].map((a) => a.id))
+          const bookedHours = zone.assets
+            .filter((a) => activeAssetIds.has(a.id))
+            .reduce((sum, a) => sum + a.bookings.reduce((s, b) => s + overlapHours(b.startsAt, b.endsAt, start, endExclusive), 0), 0)
+          const capacity = activeDesks * workingDays * hoursPerDay
+          const utilisation = capacity > 0 ? Math.round((bookedHours / capacity) * 100) : 0
 
           return {
             floorId: floor.id,
@@ -411,24 +461,38 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
 
       const bookingWhere: Record<string, unknown> = { startsAt: { gte: widenedStart, lte: widenedEnd }, ...bookingBuildingFilter }
 
-      const [widenedBookings, bookableDesks, assignedDesks, disabledDesks, queueDepth] = await Promise.all([
+      const [widenedBookings, bookableAssets, assignedAssets, disabledDesks, queueDepth] = await Promise.all([
         prisma.booking.findMany({
           where: { ...bookingWhere, status: { in: ['CONFIRMED', 'CANCELLED', 'COMPLETED'] } },
-          select: { status: true, noShow: true, userId: true, startsAt: true, asset: { select: { floor: { select: { buildingId: true } } } } },
+          select: { id: true, assetId: true, status: true, noShow: true, userId: true, startsAt: true, endsAt: true, asset: { select: { floor: { select: { buildingId: true } } } } },
         }),
-        // OPEN + RESTRICTED = freely bookable assets
-        prisma.asset.count({ where: { isBookable: true, bookingStatus: { in: ['OPEN', 'RESTRICTED'] }, ...assetBuildingFilter } }),
-        prisma.asset.count({ where: { isBookable: true, bookingStatus: 'ASSIGNED', ...assetBuildingFilter } }),
+        // Fetched per-asset (not just counted) with each one's building —
+        // capacity below needs to sum per-building desk-hours, since
+        // buildings in scope can have different working-hours configs, not
+        // a single combined desk count times one hours-per-day figure.
+        prisma.asset.findMany({
+          where: { isBookable: true, bookingStatus: { in: ['OPEN', 'RESTRICTED'] }, ...assetBuildingFilter },
+          select: { id: true, floor: { select: { buildingId: true } } },
+        }),
+        prisma.asset.findMany({
+          where: { isBookable: true, bookingStatus: 'ASSIGNED', ...assetBuildingFilter },
+          select: { id: true, floor: { select: { buildingId: true } } },
+        }),
         prisma.asset.count({ where: { isBookable: true, bookingStatus: 'DISABLED', ...assetBuildingFilter } }),
         prisma.queueEntry.count({ where: { status: 'WAITING', ...queueBuildingFilter } }),
       ])
+      const bookableDesks = bookableAssets.length
+      const assignedDesks = assignedAssets.length
+      const activeAssets = [...bookableAssets, ...assignedAssets]
 
       const summaryDayBoundsCache = new Map<string | null, { start: Date; endExclusive: Date }>()
+      const summaryHoursCache = new Map<string | null, number>()
+      const activeAssetIds = new Set(activeAssets.map((a) => a.id))
       const inRangeBookings = []
       for (const b of widenedBookings) {
         const buildingId = b.asset.floor?.buildingId ?? null
         const { start, endExclusive } = await localDayBoundsForBuilding(buildingId, startDateStr, endDateStr, summaryDayBoundsCache)
-        if (b.startsAt >= start && b.startsAt < endExclusive) inRangeBookings.push(b)
+        if (b.startsAt >= start && b.startsAt < endExclusive) inRangeBookings.push({ ...b, buildingId, rangeStart: start, rangeEnd: endExclusive })
       }
       const confirmed = inRangeBookings.filter((b) => b.status === 'CONFIRMED').length
       const cancelled = inRangeBookings.filter((b) => b.status === 'CANCELLED').length
@@ -436,15 +500,25 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       const completed = inRangeBookings.filter((b) => b.status === 'COMPLETED').length
       const uniqueBookers = new Set(inRangeBookings.filter((b) => b.status === 'CONFIRMED' || b.status === 'COMPLETED').map((b) => b.userId))
 
-      const totalDesks = bookableDesks + assignedDesks + disabledDesks
+      const totalDesks = activeAssets.length + disabledDesks
       const totalAttempted = confirmed + cancelled + completed
       // "cancelled" includes no-show releases — separate them so each rate is distinct.
       const manualCancelled = Math.max(0, cancelled - noShowCount)
       const cancellationRate = totalAttempted > 0 ? Math.round((manualCancelled / totalAttempted) * 100) : 0
       const noShowRate = totalAttempted > 0 ? Math.round((noShowCount / totalAttempted) * 100) : 0
-      // Capacity = all non-disabled desks (OPEN + RESTRICTED + ASSIGNED); disabled are truly out of service
-      const activeDesks = bookableDesks + assignedDesks
-      const totalCapacity = activeDesks * workingDays
+      // Capacity = Σ over each in-scope building of (its non-disabled desk
+      // count × workingDays × its own working-hours span) — buildings can
+      // be configured with different working hours, so this can't collapse
+      // to one combined desk count times a single hours-per-day figure.
+      const desksByBuilding = new Map<string | null, number>()
+      for (const a of activeAssets) {
+        const buildingId = a.floor?.buildingId ?? null
+        desksByBuilding.set(buildingId, (desksByBuilding.get(buildingId) ?? 0) + 1)
+      }
+      let totalCapacity = 0
+      for (const [buildingId, count] of desksByBuilding) {
+        totalCapacity += count * workingDays * (await workingHoursSpanForBuilding(buildingId, summaryHoursCache))
+      }
       // "Happened" = confirmed (still upcoming/in-progress) + completed
       // (handleAutoCompleteBookings flips a booking's status 30 minutes
       // after it ends) — the headline booking/utilisation figures below
@@ -452,8 +526,13 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       // `confirmed` alone silently collapsed toward zero for any
       // backward-looking range, since almost every booking in the past has
       // already transitioned to COMPLETED by the time anyone views this.
+      // Hours-based (not a raw event count) and scoped to currently-active
+      // desks only, same reasoning as /utilisation and /floor-utilisation.
       const happened = confirmed + completed
-      const overallUtilisationPct = totalCapacity > 0 ? Math.round((happened / totalCapacity) * 100) : 0
+      const happenedHours = inRangeBookings
+        .filter((b) => (b.status === 'CONFIRMED' || b.status === 'COMPLETED') && activeAssetIds.has(b.assetId))
+        .reduce((sum, b) => sum + overlapHours(b.startsAt, b.endsAt, b.rangeStart, b.rangeEnd), 0)
+      const overallUtilisationPct = totalCapacity > 0 ? Math.round((happenedHours / totalCapacity) * 100) : 0
 
       return reply.status(200).send({
         data: {
@@ -677,7 +756,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
                     // CONFIRMED so historical usage isn't undercounted once
                     // handleAutoCompleteBookings flips old bookings' status.
                     where: { status: { in: ['CONFIRMED', 'COMPLETED'] }, startsAt: { gte: widenedStart, lte: widenedEnd } },
-                    select: { id: true, startsAt: true },
+                    select: { id: true, startsAt: true, endsAt: true, assetId: true },
                   },
                 },
               },
@@ -688,15 +767,27 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       })
 
       const floorUtilDayBoundsCache = new Map<string | null, { start: Date; endExclusive: Date }>()
+      const floorUtilHoursCache = new Map<string | null, number>()
       const data = await Promise.all(floors.map(async (floor) => {
         const { start, endExclusive } = await localDayBoundsForBuilding(floor.building.id, startDateStr, endDateStr, floorUtilDayBoundsCache)
+        const hoursPerDay = await workingHoursSpanForBuilding(floor.building.id, floorUtilHoursCache)
         const allAssets = floor.zones.flatMap((z) => z.assets)
-        const bookableDesks = allAssets.filter((a) => a.bookingStatus === 'OPEN' || a.bookingStatus === 'RESTRICTED').length
-        const assignedDesks = allAssets.filter((a) => a.bookingStatus === 'ASSIGNED').length
+        const bookableAssets = allAssets.filter((a) => a.bookingStatus === 'OPEN' || a.bookingStatus === 'RESTRICTED')
+        const assignedAssets = allAssets.filter((a) => a.bookingStatus === 'ASSIGNED')
         const disabledDesks = allAssets.filter((a) => a.bookingStatus === 'DISABLED').length
+        const bookableDesks = bookableAssets.length
+        const assignedDesks = assignedAssets.length
+        // Informational raw count — unrelated to the hours-based utilisation
+        // % below (see workingHoursSpanForBuilding's comment on /utilisation).
         const bookingCount = allAssets.reduce((s, a) => s + a.bookings.filter((b) => b.startsAt >= start && b.startsAt < endExclusive).length, 0)
+        // See /utilisation above — booked hours scoped to currently-active
+        // (non-disabled) desks only, matching the capacity denominator.
+        const activeAssetIds = new Set([...bookableAssets, ...assignedAssets].map((a) => a.id))
+        const bookedHours = allAssets
+          .filter((a) => activeAssetIds.has(a.id))
+          .reduce((sum, a) => sum + a.bookings.reduce((s, b) => s + overlapHours(b.startsAt, b.endsAt, start, endExclusive), 0), 0)
         // Capacity = all non-disabled assets; DISABLED are out of service and excluded
-        const capacity = (bookableDesks + assignedDesks) * workingDays
+        const capacity = (bookableDesks + assignedDesks) * workingDays * hoursPerDay
         return {
           floorId: floor.id,
           floorName: floor.name,
@@ -707,7 +798,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           assignedDesks,
           disabledDesks,
           bookingCount,
-          utilisationPct: capacity > 0 ? Math.round((bookingCount / capacity) * 100) : 0,
+          utilisationPct: capacity > 0 ? Math.round((bookedHours / capacity) * 100) : 0,
         }
       }))
 
@@ -886,42 +977,89 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       const orgDefaultTz = await resolveBuildingTimezone(prisma, null)
 
       const rows = await prisma.$queryRaw<DeptRow[]>`
-        WITH booking_tz AS (
-          SELECT b.id AS booking_id, COALESCE(bld.timezone, ${orgDefaultTz}) AS tz
+        WITH org_defaults AS (
+          SELECT "workingHoursStart", "workingHoursEnd" FROM "Organisation" LIMIT 1
+        ),
+        booking_tz AS (
+          SELECT
+            b.id AS booking_id,
+            COALESCE(bld.timezone, ${orgDefaultTz}) AS tz,
+            -- Working-hours span for THIS booking's own building (falling
+            -- back to the org default), used below instead of a hardcoded
+            -- 8-hour day — the org default alone is a 12-hour window
+            -- (07:00-19:00), so dividing by 8 unconditionally overstated
+            -- desk-days by 50% at default settings.
+            EXTRACT(EPOCH FROM (
+              COALESCE(bld."workingHoursEnd", od."workingHoursEnd", '19:00')::time
+              - COALESCE(bld."workingHoursStart", od."workingHoursStart", '07:00')::time
+            )) / 3600 AS hours_span
           FROM "Booking" b
           LEFT JOIN "Asset" a ON a.id = b."assetId"
           LEFT JOIN "Floor" f ON f.id = a."floorId"
           LEFT JOIN "Building" bld ON bld.id = f."buildingId"
+          CROSS JOIN org_defaults od
         )
-        SELECT
-          d.id                                                                         AS "departmentId",
-          d.name                                                                       AS "departmentName",
-          COUNT(DISTINCT b.id)::bigint                                                 AS "bookingCount",
-          ROUND(
-            CAST(
-              COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0)
-              AS NUMERIC
-            ), 2
-          )::text                                                                      AS "deskDays",
-          COUNT(DISTINCT u.id)::bigint                                                 AS "memberCount"
-        FROM "Department" d
-        LEFT JOIN "User" u   ON u."departmentId" = d.id
-        LEFT JOIN "Booking" b ON b."userId" = u.id
-          AND b.status IN ('CONFIRMED', 'COMPLETED')
-          AND EXISTS (
-            SELECT 1 FROM booking_tz bt
-            WHERE bt.booking_id = b.id
-              AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE bt.tz) >= ${startLocal}::timestamp
-              AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE bt.tz) <= ${endLocal}::timestamp
-          )
-          ${buildingFilter}
-        GROUP BY d.id, d.name
-        ORDER BY ROUND(
-          CAST(
-            COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0)
-            AS NUMERIC
-          ), 2
-        ) DESC NULLS LAST
+        SELECT * FROM (
+        (
+          SELECT
+            d.id                                                                         AS "departmentId",
+            d.name                                                                       AS "departmentName",
+            COUNT(DISTINCT b.id)::bigint                                                 AS "bookingCount",
+            ROUND(
+              CAST(
+                COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / NULLIF(bt.hours_span, 0)), 0)
+                AS NUMERIC
+              ), 2
+            )::text                                                                       AS "deskDays",
+            COUNT(DISTINCT u.id)::bigint                                                 AS "memberCount"
+          FROM "Department" d
+          LEFT JOIN "User" u   ON u."departmentId" = d.id
+          LEFT JOIN "Booking" b ON b."userId" = u.id
+            AND b.status IN ('CONFIRMED', 'COMPLETED')
+            AND EXISTS (
+              SELECT 1 FROM booking_tz btx
+              WHERE btx.booking_id = b.id
+                AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE btx.tz) >= ${startLocal}::timestamp
+                AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE btx.tz) <= ${endLocal}::timestamp
+            )
+            ${buildingFilter}
+          LEFT JOIN booking_tz bt ON bt.booking_id = b.id
+          GROUP BY d.id, d.name
+        )
+        UNION ALL
+        -- Users with no department assigned previously vanished from this
+        -- report entirely (FROM "Department" can never match a NULL
+        -- departmentId), silently understating total org-wide activity —
+        -- surfaced here as an explicit "Unassigned" row instead, only when
+        -- at least one such user actually exists.
+        (
+          SELECT
+            'unassigned'                                                                 AS "departmentId",
+            'Unassigned'                                                                 AS "departmentName",
+            COUNT(DISTINCT b.id)::bigint                                                 AS "bookingCount",
+            ROUND(
+              CAST(
+                COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / NULLIF(bt.hours_span, 0)), 0)
+                AS NUMERIC
+              ), 2
+            )::text                                                                       AS "deskDays",
+            COUNT(DISTINCT u.id)::bigint                                                 AS "memberCount"
+          FROM "User" u
+          LEFT JOIN "Booking" b ON b."userId" = u.id
+            AND b.status IN ('CONFIRMED', 'COMPLETED')
+            AND EXISTS (
+              SELECT 1 FROM booking_tz btx
+              WHERE btx.booking_id = b.id
+                AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE btx.tz) >= ${startLocal}::timestamp
+                AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE btx.tz) <= ${endLocal}::timestamp
+            )
+            ${buildingFilter}
+          LEFT JOIN booking_tz bt ON bt.booking_id = b.id
+          WHERE u."departmentId" IS NULL
+          HAVING COUNT(u.id) > 0
+        )
+        ) combined
+        ORDER BY "deskDays"::numeric DESC NULLS LAST
       `
 
       const data = rows.map((r) => ({
@@ -979,20 +1117,32 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         : Prisma.empty
       const orgDefaultTz = await resolveBuildingTimezone(prisma, null)
       const bookingTzCte = Prisma.sql`
+        org_defaults AS (
+          SELECT "workingHoursStart", "workingHoursEnd" FROM "Organisation" LIMIT 1
+        ),
         booking_tz AS (
-          SELECT b.id AS booking_id, COALESCE(bld.timezone, ${orgDefaultTz}) AS tz
+          SELECT
+            b.id AS booking_id,
+            COALESCE(bld.timezone, ${orgDefaultTz}) AS tz,
+            -- See /departments above — this booking's own building's
+            -- working-hours span, not a hardcoded 8-hour day.
+            EXTRACT(EPOCH FROM (
+              COALESCE(bld."workingHoursEnd", od."workingHoursEnd", '19:00')::time
+              - COALESCE(bld."workingHoursStart", od."workingHoursStart", '07:00')::time
+            )) / 3600 AS hours_span
           FROM "Booking" b
           LEFT JOIN "Asset" a ON a.id = b."assetId"
           LEFT JOIN "Floor" f ON f.id = a."floorId"
           LEFT JOIN "Building" bld ON bld.id = f."buildingId"
+          CROSS JOIN org_defaults od
         )
       `
       const dateRangeExists = Prisma.sql`
         AND EXISTS (
-          SELECT 1 FROM booking_tz bt
-          WHERE bt.booking_id = b.id
-            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE bt.tz) >= ${startLocal}::timestamp
-            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE bt.tz) <= ${endLocal}::timestamp
+          SELECT 1 FROM booking_tz btx
+          WHERE btx.booking_id = b.id
+            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE btx.tz) >= ${startLocal}::timestamp
+            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE btx.tz) <= ${endLocal}::timestamp
         )
       `
 
@@ -1009,12 +1159,13 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         SELECT
           COUNT(DISTINCT s.id)::bigint AS "peopleCount",
           COUNT(DISTINCT b.id)::bigint AS "bookingCount",
-          ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0) AS NUMERIC), 2)::text AS "deskDays"
+          ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / NULLIF(bt.hours_span, 0)), 0) AS NUMERIC), 2)::text AS "deskDays"
         FROM subtree s
         LEFT JOIN "Booking" b ON b."userId" = s.id
           AND b.status IN ('CONFIRMED', 'COMPLETED')
           ${dateRangeExists}
           ${buildingFilter}
+        LEFT JOIN booking_tz bt ON bt.booking_id = b.id
       `
 
       type BranchRow = Totals & { rootId: string; rootName: string }
@@ -1031,15 +1182,16 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           ru."displayName" AS "rootName",
           COUNT(DISTINCT br.id)::bigint AS "peopleCount",
           COUNT(DISTINCT b.id)::bigint AS "bookingCount",
-          ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0) AS NUMERIC), 2)::text AS "deskDays"
+          ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / NULLIF(bt.hours_span, 0)), 0) AS NUMERIC), 2)::text AS "deskDays"
         FROM branch br
         JOIN "User" ru ON ru.id = br.root
         LEFT JOIN "Booking" b ON b."userId" = br.id
           AND b.status IN ('CONFIRMED', 'COMPLETED')
           ${dateRangeExists}
           ${buildingFilter}
+        LEFT JOIN booking_tz bt ON bt.booking_id = b.id
         GROUP BY br.root, ru."displayName"
-        ORDER BY ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0) AS NUMERIC), 2) DESC NULLS LAST
+        ORDER BY ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / NULLIF(bt.hours_span, 0)), 0) AS NUMERIC), 2) DESC NULLS LAST
       `
 
       return reply.status(200).send({
