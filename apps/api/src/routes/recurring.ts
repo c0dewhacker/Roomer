@@ -422,7 +422,7 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       return reply.status(400).send({ error: { message: 'lastDate must be on or after the series start date', code: 'VALIDATION_ERROR' } })
     }
 
-    const org = await prisma.organisation.findFirst({ select: { maxRecurringBookingWeeks: true } })
+    const org = await prisma.organisation.findFirst({ select: { maxRecurringBookingWeeks: true, maxAdvanceBookingDays: true } })
     const maxWeeks = org?.maxRecurringBookingWeeks ?? 12
     const spanWeeks = (newLastDateObj.getTime() - rule.firstDate.getTime()) / (7 * 24 * 60 * 60 * 1000)
     if (spanWeeks > maxWeeks) {
@@ -477,6 +477,26 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
           if (newDates.length === 0) {
             throw Object.assign(new Error('NO_OCCURRENCES'), { code: 'NO_OCCURRENCES' })
           }
+
+          // Same advance-booking cap as series creation (line ~132), checked
+          // against the earliest of the newly-added occurrences — an extend
+          // is, from the advance-window's point of view, indistinguishable
+          // from creating a fresh batch of occurrences starting "now"; this
+          // was missing entirely, so extending a series was the one way to
+          // materialise real bookings arbitrarily far past the org's
+          // configured cap. Checked against the series OWNER, same as the
+          // assertBookable loop below.
+          if (
+            freshRule.user.globalRole !== GlobalRole.SUPER_ADMIN &&
+            !isWithinAdvanceBookingWindow(newDates[0], org?.maxAdvanceBookingDays)
+          ) {
+            throw Object.assign(new Error('MAX_ADVANCE_EXCEEDED'), {
+              code: 'MAX_ADVANCE_EXCEEDED',
+              status: 400,
+              message: `Recurring bookings cannot start more than ${org?.maxAdvanceBookingDays} days in advance`,
+            })
+          }
+
           const extendAsset = await tx.asset.findUnique({ where: { id: freshRule.assetId }, select: { floor: { select: { buildingId: true } } } })
           const extendTimeZone = await resolveBuildingTimezone(tx, extendAsset?.floor?.buildingId)
           const slots = newDates.map((d) => ({
@@ -580,10 +600,34 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
         // approver later confirm it into existence past the series' own new
         // end date via POST /bookings/:id/approve, which only checks the
         // individual booking's own status, not whether its rule still covers it.
-        const newLastDateEndOfDay = new Date(newLastDateObj)
-        newLastDateEndOfDay.setUTCHours(23, 59, 59, 999)
+        //
+        // Cutoff computed in the asset's building timezone (the same
+        // timezone every occurrence's startsAt was built against via
+        // buildSlotDatetime), not a naive UTC end-of-day — a naive UTC
+        // boundary drops or keeps the wrong occurrence for any building
+        // whose local evening/early-morning crosses a UTC calendar-day
+        // boundary, which is most non-UTC timezones for ordinary business
+        // hours. Comparing against "the next local day's midnight" (rather
+        // than an approximate 23:59:59.999) sidesteps the imprecision
+        // entirely: any occurrence starting before that instant is on
+        // newLastDate or earlier and is kept.
+        const shortenAsset = await tx.asset.findUnique({ where: { id: freshRule.assetId }, select: { floor: { select: { buildingId: true } } } })
+        const shortenTimeZone = await resolveBuildingTimezone(tx, shortenAsset?.floor?.buildingId)
+        const dayAfterNewLastDate = new Date(Date.UTC(newLastDateObj.getUTCFullYear(), newLastDateObj.getUTCMonth(), newLastDateObj.getUTCDate() + 1))
+        const cutoff = zonedWallClockToUtc(
+          dayAfterNewLastDate.getUTCFullYear(),
+          dayAfterNewLastDate.getUTCMonth() + 1,
+          dayAfterNewLastDate.getUTCDate(),
+          0, 0,
+          shortenTimeZone,
+        )
+        // Also floors at "now", matching DELETE /:id's futureBookings guard
+        // just below — shortening a series must never retroactively cancel
+        // an occurrence that's already started (or been checked into); only
+        // a genuinely future occurrence past the new end date is dropped.
+        const now = new Date()
         const droppedBookings = await tx.booking.findMany({
-          where: { recurringRuleId: id, status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { gt: newLastDateEndOfDay } },
+          where: { recurringRuleId: id, status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { gte: cutoff, gt: now } },
           select: { id: true, assetId: true, startsAt: true, endsAt: true },
         })
         await tx.booking.updateMany({
@@ -729,6 +773,9 @@ export async function recurringBookingRoutes(fastify: FastifyInstance): Promise<
       }
       if (e.code === 'NOT_BOOKABLE') {
         return reply.status(e.status ?? 400).send({ error: { message: e.message ?? 'Not bookable', code: 'NOT_BOOKABLE' } })
+      }
+      if (e.code === 'MAX_ADVANCE_EXCEEDED') {
+        return reply.status(e.status ?? 400).send({ error: { message: e.message ?? 'Too far in advance', code: 'MAX_ADVANCE_EXCEEDED' } })
       }
       if (isOverlapConstraintViolation(err)) {
         return reply.status(409).send({
