@@ -138,7 +138,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         where['asset'] = { floor: { buildingId: { in: managedBuildingIds } } }
       }
 
-      const [bookings, total] = await Promise.all([
+      const [bookings, total, org] = await Promise.all([
         prisma.booking.findMany({
           where,
           skip,
@@ -152,7 +152,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
             user: { select: { id: true, displayName: true, email: true } },
             asset: {
               include: {
-                floor: { include: { building: { select: { id: true, name: true } } } },
+                floor: { include: { building: { select: { id: true, name: true, timezone: true } } } },
                 primaryZone: { select: { id: true, name: true } },
               },
             },
@@ -172,10 +172,23 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
           orderBy: [{ startsAt: 'desc' }, { id: 'asc' }],
         }),
         prisma.booking.count({ where }),
+        prisma.organisation.findFirst({ select: { defaultTimezone: true } }),
       ])
 
+      // Same resolvedTimezone every other booking-list endpoint in this file
+      // attaches (see GET / above and GET /pending-approvals) — without it,
+      // this report rendered every booking's time in the viewer's own
+      // browser timezone (on screen) and as a raw UTC ISO string (in the
+      // CSV export), neither of which matches the building-local time the
+      // booking was actually made for, or how the same booking displays
+      // anywhere else in the app.
+      const data = bookings.map((b) => ({
+        ...b,
+        resolvedTimezone: b.asset.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC',
+      }))
+
       return reply.status(200).send({
-        data: bookings,
+        data,
         meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
       })
     },
