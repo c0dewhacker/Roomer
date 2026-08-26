@@ -156,6 +156,13 @@ function AddAssignmentDialog({
     onSuccess: () => {
       toast.success('User assigned to desk')
       qc.invalidateQueries({ queryKey: ['floors'] })
+      // Both BookingsPage's "My Assigned Desks" and AssetsPage's "My Assets"
+      // fetch this exact assetsApi.getMyAssignments() data under these two
+      // cache keys (see AssignedDeskCard.tsx's own mutations, which already
+      // invalidate both) — without this, the newly-assigned user's own view
+      // keeps showing the old assignment state until the cache goes stale.
+      qc.invalidateQueries({ queryKey: ['my-assignments'] })
+      qc.invalidateQueries({ queryKey: ['assets', 'my'] })
       onClose()
       setSearch('')
       setSelectedUserId('')
@@ -533,6 +540,13 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   // Same reasoning for the visitor fields — a different asset means a fresh
   // booking, not "still booking for the same visitor as before".
   useEffect(() => { setIsGuestBooking(false); setGuestName(''); setGuestEmail('') }, [desk?.id])
+  // ...and for the queue-join expiry — DeskPanel isn't remounted when the
+  // selected desk changes (FloorPage renders one unkeyed instance), so
+  // without this a custom expiry typed for one desk silently carries over
+  // into a "Join Queue" submission for a completely different one, with a
+  // timestamp that has no relationship to that desk's wanted time (it can
+  // even already be in the past).
+  useEffect(() => { setQueueExpiry('') }, [desk?.id])
   const [showAdmin, setShowAdmin] = useState(false)
   const [editAssetOpen, setEditAssetOpen] = useState(false)
   const [addAllowListOpen, setAddAllowListOpen] = useState(false)
@@ -600,6 +614,9 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
     onSuccess: () => {
       toast.success('User removed from desk')
       qc.invalidateQueries({ queryKey: ['floors'] })
+      // See the `assign` mutation above — same two cache keys.
+      qc.invalidateQueries({ queryKey: ['my-assignments'] })
+      qc.invalidateQueries({ queryKey: ['assets', 'my'] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -609,6 +626,9 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
     onSuccess: () => {
       toast.success('Primary user updated')
       qc.invalidateQueries({ queryKey: ['floors'] })
+      // See the `assign` mutation above — same two cache keys.
+      qc.invalidateQueries({ queryKey: ['my-assignments'] })
+      qc.invalidateQueries({ queryKey: ['assets', 'my'] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
