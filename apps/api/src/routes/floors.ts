@@ -427,22 +427,28 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       // released the same way its bookings are, not left dangling.
       await cancelQueueEntriesForFloors([id])
 
-      // Also fetch before the delete — FloorPlan cascades away with the floor,
-      // but its files on disk don't clean themselves up (same fix as the
-      // existing "replace floor plan" upload path above).
-      const floorPlan = await prisma.floorPlan.findUnique({ where: { floorId: id } })
-
-      // The pre-delete asset snapshot and the delete itself run inside one
-      // transaction, locking the floor row first — same race and same fix
-      // shape as zones.ts DELETE /:id: a concurrent PATCH /assets/:id that
-      // places an asset onto this floor needs an FK check against this row,
-      // so Postgres blocks it until we commit, then it fails outright (the
-      // floor being gone) instead of racing our snapshot below.
-      const result = await prisma.$transaction(async (tx) => {
+      // The pre-delete asset/floor-plan snapshot and the delete itself run
+      // inside one transaction, locking the floor row first — same race and
+      // same fix shape as zones.ts DELETE /:id: a concurrent PATCH /assets/:id
+      // that places an asset onto this floor needs an FK check against this
+      // row, so Postgres blocks it until we commit, then it fails outright
+      // (the floor being gone) instead of racing our snapshot below.
+      //
+      // floorPlan is read here too, not before the transaction — the upload
+      // path (POST /:id/floor-plan) takes the exact same FOR UPDATE lock
+      // before its own upsert, so a floorPlan snapshot taken before this
+      // transaction acquires the lock can miss a floor plan an upload
+      // committed in the gap: the delete's cascade would then remove that
+      // FloorPlan row with no matching entry in this function's cleanup
+      // list, permanently orphaning its files on disk. Reading it after the
+      // lock is acquired means it always reflects whatever the upload path
+      // last committed.
+      const { result, floorPlan } = await prisma.$transaction(async (tx) => {
         await tx.$queryRaw`SELECT id FROM "Floor" WHERE id = ${id} FOR UPDATE`
         const before = await tx.floor.findUnique({ where: { id }, select: { buildingId: true, name: true, level: true } })
-        if (!before) return null
+        if (!before) return { result: null, floorPlan: null }
         const floorAssetIds = (await tx.asset.findMany({ where: { floorId: id }, select: { id: true } })).map((a) => a.id)
+        const floorPlan = await tx.floorPlan.findUnique({ where: { floorId: id } })
         await tx.floor.delete({ where: { id } })
         if (floorAssetIds.length > 0) {
           // Asset.floorId/primaryZoneId SetNull automatically via cascade,
@@ -456,8 +462,8 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
             data: { x: null, y: null, width: null, height: null, rotation: null },
           })
         }
-        return before
-      }).catch(() => null)
+        return { result: before, floorPlan }
+      }).catch(() => ({ result: null, floorPlan: null }))
 
       if (!result) {
         return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })

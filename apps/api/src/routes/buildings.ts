@@ -6,6 +6,7 @@ import { requireGlobalRole, getManagedBuildingIds, isBuildingManagerForBuilding,
 import { canUserAccessBuilding } from './groups.js'
 import { cancelFutureBookingsForFloors, cancelQueueEntriesForFloors } from '../lib/queue.js'
 import { deleteFile } from '../lib/storage.js'
+import { LEASE_DOCUMENT_LOCK_CLASS } from './leases.js'
 import { recordAuditLog } from '../lib/audit.js'
 
 /**
@@ -589,35 +590,40 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       // Same policy for queue entries — see floors.ts DELETE /:id.
       await cancelQueueEntriesForFloors(floors.map((f) => f.id))
 
-      // Also fetch before the delete — each floor's FloorPlan cascades away
-      // with it, but the files on disk don't clean themselves up.
-      const floorPlans = await prisma.floorPlan.findMany({
-        where: { floorId: { in: floors.map((f) => f.id) } },
-      })
+      // Lease ids under this building — buildingId on a lease doesn't change
+      // after creation, so this read is safe outside the lock below; it's
+      // only used to know which per-lease locks to acquire.
+      const leaseIds = (await prisma.buildingLease.findMany({ where: { buildingId: id }, select: { id: true } })).map((l) => l.id)
 
-      // Same reasoning as floor plans: BuildingLease/LeaseDocument cascade-delete
-      // with the building (schema.prisma), but the uploaded files on disk don't —
-      // and once the rows are gone there's no longer any record of the paths to
-      // clean up, so this leaks the files on disk forever.
-      const leaseDocuments = await prisma.leaseDocument.findMany({
-        where: { lease: { buildingId: id } },
-        select: { storagePath: true },
-      })
-
-      // The pre-delete asset snapshot and the delete itself run inside one
-      // transaction, locking every floor row under this building first —
-      // same race and fix shape as zones.ts/floors.ts DELETE /:id. Asset.
-      // floorId's FK checks against the Floor row, not the Building row
-      // directly, so a concurrent PATCH /assets/:id that places an asset
-      // onto one of this building's floors needs a lock on that same row;
-      // locking it here means Postgres blocks that write until we commit,
-      // then it fails outright (the floor being gone via cascade) instead of
-      // racing our snapshot below.
+      // The pre-delete asset/floor-plan/lease-document snapshot and the
+      // delete itself run inside one transaction, locking every floor row
+      // under this building first — same race and fix shape as
+      // zones.ts/floors.ts DELETE /:id. Asset.floorId's FK checks against
+      // the Floor row, not the Building row directly, so a concurrent PATCH
+      // /assets/:id that places an asset onto one of this building's floors
+      // needs a lock on that same row; locking it here means Postgres
+      // blocks that write until we commit, then it fails outright (the
+      // floor being gone via cascade) instead of racing our snapshot below.
+      //
+      // floorPlans/leaseDocuments are read here too, not before this
+      // transaction — same reasoning as floors.ts DELETE /:id's own fix: a
+      // floor-plan upload (locks its own Floor row, already covered by the
+      // FOR UPDATE below) or a lease-document upload (locks
+      // LEASE_DOCUMENT_LOCK_CLASS per lease id, NOT a Floor row, so it needs
+      // its own explicit acquire here) that commits in the gap would
+      // otherwise be invisible to a snapshot taken before the lock, leaking
+      // its file on disk once the cascade removes its DB row with no
+      // matching cleanup entry.
       const result = await prisma.$transaction(async (tx) => {
         await tx.$queryRaw`SELECT id FROM "Floor" WHERE "buildingId" = ${id} FOR UPDATE`
+        for (const leaseId of leaseIds) {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LEASE_DOCUMENT_LOCK_CLASS}, hashtext(${leaseId}))`
+        }
         const before = await tx.building.findUnique({ where: { id }, select: { name: true, address: true } })
         if (!before) return null
         const buildingAssetIds = (await tx.asset.findMany({ where: { floor: { buildingId: id } }, select: { id: true } })).map((a) => a.id)
+        const floorPlans = await tx.floorPlan.findMany({ where: { floorId: { in: floors.map((f) => f.id) } } })
+        const leaseDocuments = await tx.leaseDocument.findMany({ where: { lease: { buildingId: id } }, select: { storagePath: true } })
         await tx.building.delete({ where: { id } })
         if (buildingAssetIds.length > 0) {
           // Floor/Zone cascade-delete with the building, so Asset.floorId/
@@ -630,7 +636,7 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
             data: { x: null, y: null, width: null, height: null, rotation: null },
           })
         }
-        return before
+        return { before, floorPlans, leaseDocuments }
       }).catch(() => null)
 
       if (!result) {
@@ -638,12 +644,13 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
           error: { message: 'Building not found', code: 'NOT_FOUND' },
         })
       }
+      const { before: buildingBefore, floorPlans, leaseDocuments } = result
       await recordAuditLog(prisma, {
         actorId: request.user.id,
         action: 'building.deleted',
         resourceType: 'Building',
         resourceId: id,
-        before: result,
+        before: buildingBefore,
         ipAddress: request.ip,
       }, request.log)
 
