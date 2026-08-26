@@ -91,6 +91,32 @@ const assetInclude = {
 async function enrichPayload(event: WebhookEvent, data: unknown): Promise<unknown> {
   const d = data as Record<string, unknown>
 
+  // Checked before the generic booking.* branch below, which these event
+  // names would otherwise also match (booking.transfer_requested etc. all
+  // start with "booking."). That branch looks up d.id against the Booking
+  // table — but d.id here is the BookingTransfer/BookingSwap row's own id,
+  // a completely independent cuid() space from Booking's, so the lookup
+  // always misses and enrichment silently no-ops for every one of these
+  // event types. Transfer events carry bookingId; swap events carry
+  // bookingAId/bookingBId (two bookings, not one) — the *_expired events
+  // don't carry a booking id in their payload at all yet, so there's
+  // nothing to enrich for those two.
+  if (event.startsWith('booking.transfer_') || event.startsWith('booking.swap_')) {
+    const ids = [d.bookingId, d.bookingAId, d.bookingBId].filter((v): v is string => typeof v === 'string')
+    if (ids.length === 0) return data
+    const bookings = await prisma.booking.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, asset: { select: { id: true, name: true, ...assetInclude } } },
+    }).catch(() => [])
+    if (typeof d.bookingId === 'string') {
+      const asset = bookings.find((b) => b.id === d.bookingId)?.asset
+      return { ...d, ...(asset && { asset }) }
+    }
+    const assetA = bookings.find((b) => b.id === d.bookingAId)?.asset
+    const assetB = bookings.find((b) => b.id === d.bookingBId)?.asset
+    return { ...d, ...(assetA && { assetA }), ...(assetB && { assetB }) }
+  }
+
   if (event.startsWith('booking.')) {
     const booking = await prisma.booking.findUnique({
       where: { id: d.id as string },
