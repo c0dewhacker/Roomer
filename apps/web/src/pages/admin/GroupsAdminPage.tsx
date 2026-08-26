@@ -195,6 +195,12 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
     onSuccess: () => {
       toast.success('Member added')
       qc.invalidateQueries({ queryKey: ['groups'] })
+      // If this group carries building/floor access rules, membership
+      // directly changes this user's effective access — same reasoning
+      // UsersAdminPage.tsx's updateStatus/updateRole already documents for
+      // this exact query key. Read selectedMemberId before it's cleared
+      // below, since it's still the id that was actually just submitted.
+      qc.invalidateQueries({ queryKey: ['effective-access', selectedMemberId] })
       setMemberSearch('')
       setSelectedMemberId('')
     },
@@ -203,7 +209,12 @@ function GroupDetailSheet({ group, onClose }: { group: UserGroup | null; onClose
 
   const removeMember = useMutation({
     mutationFn: (userId: string) => groupsApi.removeMember(group!.id, userId),
-    onSuccess: () => { toast.success('Member removed'); qc.invalidateQueries({ queryKey: ['groups'] }) },
+    onSuccess: (_data, userId) => {
+      toast.success('Member removed')
+      qc.invalidateQueries({ queryKey: ['groups'] })
+      // See addMember above.
+      qc.invalidateQueries({ queryKey: ['effective-access', userId] })
+    },
     onError: (err: Error) => toast.error(err.message),
   })
 

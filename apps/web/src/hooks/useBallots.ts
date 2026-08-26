@@ -86,6 +86,13 @@ export function useForceDraw() {
     onSuccess: () => {
       toast.success('Draw complete')
       qc.invalidateQueries({ queryKey: ['ballots'] })
+      // A draw synchronously creates a Booking for every winner (see
+      // useDeclineBallotEntry below, which invalidates this same key for
+      // the same reason: a ballot outcome changing bookings) — without
+      // this, an admin who forced the draw and is also an entrant (or has
+      // any other view reading ['bookings', ...] mounted) doesn't see the
+      // new booking until an unrelated refetch.
+      qc.invalidateQueries({ queryKey: ['bookings'] })
     },
     onError: (err: Error) => toast.error(err.message),
   })

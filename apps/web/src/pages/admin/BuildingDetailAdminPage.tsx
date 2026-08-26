@@ -794,34 +794,53 @@ export default function BuildingDetailAdminPage() {
     enabled: !!buildingId,
   })
 
+  // Every one of these settings resolves down through each floor under this
+  // building (floors.ts: resolvedTimezone, and requiresApproval's zone ??
+  // building ?? org fallback chain both read Building fields directly) and
+  // is served via GET /floors/:id/availability, cached under
+  // ['floors', floorId, 'availability', dateStr] — a disjoint top-level key
+  // from ['buildings', buildingId], so invalidating only the latter (as
+  // these mutations did before) never touches a floor's own cached
+  // availability. DeskPanel's approval-required copy/button and every
+  // displayed booking time on FloorPage would then keep showing pre-edit
+  // values until an unrelated refetch or staleTime lapse. building?.floors
+  // is already loaded for the floor-list section below, so no extra fetch
+  // is needed to know which floor keys to invalidate.
+  const invalidateBuildingAndFloors = () => {
+    qc.invalidateQueries({ queryKey: ['buildings', buildingId] })
+    for (const f of building?.floors ?? []) {
+      qc.invalidateQueries({ queryKey: ['floors', f.id] })
+    }
+  }
+
   const saveNoShow = useMutation({
     mutationFn: (v: boolean | null) => buildingsApi.update(buildingId!, { noShowReleaseEnabled: v }),
-    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['buildings', buildingId] }) },
+    onSuccess: () => { toast.success('Saved'); invalidateBuildingAndFloors() },
     onError: (err: Error) => toast.error(err.message),
   })
 
   const saveQrMode = useMutation({
     mutationFn: (v: QrCheckInMode | null) => buildingsApi.update(buildingId!, { qrCheckInMode: v }),
-    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['buildings', buildingId] }) },
+    onSuccess: () => { toast.success('Saved'); invalidateBuildingAndFloors() },
     onError: (err: Error) => toast.error(err.message),
   })
 
   const saveRequiresApproval = useMutation({
     mutationFn: (v: boolean | null) => buildingsApi.update(buildingId!, { requiresApproval: v }),
-    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['buildings', buildingId] }) },
+    onSuccess: () => { toast.success('Saved'); invalidateBuildingAndFloors() },
     onError: (err: Error) => toast.error(err.message),
   })
 
   const saveTimezone = useMutation({
     mutationFn: (v: string | null) => buildingsApi.update(buildingId!, { timezone: v }),
-    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['buildings', buildingId] }) },
+    onSuccess: () => { toast.success('Saved'); invalidateBuildingAndFloors() },
     onError: (err: Error) => toast.error(err.message),
   })
 
   const saveWorkingHours = useMutation({
     mutationFn: (v: { start: string; end: string } | null) =>
       buildingsApi.update(buildingId!, { workingHoursStart: v?.start ?? null, workingHoursEnd: v?.end ?? null }),
-    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['buildings', buildingId] }) },
+    onSuccess: () => { toast.success('Saved'); invalidateBuildingAndFloors() },
     onError: (err: Error) => toast.error(err.message),
   })
 
