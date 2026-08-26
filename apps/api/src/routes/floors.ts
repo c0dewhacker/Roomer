@@ -10,6 +10,7 @@ import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage.js
 import { checkGroupAccess } from './groups.js'
 import { cancelFutureBookingsForFloors } from '../lib/queue.js'
 import { recordAuditLog } from '../lib/audit.js'
+import { zonedWallClockToUtc } from '../lib/timezone.js'
 import { z } from 'zod'
 
 /**
@@ -745,8 +746,37 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     const amenityFilterLower = amenityFilter.map((a) => a.toLowerCase())
 
     const currentUserId = request.user.id
-    const dayStart = new Date(`${date}T00:00:00.000Z`)
-    const dayEnd = new Date(`${date}T23:59:59.999Z`)
+
+    // Resolve the floor's building timezone BEFORE building the day window
+    // used below — every asset on a floor shares one building (see #72), so
+    // (unlike directory.ts's multi-building /whereabouts, which needs a
+    // widen-then-precise-filter two-pass approach) this can compute the
+    // exact local-day boundary upfront rather than a fixed UTC window. A
+    // fixed `${date}T00:00:00.000Z`..`23:59:59.999Z` window is only correct
+    // for a UTC building — for e.g. a Pacific/Honolulu (UTC-10) building, a
+    // booking made for the evening of the 15th local time lands at
+    // 2026-01-16T02:00–03:30Z, which a UTC-anchored window for "the 15th"
+    // misses entirely (it falls outside dayEnd), showing the desk as
+    // available when it's actually booked that evening — and misattributes
+    // it to the 16th instead when that day is queried.
+    const [floorForTz, orgForTz] = await Promise.all([
+      prisma.floor.findUnique({ where: { id }, select: { building: { select: { timezone: true } } } }),
+      prisma.organisation.findFirst({ select: { defaultTimezone: true } }),
+    ])
+    if (!floorForTz) {
+      return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+    }
+    const [year, month, day] = date.split('-').map(Number)
+    const availabilityTimezone = floorForTz.building?.timezone ?? orgForTz?.defaultTimezone ?? 'UTC'
+    const dayStart = zonedWallClockToUtc(year, month, day, 0, 0, availabilityTimezone)
+    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000 - 1)
+    // The requested date's own weekday, independent of dayStart — for a
+    // building ahead of UTC (e.g. Australia/Sydney, +10), local midnight of
+    // the requested day is the *previous* UTC calendar day, so
+    // dayStart.getUTCDay() would silently return the wrong weekday for any
+    // such building. Computed via Date.UTC on the plain Y/M/D triplet, which
+    // has no timezone ambiguity at all.
+    const requestedWeekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay()
 
     // Shared per-asset include shape — reused for both primary-zone assets
     // (zone.assets) and secondary-zone memberships (zone.assetZones.asset) so
@@ -831,8 +861,12 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     // Resolved once for the whole floor (every asset on it shares the same
     // building — see #72), not per-asset: the frontend uses this to render
     // every booking time on this floor's plan in the building's own
-    // timezone rather than the viewer's browser timezone.
-    const resolvedTimezone = floor.building?.timezone ?? org?.defaultTimezone ?? 'UTC'
+    // timezone rather than the viewer's browser timezone. Reuses
+    // availabilityTimezone (computed above from the same building/org
+    // values, just fetched slightly earlier) rather than recomputing it, so
+    // the day window actually used in the queries above and the timezone
+    // reported to the client can never disagree.
+    const resolvedTimezone = availabilityTimezone
 
     // Fold secondary (AssetZone) memberships into each zone's asset list —
     // done once here so every computation below (amenity filter, queue-depth
@@ -899,7 +933,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         // has marked recurringly available, not just via a one-off window. The
         // floor plan must reflect that or it shows "assigned"/unbookable for a
         // desk the booking endpoint would actually accept.
-        const hasAvailabilityRule = (asset.availabilityRules ?? []).some((r) => r.weekday === dayStart.getUTCDay())
+        const hasAvailabilityRule = (asset.availabilityRules ?? []).some((r) => r.weekday === requestedWeekday)
 
         let bookingStatus: AvailabilityStatus
 
