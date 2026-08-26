@@ -1489,10 +1489,24 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         // Ownership changes, the time slot doesn't — bump icsSequence so a
         // re-sent REQUEST (to the new owner) is recognised as superseding
         // whatever the original owner's calendar app still has.
-        await tx.booking.update({
-          where: { id: fresh.bookingId },
+        //
+        // Guarded on status: 'CONFIRMED', not a bare update-by-id — the
+        // fresh.booking.status check above only reads the state as of a
+        // moment ago; DELETE /bookings/:id (direct cancellation) takes no
+        // lock on this asset at all, so it isn't coordinated by
+        // lockAssetForBooking above and can still commit a cancellation in
+        // the gap between that read and this write (the quota/zone-group
+        // checks in between are both real await points). Without this, a
+        // booking the owner just cancelled could still get its userId
+        // reassigned to the transfer recipient, leaving a CANCELLED booking
+        // that appears to belong to someone who never actually got a desk.
+        const bookingClaimed = await tx.booking.updateMany({
+          where: { id: fresh.bookingId, status: 'CONFIRMED' },
           data: { userId: request.user.id, icsSequence: { increment: 1 } },
         })
+        if (bookingClaimed.count === 0) {
+          throw new BookingConflictError('BOOKING_NOT_ACTIVE', 'This booking is no longer active')
+        }
         // Guarded on status: 'PENDING' here too, not just the `fresh` read
         // above — decline/withdraw take no lock of their own, so without
         // this, one of them could still land between that read and this
@@ -1856,8 +1870,20 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
           throw new BookingConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
         }
 
-        await tx.booking.update({ where: { id: fresh.bookingAId }, data: { userId: fresh.recipientUserId, icsSequence: { increment: 1 } } })
-        await tx.booking.update({ where: { id: fresh.bookingBId }, data: { userId: fresh.initiatorUserId, icsSequence: { increment: 1 } } })
+        // Guarded on status: 'CONFIRMED', not a bare update-by-id — same
+        // reasoning as transfer accept above: DELETE /bookings/:id takes no
+        // lock on either asset, so it isn't coordinated by the locks taken
+        // at the top of this transaction and could still cancel either side
+        // in the gap between the status check above and these writes (the
+        // zone-group checks in between are real await points).
+        const claimedA = await tx.booking.updateMany({ where: { id: fresh.bookingAId, status: 'CONFIRMED' }, data: { userId: fresh.recipientUserId, icsSequence: { increment: 1 } } })
+        if (claimedA.count === 0) {
+          throw new BookingConflictError('BOOKING_NOT_ACTIVE', 'Both bookings must still be active')
+        }
+        const claimedB = await tx.booking.updateMany({ where: { id: fresh.bookingBId, status: 'CONFIRMED' }, data: { userId: fresh.initiatorUserId, icsSequence: { increment: 1 } } })
+        if (claimedB.count === 0) {
+          throw new BookingConflictError('BOOKING_NOT_ACTIVE', 'Both bookings must still be active')
+        }
         // Guarded on status: 'PENDING' here too, not just the `fresh` read
         // above — decline/withdraw take no lock of their own, so without
         // this, one of them could still land between that read and this
