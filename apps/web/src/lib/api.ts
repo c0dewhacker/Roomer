@@ -238,6 +238,8 @@ export interface MyAssignment {
     primaryZone?: { id: string; name: string } | null
     category: { id: string; name: string }
     availabilityWindows: AvailabilityWindow[]
+    /** Resolved building IANA timezone (floor → building → org, see #72). */
+    resolvedTimezone?: string
     // Present on the raw API response but not needed by every consumer
     // (e.g. the Bookings page's desk-focused card) — declared optional so
     // callers that do need this equipment-tracking detail (My Assets) can

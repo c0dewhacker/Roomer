@@ -85,6 +85,35 @@ export function zonedWallClockToUtc(year: number, month1to12: number, day: numbe
   return fromZonedTime(naiveIso, timeZone)
 }
 
+/**
+ * Renders a real UTC instant as a `<input type="datetime-local">`-shaped
+ * "YYYY-MM-DDTHH:mm" string in a given building timezone, not the browser's
+ * — toZonedTime shifts the instant so native (non-UTC) getters read back the
+ * target zone's wall-clock components. Pair with fromDatetimeLocalValue
+ * below when round-tripping a value the user can edit (e.g. rescheduling a
+ * booking, or creating a new availability window) — reading/writing through
+ * the same building timezone on both ends is what keeps the picker's
+ * displayed value and the instant actually submitted in agreement.
+ */
+export function toDatetimeLocalValue(iso: string, timeZone: string): string {
+  const d = toZonedTime(new Date(iso), timeZone)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/**
+ * Inverse of toDatetimeLocalValue — a datetime-local input's value is a
+ * plain wall-clock string with no timezone marker; interpret it in the same
+ * building timezone it was rendered in, not the browser's, or an edit
+ * silently shifts the underlying instant by the offset between the two.
+ */
+export function fromDatetimeLocalValue(value: string, timeZone: string): Date {
+  const [datePart, timePart] = value.split('T')
+  const [y, m, d] = datePart.split('-').map(Number)
+  const [h, min] = timePart.split(':').map(Number)
+  return zonedWallClockToUtc(y, m, d, h, min, timeZone)
+}
+
 const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
 
 /**

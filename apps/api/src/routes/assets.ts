@@ -564,29 +564,40 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     const userId = request.user.id
     const now = new Date()
 
-    const assignments = await prisma.assetUserAssignment.findMany({
-      where: { userId },
-      include: {
-        asset: {
-          include: {
-            category: { select: { id: true, name: true } },
-            floor: {
-              select: {
-                id: true, name: true,
-                building: { select: { id: true, name: true } },
+    const [assignments, org] = await Promise.all([
+      prisma.assetUserAssignment.findMany({
+        where: { userId },
+        include: {
+          asset: {
+            include: {
+              category: { select: { id: true, name: true } },
+              floor: {
+                select: {
+                  id: true, name: true,
+                  building: { select: { id: true, name: true, timezone: true } },
+                },
               },
-            },
-            primaryZone: { select: { id: true, name: true } },
-            availabilityWindows: {
-              where: { ownerId: userId, endsAt: { gt: now } },
-              orderBy: { startsAt: 'asc' },
+              primaryZone: { select: { id: true, name: true } },
+              availabilityWindows: {
+                where: { ownerId: userId, endsAt: { gt: now } },
+                orderBy: { startsAt: 'asc' },
+              },
             },
           },
         },
-      },
-    })
+      }),
+      prisma.organisation.findFirst({ select: { defaultTimezone: true } }),
+    ])
 
-    return reply.status(200).send({ data: assignments })
+    // Resolved (floor → building → org, see #72) so the "make available"
+    // dialog can construct/display a new availability window in the desk's
+    // own building timezone rather than the viewer's browser timezone.
+    const data = assignments.map((a) => ({
+      ...a,
+      asset: { ...a.asset, resolvedTimezone: a.asset.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC' },
+    }))
+
+    return reply.status(200).send({ data })
   })
 
   // GET /assets/favourites — the current user's favourited bookable assets

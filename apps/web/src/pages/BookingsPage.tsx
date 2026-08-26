@@ -31,8 +31,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog'
-import { formatDateRange, formatDate, formatCalendarDate, zoneQualifier, zonedWallClockToUtc } from '@/lib/utils'
-import { toZonedTime } from 'date-fns-tz'
+import { formatDateRange, formatDate, formatCalendarDate, zoneQualifier, toDatetimeLocalValue, fromDatetimeLocalValue } from '@/lib/utils'
 import { DateTimeLocalInput } from '@/components/ui/date-time-input'
 import { assetsApi, recurringBookingsApi, bookingsApi, usersApi } from '@/lib/api'
 import type { Booking, RecurringBookingRule, BookingTransfer, BookingSwap } from '@/types'
@@ -54,27 +53,6 @@ const statusLabel: Record<string, string> = {
   PENDING_APPROVAL: 'Pending approval',
 }
 
-// Renders the picker's value in the booking's *building* timezone (mirrors
-// the read-only summary above it via formatDateRange(..., resolvedTimezone))
-// rather than the viewer's browser timezone — toZonedTime shifts the instant
-// so native (non-UTC) getters read back the target zone's wall-clock
-// components, same trick used throughout apps/api/src/lib/timezone.ts.
-function toLocalDatetimeValue(iso: string, timeZone: string): string {
-  const d = toZonedTime(parseISO(iso), timeZone)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-// Inverse of toLocalDatetimeValue — the datetime-local input's value is a
-// plain wall-clock string with no timezone marker; interpret it in the same
-// building timezone it was rendered in, not the browser's, or a reschedule
-// silently shifts the booking by the offset between the two.
-function fromLocalDatetimeValue(value: string, timeZone: string): Date {
-  const [datePart, timePart] = value.split('T')
-  const [y, m, d] = datePart.split('-').map(Number)
-  const [h, min] = timePart.split(':').map(Number)
-  return zonedWallClockToUtc(y, m, d, h, min, timeZone)
-}
 
 // ─── Edit booking dialog ──────────────────────────────────────────────────────
 
@@ -89,8 +67,8 @@ function EditBookingDialog({
 }) {
   const update = useUpdateBooking()
   const timeZone = booking.resolvedTimezone ?? 'UTC'
-  const [startsAt, setStartsAt] = useState(toLocalDatetimeValue(booking.startsAt, timeZone))
-  const [endsAt, setEndsAt] = useState(toLocalDatetimeValue(booking.endsAt, timeZone))
+  const [startsAt, setStartsAt] = useState(toDatetimeLocalValue(booking.startsAt, timeZone))
+  const [endsAt, setEndsAt] = useState(toDatetimeLocalValue(booking.endsAt, timeZone))
   const [notes, setNotes] = useState(booking.notes ?? '')
 
   function handleSave() {
@@ -98,8 +76,8 @@ function EditBookingDialog({
       {
         id: booking.id,
         body: {
-          startsAt: fromLocalDatetimeValue(startsAt, timeZone).toISOString(),
-          endsAt: fromLocalDatetimeValue(endsAt, timeZone).toISOString(),
+          startsAt: fromDatetimeLocalValue(startsAt, timeZone).toISOString(),
+          endsAt: fromDatetimeLocalValue(endsAt, timeZone).toISOString(),
           notes: notes || undefined,
         },
       },
