@@ -41,8 +41,19 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Buildings'], ...route.schema } })
 
   // GET /buildings/:id/access-summary — "who can access / manage this building?"
-  fastify.get('/:id/access-summary', { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] }, async (request, reply) => {
+  // (SUPER_ADMIN or building admin for this building — same carve-out as
+  // PUT /:id below; BuildingManagerOrAdminRoute already routes building
+  // admins onto the page this powers, so this was silently 403ing for them.)
+  fastify.get('/:id/access-summary', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+      if (!canManage) {
+        return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
+    }
+
     const building = await prisma.building.findUnique({ where: { id }, select: { id: true, name: true } })
     if (!building) return reply.status(404).send({ error: { message: 'Building not found', code: 'NOT_FOUND' } })
 
@@ -225,9 +236,16 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /buildings/:id/access-groups — list groups with access to this building
   fastify.get(
     '/:id/access-groups',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       const building = await prisma.building.findUnique({ where: { id } })
       if (!building) {
@@ -251,9 +269,17 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /buildings/:id/access-groups — grant a group access to this building
   fastify.post(
     '/:id/access-groups',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+
       const bodyResult = z.object({ groupId: z.string().min(1) }).safeParse(request.body)
       if (!bodyResult.success) {
         return reply.status(400).send({ error: { message: 'groupId required', code: 'VALIDATION_ERROR' } })
@@ -288,9 +314,16 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   // DELETE /buildings/:id/access-groups/:groupId — revoke a group's access
   fastify.delete(
     '/:id/access-groups/:groupId',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id, groupId } = request.params as { id: string; groupId: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       try {
         await prisma.groupBuildingAccess.delete({
@@ -311,14 +344,21 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // ─── Building manager management (SUPER_ADMIN) ───────────────────────────
+  // ─── Building manager management (SUPER_ADMIN or building admin) ────────
 
   // GET /buildings/:id/managers — list individual building managers
   fastify.get(
     '/:id/managers',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       const roles = await prisma.userResourceRole.findMany({
         where: { scopeType: 'BUILDING', buildingId: id, role: 'BUILDING_ADMIN' },
@@ -335,9 +375,17 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /buildings/:id/managers — assign a user as building manager
   fastify.post(
     '/:id/managers',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+
       const bodyResult = z.object({ userId: z.string().min(1) }).safeParse(request.body)
       if (!bodyResult.success) {
         return reply.status(400).send({ error: { message: 'userId is required', code: 'VALIDATION_ERROR' } })
@@ -383,9 +431,16 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   // DELETE /buildings/:id/managers/:userId — remove a user building manager
   fastify.delete(
     '/:id/managers/:userId',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id, userId } = request.params as { id: string; userId: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       // deleteMany (not findFirst+delete) so any duplicate grant already
       // sitting in the DB from before the create-side dedupe fix above is
@@ -412,9 +467,16 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /buildings/:id/group-managers — list group building managers
   fastify.get(
     '/:id/group-managers',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       const roles = await prisma.groupResourceRole.findMany({
         where: { scopeType: 'BUILDING', buildingId: id, role: 'BUILDING_ADMIN' },
@@ -438,9 +500,17 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /buildings/:id/group-managers — assign a group as building manager
   fastify.post(
     '/:id/group-managers',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+
       const bodyResult = z.object({ groupId: z.string().min(1) }).safeParse(request.body)
       if (!bodyResult.success) {
         return reply.status(400).send({ error: { message: 'groupId is required', code: 'VALIDATION_ERROR' } })
@@ -492,9 +562,16 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   // DELETE /buildings/:id/group-managers/:groupId — remove a group building manager
   fastify.delete(
     '/:id/group-managers/:groupId',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id, groupId } = request.params as { id: string; groupId: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       const role = await prisma.groupResourceRole.findFirst({
         where: { groupId, scopeType: 'BUILDING', buildingId: id, role: 'BUILDING_ADMIN' },

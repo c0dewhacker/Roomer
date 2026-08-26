@@ -5,7 +5,7 @@ import type { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { createFloorSchema, updateFloorSchema, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { isFloorManagerForFloor, isBuildingManagerForBuilding, requireGlobalRole, RESOURCE_ROLE_GRANT_LOCK_CLASS } from '../middleware/requireRole.js'
+import { isFloorManagerForFloor, isBuildingManagerForBuilding, RESOURCE_ROLE_GRANT_LOCK_CLASS } from '../middleware/requireRole.js'
 import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage.js'
 import { checkGroupAccess } from './groups.js'
 import { cancelFutureBookingsForFloors, cancelQueueEntriesForFloors } from '../lib/queue.js'
@@ -41,8 +41,21 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Floors'], ...route.schema } })
 
   // GET /floors/:id/access-summary — "who can access / manage this floor?"
-  fastify.get('/:id/access-summary', { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] }, async (request, reply) => {
+  // SUPER_ADMIN, building admin, or floor manager for this floor —
+  // isFloorManagerForFloor already treats building admins as inheriting
+  // floor-manager access, so this one check covers both. FloorAdminPage
+  // routes all three onto the page this powers via BuildingManagerOrAdminRoute,
+  // so this was silently 403ing for anyone who wasn't a literal SUPER_ADMIN.
+  fastify.get('/:id/access-summary', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const canManage = await isFloorManagerForFloor(request.user.id, id)
+      if (!canManage) {
+        return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
+    }
+
     const floor = await prisma.floor.findUnique({
       where: { id },
       select: { id: true, name: true, building: { select: { id: true, name: true } } },
@@ -155,7 +168,10 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.status(200).send({ data: floorWithServeUrls })
   })
 
-  // GET /floors/:id/managers — list floor managers (SUPER_ADMIN or building admin)
+  // GET /floors/:id/managers — list floor managers (SUPER_ADMIN, building
+  // admin, or a manager of this specific floor — this only checked building
+  // admin, so a pure floor manager with no building-wide role couldn't see
+  // even their own floor's manager list)
   fastify.get(
     '/:id/managers',
     { preHandler: [requireAuth] },
@@ -167,7 +183,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         if (!floor) {
           return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
         }
-        const ok = await isBuildingManagerForBuilding(request.user.id, floor.buildingId)
+        const ok = await isFloorManagerForFloor(request.user.id, id)
         if (!ok) {
           return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
         }
@@ -185,7 +201,8 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // GET /floors/:id/group-managers — list group floor managers (SUPER_ADMIN or building admin)
+  // GET /floors/:id/group-managers — list group floor managers (SUPER_ADMIN,
+  // building admin, or a manager of this specific floor — see /managers above)
   fastify.get(
     '/:id/group-managers',
     { preHandler: [requireAuth] },
@@ -197,7 +214,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         if (!floor) {
           return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
         }
-        const ok = await isBuildingManagerForBuilding(request.user.id, floor.buildingId)
+        const ok = await isFloorManagerForFloor(request.user.id, id)
         if (!ok) {
           return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
         }

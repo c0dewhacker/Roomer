@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { requireGlobalRole } from '../middleware/requireRole.js'
+import { requireGlobalRole, getManagedBuildingIds, getManagedFloorIds } from '../middleware/requireRole.js'
 import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
@@ -33,8 +33,23 @@ async function getOrgId(): Promise<string> {
 export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Groups'], ...route.schema } })
 
-  // GET /groups — list all groups
-  fastify.get('/', { preHandler: adminHandlers }, async (_request, reply) => {
+  // GET /groups — list all groups. SUPER_ADMIN, or anyone holding at least
+  // one BUILDING_ADMIN/FLOOR_MANAGER resource role (the same admission test
+  // router.tsx's BuildingManagerOrAdminRoute already uses) — BuildingDetailAdminPage
+  // and FloorAdminPage both need this list to populate their "assign an
+  // existing group as manager" picker, and were silently 403ing for every
+  // building admin/floor manager who wasn't also a SUPER_ADMIN.
+  fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const [managedBuildings, managedFloors] = await Promise.all([
+        getManagedBuildingIds(request.user.id),
+        getManagedFloorIds(request.user.id),
+      ])
+      if (managedBuildings.length === 0 && managedFloors.length === 0) {
+        return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
+    }
+
     const groups = await prisma.userGroup.findMany({
       include: {
         _count: { select: { members: true } },

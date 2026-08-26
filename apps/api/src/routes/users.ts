@@ -4,7 +4,7 @@ import crypto from 'crypto'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole, ResourceRoleType, ResourceScopeType, RoleSource } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { requireGlobalRole, RESOURCE_ROLE_GRANT_LOCK_CLASS } from '../middleware/requireRole.js'
+import { requireGlobalRole, isFloorManagerForFloor, RESOURCE_ROLE_GRANT_LOCK_CLASS } from '../middleware/requireRole.js'
 import { enqueueNotification, cancelFutureBookingsForUser, cancelQueueEntriesForUser, releaseAssetAssignmentsForUser } from '../lib/queue.js'
 import { lockSuperAdminGuard, wouldRemoveLastActiveSuperAdmin } from '../lib/group-mapping.js'
 import { dispatchWebhook } from '../lib/webhook.js'
@@ -685,10 +685,15 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.status(200).send({ data: bookings, meta: { total, page, limit } })
   })
 
-  // POST /users/:id/resource-roles — assign resource role (admin)
+  // POST /users/:id/resource-roles — assign resource role (SUPER_ADMIN, or a
+  // floor manager/building admin assigning FLOOR_MANAGER on a floor they
+  // already manage — the only grant FloorAdminPage's FloorManagersPanel
+  // actually makes through this endpoint. Any other scope/role combination
+  // (granting BUILDING_ADMIN, or FLOOR_MANAGER on a floor the actor doesn't
+  // manage) stays SUPER_ADMIN-only.)
   fastify.post(
     '/:id/resource-roles',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
 
@@ -697,6 +702,17 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(400).send({
           error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
         })
+      }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage =
+          result.data.scopeType === 'FLOOR' &&
+          result.data.role === 'FLOOR_MANAGER' &&
+          result.data.floorId &&
+          (await isFloorManagerForFloor(request.user.id, result.data.floorId))
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
       }
 
       const user = await prisma.user.findUnique({ where: { id } })
@@ -774,16 +790,28 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // DELETE /users/:id/resource-roles/:roleId — remove resource role (admin)
+  // DELETE /users/:id/resource-roles/:roleId — remove resource role
+  // (SUPER_ADMIN, or the same scoped FLOOR_MANAGER carve-out as the POST above)
   fastify.delete(
     '/:id/resource-roles/:roleId',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id, roleId } = request.params as { id: string; roleId: string }
 
       const target = await prisma.userResourceRole.findUnique({ where: { id: roleId, userId: id } })
       if (!target) {
         return reply.status(404).send({ error: { message: 'Role not found', code: 'NOT_FOUND' } })
+      }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage =
+          target.scopeType === 'FLOOR' &&
+          target.role === 'FLOOR_MANAGER' &&
+          target.floorId &&
+          (await isFloorManagerForFloor(request.user.id, target.floorId))
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
       }
 
       // deleteMany on the full scope filter, not delete-by-id — the grant
