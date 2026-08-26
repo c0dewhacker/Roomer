@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { format, addHours, startOfDay, addDays } from 'date-fns'
-import { formatDateTime } from '@/lib/utils'
+import { format, startOfDay, addDays } from 'date-fns'
+import { formatDateTime, zonedWallClockToUtc } from '@/lib/utils'
 import { MapPin, Clock, Users, CheckCircle, XCircle, AlertCircle, Shield, UserPlus, UserMinus, ChevronDown, ChevronUp, Pencil, X, Repeat, Star } from 'lucide-react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
@@ -676,25 +676,51 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
 
   const categoryName = desk.category?.name ?? 'Asset'
 
+  // A one-off booking must resolve against the *desk's building* timezone
+  // (desk.resolvedTimezone — see #72), not the booker's browser, exactly
+  // like the recurring-booking flow above already does server-side.
+  // zonedWallClockToUtc reads year/month/day off `date`/`endDate` via plain
+  // local getters (fine — those Date objects only ever represent a
+  // browser-agnostic *calendar day* the user picked, never a specific
+  // instant) and combines them with the desired local hour:minute,
+  // converted through the building's own timezone rather than through
+  // date-fns' startOfDay/addHours/setHours, which all silently operate in
+  // the browser's timezone instead.
   const getBookingTimes = () => {
-    const base = startOfDay(date)
-    const endBase = startOfDay(endDate)
+    // resolvedTimezone is always populated at runtime by useFloorAvailability
+    // (every asset on a floor shares the floor's one resolved value) — the
+    // `?? 'UTC'` is a defensive fallback only, matching the backend's own
+    // ultimate fallback (Building.timezone ?? org default ?? 'UTC'), never
+    // the browser's timezone, so a missing value fails toward the same
+    // building-agnostic default the server would use, not toward the exact
+    // bug this fix removes.
+    const tz = desk?.resolvedTimezone ?? 'UTC'
+    const startYmd = { y: date.getFullYear(), m: date.getMonth() + 1, d: date.getDate() }
+    const endYmd = { y: endDate.getFullYear(), m: endDate.getMonth() + 1, d: endDate.getDate() }
     if (timePreset === 'full') {
-      return { start: base, end: new Date(endBase.getTime() + 23 * 3600000 + 59 * 60000) }
+      return {
+        start: zonedWallClockToUtc(startYmd.y, startYmd.m, startYmd.d, 0, 0, tz),
+        end: zonedWallClockToUtc(endYmd.y, endYmd.m, endYmd.d, 23, 59, tz),
+      }
     }
     if (timePreset === 'am') {
-      return { start: addHours(base, 8), end: addHours(base, 13) }
+      return {
+        start: zonedWallClockToUtc(startYmd.y, startYmd.m, startYmd.d, 8, 0, tz),
+        end: zonedWallClockToUtc(startYmd.y, startYmd.m, startYmd.d, 13, 0, tz),
+      }
     }
     if (timePreset === 'pm') {
-      return { start: addHours(base, 13), end: addHours(base, 18) }
+      return {
+        start: zonedWallClockToUtc(startYmd.y, startYmd.m, startYmd.d, 13, 0, tz),
+        end: zonedWallClockToUtc(startYmd.y, startYmd.m, startYmd.d, 18, 0, tz),
+      }
     }
     const [sh, sm] = customStart.split(':').map(Number)
     const [eh, em] = customEnd.split(':').map(Number)
-    const s = new Date(base)
-    s.setHours(sh, sm, 0, 0)
-    const e = new Date(endBase)
-    e.setHours(eh, em, 0, 0)
-    return { start: s, end: e }
+    return {
+      start: zonedWallClockToUtc(startYmd.y, startYmd.m, startYmd.d, sh, sm, tz),
+      end: zonedWallClockToUtc(endYmd.y, endYmd.m, endYmd.d, eh, em, tz),
+    }
   }
 
   const handleBook = async () => {

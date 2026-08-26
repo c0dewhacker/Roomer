@@ -1,7 +1,7 @@
 import { type ClassValue, clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
 import { format, formatDistance } from 'date-fns'
-import { toZonedTime } from 'date-fns-tz'
+import { toZonedTime, fromZonedTime } from 'date-fns-tz'
 import { getDateFormat } from './dateFormat'
 
 export function cn(...inputs: ClassValue[]) {
@@ -62,6 +62,27 @@ export function formatDateRange(start: Date | string, end: Date | string, timeZo
 export function formatRelative(date: Date | string): string {
   const d = typeof date === 'string' ? new Date(date) : date
   return formatDistance(d, new Date(), { addSuffix: true })
+}
+
+/**
+ * Mirrors the API's zonedWallClockToUtc (apps/api/src/lib/timezone.ts) —
+ * converts a plain wall-clock date+time to the correct UTC instant in a
+ * given IANA timeZone, entirely independent of the browser's own timezone.
+ *
+ * Booking a desk in a building whose timezone differs from the booker's own
+ * must resolve against *that building's* timezone (mirroring how the
+ * recurring-booking flow already does this server-side, see #72) — not the
+ * booker's browser. Passed as a naive ISO-like string with no offset/Z
+ * suffix, not a `Date` object: date-fns-tz's `fromZonedTime` reads a naive
+ * string via its own deterministic regex-based parser, but reads a `Date`
+ * object via the runtime's native local getters (tied to the browser's own
+ * timezone) — the exact same footgun the API-side version's own doc comment
+ * warns about, just with the browser's clock standing in for the server's.
+ */
+export function zonedWallClockToUtc(year: number, month1to12: number, day: number, hour: number, minute: number, timeZone: string): Date {
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  const naiveIso = `${year}-${pad(month1to12)}-${pad(day)}T${pad(hour)}:${pad(minute)}:00`
+  return fromZonedTime(naiveIso, timeZone)
 }
 
 const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
