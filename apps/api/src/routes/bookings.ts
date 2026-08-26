@@ -1547,9 +1547,29 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         assetId: { not: booking.assetId },
         user: { visibleInColleagueSearch: true },
       },
-      select: { id: true, startsAt: true, endsAt: true, asset: { select: { id: true, name: true } } },
+      select: {
+        id: true,
+        startsAt: true,
+        endsAt: true,
+        asset: { select: { id: true, name: true, floor: { select: { id: true, buildingId: true } } } },
+      },
     })
-    return reply.status(200).send({ data: candidate })
+
+    // Same reasoning as the visibleInColleagueSearch filter above: without
+    // this, the endpoint would additionally leak which restricted-floor desk
+    // a colleague is sitting on to a caller who has no access to that floor
+    // at all — returning null (indistinguishable from "no match") rather than
+    // 403 so its existence isn't disclosed either.
+    if (candidate?.asset.floor && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const allowed = await checkGroupAccess(request.user.id, candidate.asset.floor.buildingId, candidate.asset.floor.id)
+      if (!allowed) {
+        return reply.status(200).send({ data: null })
+      }
+    }
+
+    return reply.status(200).send({
+      data: candidate && { id: candidate.id, startsAt: candidate.startsAt, endsAt: candidate.endsAt, asset: { id: candidate.asset.id, name: candidate.asset.name } },
+    })
   })
 
   // POST /bookings/:id/swap-request

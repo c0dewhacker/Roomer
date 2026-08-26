@@ -978,6 +978,19 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /assets/:id/availability-rules — recurring weekdays this asset is open to others
   fastify.get('/:id/availability-rules', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+
+    const asset = await prisma.asset.findUnique({ where: { id }, include: { floor: true } })
+    if (!asset) {
+      return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+    }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN && asset.floor) {
+      const allowed = await checkGroupAccess(request.user.id, asset.floor.buildingId, asset.floor.id)
+      if (!allowed) {
+        return reply.status(403).send({ error: { message: 'Your group does not have access to this building or floor', code: 'GROUP_ACCESS_DENIED' } })
+      }
+    }
+
     const rules = await prisma.assetAvailabilityRule.findMany({
       where: { assetId: id },
       select: { weekday: true },
