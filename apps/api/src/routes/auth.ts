@@ -60,6 +60,26 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         const existingLdapUser = await prisma.user.findFirst({
           where: { email: { equals: ldapResult.email, mode: 'insensitive' } },
         })
+        // Same two guards findOrCreateSsoUser (OIDC/SAML, auth-enterprise.ts)
+        // already applies before linking — this interactive path was the one
+        // that skipped them. A local-password account must never be silently
+        // taken over by an LDAP bind (no password of the account's own was
+        // ever checked), and an account already linked to a DIFFERENT
+        // directory entry must never be silently re-pointed — otherwise a
+        // recycled email address reassigned to a new employee after the
+        // previous one left would quietly inherit the previous person's
+        // entire account, role, group memberships, and booking history the
+        // moment the new hire's real LDAP bind succeeds.
+        if (existingLdapUser?.passwordHash) {
+          return reply.status(409).send({
+            error: { message: 'This email is registered with a local password — contact an admin to link LDAP', code: 'LOCAL_PASSWORD_CONFLICT' },
+          })
+        }
+        if (existingLdapUser?.externalId && existingLdapUser.externalId !== ldapResult.dn) {
+          return reply.status(409).send({
+            error: { message: 'This email is already linked to a different directory identity — contact an admin', code: 'IDENTITY_MISMATCH' },
+          })
+        }
         user = existingLdapUser
           ? await prisma.user.update({
               where: { id: existingLdapUser.id },
