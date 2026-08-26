@@ -332,7 +332,19 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
     if (entry.status !== 'ENTERED') {
       return reply.status(409).send({ error: { message: 'This ballot has already been drawn', code: 'ALREADY_DRAWN' } })
     }
-    await prisma.ballotEntry.delete({ where: { id: entry.id } })
+    // Guarded on status: 'ENTERED', not a bare delete-by-id — the check
+    // above reads via a plain findUnique with no lock, so a withdrawal
+    // racing the exact moment the draw cron reaches this same entry could
+    // otherwise delete a row the draw is mid-way through marking WON/LOST.
+    // runDrawForRun's own writes are now guarded the same way (updateMany +
+    // status check), so whichever side actually wins the row in the
+    // database is the one that takes effect; this one correctly reports
+    // "already drawn" instead of silently deleting a just-won entry out
+    // from under its own real, already-created booking.
+    const withdrawn = await prisma.ballotEntry.deleteMany({ where: { id: entry.id, status: 'ENTERED' } })
+    if (withdrawn.count === 0) {
+      return reply.status(409).send({ error: { message: 'This ballot has already been drawn', code: 'ALREADY_DRAWN' } })
+    }
     await recordAuditLog(prisma, {
       actorId: request.user.id,
       action: 'ballot_entry.withdrawn',

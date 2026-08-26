@@ -1130,6 +1130,20 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
             throw new ZoneGroupConflictError('ZONE_GROUP_CONFLICT', 'This user already has a booking in the same zone group for this time')
           }
 
+          // Guarded on status: 'WAITING', not a bare update-by-id — `first`
+          // was read well before this transaction (assertBookable/advance-
+          // window/quota above are all real await points), and this
+          // transaction locks the ASSET (lockAssetForBooking), not the
+          // queue entry itself. DELETE /queue/:id (leave queue) locks under
+          // a different advisory class (lockAssetForQueue) and isn't
+          // coordinated by the lock above, so it could still cancel this
+          // exact entry in that gap. Without this guard, a user who just
+          // left the queue could still be claimed back in and given a real
+          // CONFIRMED booking for a slot they explicitly withdrew from.
+          const claimed = await tx.queueEntry.updateMany({ where: { id: first.id, status: 'WAITING' }, data: { status: 'CLAIMED' } })
+          if (claimed.count === 0) {
+            throw new ZoneGroupConflictError('ALREADY_LEFT', 'This queue entry is no longer waiting')
+          }
           const created = await tx.booking.create({
             data: {
               userId: first.userId,
@@ -1139,7 +1153,6 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
               status: 'CONFIRMED',
             },
           })
-          await tx.queueEntry.update({ where: { id: first.id }, data: { status: 'CLAIMED' } })
           return created
         })
       } catch (err) {

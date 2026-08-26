@@ -194,13 +194,23 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
     // uses in POST / above and promoteNextQueueEntry) — without it, this could
     // interleave with a concurrent join's position count() or a concurrent
     // promotion and leave duplicate/skewed position numbers for the asset.
-    await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       await lockAssetForQueue(tx, entry.assetId)
 
-      await tx.queueEntry.update({
-        where: { id },
+      // Guarded on status, not a bare update-by-id — the check above reads
+      // via a plain findUnique before this transaction even starts. This
+      // entry can also be mutated by /assets/:id/make-available's
+      // single-waiter branch, which claims under lockAssetForBooking (a
+      // DIFFERENT advisory lock class than lockAssetForQueue here), so the
+      // lock in this transaction alone doesn't rule out a concurrent claim
+      // landing in between. Without this guard, cancelling here could
+      // overwrite a queue entry that was already CLAIMED into a real
+      // CONFIRMED booking back to CANCELLED, with no error to either side.
+      const claimed = await tx.queueEntry.updateMany({
+        where: { id, status: { in: ['WAITING', 'PROMOTED'] } },
         data: { status: 'CANCELLED' },
       })
+      if (claimed.count === 0) return false
 
       // Compact positions: decrement all WAITING entries for the same asset/period that were behind the cancelled one
       await tx.queueEntry.updateMany({
@@ -223,7 +233,13 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
         after: { status: 'CANCELLED' },
         ipAddress: request.ip,
       }, request.log)
+      return true
     })
+    if (!result) {
+      return reply.status(409).send({
+        error: { message: 'Queue entry cannot be cancelled in its current state', code: 'INVALID_STATUS' },
+      })
+    }
 
     dispatchWebhook('queue.cancelled', { id: entry.id, userId: entry.userId, assetId: entry.assetId }).catch(() => {})
 
