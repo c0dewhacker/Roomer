@@ -194,8 +194,23 @@ function deny(status: number, code: string, message: string): BookabilityResult 
  */
 export function isWithinAdvanceBookingWindow(startsAt: Date, maxAdvanceBookingDays: number | null | undefined): boolean {
   if (!maxAdvanceBookingDays) return true
-  const maxDate = new Date()
-  maxDate.setUTCDate(maxDate.getUTCDate() + maxAdvanceBookingDays)
+  const now = new Date()
+  // End of calendar day N (UTC) — not "N days from now, preserving the
+  // current time-of-day", which is what `new Date(); setUTCDate(+N)` computes.
+  // That tied the cutoff to whatever second the request happened to be
+  // submitted: the identical target slot on day N could be accepted or
+  // rejected purely depending on what time of day the *request* was made
+  // (e.g. a 9am request rejects a 5pm slot on day N with "cannot be made
+  // more than N days in advance"; the same request made at 6pm for the
+  // identical slot succeeds) — nothing to do with "N days in advance" as
+  // the admin-facing setting/error message promise, which implies a whole
+  // calendar day. Deliberately UTC, not the target asset's own building
+  // timezone: this is a coarse admin guard rail (unlike working-hours/
+  // approval-window precision elsewhere in this file), and threading a
+  // per-asset timezone through every one of this function's ~6 call sites
+  // (create, reschedule, recurring, queue-claim x2, auto-confirm) isn't
+  // worth it for a rail whose whole point is a generous, approximate cap.
+  const maxDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + maxAdvanceBookingDays, 23, 59, 59, 999))
   return startsAt <= maxDate
 }
 
