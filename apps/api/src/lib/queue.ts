@@ -619,34 +619,36 @@ async function processSendNotification(
   } else if (type === NotificationType.QUEUE_JOINED && queueEntryId) {
     const entry = await prisma.queueEntry.findUnique({
       where: { id: queueEntryId },
-      include: { asset: true },
+      include: { asset: { include: { floor: { select: { buildingId: true } } } } },
     })
     if (entry) {
+      const tz = await resolveBuildingTimezone(prisma, entry.asset.floor?.buildingId)
       title = `Joined queue — ${entry.asset.name}`
       body = `You are #${entry.position} in the queue for ${entry.asset.name}.`
-      emailPayload = renderQueueJoined(entry, user, entry.asset)
+      emailPayload = renderQueueJoined(entry, user, entry.asset, tz)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: entry.asset.name,
         position: String(entry.position),
-        wantedStartsAt: formatDate(entry.wantedStartsAt), wantedEndsAt: formatDate(entry.wantedEndsAt),
+        wantedStartsAt: formatDate(entry.wantedStartsAt, tz), wantedEndsAt: formatDate(entry.wantedEndsAt, tz),
         queueUrl: `${env.APP_URL}/queue`, appUrl: env.APP_URL,
       }
     }
   } else if (type === NotificationType.QUEUE_PROMOTED && queueEntryId) {
     const entry = await prisma.queueEntry.findUnique({
       where: { id: queueEntryId },
-      include: { asset: true },
+      include: { asset: { include: { floor: { select: { buildingId: true } } } } },
     })
     if (entry && claimDeadline && entry.claimToken) {
+      const tz = await resolveBuildingTimezone(prisma, entry.asset.floor?.buildingId)
       title = `Asset available — ${entry.asset.name}`
-      body = `Claim your booking by ${formatDate(new Date(claimDeadline))}.`
-      emailPayload = renderQueuePromoted(entry, user, entry.asset, new Date(claimDeadline), entry.claimToken)
+      body = `Claim your booking by ${formatDate(new Date(claimDeadline), tz)}.`
+      emailPayload = renderQueuePromoted(entry, user, entry.asset, new Date(claimDeadline), entry.claimToken, tz)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: entry.asset.name,
-        wantedStartsAt: formatDate(entry.wantedStartsAt), wantedEndsAt: formatDate(entry.wantedEndsAt),
-        claimDeadline: formatDate(new Date(claimDeadline)),
+        wantedStartsAt: formatDate(entry.wantedStartsAt, tz), wantedEndsAt: formatDate(entry.wantedEndsAt, tz),
+        claimDeadline: formatDate(new Date(claimDeadline), tz),
         claimUrl: `${env.APP_URL}/queue/claim?token=${encodeURIComponent(entry.claimToken)}`,
         appUrl: env.APP_URL,
       }
@@ -654,17 +656,18 @@ async function processSendNotification(
   } else if (type === NotificationType.QUEUE_CLAIM_EXPIRING && queueEntryId) {
     const entry = await prisma.queueEntry.findUnique({
       where: { id: queueEntryId },
-      include: { asset: true },
+      include: { asset: { include: { floor: { select: { buildingId: true } } } } },
     })
     if (entry && claimDeadline && entry.claimToken) {
+      const tz = await resolveBuildingTimezone(prisma, entry.asset.floor?.buildingId)
       title = `Claim window closing soon — ${entry.asset.name}`
-      body = `Claim your booking for ${entry.asset.name} by ${formatDate(new Date(claimDeadline))}.`
-      emailPayload = renderQueueClaimExpiring(entry, user, entry.asset, new Date(claimDeadline), entry.claimToken)
+      body = `Claim your booking for ${entry.asset.name} by ${formatDate(new Date(claimDeadline), tz)}.`
+      emailPayload = renderQueueClaimExpiring(entry, user, entry.asset, new Date(claimDeadline), entry.claimToken, tz)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: entry.asset.name,
-        wantedStartsAt: formatDate(entry.wantedStartsAt), wantedEndsAt: formatDate(entry.wantedEndsAt),
-        claimDeadline: formatDate(new Date(claimDeadline)),
+        wantedStartsAt: formatDate(entry.wantedStartsAt, tz), wantedEndsAt: formatDate(entry.wantedEndsAt, tz),
+        claimDeadline: formatDate(new Date(claimDeadline), tz),
         claimUrl: `${env.APP_URL}/queue/claim?token=${encodeURIComponent(entry.claimToken)}`,
         appUrl: env.APP_URL,
       }
@@ -691,16 +694,17 @@ async function processSendNotification(
   } else if (type === NotificationType.QUEUE_EXPIRED && queueEntryId) {
     const entry = await prisma.queueEntry.findUnique({
       where: { id: queueEntryId },
-      include: { asset: true },
+      include: { asset: { include: { floor: { select: { buildingId: true } } } } },
     })
     if (entry) {
+      const tz = await resolveBuildingTimezone(prisma, entry.asset.floor?.buildingId)
       title = `Queue entry expired — ${entry.asset.name}`
       body = `Your queue entry for ${entry.asset.name} has expired.`
-      emailPayload = renderQueueExpired(entry, user, entry.asset)
+      emailPayload = renderQueueExpired(entry, user, entry.asset, tz)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: entry.asset.name,
-        wantedStartsAt: formatDate(entry.wantedStartsAt), wantedEndsAt: formatDate(entry.wantedEndsAt),
+        wantedStartsAt: formatDate(entry.wantedStartsAt, tz), wantedEndsAt: formatDate(entry.wantedEndsAt, tz),
         queueUrl: `${env.APP_URL}/queue`, appUrl: env.APP_URL,
       }
     }
@@ -726,29 +730,31 @@ async function processSendNotification(
   } else if (type === NotificationType.BOOKING_TRANSFER_REQUESTED && transferId) {
     const transfer = await prisma.bookingTransfer.findUnique({
       where: { id: transferId },
-      include: { booking: { include: { asset: true } }, fromUser: true },
+      include: { booking: { include: { asset: { include: { floor: { select: { buildingId: true } } } } } }, fromUser: true },
     })
     if (transfer) {
+      const tz = await resolveBuildingTimezone(prisma, transfer.booking.asset.floor?.buildingId)
       title = `Transfer request — ${transfer.booking.asset.name}`
       body = `${transfer.fromUser.displayName} wants to transfer their ${transfer.booking.asset.name} booking to you.`
-      emailPayload = renderBookingTransferRequested(transfer.booking, user, transfer.fromUser, transfer.booking.asset)
+      emailPayload = renderBookingTransferRequested(transfer.booking, user, transfer.fromUser, transfer.booking.asset, tz)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         fromUserName: transfer.fromUser.displayName,
         assetName: transfer.booking.asset.name,
-        startsAt: formatDate(transfer.booking.startsAt), endsAt: formatDate(transfer.booking.endsAt),
+        startsAt: formatDate(transfer.booking.startsAt, tz), endsAt: formatDate(transfer.booking.endsAt, tz),
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }
   } else if (type === NotificationType.BOOKING_TRANSFER_ACCEPTED && transferId) {
     const transfer = await prisma.bookingTransfer.findUnique({
       where: { id: transferId },
-      include: { booking: { include: { asset: true } }, toUser: true },
+      include: { booking: { include: { asset: { include: { floor: { select: { buildingId: true } } } } } }, toUser: true },
     })
     if (transfer) {
+      const tz = await resolveBuildingTimezone(prisma, transfer.booking.asset.floor?.buildingId)
       title = `Transfer accepted — ${transfer.booking.asset.name}`
       body = `${transfer.toUser.displayName} accepted your transfer of ${transfer.booking.asset.name}.`
-      emailPayload = renderBookingTransferAccepted(transfer.booking, user, transfer.toUser, transfer.booking.asset)
+      emailPayload = renderBookingTransferAccepted(transfer.booking, user, transfer.toUser, transfer.booking.asset, tz)
       // This notification goes to the FORMER owner (see bookings.ts transfer
       // accept). The BOOKING_CONFIRMED job sent alongside it only sends a
       // fresh REQUEST to the NEW owner's calendar — a different mailbox
@@ -770,64 +776,76 @@ async function processSendNotification(
         userName: user.displayName, userEmail: user.email,
         toUserName: transfer.toUser.displayName,
         assetName: transfer.booking.asset.name,
-        startsAt: formatDate(transfer.booking.startsAt), endsAt: formatDate(transfer.booking.endsAt),
+        startsAt: formatDate(transfer.booking.startsAt, tz), endsAt: formatDate(transfer.booking.endsAt, tz),
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }
   } else if (type === NotificationType.BOOKING_TRANSFER_DECLINED && transferId) {
     const transfer = await prisma.bookingTransfer.findUnique({
       where: { id: transferId },
-      include: { booking: { include: { asset: true } }, toUser: true },
+      include: { booking: { include: { asset: { include: { floor: { select: { buildingId: true } } } } } }, toUser: true },
     })
     if (transfer) {
+      const tz = await resolveBuildingTimezone(prisma, transfer.booking.asset.floor?.buildingId)
       title = `Transfer declined — ${transfer.booking.asset.name}`
       body = `${transfer.toUser.displayName} declined your transfer of ${transfer.booking.asset.name}.`
-      emailPayload = renderBookingTransferDeclined(transfer.booking, user, transfer.toUser, transfer.booking.asset)
+      emailPayload = renderBookingTransferDeclined(transfer.booking, user, transfer.toUser, transfer.booking.asset, tz)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         toUserName: transfer.toUser.displayName,
         assetName: transfer.booking.asset.name,
-        startsAt: formatDate(transfer.booking.startsAt), endsAt: formatDate(transfer.booking.endsAt),
+        startsAt: formatDate(transfer.booking.startsAt, tz), endsAt: formatDate(transfer.booking.endsAt, tz),
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }
   } else if (type === NotificationType.BOOKING_TRANSFER_EXPIRED && transferId) {
     const transfer = await prisma.bookingTransfer.findUnique({
       where: { id: transferId },
-      include: { booking: { include: { asset: true } } },
+      include: { booking: { include: { asset: { include: { floor: { select: { buildingId: true } } } } } } },
     })
     if (transfer) {
+      const tz = await resolveBuildingTimezone(prisma, transfer.booking.asset.floor?.buildingId)
       title = `Transfer request expired — ${transfer.booking.asset.name}`
       body = `Nobody responded to your transfer of ${transfer.booking.asset.name} in time — it's still yours.`
-      emailPayload = renderBookingTransferExpired(transfer.booking, user, transfer.booking.asset)
+      emailPayload = renderBookingTransferExpired(transfer.booking, user, transfer.booking.asset, tz)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: transfer.booking.asset.name,
-        startsAt: formatDate(transfer.booking.startsAt), endsAt: formatDate(transfer.booking.endsAt),
+        startsAt: formatDate(transfer.booking.startsAt, tz), endsAt: formatDate(transfer.booking.endsAt, tz),
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }
   } else if (type === NotificationType.BOOKING_SWAP_REQUESTED && swapId) {
     const swap = await prisma.bookingSwap.findUnique({
       where: { id: swapId },
-      include: { bookingA: { include: { asset: true } }, bookingB: true, initiator: true },
+      include: { bookingA: { include: { asset: { include: { floor: { select: { buildingId: true } } } } } }, bookingB: true, initiator: true },
     })
     if (swap) {
+      // bookingA's building — the desk the recipient would MOVE TO — since
+      // that's the asset this notification's copy and "You'd get" line are
+      // both actually about, even though the time shown is read off
+      // bookingB (same UTC instant either way; a swap requires matching
+      // times).
+      const tz = await resolveBuildingTimezone(prisma, swap.bookingA.asset.floor?.buildingId)
       title = `Swap request — ${swap.bookingA.asset.name}`
       body = `${swap.initiator.displayName} wants to swap desks with you.`
-      emailPayload = renderBookingSwapRequested(swap.bookingB, user, swap.initiator, swap.bookingA.asset)
+      emailPayload = renderBookingSwapRequested(swap.bookingB, user, swap.initiator, swap.bookingA.asset, tz)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         initiatorName: swap.initiator.displayName,
         assetName: swap.bookingA.asset.name,
-        startsAt: formatDate(swap.bookingB.startsAt), endsAt: formatDate(swap.bookingB.endsAt),
+        startsAt: formatDate(swap.bookingB.startsAt, tz), endsAt: formatDate(swap.bookingB.endsAt, tz),
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }
   } else if (type === NotificationType.BOOKING_SWAP_ACCEPTED && swapId) {
     const swap = await prisma.bookingSwap.findUnique({
       where: { id: swapId },
-      include: { bookingA: { include: { asset: true } }, bookingB: { include: { asset: true } }, initiator: true, recipient: true },
+      include: {
+        bookingA: { include: { asset: { include: { floor: { select: { buildingId: true } } } } } },
+        bookingB: { include: { asset: { include: { floor: { select: { buildingId: true } } } } } },
+        initiator: true, recipient: true,
+      },
     })
     if (swap) {
       // Each recipient of this notification is now on the *other* booking's
@@ -837,9 +855,10 @@ async function processSendNotification(
       const newBooking = userEndsUpOnA ? swap.bookingA : swap.bookingB
       const newAsset = userEndsUpOnA ? swap.bookingA.asset : swap.bookingB.asset
       const otherUser = userEndsUpOnA ? swap.initiator : swap.recipient
+      const tz = await resolveBuildingTimezone(prisma, newAsset.floor?.buildingId)
       title = `Swap complete — ${newAsset.name}`
       body = `Your desk swap with ${otherUser.displayName} is complete — you're now on ${newAsset.name}.`
-      emailPayload = renderBookingSwapAccepted(newBooking, user, otherUser, newAsset)
+      emailPayload = renderBookingSwapAccepted(newBooking, user, otherUser, newAsset, tz)
       // This booking row's icsSequence was already bumped by the swap-accept
       // transaction (ownership changed, same reasoning as transfer above) —
       // a fresh REQUEST here is what actually puts the new desk on this
@@ -858,40 +877,42 @@ async function processSendNotification(
         userName: user.displayName, userEmail: user.email,
         otherUserName: otherUser.displayName,
         assetName: newAsset.name,
-        startsAt: formatDate(newBooking.startsAt), endsAt: formatDate(newBooking.endsAt),
+        startsAt: formatDate(newBooking.startsAt, tz), endsAt: formatDate(newBooking.endsAt, tz),
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }
   } else if (type === NotificationType.BOOKING_SWAP_DECLINED && swapId) {
     const swap = await prisma.bookingSwap.findUnique({
       where: { id: swapId },
-      include: { bookingA: { include: { asset: true } }, recipient: true },
+      include: { bookingA: { include: { asset: { include: { floor: { select: { buildingId: true } } } } } }, recipient: true },
     })
     if (swap) {
+      const tz = await resolveBuildingTimezone(prisma, swap.bookingA.asset.floor?.buildingId)
       title = `Swap declined — ${swap.bookingA.asset.name}`
       body = `${swap.recipient.displayName} declined your desk swap request.`
-      emailPayload = renderBookingSwapDeclined(swap.bookingA, user, swap.recipient, swap.bookingA.asset)
+      emailPayload = renderBookingSwapDeclined(swap.bookingA, user, swap.recipient, swap.bookingA.asset, tz)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         recipientName: swap.recipient.displayName,
         assetName: swap.bookingA.asset.name,
-        startsAt: formatDate(swap.bookingA.startsAt), endsAt: formatDate(swap.bookingA.endsAt),
+        startsAt: formatDate(swap.bookingA.startsAt, tz), endsAt: formatDate(swap.bookingA.endsAt, tz),
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }
   } else if (type === NotificationType.BOOKING_SWAP_EXPIRED && swapId) {
     const swap = await prisma.bookingSwap.findUnique({
       where: { id: swapId },
-      include: { bookingA: { include: { asset: true } } },
+      include: { bookingA: { include: { asset: { include: { floor: { select: { buildingId: true } } } } } } },
     })
     if (swap) {
+      const tz = await resolveBuildingTimezone(prisma, swap.bookingA.asset.floor?.buildingId)
       title = `Swap request expired — ${swap.bookingA.asset.name}`
       body = `Nobody responded to your desk swap request in time — your booking is unchanged.`
-      emailPayload = renderBookingSwapExpired(swap.bookingA, user, swap.bookingA.asset)
+      emailPayload = renderBookingSwapExpired(swap.bookingA, user, swap.bookingA.asset, tz)
       templateVars = {
         userName: user.displayName, userEmail: user.email,
         assetName: swap.bookingA.asset.name,
-        startsAt: formatDate(swap.bookingA.startsAt), endsAt: formatDate(swap.bookingA.endsAt),
+        startsAt: formatDate(swap.bookingA.startsAt, tz), endsAt: formatDate(swap.bookingA.endsAt, tz),
         bookingsUrl: `${env.APP_URL}/bookings`, appUrl: env.APP_URL,
       }
     }

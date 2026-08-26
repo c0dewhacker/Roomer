@@ -419,6 +419,7 @@ export function renderQueueJoined(
   queueEntry: Pick<QueueEntry, 'id' | 'wantedStartsAt' | 'wantedEndsAt' | 'position'>,
   user: Pick<User, 'displayName' | 'email'>,
   asset: Pick<Asset, 'name'>,
+  timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
   const subject = `You've joined the queue — ${asset.name}`
   const html = baseHtml(
@@ -428,13 +429,13 @@ export function renderQueueJoined(
      <div class="detail">
        <dl>
          <dt>Position</dt><dd>#${queueEntry.position}</dd>
-         <dt>Wanted period</dt><dd>${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}</dd>
+         <dt>Wanted period</dt><dd>${formatDate(queueEntry.wantedStartsAt, timeZone)} → ${formatDate(queueEntry.wantedEndsAt, timeZone)}</dd>
        </dl>
      </div>
      <p>We'll notify you immediately if the asset becomes available.</p>
      <a href="${env.APP_URL}/queue" class="btn">View My Queue</a>`,
   )
-  const text = `Hi ${user.displayName},\n\nYou are #${queueEntry.position} in the queue for ${asset.name}.\nWanted: ${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}\n\nWe'll notify you when the asset is available.\n\n${env.APP_URL}/queue`
+  const text = `Hi ${user.displayName},\n\nYou are #${queueEntry.position} in the queue for ${asset.name}.\nWanted: ${formatDate(queueEntry.wantedStartsAt, timeZone)} → ${formatDate(queueEntry.wantedEndsAt, timeZone)}\n\nWe'll notify you when the asset is available.\n\n${env.APP_URL}/queue`
   return { subject, html, text }
 }
 
@@ -446,6 +447,7 @@ export function renderQueuePromoted(
   asset: Pick<Asset, 'name'>,
   claimDeadline: Date,
   claimToken: string,
+  timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
   const claimUrl = `${env.APP_URL}/queue/claim?token=${encodeURIComponent(claimToken)}`
   const subject = `Asset available — claim now! ${asset.name}`
@@ -455,14 +457,14 @@ export function renderQueuePromoted(
      <p>Hi ${escapeHtml(user.displayName)}, <strong>${escapeHtml(asset.name)}</strong> is now available for your requested period.</p>
      <div class="detail">
        <dl>
-         <dt>Period</dt><dd>${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}</dd>
-         <dt>Claim by</dt><dd><strong>${formatDate(claimDeadline)}</strong></dd>
+         <dt>Period</dt><dd>${formatDate(queueEntry.wantedStartsAt, timeZone)} → ${formatDate(queueEntry.wantedEndsAt, timeZone)}</dd>
+         <dt>Claim by</dt><dd><strong>${formatDate(claimDeadline, timeZone)}</strong></dd>
        </dl>
      </div>
      <p>Click the button below to claim your booking instantly — no login required. This link expires when the claim deadline passes.</p>
      <a href="${claimUrl}" class="btn">Claim Now</a>`,
   )
-  const text = `Hi ${user.displayName},\n\n${asset.name} is now available!\nPeriod: ${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}\nClaim by: ${formatDate(claimDeadline)}\n\nClaim your booking: ${claimUrl}`
+  const text = `Hi ${user.displayName},\n\n${asset.name} is now available!\nPeriod: ${formatDate(queueEntry.wantedStartsAt, timeZone)} → ${formatDate(queueEntry.wantedEndsAt, timeZone)}\nClaim by: ${formatDate(claimDeadline, timeZone)}\n\nClaim your booking: ${claimUrl}`
   return { subject, html, text }
 }
 
@@ -474,6 +476,7 @@ export function renderQueueClaimExpiring(
   asset: Pick<Asset, 'name'>,
   claimDeadline: Date,
   claimToken: string,
+  timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
   const claimUrl = `${env.APP_URL}/queue/claim?token=${encodeURIComponent(claimToken)}`
   const subject = `Claim window closing soon — ${asset.name}`
@@ -483,14 +486,14 @@ export function renderQueueClaimExpiring(
      <p>Hi ${escapeHtml(user.displayName)}, you still have <strong>${escapeHtml(asset.name)}</strong> reserved for you, but your claim window is about to expire.</p>
      <div class="detail">
        <dl>
-         <dt>Period</dt><dd>${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}</dd>
-         <dt>Claim by</dt><dd><strong>${formatDate(claimDeadline)}</strong></dd>
+         <dt>Period</dt><dd>${formatDate(queueEntry.wantedStartsAt, timeZone)} → ${formatDate(queueEntry.wantedEndsAt, timeZone)}</dd>
+         <dt>Claim by</dt><dd><strong>${formatDate(claimDeadline, timeZone)}</strong></dd>
        </dl>
      </div>
      <p>Claim it now before it's offered to the next person in the queue.</p>
      <a href="${claimUrl}" class="btn">Claim Now</a>`,
   )
-  const text = `Hi ${user.displayName},\n\nYour claim window for ${asset.name} is closing soon.\nPeriod: ${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}\nClaim by: ${formatDate(claimDeadline)}\n\nClaim your booking: ${claimUrl}`
+  const text = `Hi ${user.displayName},\n\nYour claim window for ${asset.name} is closing soon.\nPeriod: ${formatDate(queueEntry.wantedStartsAt, timeZone)} → ${formatDate(queueEntry.wantedEndsAt, timeZone)}\nClaim by: ${formatDate(claimDeadline, timeZone)}\n\nClaim your booking: ${claimUrl}`
   return { subject, html, text }
 }
 
@@ -529,6 +532,7 @@ export function renderQueueExpired(
   queueEntry: Pick<QueueEntry, 'id' | 'wantedStartsAt' | 'wantedEndsAt'>,
   user: Pick<User, 'displayName' | 'email'>,
   asset: Pick<Asset, 'name'>,
+  timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
   const subject = `Queue entry expired — ${asset.name}`
   const html = baseHtml(
@@ -538,13 +542,13 @@ export function renderQueueExpired(
      <div class="detail">
        <dl>
          <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
-         <dt>Wanted period</dt><dd>${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}</dd>
+         <dt>Wanted period</dt><dd>${formatDate(queueEntry.wantedStartsAt, timeZone)} → ${formatDate(queueEntry.wantedEndsAt, timeZone)}</dd>
        </dl>
      </div>
      <p>You can rejoin the queue any time from the floor plan.</p>
      <a href="${env.APP_URL}/queue" class="btn">View My Queue</a>`,
   )
-  const text = `Hi ${user.displayName},\n\nYour queue entry for ${asset.name} (${formatDate(queueEntry.wantedStartsAt)} → ${formatDate(queueEntry.wantedEndsAt)}) has expired.\n\nYou can rejoin the queue from the floor plan: ${env.APP_URL}`
+  const text = `Hi ${user.displayName},\n\nYour queue entry for ${asset.name} (${formatDate(queueEntry.wantedStartsAt, timeZone)} → ${formatDate(queueEntry.wantedEndsAt, timeZone)}) has expired.\n\nYou can rejoin the queue from the floor plan: ${env.APP_URL}`
   return { subject, html, text }
 }
 
@@ -665,6 +669,7 @@ export function renderBookingTransferRequested(
   toUser: Pick<User, 'displayName'>,
   fromUser: Pick<User, 'displayName'>,
   asset: Pick<Asset, 'name'>,
+  timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
   const subject = `${fromUser.displayName} wants to transfer a booking to you — ${asset.name}`
   const html = baseHtml(
@@ -674,12 +679,12 @@ export function renderBookingTransferRequested(
      <div class="detail">
        <dl>
          <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
-         <dt>When</dt><dd>${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}</dd>
+         <dt>When</dt><dd>${formatDate(booking.startsAt, timeZone)} → ${formatDate(booking.endsAt, timeZone)}</dd>
        </dl>
      </div>
      <a href="${env.APP_URL}/bookings" class="btn">Review Request</a>`,
   )
-  const text = `Hi ${toUser.displayName},\n\n${fromUser.displayName} wants to transfer their booking for ${asset.name} (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}) to you. Review it at ${env.APP_URL}/bookings`
+  const text = `Hi ${toUser.displayName},\n\n${fromUser.displayName} wants to transfer their booking for ${asset.name} (${formatDate(booking.startsAt, timeZone)} → ${formatDate(booking.endsAt, timeZone)}) to you. Review it at ${env.APP_URL}/bookings`
   return { subject, html, text }
 }
 
@@ -688,6 +693,7 @@ export function renderBookingTransferAccepted(
   fromUser: Pick<User, 'displayName'>,
   toUser: Pick<User, 'displayName'>,
   asset: Pick<Asset, 'name'>,
+  timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
   const subject = `${toUser.displayName} accepted your transfer — ${asset.name}`
   const html = baseHtml(
@@ -697,12 +703,12 @@ export function renderBookingTransferAccepted(
      <div class="detail">
        <dl>
          <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
-         <dt>Was scheduled</dt><dd>${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}</dd>
+         <dt>Was scheduled</dt><dd>${formatDate(booking.startsAt, timeZone)} → ${formatDate(booking.endsAt, timeZone)}</dd>
        </dl>
      </div>
      <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
   )
-  const text = `Hi ${fromUser.displayName},\n\n${toUser.displayName} accepted your transfer of the ${asset.name} booking (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}). It's no longer on your calendar.`
+  const text = `Hi ${fromUser.displayName},\n\n${toUser.displayName} accepted your transfer of the ${asset.name} booking (${formatDate(booking.startsAt, timeZone)} → ${formatDate(booking.endsAt, timeZone)}). It's no longer on your calendar.`
   return { subject, html, text }
 }
 
@@ -711,6 +717,7 @@ export function renderBookingTransferDeclined(
   fromUser: Pick<User, 'displayName'>,
   toUser: Pick<User, 'displayName'>,
   asset: Pick<Asset, 'name'>,
+  timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
   const subject = `${toUser.displayName} declined your transfer — ${asset.name}`
   const html = baseHtml(
@@ -720,12 +727,12 @@ export function renderBookingTransferDeclined(
      <div class="detail">
        <dl>
          <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
-         <dt>When</dt><dd>${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}</dd>
+         <dt>When</dt><dd>${formatDate(booking.startsAt, timeZone)} → ${formatDate(booking.endsAt, timeZone)}</dd>
        </dl>
      </div>
      <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
   )
-  const text = `Hi ${fromUser.displayName},\n\n${toUser.displayName} declined your transfer of the ${asset.name} booking (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}). It's still yours.`
+  const text = `Hi ${fromUser.displayName},\n\n${toUser.displayName} declined your transfer of the ${asset.name} booking (${formatDate(booking.startsAt, timeZone)} → ${formatDate(booking.endsAt, timeZone)}). It's still yours.`
   return { subject, html, text }
 }
 
@@ -733,6 +740,7 @@ export function renderBookingTransferExpired(
   booking: Pick<Booking, 'startsAt' | 'endsAt'>,
   fromUser: Pick<User, 'displayName'>,
   asset: Pick<Asset, 'name'>,
+  timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
   const subject = `Your transfer request expired — ${asset.name}`
   const html = baseHtml(
@@ -742,12 +750,12 @@ export function renderBookingTransferExpired(
      <div class="detail">
        <dl>
          <dt>Asset</dt><dd>${escapeHtml(asset.name)}</dd>
-         <dt>When</dt><dd>${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}</dd>
+         <dt>When</dt><dd>${formatDate(booking.startsAt, timeZone)} → ${formatDate(booking.endsAt, timeZone)}</dd>
        </dl>
      </div>
      <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
   )
-  const text = `Hi ${fromUser.displayName},\n\nNobody responded to your transfer request for the ${asset.name} booking (${formatDate(booking.startsAt)} → ${formatDate(booking.endsAt)}) in time, so it's still yours.`
+  const text = `Hi ${fromUser.displayName},\n\nNobody responded to your transfer request for the ${asset.name} booking (${formatDate(booking.startsAt, timeZone)} → ${formatDate(booking.endsAt, timeZone)}) in time, so it's still yours.`
   return { subject, html, text }
 }
 
@@ -756,6 +764,7 @@ export function renderBookingSwapRequested(
   recipient: Pick<User, 'displayName'>,
   initiator: Pick<User, 'displayName'>,
   assetA: Pick<Asset, 'name'>,
+  timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
   const subject = `${initiator.displayName} wants to swap desks with you — ${assetA.name}`
   const html = baseHtml(
@@ -765,12 +774,12 @@ export function renderBookingSwapRequested(
      <div class="detail">
        <dl>
          <dt>You'd get</dt><dd>${escapeHtml(assetA.name)}</dd>
-         <dt>When</dt><dd>${formatDate(bookingB.startsAt)} → ${formatDate(bookingB.endsAt)}</dd>
+         <dt>When</dt><dd>${formatDate(bookingB.startsAt, timeZone)} → ${formatDate(bookingB.endsAt, timeZone)}</dd>
        </dl>
      </div>
      <a href="${env.APP_URL}/bookings" class="btn">Review Request</a>`,
   )
-  const text = `Hi ${recipient.displayName},\n\n${initiator.displayName} would like to swap their booking for ${assetA.name} (${formatDate(bookingB.startsAt)} → ${formatDate(bookingB.endsAt)}) with yours. Review it at ${env.APP_URL}/bookings`
+  const text = `Hi ${recipient.displayName},\n\n${initiator.displayName} would like to swap their booking for ${assetA.name} (${formatDate(bookingB.startsAt, timeZone)} → ${formatDate(bookingB.endsAt, timeZone)}) with yours. Review it at ${env.APP_URL}/bookings`
   return { subject, html, text }
 }
 
@@ -779,6 +788,7 @@ export function renderBookingSwapAccepted(
   user: Pick<User, 'displayName'>,
   otherUser: Pick<User, 'displayName'>,
   newAsset: Pick<Asset, 'name'>,
+  timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
   const subject = `Desk swap complete — you're now on ${newAsset.name}`
   const html = baseHtml(
@@ -788,12 +798,12 @@ export function renderBookingSwapAccepted(
      <div class="detail">
        <dl>
          <dt>You're now on</dt><dd>${escapeHtml(newAsset.name)}</dd>
-         <dt>When</dt><dd>${formatDate(newBooking.startsAt)} → ${formatDate(newBooking.endsAt)}</dd>
+         <dt>When</dt><dd>${formatDate(newBooking.startsAt, timeZone)} → ${formatDate(newBooking.endsAt, timeZone)}</dd>
        </dl>
      </div>
      <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
   )
-  const text = `Hi ${user.displayName},\n\nYour desk swap with ${otherUser.displayName} is complete. You're now on ${newAsset.name} (${formatDate(newBooking.startsAt)} → ${formatDate(newBooking.endsAt)}).`
+  const text = `Hi ${user.displayName},\n\nYour desk swap with ${otherUser.displayName} is complete. You're now on ${newAsset.name} (${formatDate(newBooking.startsAt, timeZone)} → ${formatDate(newBooking.endsAt, timeZone)}).`
   return { subject, html, text }
 }
 
@@ -802,6 +812,7 @@ export function renderBookingSwapDeclined(
   initiator: Pick<User, 'displayName'>,
   recipient: Pick<User, 'displayName'>,
   assetA: Pick<Asset, 'name'>,
+  timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
   const subject = `${recipient.displayName} declined your swap request — ${assetA.name}`
   const html = baseHtml(
@@ -811,12 +822,12 @@ export function renderBookingSwapDeclined(
      <div class="detail">
        <dl>
          <dt>Asset</dt><dd>${escapeHtml(assetA.name)}</dd>
-         <dt>When</dt><dd>${formatDate(bookingA.startsAt)} → ${formatDate(bookingA.endsAt)}</dd>
+         <dt>When</dt><dd>${formatDate(bookingA.startsAt, timeZone)} → ${formatDate(bookingA.endsAt, timeZone)}</dd>
        </dl>
      </div>
      <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
   )
-  const text = `Hi ${initiator.displayName},\n\n${recipient.displayName} declined your desk swap request. Your booking for ${assetA.name} (${formatDate(bookingA.startsAt)} → ${formatDate(bookingA.endsAt)}) is unchanged.`
+  const text = `Hi ${initiator.displayName},\n\n${recipient.displayName} declined your desk swap request. Your booking for ${assetA.name} (${formatDate(bookingA.startsAt, timeZone)} → ${formatDate(bookingA.endsAt, timeZone)}) is unchanged.`
   return { subject, html, text }
 }
 
@@ -824,6 +835,7 @@ export function renderBookingSwapExpired(
   bookingA: Pick<Booking, 'startsAt' | 'endsAt'>,
   initiator: Pick<User, 'displayName'>,
   assetA: Pick<Asset, 'name'>,
+  timeZone = 'UTC',
 ): { subject: string; html: string; text: string } {
   const subject = `Your swap request expired — ${assetA.name}`
   const html = baseHtml(
@@ -833,12 +845,12 @@ export function renderBookingSwapExpired(
      <div class="detail">
        <dl>
          <dt>Asset</dt><dd>${escapeHtml(assetA.name)}</dd>
-         <dt>When</dt><dd>${formatDate(bookingA.startsAt)} → ${formatDate(bookingA.endsAt)}</dd>
+         <dt>When</dt><dd>${formatDate(bookingA.startsAt, timeZone)} → ${formatDate(bookingA.endsAt, timeZone)}</dd>
        </dl>
      </div>
      <a href="${env.APP_URL}/bookings" class="btn">View My Bookings</a>`,
   )
-  const text = `Hi ${initiator.displayName},\n\nNobody responded to your desk swap request for ${assetA.name} (${formatDate(bookingA.startsAt)} → ${formatDate(bookingA.endsAt)}) in time. Your booking is unchanged.`
+  const text = `Hi ${initiator.displayName},\n\nNobody responded to your desk swap request for ${assetA.name} (${formatDate(bookingA.startsAt, timeZone)} → ${formatDate(bookingA.endsAt, timeZone)}) in time. Your booking is unchanged.`
   return { subject, html, text }
 }
 
