@@ -31,7 +31,8 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog'
-import { formatDateRange, formatDate, formatCalendarDate, zoneQualifier } from '@/lib/utils'
+import { formatDateRange, formatDate, formatCalendarDate, zoneQualifier, zonedWallClockToUtc } from '@/lib/utils'
+import { toZonedTime } from 'date-fns-tz'
 import { DateTimeLocalInput } from '@/components/ui/date-time-input'
 import { assetsApi, recurringBookingsApi, bookingsApi, usersApi } from '@/lib/api'
 import type { Booking, RecurringBookingRule, BookingTransfer, BookingSwap } from '@/types'
@@ -53,10 +54,26 @@ const statusLabel: Record<string, string> = {
   PENDING_APPROVAL: 'Pending approval',
 }
 
-function toLocalDatetimeValue(iso: string): string {
-  const d = parseISO(iso)
+// Renders the picker's value in the booking's *building* timezone (mirrors
+// the read-only summary above it via formatDateRange(..., resolvedTimezone))
+// rather than the viewer's browser timezone — toZonedTime shifts the instant
+// so native (non-UTC) getters read back the target zone's wall-clock
+// components, same trick used throughout apps/api/src/lib/timezone.ts.
+function toLocalDatetimeValue(iso: string, timeZone: string): string {
+  const d = toZonedTime(parseISO(iso), timeZone)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+// Inverse of toLocalDatetimeValue — the datetime-local input's value is a
+// plain wall-clock string with no timezone marker; interpret it in the same
+// building timezone it was rendered in, not the browser's, or a reschedule
+// silently shifts the booking by the offset between the two.
+function fromLocalDatetimeValue(value: string, timeZone: string): Date {
+  const [datePart, timePart] = value.split('T')
+  const [y, m, d] = datePart.split('-').map(Number)
+  const [h, min] = timePart.split(':').map(Number)
+  return zonedWallClockToUtc(y, m, d, h, min, timeZone)
 }
 
 // ─── Edit booking dialog ──────────────────────────────────────────────────────
@@ -71,8 +88,9 @@ function EditBookingDialog({
   onClose: () => void
 }) {
   const update = useUpdateBooking()
-  const [startsAt, setStartsAt] = useState(toLocalDatetimeValue(booking.startsAt))
-  const [endsAt, setEndsAt] = useState(toLocalDatetimeValue(booking.endsAt))
+  const timeZone = booking.resolvedTimezone ?? 'UTC'
+  const [startsAt, setStartsAt] = useState(toLocalDatetimeValue(booking.startsAt, timeZone))
+  const [endsAt, setEndsAt] = useState(toLocalDatetimeValue(booking.endsAt, timeZone))
   const [notes, setNotes] = useState(booking.notes ?? '')
 
   function handleSave() {
@@ -80,8 +98,8 @@ function EditBookingDialog({
       {
         id: booking.id,
         body: {
-          startsAt: new Date(startsAt).toISOString(),
-          endsAt: new Date(endsAt).toISOString(),
+          startsAt: fromLocalDatetimeValue(startsAt, timeZone).toISOString(),
+          endsAt: fromLocalDatetimeValue(endsAt, timeZone).toISOString(),
           notes: notes || undefined,
         },
       },
@@ -97,11 +115,19 @@ function EditBookingDialog({
         </DialogHeader>
         <div className="space-y-4 py-2">
           <div>
-            <Label>Start</Label>
+            <Label>
+              Start{zoneQualifier(timeZone, booking.startsAt) && (
+                <span className="text-muted-foreground font-normal"> ({zoneQualifier(timeZone, booking.startsAt)})</span>
+              )}
+            </Label>
             <DateTimeLocalInput value={startsAt} onChange={setStartsAt} className="mt-1.5" />
           </div>
           <div>
-            <Label>End</Label>
+            <Label>
+              End{zoneQualifier(timeZone, booking.endsAt) && (
+                <span className="text-muted-foreground font-normal"> ({zoneQualifier(timeZone, booking.endsAt)})</span>
+              )}
+            </Label>
             <DateTimeLocalInput value={endsAt} onChange={setEndsAt} min={startsAt} className="mt-1.5" />
           </div>
           <div>
