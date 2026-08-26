@@ -227,7 +227,7 @@ export async function deliverWebhookJob(jobs: Job<WebhookDeliveryJobData>[]): Pr
   return results
 }
 
-async function deliverOne({ endpointId, deliveryId, url, event, payload }: WebhookDeliveryJobData, attempt: number): Promise<boolean> {
+async function deliverOne({ endpointId, deliveryId, event, payload }: WebhookDeliveryJobData, attempt: number): Promise<boolean> {
   let statusCode: number | null = null
   let success = false
   let error: string | null = null
@@ -235,8 +235,15 @@ async function deliverOne({ endpointId, deliveryId, url, event, payload }: Webho
   try {
     // Look up + decrypt the signing secret at delivery time (it is not stored in
     // the job payload). A deleted endpoint means there is nothing to deliver.
-    const ep = await prisma.webhookEndpoint.findUnique({ where: { id: endpointId }, select: { secret: true, enabled: true } })
+    // Also re-reads `url`, not just `secret`/`enabled` — the job payload's own
+    // `url` is a snapshot from enqueue time, the same staleness problem
+    // `enabled` already guards against a few lines below: an admin editing the
+    // endpoint's URL mid-retry-storm (e.g. rotating to a new vendor) must not
+    // leave already-queued retries silently posting to the old address for up
+    // to 24h.
+    const ep = await prisma.webhookEndpoint.findUnique({ where: { id: endpointId }, select: { url: true, secret: true, enabled: true } })
     if (!ep) return true
+    const { url } = ep
     // The endpoint may have been disabled after this delivery was queued, or
     // between retries of a failing one — without this, an admin disabling a
     // misbehaving or leaked endpoint mid-retry-storm doesn't stop it; pg-boss
