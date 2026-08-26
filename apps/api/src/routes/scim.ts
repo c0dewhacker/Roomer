@@ -199,6 +199,16 @@ function registerUsers(fastify: FastifyInstance): void {
       // duplicate; this direction just under-reports on an attribute this
       // endpoint was never asked to support).
       else where = { id: { in: [] } }
+    } else if (q.filter !== undefined) {
+      // A filter string was actually supplied but didn't match this parser's
+      // grammar at all (an operator besides eq, a compound and/or, bracketed
+      // sub-filters) — same reasoning as the unrecognized-attribute case just
+      // above, and the exact bug that case's own comment was guarding
+      // against: parseScimFilter returns null for both "no filter given" and
+      // "filter given but unparseable", and this branch was the one place
+      // that distinction got lost, silently treating an unparseable filter
+      // as "no filter" and returning the entire directory as if it matched.
+      where = { id: { in: [] } }
     }
 
     const [users, total] = await Promise.all([
@@ -263,6 +273,19 @@ function registerUsers(fastify: FastifyInstance): void {
         await lockScimEmail(tx, email)
         const existing = await tx.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } }, select: { id: true } })
         if (existing) throw Object.assign(new Error('EMAIL_TAKEN'), { code: 'EMAIL_TAKEN' })
+        // externalId has no DB unique constraint (only an index), so unlike
+        // email this isn't enforced at the database level at all — without
+        // this check, an IdP-side identity recreation (a rehire flow, or a
+        // misbehaving connector) pushing a create with an externalId that
+        // already belongs to a different user creates a second live account
+        // sharing that external identity. manager.ts's manager-ref
+        // resolution matches by externalId and has no way to know which of
+        // two such accounts is "the" one, making manager linking
+        // non-deterministic between them.
+        if (externalId) {
+          const externalIdTaken = await tx.user.findFirst({ where: { externalId }, select: { id: true } })
+          if (externalIdTaken) throw Object.assign(new Error('EXTERNAL_ID_TAKEN'), { code: 'EXTERNAL_ID_TAKEN' })
+        }
         return tx.user.create({
           data: {
             email,
@@ -279,6 +302,10 @@ function registerUsers(fastify: FastifyInstance): void {
       if ((err as { code?: string })?.code === 'EMAIL_TAKEN') {
         return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
           .send(scimError(409, `User ${email} already exists`))
+      }
+      if ((err as { code?: string })?.code === 'EXTERNAL_ID_TAKEN') {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, `externalId ${externalId} already belongs to a different user`))
       }
       throw err
     }
@@ -382,6 +409,15 @@ function registerUsers(fastify: FastifyInstance): void {
           })
           if (collision) throw Object.assign(new Error('EMAIL_TAKEN'), { code: 'EMAIL_TAKEN' })
         }
+        // See POST /Users — externalId has no DB unique constraint, so this
+        // has to be checked explicitly. A PUT is exactly how an IdP-side
+        // identity recreation would repoint an existing Roomer user's
+        // externalId, and without this check it could collide with a
+        // different user's already-provisioned externalId.
+        if (externalId) {
+          const externalIdTaken = await tx.user.findFirst({ where: { externalId, id: { not: id } }, select: { id: true } })
+          if (externalIdTaken) throw Object.assign(new Error('EXTERNAL_ID_TAKEN'), { code: 'EXTERNAL_ID_TAKEN' })
+        }
         if (active === false) {
           await lockSuperAdminGuard(tx)
           if (await wouldRemoveLastActiveSuperAdmin(tx, id)) {
@@ -440,6 +476,10 @@ function registerUsers(fastify: FastifyInstance): void {
         return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
           .send(scimError(409, `userName ${email} is already in use`))
       }
+      if (e?.code === 'EXTERNAL_ID_TAKEN') {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, `externalId ${externalId} already belongs to a different user`))
+      }
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
     }
   })
@@ -488,6 +528,15 @@ function registerUsers(fastify: FastifyInstance): void {
           })
           if (collision) throw Object.assign(new Error('EMAIL_TAKEN'), { code: 'EMAIL_TAKEN' })
         }
+        // See POST /Users — externalId has no DB unique constraint, so this
+        // has to be checked explicitly rather than relying on a P2002.
+        if (userPatch.externalId) {
+          const externalIdTaken = await tx.user.findFirst({
+            where: { externalId: userPatch.externalId, id: { not: id } },
+            select: { id: true },
+          })
+          if (externalIdTaken) throw Object.assign(new Error('EXTERNAL_ID_TAKEN'), { code: 'EXTERNAL_ID_TAKEN' })
+        }
         if (userPatch.accountStatus === 'BLOCKED') {
           await lockSuperAdminGuard(tx)
           if (await wouldRemoveLastActiveSuperAdmin(tx, id)) {
@@ -534,6 +583,10 @@ function registerUsers(fastify: FastifyInstance): void {
         return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
           .send(scimError(409, `userName ${userPatch.email} is already in use`))
       }
+      if (e?.code === 'EXTERNAL_ID_TAKEN') {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, `externalId ${userPatch.externalId} already belongs to a different user`))
+      }
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
     }
   })
@@ -541,6 +594,16 @@ function registerUsers(fastify: FastifyInstance): void {
   // DELETE /Users/:id — deprovision
   fastify.delete('/Users/:id', { preHandler: [scimAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+    // Same guard as PUT/PATCH above (see isUserPrivileged's doc comment) —
+    // a SCIM DELETE sets accountStatus: 'BLOCKED', functionally identical to
+    // a PATCH with active:false, which is explicitly forbidden for a
+    // privileged user three handlers up. Without this, a leaked/over-scoped
+    // SCIM token could deprovision any BUILDING_ADMIN/FLOOR_MANAGER or
+    // non-last SUPER_ADMIN outright via this one unguarded path.
+    if (await isUserPrivileged(id)) {
+      return reply.status(403).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(403, 'Cannot modify a privileged user via SCIM — use the admin UI'))
+    }
 
     try {
       const user = await prisma.$transaction(async (tx) => {
@@ -603,6 +666,11 @@ function registerGroups(fastify: FastifyInstance): void {
       // `members eq`) must not fall through to "no filter" and return every
       // group unfiltered.
       else where = { id: { in: [] } }
+    } else if (q.filter !== undefined) {
+      // Same gap as GET /Users — a filter that doesn't match this parser's
+      // grammar at all (not just an unrecognized attribute) also mustn't
+      // silently mean "no filter, return everything."
+      where = { id: { in: [] } }
     }
 
     const org = await prisma.organisation.findFirst({ select: { id: true } })
@@ -711,9 +779,30 @@ function registerGroups(fastify: FastifyInstance): void {
     const body = request.body as { Operations?: Array<{ op: string; path?: string; value?: unknown }> }
     const patch = applyGroupPatchOps(body.Operations ?? [])
 
-    const group = await prisma.userGroup.findUnique({ where: { id }, select: groupSelect })
+    const group = await prisma.userGroup.findUnique({
+      where: { id },
+      select: { ...groupSelect, members: patch.replaceMemberIds !== null ? { select: { userId: true } } : false },
+    })
     if (!group) {
       return reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `Group ${id} not found`))
+    }
+
+    // A "replace members" op carries the complete new membership, not an
+    // addition — diff it against current membership here (applyGroupPatchOps
+    // has no DB access to do this itself) so a member dropped from the IdP's
+    // canonical list during a full-sync PATCH is actually removed, not just
+    // left in place because no explicit "remove" op named them individually.
+    if (patch.replaceMemberIds !== null) {
+      const currentMemberIds = new Set(
+        ((group as { members?: Array<{ userId: string }> }).members ?? []).map((m) => m.userId),
+      )
+      const newMemberIds = new Set(patch.replaceMemberIds)
+      for (const userId of patch.replaceMemberIds) {
+        if (!currentMemberIds.has(userId)) patch.addMemberIds.push(userId)
+      }
+      for (const userId of currentMemberIds) {
+        if (!newMemberIds.has(userId)) patch.removeMemberIds.push(userId)
+      }
     }
 
     if ((patch.addMemberIds.length > 0 || patch.removeMemberIds.length > 0) && await isGroupPrivileged(id)) {
