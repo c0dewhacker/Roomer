@@ -474,9 +474,23 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
   )
 
   // GET /settings/public — public non-sensitive settings (dateFormat etc.)
+  //
+  // maxAdvanceBookingDays lives here too: booking UI (DeskPanel, FloorPage)
+  // needs it to compute date-picker bounds for every user, not just admins,
+  // but GET /organisation above is SUPER_ADMIN-gated. Before this, those
+  // components queried the admin endpoint, got a silent 403 for every
+  // non-admin user, and fell back to a hardcoded default that only happened
+  // to match reality when the org hadn't changed it from 14.
   fastify.get('/public', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (_request, reply) => {
-    const org = await prisma.organisation.findFirst({ select: { dateFormat: true } })
-    return reply.status(200).send({ data: { dateFormat: org?.dateFormat ?? 'dd/MM/yyyy' } })
+    const org = await prisma.organisation.findFirst({
+      select: { dateFormat: true, maxAdvanceBookingDays: true },
+    })
+    return reply.status(200).send({
+      data: {
+        dateFormat: org?.dateFormat ?? 'dd/MM/yyyy',
+        maxAdvanceBookingDays: org?.maxAdvanceBookingDays ?? 14,
+      },
+    })
   })
 
   // GET /settings/branding — public (needed for login page theming)

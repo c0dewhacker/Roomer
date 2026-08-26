@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { format, startOfDay, addDays } from 'date-fns'
+import { format, startOfDay } from 'date-fns'
 import { formatDateTime, zonedWallClockToUtc } from '@/lib/utils'
 import { MapPin, Clock, Users, CheckCircle, XCircle, AlertCircle, Shield, UserPlus, UserMinus, ChevronDown, ChevronUp, Pencil, X, Repeat, Star } from 'lucide-react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet'
@@ -567,13 +567,41 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   )
   const canManageDesk = isAdmin || isFloorManager
 
-  const { data: orgSettings } = useQuery({
-    queryKey: ['settings', 'organisation'],
-    queryFn: () => settingsApi.getOrg(),
+  // Public endpoint, not getOrg()/'organisation' — that one is
+  // SUPER_ADMIN-gated and every non-admin user booking a desk would silently
+  // 403 and fall back to the hardcoded default below, regardless of what the
+  // org actually has configured.
+  const { data: publicSettings } = useQuery({
+    queryKey: ['settings', 'public'],
+    queryFn: () => settingsApi.getPublic(),
     select: (r) => r.data,
   })
-  const maxAdvanceDays = orgSettings?.maxAdvanceBookingDays ?? 14
-  const maxEndDateStr = format(addDays(date, maxAdvanceDays), 'yyyy-MM-dd')
+  const maxAdvanceDays = publicSettings?.maxAdvanceBookingDays ?? 14
+  // Anchored to today, not the selected start `date` — "max advance
+  // booking days" means no part of a booking can be more than N days out
+  // from now (matching isWithinAdvanceBookingWindow's actual, backend-
+  // enforced semantics for startsAt), not "up to N more days past whatever
+  // start date is already selected". The previous version let picking a
+  // start date near the edge of the advance window (e.g. day 13 of 14)
+  // produce an end-date max far beyond the real policy boundary (day 27),
+  // effectively repurposing this setting as an unintended ~N-day cap on
+  // booking *duration* instead — there is no separate max-duration concept
+  // or backend check at all, so this UI max was the only thing limiting
+  // how long a multi-day booking could span.
+  //
+  // Computed from UTC getters, not date-fns `addDays`/`format` (which read
+  // local getters): the backend's isWithinAdvanceBookingWindow deliberately
+  // cuts off at end-of-day-N in UTC, not the browser's local timezone. When
+  // local time is ahead of UTC (e.g. Australia/Sydney), the local calendar
+  // day is already one day ahead of the UTC calendar day for part of every
+  // day, which shifted this max one day later than what the backend would
+  // actually accept.
+  const now = new Date()
+  const maxEndDateStr = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + maxAdvanceDays),
+  )
+    .toISOString()
+    .slice(0, 10)
   const isMultiDay = format(endDate, 'yyyy-MM-dd') !== format(date, 'yyyy-MM-dd')
 
   // Reset AM/PM preset when multi-day selection is made

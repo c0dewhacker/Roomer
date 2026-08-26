@@ -672,7 +672,8 @@ export const settingsApi = {
   getOrg: () => api.get<{ data: OrgSettings }>('/settings/organisation'),
   updateOrg: (body: Partial<Omit<OrgSettings, 'id'>>) =>
     api.patch<{ data: OrgSettings }>('/settings/organisation', body),
-  getPublic: () => api.get<{ data: { dateFormat: string } }>('/settings/public'),
+  getPublic: () =>
+    api.get<{ data: { dateFormat: string; maxAdvanceBookingDays: number } }>('/settings/public'),
   getScim: () =>
     api.get<{ data: { enabled: boolean; hasToken: boolean; endpointUrl: string } }>('/settings/scim'),
   patchScim: (body: { enabled: boolean }) =>
