@@ -7,6 +7,7 @@ import { getManagedBuildingIds, getManagedFloorIds } from '../middleware/require
 import { checkGroupAccess } from './groups.js'
 import { ensureNextBallotRun, runDrawForRun, declineBallotEntry, resolveBallotAssetPool } from '../lib/ballot.js'
 import { recordAuditLog } from '../lib/audit.js'
+import { resolveBuildingTimezone } from '../lib/timezone.js'
 
 /**
  * True when the caller may create/manage a ballot over this scope: SUPER_ADMIN,
@@ -363,11 +364,28 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
       include: {
         run: { include: { ballot: { select: { id: true, name: true } } } },
         asset: { select: { id: true, name: true } },
-        booking: { select: { id: true, startsAt: true, endsAt: true, status: true } },
+        booking: { select: { id: true, startsAt: true, endsAt: true, status: true, asset: { select: { floor: { select: { buildingId: true } } } } } },
       },
       orderBy: { createdAt: 'desc' },
     })
-    return reply.status(200).send({ data: entries })
+    // A won entry's booking is a real, timezone-resolved instant (unlike
+    // slotStartsAt/slotEndsAt below, which are date-only) — attach the same
+    // resolvedTimezone every other booking listing exposes (see GET / and
+    // /pending-approvals in bookings.ts) so the frontend renders it in the
+    // building's own timezone instead of the viewer's browser timezone.
+    const tzCache = new Map<string, Promise<string>>()
+    const resolveTz = (buildingId: string | null | undefined) => {
+      const key = buildingId ?? ''
+      if (!tzCache.has(key)) tzCache.set(key, resolveBuildingTimezone(prisma, buildingId))
+      return tzCache.get(key)!
+    }
+    const withTz = await Promise.all(entries.map(async (e) => {
+      if (!e.booking) return e
+      const resolvedTimezone = await resolveTz(e.booking.asset?.floor?.buildingId)
+      const { asset: _bookingAsset, ...booking } = e.booking
+      return { ...e, booking: { ...booking, resolvedTimezone } }
+    }))
+    return reply.status(200).send({ data: withTz })
   })
 
   // POST /ballots/entries/:id/decline — decline a won assignment

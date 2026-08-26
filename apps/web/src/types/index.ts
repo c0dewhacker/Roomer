@@ -253,7 +253,7 @@ export interface BallotEntry {
   run?: BallotRun & { ballot: { id: string; name: string } }
   user?: { id: string; displayName: string; email: string }
   asset?: { id: string; name: string } | null
-  booking?: { id: string; startsAt: string; endsAt: string; status: BookingStatus } | null
+  booking?: { id: string; startsAt: string; endsAt: string; status: BookingStatus; resolvedTimezone?: string } | null
 }
 
 export interface Booking {

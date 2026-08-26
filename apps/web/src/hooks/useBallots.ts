@@ -100,11 +100,18 @@ export function useForceDraw() {
 
 // ─── User-facing ────────────────────────────────────────────────────────────
 
+// Draws happen server-side (an hourly cron sweep, or another admin's manual
+// force-draw) — never as a result of this browser's own mutations — so the
+// invalidateQueries calls elsewhere in this file never reach a tab sitting on
+// these two queries. Without polling, a user watching "Open ballots"/"My
+// entries" for a result has no way to see it short of a manual reload, the
+// same class of gap already fixed for NotificationBell/useBookings/WhosInPage.
 export function useAvailableBallots() {
   return useQuery({
     queryKey: ['ballots', 'available'],
     queryFn: () => ballotsApi.available(),
     select: (res) => res.data,
+    refetchInterval: 30_000,
   })
 }
 
@@ -113,6 +120,7 @@ export function useMyBallotEntries() {
     queryKey: ['ballots', 'my-entries'],
     queryFn: () => ballotsApi.myEntries(),
     select: (res) => res.data,
+    refetchInterval: 30_000,
   })
 }
 
