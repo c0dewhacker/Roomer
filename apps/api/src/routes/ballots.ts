@@ -293,7 +293,14 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
     const { runId } = request.params as { runId: string }
     const run = await prisma.ballotRun.findUnique({ where: { id: runId }, include: { ballot: true } })
     if (!run) return reply.status(404).send({ error: { message: 'Run not found', code: 'NOT_FOUND' } })
-    if (run.status !== 'OPEN' || run.registrationClosesAt < new Date()) {
+    // <= (not <) so the exact registrationClosesAt instant is already
+    // closed — matches the draw-eligibility sweep in lib/ballot.ts, which
+    // selects runs via `registrationClosesAt: { lte: new Date() }` (i.e.
+    // already eligible to draw at that same instant). "Closes at X" should
+    // mean X itself is closed; the stricter `<` here left a one-instant
+    // window where a request landing at exactly that millisecond could be
+    // accepted into a run the sweep already considers ready to draw.
+    if (run.status !== 'OPEN' || run.registrationClosesAt <= new Date()) {
       return reply.status(409).send({ error: { message: 'Registration is not open for this run', code: 'REGISTRATION_CLOSED' } })
     }
     const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
