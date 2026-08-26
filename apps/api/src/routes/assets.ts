@@ -714,8 +714,19 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(400).send({ error: { message: 'date query param required (YYYY-MM-DD)', code: 'INVALID_DATE' } })
     }
     const { date } = queryResult.data
-    const dayStart = new Date(`${date}T00:00:00.000Z`)
-    const dayEnd = new Date(`${date}T23:59:59.999Z`)
+    const [year, month, day] = date.split('-').map(Number)
+    // Widened DB pre-filter only — candidates span assets in potentially
+    // different buildings/timezones, so no single global UTC window can
+    // correctly represent "the requested day" for all of them at once (same
+    // reasoning as directory.ts's /whereabouts). The precise per-candidate
+    // window (below, after each asset's own building timezone is known) does
+    // the real overlap/gate check; ±26h margin covers every real-world UTC
+    // offset (max +14) either direction with room to spare.
+    const WIDEN_MS = 26 * 60 * 60 * 1000
+    const naiveDayStart = new Date(`${date}T00:00:00.000Z`)
+    const naiveDayEnd = new Date(`${date}T23:59:59.999Z`)
+    const widenedDayStart = new Date(naiveDayStart.getTime() - WIDEN_MS)
+    const widenedDayEnd = new Date(naiveDayEnd.getTime() + WIDEN_MS)
     const userId = request.user.id
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
 
@@ -778,35 +789,41 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     // internal inventory/management fields must not leak to every
     // authenticated user just because their booking history scored a desk
     // highly.
-    const candidates = await prisma.asset.findMany({
-      // primaryZoneId: not null — an asset with no zone (e.g. left unmapped by
-      // a CSV import whose row didn't match an existing zone) never appears in
-      // GET /floors/:id/availability's desks list (that endpoint only walks
-      // floor.zones[].assets), so it can't be selected/booked from the floor
-      // plan at all. Suggesting it anyway meant "Book it" silently did
-      // nothing — the desk it pointed at was invisible to the very picker the
-      // button tries to drive.
-      where: { id: { in: rankedIds }, isBookable: true, primaryZoneId: { not: null } },
-      select: {
-        id: true, name: true, bookingLabel: true, isBookable: true,
-        bookingStatus: true, amenities: true, capacity: true,
-        x: true, y: true, width: true, height: true, rotation: true,
-        category: { select: { id: true, name: true } },
-        floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
-        primaryZone: { select: { id: true, name: true } },
-        bookings: {
-          // PENDING_APPROVAL reserves the slot exactly like CONFIRMED (#74)
-          // — hasBlockingOverlap (lib/booking.ts), the floor-plan occupancy
-          // query, and the DB's own overlap exclusion constraint all treat
-          // it that way. This was the one place still only checking
-          // CONFIRMED, so a desk someone else had already requested (but
-          // not yet had approved) could still be suggested here, only to
-          // fail with ASSET_CONFLICT the moment the user tried to book it.
-          where: { status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { lt: dayEnd }, endsAt: { gt: dayStart } },
-          select: { id: true },
+    const [candidates, org] = await Promise.all([
+      prisma.asset.findMany({
+        // primaryZoneId: not null — an asset with no zone (e.g. left unmapped by
+        // a CSV import whose row didn't match an existing zone) never appears in
+        // GET /floors/:id/availability's desks list (that endpoint only walks
+        // floor.zones[].assets), so it can't be selected/booked from the floor
+        // plan at all. Suggesting it anyway meant "Book it" silently did
+        // nothing — the desk it pointed at was invisible to the very picker the
+        // button tries to drive.
+        where: { id: { in: rankedIds }, isBookable: true, primaryZoneId: { not: null } },
+        select: {
+          id: true, name: true, bookingLabel: true, isBookable: true,
+          bookingStatus: true, amenities: true, capacity: true,
+          x: true, y: true, width: true, height: true, rotation: true,
+          category: { select: { id: true, name: true } },
+          floor: { select: { id: true, name: true, building: { select: { id: true, name: true, timezone: true } } } },
+          primaryZone: { select: { id: true, name: true } },
+          bookings: {
+            // PENDING_APPROVAL reserves the slot exactly like CONFIRMED (#74)
+            // — hasBlockingOverlap (lib/booking.ts), the floor-plan occupancy
+            // query, and the DB's own overlap exclusion constraint all treat
+            // it that way. This was the one place still only checking
+            // CONFIRMED, so a desk someone else had already requested (but
+            // not yet had approved) could still be suggested here, only to
+            // fail with ASSET_CONFLICT the moment the user tried to book it.
+            // Widened window (see widenedDayStart/widenedDayEnd above) — the
+            // precise per-asset overlap check happens below, once this
+            // asset's own building timezone is known.
+            where: { status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { lt: widenedDayEnd }, endsAt: { gt: widenedDayStart } },
+            select: { id: true, startsAt: true, endsAt: true },
+          },
         },
-      },
-    })
+      }),
+      prisma.organisation.findFirst({ select: { defaultTimezone: true } }),
+    ])
     const candidatesById = new Map(candidates.map((a) => [a.id, a]))
 
     const SUGGESTION_LIMIT = 3
@@ -814,8 +831,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     for (const assetId of rankedIds) {
       if (suggestions.length >= SUGGESTION_LIMIT) break
       const asset = candidatesById.get(assetId)
-      if (!asset || asset.bookings.length > 0) continue
-      const gate = await assertBookable(prisma, request.user, assetId, dayStart, dayEnd)
+      if (!asset) continue
+      // Precise per-candidate window: this asset's own building's local day
+      // (falling back to org default), not the naive global UTC day.
+      const tz = asset.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC'
+      const assetDayStart = zonedWallClockToUtc(year, month, day, 0, 0, tz)
+      const assetDayEnd = new Date(assetDayStart.getTime() + 24 * 60 * 60 * 1000 - 1)
+      const hasRealOverlap = asset.bookings.some((b) => b.startsAt < assetDayEnd && b.endsAt > assetDayStart)
+      if (hasRealOverlap) continue
+      const gate = await assertBookable(prisma, request.user, assetId, assetDayStart, assetDayEnd)
       if (!gate.ok) continue
       const { bookings: _bookings, ...rest } = asset
       suggestions.push(rest)
