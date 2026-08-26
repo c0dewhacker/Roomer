@@ -522,7 +522,17 @@ function CategoryDialog({ open, onClose, existing }: { open: boolean; onClose: (
       if (iconFile) await uploadIcon.mutateAsync({ id: existing!.id, file: iconFile })
       return res
     },
-    onSuccess: () => { toast.success('Category updated'); qc.invalidateQueries({ queryKey: ['asset-categories'] }); onClose() },
+    onSuccess: () => {
+      toast.success('Category updated')
+      qc.invalidateQueries({ queryKey: ['asset-categories'] })
+      // Every existing asset in this category already joins its name/colour
+      // for display — the admin asset list (['assets']) and DeskPanel's
+      // "Category:" line (['floors', ..., 'availability', ...], read via
+      // ['floors']) both show the pre-rename value otherwise.
+      qc.invalidateQueries({ queryKey: ['assets'] })
+      qc.invalidateQueries({ queryKey: ['floors'] })
+      onClose()
+    },
     onError: (err: Error) => toast.error(err.message),
   })
 

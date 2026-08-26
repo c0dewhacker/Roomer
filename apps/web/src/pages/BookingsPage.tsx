@@ -354,6 +354,13 @@ function TransferAndSwapRequestsSection() {
     qc.invalidateQueries({ queryKey: ['bookings', 'transfers'] })
     qc.invalidateQueries({ queryKey: ['bookings', 'swaps'] })
     qc.invalidateQueries({ queryKey: ['bookings'] })
+    // Accepting a transfer/swap reassigns Booking.userId on an existing
+    // booking — same "who occupies this desk" change useCancelBooking/
+    // useUpdateBooking in useBookings.ts already invalidate ['floors'] for.
+    // Declining/withdrawing don't change any desk's occupancy, but sharing
+    // one invalidate() across all six mutations is simpler than splitting
+    // it, and an extra floor refetch on a no-op path is harmless.
+    qc.invalidateQueries({ queryKey: ['floors'] })
   }
 
   const acceptTransfer = useMutation({
@@ -705,6 +712,10 @@ function EditRecurringEndDateDialog({
       // Same reasoning as cancel above — extending/shortening changes the
       // underlying Booking rows directly, not just the rule.
       qc.invalidateQueries({ queryKey: ['bookings'] })
+      // Shortening frees future desk-day slots (extending occupies new
+      // ones) — same floor-availability staleness useCancelBooking/
+      // useUpdateBooking in useBookings.ts already invalidate ['floors'] for.
+      qc.invalidateQueries({ queryKey: ['floors'] })
       onClose()
     },
     onError: (err: Error) => toast.error(err.message),
@@ -807,6 +818,10 @@ function RecurringRuleCard({ rule }: { rule: RecurringBookingRule }) {
       // ['bookings'] cache keeps showing those rows as CONFIRMED with live
       // Edit/Cancel buttons until an unrelated refetch happens to occur.
       qc.invalidateQueries({ queryKey: ['bookings'] })
+      // Cancelling a series frees every one of its future desk-day slots —
+      // same floor-availability staleness useCancelBooking/useUpdateBooking
+      // in useBookings.ts already invalidate ['floors'] for.
+      qc.invalidateQueries({ queryKey: ['floors'] })
     },
     onError: (err: Error) => toast.error(err.message),
   })

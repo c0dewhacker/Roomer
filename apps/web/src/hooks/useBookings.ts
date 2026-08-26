@@ -48,6 +48,13 @@ export function useCancelBooking() {
       // "yours", marker still blue) until an unrelated refetch happened to
       // occur.
       qc.invalidateQueries({ queryKey: ['floors'] })
+      // A single occurrence of a recurring series is a plain Booking row,
+      // cancelled through this same generic endpoint — without this,
+      // RecurringBookingsSection's "(N upcoming)" count and its "view all
+      // occurrences" dialog (BookingsPage.tsx) keep showing the
+      // just-cancelled occurrence as still CONFIRMED. Harmless no-op
+      // refetch when the cancelled booking wasn't part of a series.
+      qc.invalidateQueries({ queryKey: ['recurring-bookings'] })
     },
     onError: (err: Error) => {
       toast.error(apiErrMsg(err, 'Failed to cancel booking'))

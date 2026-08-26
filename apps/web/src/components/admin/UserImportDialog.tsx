@@ -136,6 +136,17 @@ export function UserImportDialog({ open, onClose }: Props) {
       setResult(res.data)
       setStep('result')
       qc.invalidateQueries({ queryKey: ['admin', 'users'] })
+      // A row with an access_groups column directly creates UserGroupMember
+      // rows server-side — GroupsAdminPage's member counts/list
+      // (['groups'], ['groups', groupId]) and any imported user's own
+      // EffectiveAccessDialog (['effective-access', userId]) would otherwise
+      // stay stale. The response only returns counts, not which users/groups
+      // were touched, so this invalidates broadly (prefix-matches every
+      // cached query under each key) rather than enumerating — same
+      // "harmless extra refetch" tradeoff already made elsewhere in this
+      // codebase for a batch operation with unknown-in-advance targets.
+      qc.invalidateQueries({ queryKey: ['groups'] })
+      qc.invalidateQueries({ queryKey: ['effective-access'] })
       if (res.data.errors.length === 0) {
         toast.success(`Import complete — ${res.data.created} created, ${res.data.updated} updated`)
       } else {
