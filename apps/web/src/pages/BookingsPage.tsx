@@ -558,6 +558,11 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
               {booking.notes && (
                 <p className="text-xs text-muted-foreground mt-1 italic">{booking.notes}</p>
               )}
+              {booking.status === 'CANCELLED' && booking.rejectionNote && (
+                <p className="text-xs text-destructive mt-1">
+                  <span className="font-medium">Declined:</span> {booking.rejectionNote}
+                </p>
+              )}
             </div>
 
             {canModify && (
