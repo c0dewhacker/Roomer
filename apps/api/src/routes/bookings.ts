@@ -12,7 +12,7 @@ import { buildBookingIcs } from '../lib/ical.js'
 import { sendEmail, renderGuestBookingInvite, renderGuestBookingCancelled } from '../lib/mailer.js'
 import { checkGroupAccess } from './groups.js'
 import { assertBookable, assertUnderBookingQuota, hasBlockingOverlap, checkZoneGroupOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, lockUserForBookingQuota, isOverlapConstraintViolation, resolveRequiresApproval } from '../lib/booking.js'
-import { resolveBuildingTimezone, localDateStr } from '../lib/timezone.js'
+import { resolveBuildingTimezone, localDateStr, zonedWallClockToUtc } from '../lib/timezone.js'
 import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
@@ -231,18 +231,21 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     }
     const { status } = queryResult.data
     const now = new Date()
-    // UTC midnight, same convention every other day-boundary calculation in
-    // the app uses (directory.ts whereabouts, recurring.ts, analytics working
-    // days) — local Date getters here made the boundary depend on whatever
-    // TZ the API process happens to run under (no TZ=UTC pin exists in the
-    // repo), so a booking that had already ended by the UTC convention could
-    // still sit in the Upcoming tab with live Edit/Cancel/Check-in actions.
-    const startOfToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
-
+    // Widened DB pre-filter only — a user's bookings can span buildings in
+    // different timezones, so no single global cutoff can define "today"
+    // correctly for all of them at once (same reasoning as directory.ts's
+    // /whereabouts ±14h widen-then-precise-filter). A single global UTC-
+    // midnight cutoff (the previous approach here) put a Sydney-local booking
+    // that's still "today" in Sydney terms into the wrong bucket whenever its
+    // UTC instant crossed into the previous/next UTC calendar day. The
+    // precise per-booking check below (once each row's own resolvedTimezone
+    // is known) does the real work; ±26h margin covers every real-world UTC
+    // offset (max +14) either direction with room to spare.
+    const WIDEN_MS = 26 * 60 * 60 * 1000
     const where: Record<string, unknown> = { userId: request.user.id }
 
     if (status === 'past') {
-      where['endsAt'] = { lt: startOfToday }
+      where['endsAt'] = { lt: new Date(now.getTime() + WIDEN_MS) }
     } else if (status === 'all') {
       // No filter
     } else {
@@ -250,40 +253,50 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       // PENDING_APPROVAL is included alongside CONFIRMED (see #74) — it's
       // reserving the same slot and the requester still needs to see it
       // (and be able to withdraw it) here, not just once it's approved.
-      where['endsAt'] = { gte: startOfToday }
+      where['endsAt'] = { gte: new Date(now.getTime() - WIDEN_MS) }
       where['status'] = { in: ['CONFIRMED', 'PENDING_APPROVAL'] }
     }
 
-    const bookings = await prisma.booking.findMany({
-      where,
-      omit: { guestCheckInToken: true },
-      include: {
-        asset: {
-          include: {
-            floor: { include: { building: { select: { id: true, name: true, qrCheckInMode: true, timezone: true } } } },
-            primaryZone: { select: { id: true, name: true } },
+    const [bookings, org] = await Promise.all([
+      prisma.booking.findMany({
+        where,
+        omit: { guestCheckInToken: true },
+        include: {
+          asset: {
+            include: {
+              floor: { include: { building: { select: { id: true, name: true, qrCheckInMode: true, timezone: true } } } },
+              primaryZone: { select: { id: true, name: true } },
+            },
           },
         },
-      },
-      orderBy: { startsAt: 'asc' },
+        orderBy: { startsAt: 'asc' },
+      }),
+      // Resolved (not raw) QR mode + timezone per booking — floor → building →
+      // org, same order as everywhere else this resolves. The frontend uses
+      // qrCheckInMode purely to decide whether to show the manual "I'm here"
+      // check-in button (hidden under MANDATORY), and resolvedTimezone (see
+      // #72) to render this booking's time in its actual building-local time
+      // rather than the viewer's own browser timezone.
+      prisma.organisation.findFirst({ select: { qrCheckInMode: true, defaultTimezone: true } }),
+    ])
+
+    // Precise past/upcoming split: is "today" (in *this booking's own*
+    // building timezone) before or at-or-after its endsAt? Replaces the
+    // widened DB filter above as the actual source of truth.
+    const finalBookings = status === 'all' ? bookings : bookings.filter((b) => {
+      const tz = b.asset.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC'
+      const [y, m, d] = localDateStr(now, tz).split('-').map(Number)
+      const localStartOfToday = zonedWallClockToUtc(y, m, d, 0, 0, tz)
+      return status === 'past' ? b.endsAt < localStartOfToday : b.endsAt >= localStartOfToday
     })
 
-    // Resolved (not raw) QR mode + timezone per booking — floor → building →
-    // org, same order as everywhere else this resolves. The frontend uses
-    // qrCheckInMode purely to decide whether to show the manual "I'm here"
-    // check-in button (hidden under MANDATORY), and resolvedTimezone (see
-    // #72) to render this booking's time in its actual building-local time
-    // rather than the viewer's own browser timezone — neither needs to
-    // duplicate the resolution logic or fetch org/building/floor data
-    // separately to make that call.
-    const org = await prisma.organisation.findFirst({ select: { qrCheckInMode: true, defaultTimezone: true } })
-    const data = bookings.map((b) => ({
+    const data = finalBookings.map((b) => ({
       ...b,
       qrCheckInMode: b.asset.floor?.qrCheckInMode ?? b.asset.floor?.building?.qrCheckInMode ?? org?.qrCheckInMode ?? 'DISABLED',
       resolvedTimezone: b.asset.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC',
     }))
 
-    return reply.status(200).send({ data, meta: { total: bookings.length } })
+    return reply.status(200).send({ data, meta: { total: finalBookings.length } })
   })
 
   // POST /bookings — create booking
