@@ -625,13 +625,27 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(200).send({ data: { id: booking.id, checkedInAt: booking.checkedInAt } })
     }
 
-    // Conditioned on status: 'CONFIRMED', not a bare update-by-id — closes the
-    // other side of the same race handleReleaseNoShows's write now guards
-    // against: if the no-show sweep cancels this exact booking in the gap
-    // between the status check above and this write, a plain update-by-id
-    // would still stamp a checkedInAt onto a row that's already CANCELLED.
-    const result = await prisma.booking.updateMany({ where: { id, status: 'CONFIRMED' }, data: { checkedInAt: new Date() } })
+    // Conditioned on status: 'CONFIRMED' AND checkedInAt: null, not a bare
+    // update-by-id — the status half closes the race against
+    // handleReleaseNoShows (if the no-show sweep cancels this exact booking
+    // in the gap between the status check above and this write, a plain
+    // update-by-id would still stamp a checkedInAt onto a row that's already
+    // CANCELLED). The checkedInAt half closes a *different* race: two
+    // check-in requests for the same booking in flight at once (a
+    // double-click, a client retry) both pass the in-memory checkedInAt-null
+    // check above before either commits — without this guard both writes
+    // would succeed, double-firing the webhook/audit-log entry below for a
+    // single physical check-in.
+    const result = await prisma.booking.updateMany({ where: { id, status: 'CONFIRMED', checkedInAt: null }, data: { checkedInAt: new Date() } })
     if (result.count === 0) {
+      // Lost the race — could be a concurrent check-in (idempotent replay)
+      // or an actual state change (cancelled/no-showed underneath us).
+      // Distinguish so a same-instant double-submit gets the same 200 the
+      // first request saw, not a misleading "not active" error.
+      const current = await prisma.booking.findUnique({ where: { id }, select: { status: true, checkedInAt: true } })
+      if (current?.status === 'CONFIRMED' && current.checkedInAt) {
+        return reply.status(200).send({ data: { id, checkedInAt: current.checkedInAt } })
+      }
       return reply.status(409).send({ error: { message: 'Booking is not active', code: 'BOOKING_NOT_ACTIVE' } })
     }
     const updated = await prisma.booking.findUniqueOrThrow({ where: { id } })
@@ -688,11 +702,16 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     // It's still cleared once the booking is no longer CONFIRMED (see the
     // cancel path below), which closes the other half of that contract
     // without breaking this one.
-    // Conditioned on status: 'CONFIRMED', not a bare update-by-id — see the
-    // authenticated check-in route above for why (closes the same race
-    // against handleReleaseNoShows).
-    const checkInResult = await prisma.booking.updateMany({ where: { id: booking.id, status: 'CONFIRMED' }, data: { checkedInAt: now } })
+    // Conditioned on status: 'CONFIRMED' AND checkedInAt: null, not a bare
+    // update-by-id — see the authenticated check-in route above for why
+    // (closes both the race against handleReleaseNoShows and a concurrent
+    // duplicate submission of this same link).
+    const checkInResult = await prisma.booking.updateMany({ where: { id: booking.id, status: 'CONFIRMED', checkedInAt: null }, data: { checkedInAt: now } })
     if (checkInResult.count === 0) {
+      const current = await prisma.booking.findUnique({ where: { id: booking.id }, select: { status: true, checkedInAt: true } })
+      if (current?.status === 'CONFIRMED' && current.checkedInAt) {
+        return reply.status(200).send({ data: { guestName: booking.guestName, checkedInAt: current.checkedInAt } })
+      }
       return reply.status(409).send({ error: { message: 'This booking is no longer active', code: 'BOOKING_NOT_ACTIVE' } })
     }
     const updated = await prisma.booking.findUniqueOrThrow({ where: { id: booking.id } })
