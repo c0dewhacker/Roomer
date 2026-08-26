@@ -29,15 +29,19 @@ export async function lockScimEmail(tx: Prisma.TransactionClient, email: string)
  * either commits, leaving two live groups that read as the same group
  * everywhere else in the app. Keyed on the lowercased name.
  *
- * 4249 — the next unused pg_advisory_xact_lock classid. In addition to the
- * ones already listed on SCIM_EMAIL_LOCK_CLASS above, 4247 also turned out
- * to be independently reused by routes/manager-requests.ts and
- * routes/settings.ts (that comment only checked lib/, not routes/) — not a
- * real collision risk (different hashtext inputs, and settings.ts uses the
- * single-arg overload, a disjoint lock space), but check every route file
- * too, not just lib/, before reusing an integer here.
+ * 4250 — the next unused pg_advisory_xact_lock classid as of this writing.
+ * This constant was originally assigned 4249, which turned out to already
+ * be RESOURCE_ROLE_GRANT_LOCK_CLASS in middleware/requireRole.ts — a real
+ * collision (both use the two-arg hashtext overload), caught by grepping
+ * the whole repo (`grep -rn "_LOCK_CLASS = "`) rather than just lib/ and
+ * routes/, which is what let it slip through the first time. 4247 is also
+ * independently reused by lib/scim-helpers.ts's own SCIM_EMAIL_LOCK_CLASS,
+ * routes/manager-requests.ts, and routes/settings.ts (the last uses the
+ * single-arg overload, a disjoint lock space, so not a real collision) —
+ * always grep the full repo, not a subset of directories, before reusing an
+ * integer here.
  */
-const SCIM_GROUP_NAME_LOCK_CLASS = 4249
+const SCIM_GROUP_NAME_LOCK_CLASS = 4250
 
 export async function lockScimGroupName(tx: Prisma.TransactionClient, name: string): Promise<void> {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(${SCIM_GROUP_NAME_LOCK_CLASS}, hashtext(${name.toLowerCase()}))`
