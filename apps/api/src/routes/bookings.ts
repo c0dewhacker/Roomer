@@ -608,7 +608,16 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(200).send({ data: { id: booking.id, checkedInAt: booking.checkedInAt } })
     }
 
-    const updated = await prisma.booking.update({ where: { id }, data: { checkedInAt: new Date() } })
+    // Conditioned on status: 'CONFIRMED', not a bare update-by-id — closes the
+    // other side of the same race handleReleaseNoShows's write now guards
+    // against: if the no-show sweep cancels this exact booking in the gap
+    // between the status check above and this write, a plain update-by-id
+    // would still stamp a checkedInAt onto a row that's already CANCELLED.
+    const result = await prisma.booking.updateMany({ where: { id, status: 'CONFIRMED' }, data: { checkedInAt: new Date() } })
+    if (result.count === 0) {
+      return reply.status(409).send({ error: { message: 'Booking is not active', code: 'BOOKING_NOT_ACTIVE' } })
+    }
+    const updated = await prisma.booking.findUniqueOrThrow({ where: { id } })
     dispatchWebhook('booking.checked_in', { id: updated.id, userId: updated.userId, assetId: updated.assetId, checkedInAt: updated.checkedInAt }).catch(() => {})
     await recordAuditLog(prisma, {
       actorId: request.user.id,
@@ -662,7 +671,14 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     // It's still cleared once the booking is no longer CONFIRMED (see the
     // cancel path below), which closes the other half of that contract
     // without breaking this one.
-    const updated = await prisma.booking.update({ where: { id: booking.id }, data: { checkedInAt: now } })
+    // Conditioned on status: 'CONFIRMED', not a bare update-by-id — see the
+    // authenticated check-in route above for why (closes the same race
+    // against handleReleaseNoShows).
+    const checkInResult = await prisma.booking.updateMany({ where: { id: booking.id, status: 'CONFIRMED' }, data: { checkedInAt: now } })
+    if (checkInResult.count === 0) {
+      return reply.status(409).send({ error: { message: 'This booking is no longer active', code: 'BOOKING_NOT_ACTIVE' } })
+    }
+    const updated = await prisma.booking.findUniqueOrThrow({ where: { id: booking.id } })
     dispatchWebhook('booking.checked_in', { id: updated.id, userId: updated.userId, assetId: updated.assetId, checkedInAt: updated.checkedInAt }).catch(() => {})
     // actorId is the booking's own owner — this endpoint is deliberately
     // unauthenticated (a guest check-in link), but the identity is known

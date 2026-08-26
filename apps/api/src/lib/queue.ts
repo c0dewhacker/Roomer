@@ -1547,13 +1547,34 @@ async function handleReleaseNoShows(): Promise<void> {
     select: { id: true },
   })
   const stillNoShowIds = new Set(stillNoShow.map((b) => b.id))
-  const toRelease = noShows.filter((b) => stillNoShowIds.has(b.id))
+  let toRelease = noShows.filter((b) => stillNoShowIds.has(b.id))
   if (toRelease.length === 0) return
 
+  // The re-check above only re-reads state; it doesn't stop a check-in from
+  // landing in the gap between that read and this write. Repeating the same
+  // freshness condition on the write itself (not just the read) is what
+  // actually closes the race — otherwise a check-in that commits in that gap
+  // gets silently clobbered back to CANCELLED/noShow here, and the "freed"
+  // desk gets promoted to the next queue entrant while the original booker
+  // is already sitting at it.
   await prisma.booking.updateMany({
-    where: { id: { in: toRelease.map((b) => b.id) } },
+    where: { id: { in: toRelease.map((b) => b.id) }, status: 'CONFIRMED', checkedInAt: null },
     data: { status: 'CANCELLED', noShow: true },
   })
+
+  // Re-derive from what the write actually affected, not the pre-write
+  // candidate list — a booking that won the check-in race above must not be
+  // notified/promoted/audited as a no-show release.
+  const releasedIds = new Set(
+    (
+      await prisma.booking.findMany({
+        where: { id: { in: toRelease.map((b) => b.id) }, status: 'CANCELLED', noShow: true },
+        select: { id: true },
+      })
+    ).map((b) => b.id),
+  )
+  toRelease = toRelease.filter((b) => releasedIds.has(b.id))
+  if (toRelease.length === 0) return
 
   await getBoss().insert(
     'send-notification',
