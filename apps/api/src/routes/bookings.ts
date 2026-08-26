@@ -1493,10 +1493,17 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
           where: { id: fresh.bookingId },
           data: { userId: request.user.id, icsSequence: { increment: 1 } },
         })
-        await tx.bookingTransfer.update({
-          where: { id },
+        // Guarded on status: 'PENDING' here too, not just the `fresh` read
+        // above — decline/withdraw take no lock of their own, so without
+        // this, one of them could still land between that read and this
+        // write and get silently clobbered back to ACCEPTED.
+        const claimed = await tx.bookingTransfer.updateMany({
+          where: { id, status: 'PENDING' },
           data: { status: 'ACCEPTED', respondedAt: new Date() },
         })
+        if (claimed.count === 0) {
+          throw new BookingConflictError('NOT_PENDING', 'This transfer request is no longer pending')
+        }
       })
     } catch (err) {
       if (err instanceof BookingConflictError) {
@@ -1532,7 +1539,16 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (transfer.status !== 'PENDING') {
       return reply.status(409).send({ error: { message: 'This transfer request is no longer pending', code: 'NOT_PENDING' } })
     }
-    await prisma.bookingTransfer.update({ where: { id }, data: { status: 'DECLINED', respondedAt: new Date() } })
+    // Guarded on the write itself (status: 'PENDING'), not just the check
+    // above — without this, a decline racing the recipient's own accept (or
+    // the requester's withdraw) could land after accept already committed
+    // ACCEPTED + reassigned the booking, silently overwriting it back to
+    // DECLINED with no error to either side, while both outcomes' webhooks/
+    // notifications fire regardless.
+    const declined = await prisma.bookingTransfer.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'DECLINED', respondedAt: new Date() } })
+    if (declined.count === 0) {
+      return reply.status(409).send({ error: { message: 'This transfer request is no longer pending', code: 'NOT_PENDING' } })
+    }
     await enqueueNotification({ type: NotificationType.BOOKING_TRANSFER_DECLINED, userId: transfer.fromUserId, transferId: transfer.id })
     dispatchWebhook('booking.transfer_declined', { id: transfer.id, bookingId: transfer.bookingId, fromUserId: transfer.fromUserId, toUserId: transfer.toUserId }).catch(() => {})
     await recordAuditLog(prisma, {
@@ -1558,7 +1574,14 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (transfer.status !== 'PENDING') {
       return reply.status(409).send({ error: { message: 'This transfer request is no longer pending', code: 'NOT_PENDING' } })
     }
-    await prisma.bookingTransfer.update({ where: { id }, data: { status: 'CANCELLED', respondedAt: new Date() } })
+    // Guarded on the write itself — same reasoning as decline above: without
+    // this, a withdraw racing the recipient's accept could land after accept
+    // already committed, silently overwriting the record back to CANCELLED
+    // even though the booking really did change hands.
+    const cancelled = await prisma.bookingTransfer.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'CANCELLED', respondedAt: new Date() } })
+    if (cancelled.count === 0) {
+      return reply.status(409).send({ error: { message: 'This transfer request is no longer pending', code: 'NOT_PENDING' } })
+    }
     await recordAuditLog(prisma, {
       actorId: request.user.id,
       action: 'booking_transfer.cancelled',
@@ -1835,7 +1858,14 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
         await tx.booking.update({ where: { id: fresh.bookingAId }, data: { userId: fresh.recipientUserId, icsSequence: { increment: 1 } } })
         await tx.booking.update({ where: { id: fresh.bookingBId }, data: { userId: fresh.initiatorUserId, icsSequence: { increment: 1 } } })
-        await tx.bookingSwap.update({ where: { id }, data: { status: 'ACCEPTED', respondedAt: new Date() } })
+        // Guarded on status: 'PENDING' here too, not just the `fresh` read
+        // above — decline/withdraw take no lock of their own, so without
+        // this, one of them could still land between that read and this
+        // write and get silently clobbered back to ACCEPTED.
+        const claimed = await tx.bookingSwap.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'ACCEPTED', respondedAt: new Date() } })
+        if (claimed.count === 0) {
+          throw new BookingConflictError('NOT_PENDING', 'This swap request is no longer pending')
+        }
       })
     } catch (err) {
       if (err instanceof BookingConflictError) {
@@ -1880,7 +1910,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (swap.status !== 'PENDING') {
       return reply.status(409).send({ error: { message: 'This swap request is no longer pending', code: 'NOT_PENDING' } })
     }
-    await prisma.bookingSwap.update({ where: { id }, data: { status: 'DECLINED', respondedAt: new Date() } })
+    // Guarded on the write itself — same reasoning as transfer decline: a
+    // decline racing the initiator's own accept (which takes no lock on
+    // this row) could otherwise land after accept already committed and
+    // reassigned both bookings, silently overwriting the record back to
+    // DECLINED with no error to either side.
+    const declined = await prisma.bookingSwap.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'DECLINED', respondedAt: new Date() } })
+    if (declined.count === 0) {
+      return reply.status(409).send({ error: { message: 'This swap request is no longer pending', code: 'NOT_PENDING' } })
+    }
     await enqueueNotification({ type: NotificationType.BOOKING_SWAP_DECLINED, userId: swap.initiatorUserId, swapId: swap.id })
     dispatchWebhook('booking.swap_declined', { id: swap.id, bookingAId: swap.bookingAId, bookingBId: swap.bookingBId, initiatorUserId: swap.initiatorUserId, recipientUserId: swap.recipientUserId }).catch(() => {})
     await recordAuditLog(prisma, {
@@ -1906,7 +1944,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (swap.status !== 'PENDING') {
       return reply.status(409).send({ error: { message: 'This swap request is no longer pending', code: 'NOT_PENDING' } })
     }
-    await prisma.bookingSwap.update({ where: { id }, data: { status: 'CANCELLED', respondedAt: new Date() } })
+    // Guarded on the write itself — same reasoning as transfer withdraw: a
+    // withdraw racing the recipient's accept could otherwise land after
+    // accept already committed and reassigned both bookings, silently
+    // overwriting the record back to CANCELLED even though the swap really
+    // did go through.
+    const cancelled = await prisma.bookingSwap.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'CANCELLED', respondedAt: new Date() } })
+    if (cancelled.count === 0) {
+      return reply.status(409).send({ error: { message: 'This swap request is no longer pending', code: 'NOT_PENDING' } })
+    }
     await recordAuditLog(prisma, {
       actorId: request.user.id,
       action: 'booking_swap.cancelled',
