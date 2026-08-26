@@ -157,7 +157,19 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
               },
             },
           },
-          orderBy: { startsAt: 'desc' },
+          // Secondary sort on id — startsAt is not unique (many bookings
+          // routinely share the same slot start, e.g. everyone booking a
+          // desk "for the day"), and Postgres gives no ordering guarantee
+          // among tied rows across two separate query executions unless a
+          // unique tiebreaker is included. Without one, a row among a tied
+          // group can shift position between page fetches (e.g. the
+          // 30-minute auto-complete sweep in queue.ts updates elapsed
+          // bookings' status, rewriting those rows) — handleExportAll's
+          // page-by-page CSV walk (BookingsReportPage.tsx) can then see the
+          // same booking twice or skip one entirely at a page boundary, and
+          // the plain paginated UI table has the same instability on Next/
+          // Previous.
+          orderBy: [{ startsAt: 'desc' }, { id: 'asc' }],
         }),
         prisma.booking.count({ where }),
       ])

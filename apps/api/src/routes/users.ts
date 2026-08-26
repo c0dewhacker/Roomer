@@ -192,7 +192,11 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
             updatedAt: true,
             _count: { select: { bookings: true } },
           },
-          orderBy: { displayName: 'asc' },
+          // Secondary sort on id — displayName is not unique (two users can
+          // easily share a name), and Postgres gives no ordering guarantee
+          // among tied rows across separate queries without a unique
+          // tiebreaker. Same class of bug as GET /bookings/report.
+          orderBy: [{ displayName: 'asc' }, { id: 'asc' }],
         }),
         prisma.user.count({ where }),
       ])
