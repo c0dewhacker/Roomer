@@ -1,8 +1,10 @@
 import type { FastifyInstance } from 'fastify'
+import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole } from '../middleware/requireRole.js'
+import { recordAuditLog } from '../lib/audit.js'
 import { GlobalRole } from '@roomer/shared'
 
 // ─── Palette used when zone_colour is omitted ─────────────────────────────────
@@ -338,6 +340,23 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }, { timeout: 120_000 }) // up to 2000 rows, each doing several sequential lookups/creates — the
       // 5s Prisma default is not enough headroom (measured ~3.2s for 500 unique rows locally)
+
+      // One summary row for the whole batch, not one per created row — this
+      // can create hundreds of buildings/floors/zones/assets in a single call.
+      // Distinct resourceType/action from assets.ts's own /bulk-import (which
+      // only ever creates assets on one existing floor) so the two don't show
+      // up as indistinguishable entries in the audit log.
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'import.bulk_csv',
+        resourceType: 'Import',
+        resourceId: randomUUID(),
+        after: {
+          buildingsCreated, floorsCreated, zonesCreated, assetsCreated,
+          errorCount: errors.length, totalRows: body.data.rows.length,
+        },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(200).send({
         data: {
