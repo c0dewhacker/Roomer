@@ -859,11 +859,11 @@ async function processSendNotification(
       title = `Swap complete — ${newAsset.name}`
       body = `Your desk swap with ${otherUser.displayName} is complete — you're now on ${newAsset.name}.`
       emailPayload = renderBookingSwapAccepted(newBooking, user, otherUser, newAsset, tz)
-      // This booking row's icsSequence was already bumped by the swap-accept
-      // transaction (ownership changed, same reasoning as transfer above) —
-      // a fresh REQUEST here is what actually puts the new desk on this
-      // user's calendar. The desk they gave up is handled separately: see
-      // the BOOKING_CANCELLED job bookings.ts enqueues alongside this one.
+      // The swap-accept transaction deliberately leaves this row's
+      // icsSequence untouched (only the give-up side's CANCEL needs a bump,
+      // handled by the BOOKING_CANCELLED job bookings.ts enqueues alongside
+      // this one) — a fresh REQUEST at the current value is what actually
+      // puts the new desk on this user's calendar for the first time.
       icalEvent = {
         method: 'REQUEST',
         content: buildBookingIcs({

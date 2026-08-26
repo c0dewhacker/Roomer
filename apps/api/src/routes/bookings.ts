@@ -62,6 +62,10 @@ async function sendGuestBookingInvite(booking: {
       assetName: asset.name, zoneName: asset.primaryZone?.name, floorName: asset.floor?.name, buildingName: asset.floor?.building?.name,
       sequence: booking.icsSequence,
       attendeeEmail: booking.guestEmail, attendeeName: booking.guestName,
+      // A guest has no account and can't load the default {APP_URL}/bookings/:id
+      // link — point the calendar entry at their check-in link instead, the
+      // one URL they can actually use.
+      url: checkInUrl,
     }, 'REQUEST'),
   }
   await sendEmail({ to: booking.guestEmail, ...payload, icalEvent }).catch(() => {})
@@ -1889,11 +1893,20 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         // at the top of this transaction and could still cancel either side
         // in the gap between the status check above and these writes (the
         // zone-group checks in between are real await points).
-        const claimedA = await tx.booking.updateMany({ where: { id: fresh.bookingAId, status: 'CONFIRMED' }, data: { userId: fresh.recipientUserId, icsSequence: { increment: 1 } } })
+        // icsSequence is deliberately left untouched here — unlike the
+        // reschedule/transfer paths, nothing about this write itself is
+        // re-sent as a REQUEST at a bumped value. The give-up side's
+        // BOOKING_CANCELLED job (enqueued below) does its own +1 off
+        // whatever value is current, and that's the only bump either
+        // booking needs; bumping here too would make that CANCEL land two
+        // sequence numbers ahead instead of one, contradicting the
+        // "CANCEL always uses sequence+1" invariant documented on the
+        // schema field.
+        const claimedA = await tx.booking.updateMany({ where: { id: fresh.bookingAId, status: 'CONFIRMED' }, data: { userId: fresh.recipientUserId } })
         if (claimedA.count === 0) {
           throw new BookingConflictError('BOOKING_NOT_ACTIVE', 'Both bookings must still be active')
         }
-        const claimedB = await tx.booking.updateMany({ where: { id: fresh.bookingBId, status: 'CONFIRMED' }, data: { userId: fresh.initiatorUserId, icsSequence: { increment: 1 } } })
+        const claimedB = await tx.booking.updateMany({ where: { id: fresh.bookingBId, status: 'CONFIRMED' }, data: { userId: fresh.initiatorUserId } })
         if (claimedB.count === 0) {
           throw new BookingConflictError('BOOKING_NOT_ACTIVE', 'Both bookings must still be active')
         }
