@@ -487,8 +487,23 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       // was just written, leaving iconUrl pointing at nothing. (Unlike floor
       // plans/lease documents, which get a fresh unique path per upload and
       // genuinely need the old file cleaned up separately.)
-      // Store the relative storage path — the serve URL is /assets/categories/:id/icon
-      const category = await prisma.assetCategory.update({ where: { id }, data: { iconUrl: relPath } })
+      // Store the relative storage path — the serve URL is /assets/categories/:id/icon.
+      // Locks the category row first, same lock DELETE /categories/:id takes,
+      // and re-checks the row still exists: without this, a category deleted
+      // in the gap between the `existing` check above (slow: image
+      // processing happens after it) and this update would make the update
+      // throw P2025 unhandled (500) while the just-written file is never
+      // cleaned up — orphaned exactly like the delete side of this same race.
+      const category = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "AssetCategory" WHERE id = ${id} FOR UPDATE`
+        const stillExists = await tx.assetCategory.findUnique({ where: { id }, select: { id: true } })
+        if (!stillExists) return null
+        return tx.assetCategory.update({ where: { id }, data: { iconUrl: relPath } })
+      })
+      if (!category) {
+        await deleteFile(relPath).catch(() => {})
+        return reply.status(404).send({ error: { message: 'Category not found', code: 'NOT_FOUND' } })
+      }
       // Icon binary content is never logged — only that one was set/replaced.
       await recordAuditLog(prisma, {
         actorId: request.user.id,
@@ -545,8 +560,27 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         })
       }
 
-      if (existing.iconUrl) await deleteFile(existing.iconUrl).catch(() => {})
-      const deleted = await prisma.assetCategory.delete({ where: { id } })
+      // Re-read iconUrl here, inside a transaction locking the category row,
+      // rather than trusting the `existing` snapshot taken above — a
+      // concurrent POST /categories/:id/icon that commits between that
+      // snapshot and this delete would leave `existing.iconUrl` stale (null,
+      // or an older path), so the icon file it just wrote is never unlinked
+      // and is orphaned once the category row (and its DB iconUrl column)
+      // is gone. Same race and fix shape as the floor-plan/lease-document
+      // delete-vs-upload race fixed elsewhere — category icons use a
+      // deterministic per-category path rather than a unique-per-upload one,
+      // so there's no list of paths to reconcile, just one fresh read.
+      const { deleted, iconUrlToDelete } = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "AssetCategory" WHERE id = ${id} FOR UPDATE`
+        const fresh = await tx.assetCategory.findUnique({ where: { id }, select: { iconUrl: true } })
+        if (!fresh) return { deleted: null, iconUrlToDelete: null }
+        const deleted = await tx.assetCategory.delete({ where: { id } })
+        return { deleted, iconUrlToDelete: fresh.iconUrl }
+      })
+      if (!deleted) {
+        return reply.status(404).send({ error: { message: 'Category not found', code: 'NOT_FOUND' } })
+      }
+      if (iconUrlToDelete) await deleteFile(iconUrlToDelete).catch(() => {})
       await recordAuditLog(prisma, {
         actorId: request.user.id,
         action: 'asset_category.deleted',
