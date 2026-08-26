@@ -827,6 +827,20 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
     (q) => q.assetId === desk.id && (q.status === 'WAITING' || q.status === 'PROMOTED'),
   )
 
+  // The 30s poll backing queueEntries is the only other thing that would
+  // catch a passed claimDeadline — without a client-side tick, "Claim Desk"
+  // stayed clickable up to ~30s after the server would already reject it
+  // with CLAIM_EXPIRED, with nothing on screen indicating the window had
+  // closed. Only ticks while there's an actual promoted deadline to watch.
+  const [claimNow, setClaimNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (myQueueEntry?.status !== 'PROMOTED' || !myQueueEntry.claimDeadline) return
+    const id = setInterval(() => setClaimNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [myQueueEntry?.status, myQueueEntry?.claimDeadline])
+  const claimExpired = myQueueEntry?.status === 'PROMOTED' && !!myQueueEntry.claimDeadline
+    && claimNow >= new Date(myQueueEntry.claimDeadline).getTime()
+
   const isMyAssignedDesk = !!(
     desk.assignedUsers?.some((u) => u.id === user?.id) &&
     desk.rawBookingStatus === 'ASSIGNED'
@@ -1357,7 +1371,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                     You'll be notified when this desk becomes available.
                   </p>
                   <p className="text-xs text-yellow-600 mt-1">
-                    Queue expires: {formatDateTime(myQueueEntry.expiresAt)}
+                    Queue expires: {formatDateTime(myQueueEntry.expiresAt, desk.resolvedTimezone)}
                   </p>
                 </div>
                 <AlertDialog>
@@ -1395,17 +1409,19 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
             {/* Promoted: claim desk */}
             {myQueueEntry?.status === 'PROMOTED' && (
               <div className="space-y-3">
-                <div className="rounded-md bg-green-50 p-3 border border-green-200">
-                  <p className="text-sm font-semibold text-green-800">Desk available for you!</p>
+                <div className={`rounded-md p-3 border ${claimExpired ? 'bg-destructive/10 border-destructive/30' : 'bg-green-50 border-green-200'}`}>
+                  <p className={`text-sm font-semibold ${claimExpired ? 'text-destructive' : 'text-green-800'}`}>
+                    {claimExpired ? 'Claim window expired' : 'Desk available for you!'}
+                  </p>
                   {myQueueEntry.claimDeadline && (
-                    <p className="text-xs text-green-600 mt-1">
-                      Claim before: {formatDateTime(myQueueEntry.claimDeadline)}
+                    <p className={`text-xs mt-1 ${claimExpired ? 'text-destructive' : 'text-green-600'}`}>
+                      {claimExpired ? 'Refreshing…' : `Claim before: ${formatDateTime(myQueueEntry.claimDeadline, desk.resolvedTimezone)}`}
                     </p>
                   )}
                 </div>
                 <Button
                   onClick={() => claimDesk.mutate(myQueueEntry.id)}
-                  disabled={claimDesk.isPending}
+                  disabled={claimDesk.isPending || claimExpired}
                   className="w-full bg-green-600 hover:bg-green-700"
                 >
                   <CheckCircle className="mr-2 h-4 w-4" />

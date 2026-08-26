@@ -46,25 +46,40 @@ export async function queueRoutes(fastify: FastifyInstance): Promise<void> {
       ? undefined
       : { in: ['WAITING', 'PROMOTED'] }
 
-    const entries = await prisma.queueEntry.findMany({
-      where: {
-        userId: request.user.id,
-        ...(statusFilter ? { status: statusFilter } : {}),
-      },
-      include: {
-        asset: {
-          include: {
-            primaryZone: {
-              include: { floor: { include: { building: { select: { id: true, name: true } } } } },
+    const [entries, org] = await Promise.all([
+      prisma.queueEntry.findMany({
+        where: {
+          userId: request.user.id,
+          ...(statusFilter ? { status: statusFilter } : {}),
+        },
+        include: {
+          asset: {
+            include: {
+              primaryZone: {
+                include: { floor: { include: { building: { select: { id: true, name: true } } } } },
+              },
+              floor: { include: { building: { select: { id: true, name: true, timezone: true } } } },
             },
-            floor: { include: { building: { select: { id: true, name: true } } } },
           },
         },
-      },
-      orderBy: { createdAt: 'desc' },
-    })
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.organisation.findFirst({ select: { defaultTimezone: true } }),
+    ])
 
-    return reply.status(200).send({ data: entries })
+    // Same resolvedTimezone convention as GET /bookings and /pending-approvals
+    // (#72) — expiresAt/claimDeadline are real instants, and without this the
+    // frontend had no source for which building-local time they correspond
+    // to and fell back to the browser's own timezone.
+    const data = entries.map((e) => ({
+      ...e,
+      asset: {
+        ...e.asset,
+        resolvedTimezone: e.asset.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC',
+      },
+    }))
+
+    return reply.status(200).send({ data })
   })
 
   // POST /queue — join queue

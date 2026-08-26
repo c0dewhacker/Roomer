@@ -357,7 +357,7 @@ export interface QueueEntry {
   status: QueueEntryStatus
   expiresAt: string
   claimDeadline?: string
-  asset?: Asset & { zone?: Zone }
+  asset?: Asset & { zone?: Zone; resolvedTimezone?: string }
   /** @deprecated Use assetId */
   deskId?: string
   /** @deprecated Use asset */
