@@ -10,7 +10,7 @@ import { findOrCreateDepartment } from '../lib/department.js'
 import { recordAuditLog } from '../lib/audit.js'
 import {
   userToScim, groupToScim, scimError, listResponse, parseScimFilter,
-  applyUserPatchOps, applyGroupPatchOps, hashScimToken, coerceScimActive, lockScimEmail,
+  applyUserPatchOps, applyGroupPatchOps, hashScimToken, coerceScimActive, lockScimEmail, lockScimGroupName,
   SCIM_SCHEMAS,
 } from '../lib/scim-helpers.js'
 import { env } from '../env.js'
@@ -592,7 +592,12 @@ function registerGroups(fastify: FastifyInstance): void {
     const parsed = parseScimFilter(q.filter)
     let where: Record<string, unknown> = {}
     if (parsed) {
-      if (parsed.attr === 'displayName') where = { name: parsed.value }
+      // Case-insensitive, matching the analogous userName/email filter above
+      // — an IdP's own pre-create existence probe (e.g. Entra ID checking
+      // `displayName eq "marketing"` before deciding whether to POST) must
+      // find an existing "Marketing" group regardless of case, or it will
+      // conclude none exists and create a duplicate. See lockScimGroupName.
+      if (parsed.attr === 'displayName') where = { name: { equals: parsed.value, mode: 'insensitive' } }
       else if (parsed.attr === 'externalId') where = { id: parsed.value }
       // See the same guard on GET /Users — an unsupported attribute (e.g.
       // `members eq`) must not fall through to "no filter" and return every
@@ -638,10 +643,23 @@ function registerGroups(fastify: FastifyInstance): void {
     const org = await prisma.organisation.findFirst({ select: { id: true } })
     if (!org) return reply.status(500).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(500, 'No organisation'))
 
+    // Case-insensitive collision check under an advisory lock, same pattern
+    // and same reasoning as POST /Users' email check above — the DB unique
+    // constraint on UserGroup.name is exact-match only, so without the lock
+    // two concurrent creates for names differing only by case can both pass
+    // a plain findFirst before either commits. See lockScimGroupName.
     try {
-      const group = await prisma.userGroup.create({
-        data: { name: body.displayName, organisationId: org.id },
-        select: groupSelect,
+      const group = await prisma.$transaction(async (tx) => {
+        await lockScimGroupName(tx, body.displayName!)
+        const existing = await tx.userGroup.findFirst({
+          where: { organisationId: org.id, name: { equals: body.displayName!, mode: 'insensitive' } },
+          select: { id: true },
+        })
+        if (existing) throw Object.assign(new Error('GROUP_NAME_TAKEN'), { code: 'GROUP_NAME_TAKEN' })
+        return tx.userGroup.create({
+          data: { name: body.displayName!, organisationId: org.id },
+          select: groupSelect,
+        })
       })
       await recordAuditLog(prisma, {
         actorId: null,
@@ -652,8 +670,16 @@ function registerGroups(fastify: FastifyInstance): void {
         ipAddress: request.ip,
       }, request.log)
       reply.status(201).header('Content-Type', SCIM_CONTENT_TYPE).send(groupToScim(group, []))
-    } catch {
-      reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(409, `Group ${body.displayName} already exists`))
+    } catch (err) {
+      const code = (err as { code?: string })?.code
+      // GROUP_NAME_TAKEN is the expected path (the check above); P2002 is a
+      // defensive fallback matching groups.ts/departments.ts's own belt-and-
+      // suspenders pattern, not one this lock should actually let happen.
+      if (code === 'GROUP_NAME_TAKEN' || code === 'P2002') {
+        reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(409, `Group ${body.displayName} already exists`))
+        return
+      }
+      throw err
     }
   })
 
@@ -696,7 +722,24 @@ function registerGroups(fastify: FastifyInstance): void {
     }
 
     if (patch.displayName) {
-      await prisma.userGroup.update({ where: { id }, data: { name: patch.displayName } })
+      // Same case-insensitive collision check as POST /Groups above,
+      // scoped to this group's org and excluding itself.
+      const org = await prisma.organisation.findFirst({ select: { id: true } })
+      const nameTaken = org && await prisma.userGroup.findFirst({
+        where: { organisationId: org.id, id: { not: id }, name: { equals: patch.displayName, mode: 'insensitive' } },
+        select: { id: true },
+      })
+      if (nameTaken) {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(409, `Group ${patch.displayName} already exists`))
+      }
+      try {
+        await prisma.userGroup.update({ where: { id }, data: { name: patch.displayName } })
+      } catch (err) {
+        if ((err as { code?: string }).code === 'P2002') {
+          return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(409, `Group ${patch.displayName} already exists`))
+        }
+        throw err
+      }
       await recordAuditLog(prisma, {
         actorId: null,
         action: 'user_group.scim_updated',

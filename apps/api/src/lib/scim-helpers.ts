@@ -21,6 +21,28 @@ export async function lockScimEmail(tx: Prisma.TransactionClient, email: string)
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(${SCIM_EMAIL_LOCK_CLASS}, hashtext(${email.toLowerCase()}))`
 }
 
+/**
+ * Same race as lockScimEmail above, for UserGroup.name: the DB unique
+ * constraint is case-sensitive, so without a lock two concurrent SCIM
+ * `POST /Groups` calls for names differing only by case (e.g. "Marketing"
+ * vs "marketing") can both pass a case-insensitive collision check before
+ * either commits, leaving two live groups that read as the same group
+ * everywhere else in the app. Keyed on the lowercased name.
+ *
+ * 4249 — the next unused pg_advisory_xact_lock classid. In addition to the
+ * ones already listed on SCIM_EMAIL_LOCK_CLASS above, 4247 also turned out
+ * to be independently reused by routes/manager-requests.ts and
+ * routes/settings.ts (that comment only checked lib/, not routes/) — not a
+ * real collision risk (different hashtext inputs, and settings.ts uses the
+ * single-arg overload, a disjoint lock space), but check every route file
+ * too, not just lib/, before reusing an integer here.
+ */
+const SCIM_GROUP_NAME_LOCK_CLASS = 4249
+
+export async function lockScimGroupName(tx: Prisma.TransactionClient, name: string): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${SCIM_GROUP_NAME_LOCK_CLASS}, hashtext(${name.toLowerCase()}))`
+}
+
 export const SCIM_SCHEMAS = {
   USER: 'urn:ietf:params:scim:schemas:core:2.0:User',
   GROUP: 'urn:ietf:params:scim:schemas:core:2.0:Group',

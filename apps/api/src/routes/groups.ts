@@ -57,6 +57,18 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
 
     const orgId = await getOrgId()
 
+    // Case-insensitive check — the @@unique constraint below is exact-match
+    // only (UserGroup.name has no case-insensitive collation), so "Marketing"
+    // and "marketing" would otherwise create two rows that read as the same
+    // group everywhere they're displayed, without ever tripping the P2002
+    // catch below. Same pattern as departments.ts.
+    const existingGroup = await prisma.userGroup.findFirst({
+      where: { organisationId: orgId, name: { equals: result.data.name, mode: 'insensitive' } },
+    })
+    if (existingGroup) {
+      return reply.status(409).send({ error: { message: 'A group with this name already exists', code: 'ALREADY_EXISTS' } })
+    }
+
     try {
       const group = await prisma.userGroup.create({
         data: {
@@ -80,8 +92,14 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
         ipAddress: request.ip,
       }, request.log)
       return reply.status(201).send({ data: group })
-    } catch {
-      return reply.status(409).send({ error: { message: 'Group name already exists', code: 'ALREADY_EXISTS' } })
+    } catch (err) {
+      // Narrowed to the actual unique-constraint violation — a blanket catch
+      // here mislabels any other failure (a transient DB error) as "already
+      // exists" instead of surfacing it as the real error it is.
+      if ((err as { code?: string }).code === 'P2002') {
+        return reply.status(409).send({ error: { message: 'A group with this name already exists', code: 'ALREADY_EXISTS' } })
+      }
+      throw err
     }
   })
 
@@ -123,7 +141,18 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     try {
-      const before = await prisma.userGroup.findUnique({ where: { id }, select: { name: true, description: true, globalRole: true } })
+      const before = await prisma.userGroup.findUnique({ where: { id }, select: { name: true, description: true, globalRole: true, organisationId: true } })
+      // Same case-insensitive check as POST above, scoped to this group's
+      // own org and excluding itself (renaming to the same name, same
+      // casing or not, is a no-op, not a collision).
+      if (before && result.data.name) {
+        const existingGroup = await prisma.userGroup.findFirst({
+          where: { organisationId: before.organisationId, id: { not: id }, name: { equals: result.data.name, mode: 'insensitive' } },
+        })
+        if (existingGroup) {
+          return reply.status(409).send({ error: { message: 'A group with this name already exists', code: 'ALREADY_EXISTS' } })
+        }
+      }
       const group = await prisma.userGroup.update({
         where: { id },
         data: result.data,
@@ -143,7 +172,14 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
         ipAddress: request.ip,
       }, request.log)
       return reply.status(200).send({ data: group })
-    } catch {
+    } catch (err) {
+      // Renaming to a name that collides with another group in the org hits
+      // the same @@unique([organisationId, name]) constraint POST's create
+      // handler already guards against — without this narrowing, that
+      // failure was mislabelled "not found" instead of "already exists".
+      if ((err as { code?: string }).code === 'P2002') {
+        return reply.status(409).send({ error: { message: 'A group with this name already exists', code: 'ALREADY_EXISTS' } })
+      }
       return reply.status(404).send({ error: { message: 'Group not found', code: 'NOT_FOUND' } })
     }
   })
