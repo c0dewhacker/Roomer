@@ -1349,6 +1349,17 @@ export default function FloorAdminPage() {
                 </div>
               )}
               <FloorPlanCanvas
+                // Forces a clean remount on floor switch — without this,
+                // navigating from one managed floor to another (no full page
+                // reload, just a route param change) left the previous
+                // floor's uncommitted drags sitting in this component's local
+                // state. Clicking "Save Layout" on the new floor then sent
+                // the OLD floor's asset ids/positions through
+                // PATCH /assets/positions, which authorizes by the asset's
+                // actual floor (not by whatever floor the UI currently shows)
+                // and so silently succeeded — corrupting the previous floor's
+                // layout while showing a success toast for the one on screen.
+                key={floorId}
                 floorId={floorId}
                 date={new Date()}
                 editMode={true}

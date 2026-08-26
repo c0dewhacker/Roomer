@@ -389,6 +389,16 @@ export function FloorPlanCanvas({
 
   const hasUnsavedChanges = Object.keys(localPositions).length > 0
 
+  // Closing the tab or reloading with unsaved drags loses them with zero
+  // warning otherwise — there's no autosave and no in-app navigation guard,
+  // so this is the one point where silent data loss is preventable.
+  useEffect(() => {
+    if (!hasUnsavedChanges) return
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault() }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [hasUnsavedChanges])
+
   // NOTE: do NOT early-return for isLoading here. The containerRef div must
   // always be mounted so the ResizeObserver fires and `dimensions` gets set to
   // the actual container size. If we return a different element tree while
