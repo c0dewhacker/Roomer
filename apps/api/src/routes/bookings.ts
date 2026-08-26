@@ -1118,6 +1118,18 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (booking.status !== 'PENDING_APPROVAL') {
       return reply.status(409).send({ error: { message: 'Booking is not pending approval', code: 'BOOKING_NOT_PENDING' } })
     }
+    // A standalone booking whose slot has already ended shouldn't be
+    // confirmable after the fact (same isNotAlreadyElapsed guard reschedule/
+    // transfer/swap already use) — nothing previously stopped an approver
+    // from confirming, webhook-firing, and (for a guest booking) emailing a
+    // calendar invite for a meeting that already happened. Checked upfront
+    // only here, not for a recurring series: approving is a single
+    // whole-series decision, so an elapsed occurrence there is instead
+    // simply excluded from what gets claimed below, without failing the
+    // still-valid rest of the series.
+    if (!booking.recurringRuleId && !isNotAlreadyElapsed(booking.endsAt)) {
+      return reply.status(409).send({ error: { message: 'This booking has already ended', code: 'ALREADY_ELAPSED' } })
+    }
 
     const now = new Date()
     const affected = booking.recurringRuleId
@@ -1128,7 +1140,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         })
       : [{ id: booking.id, assetId: booking.assetId, startsAt: booking.startsAt, endsAt: booking.endsAt }]
 
-    // Claimed atomically (status: 'PENDING_APPROVAL' guard), not an
+    // Claimed atomically (status: 'PENDING_APPROVAL' + endsAt guard), not an
     // unconditional update — otherwise this can race a concurrent reject (or
     // the auto-reject-pending-approvals cron) that read PENDING_APPROVAL
     // before either commits: whichever side's write lands last would
@@ -1137,16 +1149,36 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     // ends up CANCELLED can still get a booking.created webhook and a
     // BOOKING_APPROVED email, or (worse) one that ends up CONFIRMED can
     // still have releaseRejectedSlot hand its still-occupied slot to the
-    // next queued user, a real path to a double-booked desk.
+    // next queued user, a real path to a double-booked desk. The endsAt
+    // filter is the recurring-series half of the elapsed guard above: an
+    // occurrence that ended before this call reached the database is
+    // silently left PENDING_APPROVAL (for the auto-reject cron to clean up)
+    // rather than confirmed after the fact.
     const claimed = await prisma.booking.updateMany({
-      where: { id: { in: affected.map((b) => b.id) }, status: 'PENDING_APPROVAL' },
+      where: { id: { in: affected.map((b) => b.id) }, status: 'PENDING_APPROVAL', endsAt: { gt: now } },
       data: { status: 'CONFIRMED', approvedAt: now, approvedByUserId: request.user.id, approvalExpiresAt: null },
     })
     if (claimed.count === 0) {
       return reply.status(409).send({ error: { message: 'Booking is not pending approval', code: 'BOOKING_NOT_PENDING' } })
     }
 
-    for (const b of affected) {
+    // Re-derive from what the write actually claimed, not the pre-write
+    // `affected` snapshot — for a recurring series, one of its occurrences
+    // can be individually withdrawn (DELETE /:id is not recurringRuleId-
+    // scoped and allows this) in the gap between the findMany above and the
+    // guarded updateMany. Looping over the stale `affected` list would still
+    // fire a booking.created webhook for an occurrence that's actually
+    // CANCELLED. None of `affected`'s ids could have been CONFIRMED before
+    // this call (the findMany above only selected PENDING_APPROVAL rows), so
+    // filtering the same id set down to status: 'CONFIRMED' now correctly
+    // identifies exactly the rows this call flipped.
+    const actuallyApproved = await prisma.booking.findMany({
+      where: { id: { in: affected.map((b) => b.id) }, status: 'CONFIRMED' },
+      select: { id: true, assetId: true, startsAt: true, endsAt: true },
+      orderBy: { startsAt: 'asc' },
+    })
+
+    for (const b of actuallyApproved) {
       dispatchWebhook('booking.created', { id: b.id, userId: booking.userId, assetId: b.assetId, startsAt: b.startsAt, endsAt: b.endsAt }).catch(() => {})
     }
     // One notification for the whole approval decision, referencing the
@@ -1155,7 +1187,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     await enqueueNotification({
       type: NotificationType.BOOKING_APPROVED,
       userId: booking.userId,
-      bookingId: affected[0].id,
+      bookingId: actuallyApproved[0].id,
     })
 
     // A guest booking (see #79) never got its invite at creation time if it
@@ -1248,14 +1280,33 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(409).send({ error: { message: 'Booking is not pending approval', code: 'BOOKING_NOT_PENDING' } })
     }
 
-    for (const b of affected) {
+    // Re-derive from what the write actually claimed, not the pre-write
+    // `affected` snapshot — same reasoning as approve above, but more
+    // important here: releaseRejectedSlot calls promoteNextQueueEntry with
+    // no idempotency guard, so re-running it for an occurrence that was
+    // actually cancelled by something else (an individual withdrawal via
+    // DELETE /:id, which is not recurringRuleId-scoped and can race a
+    // series-wide reject) would promote a SECOND, different queue entrant
+    // for a slot that was already freed and promoted once — a false "you
+    // got the desk" notification for a slot that isn't really newly
+    // available. `approvedByUserId: request.user.id` is a safe marker: a
+    // withdrawal never sets it, and the auto-reject cron always leaves it
+    // null (it has no acting user), so only rows THIS call actually
+    // rejected match both conditions.
+    const actuallyRejected = await prisma.booking.findMany({
+      where: { id: { in: affected.map((b) => b.id) }, status: 'CANCELLED', approvedByUserId: request.user.id },
+      select: { id: true, assetId: true, startsAt: true, endsAt: true },
+      orderBy: { startsAt: 'asc' },
+    })
+
+    for (const b of actuallyRejected) {
       dispatchWebhook('booking.cancelled', { id: b.id, userId: booking.userId, assetId: b.assetId }).catch(() => {})
       await releaseRejectedSlot(b.assetId, b.startsAt, b.endsAt, booking.userId)
     }
     await enqueueNotification({
       type: NotificationType.BOOKING_REJECTED,
       userId: booking.userId,
-      bookingId: affected[0].id,
+      bookingId: actuallyRejected[0].id,
     })
 
     await recordAuditLog(prisma, {
