@@ -14,6 +14,15 @@ export function useMyBookings(status?: 'upcoming' | 'past' | 'all') {
     queryKey: ['bookings', status ?? 'all'],
     queryFn: () => bookingsApi.list(status),
     select: (res) => ({ bookings: res.data, total: res.meta?.total ?? res.data.length }),
+    // Approval/rejection (by an admin, or the auto-reject cron) isn't driven
+    // by this client, so a "Pending approval" badge here can go stale the
+    // same way the approvals list itself could (see useBookingApprovals.ts).
+    // Only polls while there's actually something to watch — this query
+    // backs the main bookings list for every user regardless of whether
+    // they have any pending request, so an unconditional interval here
+    // would poll far more often than useQueueEntries/useBallots's
+    // narrower, already-time-sensitive surfaces.
+    refetchInterval: (query) => (query.state.data?.data ?? []).some((b) => b.status === 'PENDING_APPROVAL') ? 30_000 : false,
   })
 }
 
@@ -41,6 +50,20 @@ export function useCancelBooking() {
     onSuccess: () => {
       toast.success('Booking cancelled')
       qc.invalidateQueries({ queryKey: ['bookings'] })
+      // Freeing a desk changes floor availability — useLeaveQueue,
+      // useClaimDesk, and useMakeAvailable below all already invalidate this
+      // too; cancel was the one mutation in this file that didn't, leaving
+      // DeskPanel/the floor plan showing the just-cancelled booking (still
+      // "yours", marker still blue) until an unrelated refetch happened to
+      // occur.
+      qc.invalidateQueries({ queryKey: ['floors'] })
+      // A single occurrence of a recurring series is a plain Booking row,
+      // cancelled through this same generic endpoint — without this,
+      // RecurringBookingsSection's "(N upcoming)" count and its "view all
+      // occurrences" dialog (BookingsPage.tsx) keep showing the
+      // just-cancelled occurrence as still CONFIRMED. Harmless no-op
+      // refetch when the cancelled booking wasn't part of a series.
+      qc.invalidateQueries({ queryKey: ['recurring-bookings'] })
     },
     onError: (err: Error) => {
       toast.error(apiErrMsg(err, 'Failed to cancel booking'))
@@ -57,6 +80,10 @@ export function useUpdateBooking() {
     onSuccess: () => {
       toast.success('Booking updated')
       qc.invalidateQueries({ queryKey: ['bookings'] })
+      // Same staleness gap as useCancelBooking above — rescheduling frees
+      // the old slot and occupies a new one, both of which affect floor
+      // availability.
+      qc.invalidateQueries({ queryKey: ['floors'] })
     },
     onError: (err: Error) => {
       toast.error(err.message ?? 'Failed to update booking')

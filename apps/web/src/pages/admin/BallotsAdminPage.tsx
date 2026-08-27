@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Dices, Plus, X, ChevronDown, ChevronUp, Play, Shuffle, Trash2, Pause } from 'lucide-react'
 import { buildingsApi, assetsApi } from '@/lib/api'
+import { formatCalendarDate } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
 import {
   useBallots, useBallotRuns, useBallotRunDetail,
@@ -400,7 +401,12 @@ function BallotRunsPanel({ ballotId }: { ballotId: string }) {
                 <span className="text-xs text-muted-foreground">{r._count?.entries ?? 0} entrant{r._count?.entries === 1 ? '' : 's'}</span>
               </div>
               <p className="text-xs text-muted-foreground mt-1">
-                Slot: {new Date(r.slotStartsAt).toLocaleDateString()} – {new Date(r.slotEndsAt).toLocaleDateString()} · Registration closes {new Date(r.registrationClosesAt).toLocaleString()}
+                {/* slotStartsAt/slotEndsAt are date-only (UTC midnight, no
+                    real time-of-day) — formatCalendarDate re-anchors them as
+                    local midnight first; toLocaleDateString() on the raw
+                    instant shifts the date itself back a day for any admin
+                    viewing from behind UTC. */}
+                Slot: {formatCalendarDate(r.slotStartsAt)} – {formatCalendarDate(r.slotEndsAt)} · Registration closes {new Date(r.registrationClosesAt).toLocaleString()}
               </p>
             </div>
             <div className="flex items-center gap-1 shrink-0">
@@ -429,7 +435,7 @@ export default function BallotsAdminPage() {
   const qc = useQueryClient()
 
   return (
-    <div className="p-6 space-y-6 max-w-4xl">
+    <div className="p-6 space-y-6 max-w-4xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold flex items-center gap-2">

@@ -908,6 +908,10 @@ function FloorManagersPanel({ floorId, floorName }: { floorId: string; floorName
     onSuccess: () => {
       toast.success('Floor manager assigned')
       qc.invalidateQueries({ queryKey: ['floors', floorId, 'managers'] })
+      // AccessSummaryDialog reads a separate ['access-summary', 'floor', id]
+      // query — without this, "Access summary" kept showing the pre-change
+      // manager list for up to its 30s staleTime after an assign/remove here.
+      qc.invalidateQueries({ queryKey: ['access-summary', 'floor', floorId] })
       setSearch('')
       setSelectedUserId('')
     },
@@ -920,6 +924,7 @@ function FloorManagersPanel({ floorId, floorName }: { floorId: string; floorName
     onSuccess: () => {
       toast.success('Floor manager removed')
       qc.invalidateQueries({ queryKey: ['floors', floorId, 'managers'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'floor', floorId] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -947,6 +952,7 @@ function FloorManagersPanel({ floorId, floorName }: { floorId: string; floorName
     onSuccess: () => {
       toast.success('Group assigned as floor manager')
       qc.invalidateQueries({ queryKey: ['floors', floorId, 'group-managers'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'floor', floorId] })
       setSelectedGroupId('')
     },
     onError: (err: Error) => toast.error(err.message),
@@ -957,6 +963,7 @@ function FloorManagersPanel({ floorId, floorName }: { floorId: string; floorName
     onSuccess: () => {
       toast.success('Group manager removed')
       qc.invalidateQueries({ queryKey: ['floors', floorId, 'group-managers'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'floor', floorId] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -1320,7 +1327,7 @@ export default function FloorAdminPage() {
       <div className="flex-1 overflow-hidden">
         {view === 'managers' ? (
           <div className="h-full overflow-y-auto">
-            <div className="p-4 max-w-sm space-y-3">
+            <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
               <NoShowOverrideControl scope="floor" value={floor?.noShowReleaseEnabled} onChange={(v) => saveNoShow.mutate(v)} disabled={saveNoShow.isPending} />
               <QrCheckInModeControl scope="floor" value={floor?.qrCheckInMode} onChange={(v) => saveQrMode.mutate(v)} disabled={saveQrMode.isPending} />
             </div>
@@ -1342,6 +1349,17 @@ export default function FloorAdminPage() {
                 </div>
               )}
               <FloorPlanCanvas
+                // Forces a clean remount on floor switch — without this,
+                // navigating from one managed floor to another (no full page
+                // reload, just a route param change) left the previous
+                // floor's uncommitted drags sitting in this component's local
+                // state. Clicking "Save Layout" on the new floor then sent
+                // the OLD floor's asset ids/positions through
+                // PATCH /assets/positions, which authorizes by the asset's
+                // actual floor (not by whatever floor the UI currently shows)
+                // and so silently succeeded — corrupting the previous floor's
+                // layout while showing a success toast for the one on screen.
+                key={floorId}
                 floorId={floorId}
                 date={new Date()}
                 editMode={true}

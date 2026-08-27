@@ -23,8 +23,11 @@ interface Filters {
 }
 
 function auditCsvRow(e: AuditLogEntry): string[] {
+  // Formatted the same way the on-screen table renders it (browser-local —
+  // there's no per-entry building to resolve a timezone against for an
+  // org-wide compliance log), not a raw ISO string.
   return [
-    e.createdAt,
+    formatDateTime(e.createdAt),
     e.actor?.displayName ?? 'System',
     e.actor?.email ?? '',
     e.action,

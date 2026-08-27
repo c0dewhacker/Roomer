@@ -1287,6 +1287,11 @@ model WebhookDelivery {
   error      String?
   attempt    Int             @default(1)
   createdAt  DateTime        @default(now())
+  /// Each retry upserts this same row (keyed on the stable deliveryId) rather
+  /// than inserting a new one — createdAt therefore always reflects the
+  /// FIRST attempt, not the one whose success/error/statusCode is currently
+  /// shown. This is when that outcome was actually recorded.
+  updatedAt  DateTime        @updatedAt
 
   @@index([endpointId, createdAt])
   @@index([event])

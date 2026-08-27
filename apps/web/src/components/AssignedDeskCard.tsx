@@ -21,13 +21,16 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { DateTimeLocalInput } from '@/components/ui/date-time-input'
-import { formatDateRange } from '@/lib/utils'
+import { formatDateRange, toDatetimeLocalValue, fromDatetimeLocalValue } from '@/lib/utils'
 import { assetsApi, type MyAssignment, type AvailabilityWindow } from '@/lib/api'
 
-function nowLocalValue(): string {
-  const d = new Date()
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+// "Now" rendered in the desk's own building timezone, not the viewer's
+// browser — an owner setting business hours for their desk means hours in
+// *that desk's* building, regardless of which timezone they're travelling
+// in when they set it (same reasoning as the booking-creation/reschedule
+// fixes elsewhere — see #72).
+function nowLocalValue(timeZone: string): string {
+  return toDatetimeLocalValue(new Date().toISOString(), timeZone)
 }
 
 // ─── Make-available dialog ──────────────────────────────────────────────────
@@ -42,15 +45,16 @@ export function MakeAvailableDialog({
   onClose: () => void
 }) {
   const qc = useQueryClient()
-  const [startsAt, setStartsAt] = useState(nowLocalValue())
+  const timeZone = assignment.asset.resolvedTimezone ?? 'UTC'
+  const [startsAt, setStartsAt] = useState(nowLocalValue(timeZone))
   const [endsAt, setEndsAt] = useState('')
   const [note, setNote] = useState('')
 
   const create = useMutation({
     mutationFn: () =>
       assetsApi.createAvailabilityWindow(assignment.assetId, {
-        startsAt: new Date(startsAt).toISOString(),
-        endsAt: new Date(endsAt).toISOString(),
+        startsAt: fromDatetimeLocalValue(startsAt, timeZone).toISOString(),
+        endsAt: fromDatetimeLocalValue(endsAt, timeZone).toISOString(),
         note: note || undefined,
       }),
     onSuccess: () => {
@@ -86,7 +90,7 @@ export function MakeAvailableDialog({
             <Label>Available from</Label>
             <DateTimeLocalInput
               value={startsAt}
-              min={nowLocalValue()}
+              min={nowLocalValue(timeZone)}
               onChange={setStartsAt}
               className="mt-1.5"
             />

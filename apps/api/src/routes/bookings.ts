@@ -12,7 +12,7 @@ import { buildBookingIcs } from '../lib/ical.js'
 import { sendEmail, renderGuestBookingInvite, renderGuestBookingCancelled } from '../lib/mailer.js'
 import { checkGroupAccess } from './groups.js'
 import { assertBookable, assertUnderBookingQuota, hasBlockingOverlap, checkZoneGroupOverlap, isWithinAdvanceBookingWindow, isNotAlreadyElapsed, lockAssetForBooking, lockUserForBookingQuota, isOverlapConstraintViolation, resolveRequiresApproval } from '../lib/booking.js'
-import { resolveBuildingTimezone } from '../lib/timezone.js'
+import { resolveBuildingTimezone, localDateStr, zonedWallClockToUtc } from '../lib/timezone.js'
 import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
@@ -62,6 +62,10 @@ async function sendGuestBookingInvite(booking: {
       assetName: asset.name, zoneName: asset.primaryZone?.name, floorName: asset.floor?.name, buildingName: asset.floor?.building?.name,
       sequence: booking.icsSequence,
       attendeeEmail: booking.guestEmail, attendeeName: booking.guestName,
+      // A guest has no account and can't load the default {APP_URL}/bookings/:id
+      // link — point the calendar entry at their check-in link instead, the
+      // one URL they can actually use.
+      url: checkInUrl,
     }, 'REQUEST'),
   }
   await sendEmail({ to: booking.guestEmail, ...payload, icalEvent }).catch(() => {})
@@ -138,7 +142,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         where['asset'] = { floor: { buildingId: { in: managedBuildingIds } } }
       }
 
-      const [bookings, total] = await Promise.all([
+      const [bookings, total, org] = await Promise.all([
         prisma.booking.findMany({
           where,
           skip,
@@ -152,18 +156,43 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
             user: { select: { id: true, displayName: true, email: true } },
             asset: {
               include: {
-                floor: { include: { building: { select: { id: true, name: true } } } },
+                floor: { include: { building: { select: { id: true, name: true, timezone: true } } } },
                 primaryZone: { select: { id: true, name: true } },
               },
             },
           },
-          orderBy: { startsAt: 'desc' },
+          // Secondary sort on id — startsAt is not unique (many bookings
+          // routinely share the same slot start, e.g. everyone booking a
+          // desk "for the day"), and Postgres gives no ordering guarantee
+          // among tied rows across two separate query executions unless a
+          // unique tiebreaker is included. Without one, a row among a tied
+          // group can shift position between page fetches (e.g. the
+          // 30-minute auto-complete sweep in queue.ts updates elapsed
+          // bookings' status, rewriting those rows) — handleExportAll's
+          // page-by-page CSV walk (BookingsReportPage.tsx) can then see the
+          // same booking twice or skip one entirely at a page boundary, and
+          // the plain paginated UI table has the same instability on Next/
+          // Previous.
+          orderBy: [{ startsAt: 'desc' }, { id: 'asc' }],
         }),
         prisma.booking.count({ where }),
+        prisma.organisation.findFirst({ select: { defaultTimezone: true } }),
       ])
 
+      // Same resolvedTimezone every other booking-list endpoint in this file
+      // attaches (see GET / above and GET /pending-approvals) — without it,
+      // this report rendered every booking's time in the viewer's own
+      // browser timezone (on screen) and as a raw UTC ISO string (in the
+      // CSV export), neither of which matches the building-local time the
+      // booking was actually made for, or how the same booking displays
+      // anywhere else in the app.
+      const data = bookings.map((b) => ({
+        ...b,
+        resolvedTimezone: b.asset.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC',
+      }))
+
       return reply.status(200).send({
-        data: bookings,
+        data,
         meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
       })
     },
@@ -231,18 +260,21 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     }
     const { status } = queryResult.data
     const now = new Date()
-    // UTC midnight, same convention every other day-boundary calculation in
-    // the app uses (directory.ts whereabouts, recurring.ts, analytics working
-    // days) — local Date getters here made the boundary depend on whatever
-    // TZ the API process happens to run under (no TZ=UTC pin exists in the
-    // repo), so a booking that had already ended by the UTC convention could
-    // still sit in the Upcoming tab with live Edit/Cancel/Check-in actions.
-    const startOfToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
-
+    // Widened DB pre-filter only — a user's bookings can span buildings in
+    // different timezones, so no single global cutoff can define "today"
+    // correctly for all of them at once (same reasoning as directory.ts's
+    // /whereabouts ±14h widen-then-precise-filter). A single global UTC-
+    // midnight cutoff (the previous approach here) put a Sydney-local booking
+    // that's still "today" in Sydney terms into the wrong bucket whenever its
+    // UTC instant crossed into the previous/next UTC calendar day. The
+    // precise per-booking check below (once each row's own resolvedTimezone
+    // is known) does the real work; ±26h margin covers every real-world UTC
+    // offset (max +14) either direction with room to spare.
+    const WIDEN_MS = 26 * 60 * 60 * 1000
     const where: Record<string, unknown> = { userId: request.user.id }
 
     if (status === 'past') {
-      where['endsAt'] = { lt: startOfToday }
+      where['endsAt'] = { lt: new Date(now.getTime() + WIDEN_MS) }
     } else if (status === 'all') {
       // No filter
     } else {
@@ -250,40 +282,50 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       // PENDING_APPROVAL is included alongside CONFIRMED (see #74) — it's
       // reserving the same slot and the requester still needs to see it
       // (and be able to withdraw it) here, not just once it's approved.
-      where['endsAt'] = { gte: startOfToday }
+      where['endsAt'] = { gte: new Date(now.getTime() - WIDEN_MS) }
       where['status'] = { in: ['CONFIRMED', 'PENDING_APPROVAL'] }
     }
 
-    const bookings = await prisma.booking.findMany({
-      where,
-      omit: { guestCheckInToken: true },
-      include: {
-        asset: {
-          include: {
-            floor: { include: { building: { select: { id: true, name: true, qrCheckInMode: true, timezone: true } } } },
-            primaryZone: { select: { id: true, name: true } },
+    const [bookings, org] = await Promise.all([
+      prisma.booking.findMany({
+        where,
+        omit: { guestCheckInToken: true },
+        include: {
+          asset: {
+            include: {
+              floor: { include: { building: { select: { id: true, name: true, qrCheckInMode: true, timezone: true } } } },
+              primaryZone: { select: { id: true, name: true } },
+            },
           },
         },
-      },
-      orderBy: { startsAt: 'asc' },
+        orderBy: { startsAt: 'asc' },
+      }),
+      // Resolved (not raw) QR mode + timezone per booking — floor → building →
+      // org, same order as everywhere else this resolves. The frontend uses
+      // qrCheckInMode purely to decide whether to show the manual "I'm here"
+      // check-in button (hidden under MANDATORY), and resolvedTimezone (see
+      // #72) to render this booking's time in its actual building-local time
+      // rather than the viewer's own browser timezone.
+      prisma.organisation.findFirst({ select: { qrCheckInMode: true, defaultTimezone: true } }),
+    ])
+
+    // Precise past/upcoming split: is "today" (in *this booking's own*
+    // building timezone) before or at-or-after its endsAt? Replaces the
+    // widened DB filter above as the actual source of truth.
+    const finalBookings = status === 'all' ? bookings : bookings.filter((b) => {
+      const tz = b.asset.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC'
+      const [y, m, d] = localDateStr(now, tz).split('-').map(Number)
+      const localStartOfToday = zonedWallClockToUtc(y, m, d, 0, 0, tz)
+      return status === 'past' ? b.endsAt < localStartOfToday : b.endsAt >= localStartOfToday
     })
 
-    // Resolved (not raw) QR mode + timezone per booking — floor → building →
-    // org, same order as everywhere else this resolves. The frontend uses
-    // qrCheckInMode purely to decide whether to show the manual "I'm here"
-    // check-in button (hidden under MANDATORY), and resolvedTimezone (see
-    // #72) to render this booking's time in its actual building-local time
-    // rather than the viewer's own browser timezone — neither needs to
-    // duplicate the resolution logic or fetch org/building/floor data
-    // separately to make that call.
-    const org = await prisma.organisation.findFirst({ select: { qrCheckInMode: true, defaultTimezone: true } })
-    const data = bookings.map((b) => ({
+    const data = finalBookings.map((b) => ({
       ...b,
       qrCheckInMode: b.asset.floor?.qrCheckInMode ?? b.asset.floor?.building?.qrCheckInMode ?? org?.qrCheckInMode ?? 'DISABLED',
       resolvedTimezone: b.asset.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC',
     }))
 
-    return reply.status(200).send({ data, meta: { total: bookings.length } })
+    return reply.status(200).send({ data, meta: { total: finalBookings.length } })
   })
 
   // POST /bookings — create booking
@@ -583,7 +625,30 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(200).send({ data: { id: booking.id, checkedInAt: booking.checkedInAt } })
     }
 
-    const updated = await prisma.booking.update({ where: { id }, data: { checkedInAt: new Date() } })
+    // Conditioned on status: 'CONFIRMED' AND checkedInAt: null, not a bare
+    // update-by-id — the status half closes the race against
+    // handleReleaseNoShows (if the no-show sweep cancels this exact booking
+    // in the gap between the status check above and this write, a plain
+    // update-by-id would still stamp a checkedInAt onto a row that's already
+    // CANCELLED). The checkedInAt half closes a *different* race: two
+    // check-in requests for the same booking in flight at once (a
+    // double-click, a client retry) both pass the in-memory checkedInAt-null
+    // check above before either commits — without this guard both writes
+    // would succeed, double-firing the webhook/audit-log entry below for a
+    // single physical check-in.
+    const result = await prisma.booking.updateMany({ where: { id, status: 'CONFIRMED', checkedInAt: null }, data: { checkedInAt: new Date() } })
+    if (result.count === 0) {
+      // Lost the race — could be a concurrent check-in (idempotent replay)
+      // or an actual state change (cancelled/no-showed underneath us).
+      // Distinguish so a same-instant double-submit gets the same 200 the
+      // first request saw, not a misleading "not active" error.
+      const current = await prisma.booking.findUnique({ where: { id }, select: { status: true, checkedInAt: true } })
+      if (current?.status === 'CONFIRMED' && current.checkedInAt) {
+        return reply.status(200).send({ data: { id, checkedInAt: current.checkedInAt } })
+      }
+      return reply.status(409).send({ error: { message: 'Booking is not active', code: 'BOOKING_NOT_ACTIVE' } })
+    }
+    const updated = await prisma.booking.findUniqueOrThrow({ where: { id } })
     dispatchWebhook('booking.checked_in', { id: updated.id, userId: updated.userId, assetId: updated.assetId, checkedInAt: updated.checkedInAt }).catch(() => {})
     await recordAuditLog(prisma, {
       actorId: request.user.id,
@@ -637,7 +702,19 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     // It's still cleared once the booking is no longer CONFIRMED (see the
     // cancel path below), which closes the other half of that contract
     // without breaking this one.
-    const updated = await prisma.booking.update({ where: { id: booking.id }, data: { checkedInAt: now } })
+    // Conditioned on status: 'CONFIRMED' AND checkedInAt: null, not a bare
+    // update-by-id — see the authenticated check-in route above for why
+    // (closes both the race against handleReleaseNoShows and a concurrent
+    // duplicate submission of this same link).
+    const checkInResult = await prisma.booking.updateMany({ where: { id: booking.id, status: 'CONFIRMED', checkedInAt: null }, data: { checkedInAt: now } })
+    if (checkInResult.count === 0) {
+      const current = await prisma.booking.findUnique({ where: { id: booking.id }, select: { status: true, checkedInAt: true } })
+      if (current?.status === 'CONFIRMED' && current.checkedInAt) {
+        return reply.status(200).send({ data: { guestName: booking.guestName, checkedInAt: current.checkedInAt } })
+      }
+      return reply.status(409).send({ error: { message: 'This booking is no longer active', code: 'BOOKING_NOT_ACTIVE' } })
+    }
+    const updated = await prisma.booking.findUniqueOrThrow({ where: { id: booking.id } })
     dispatchWebhook('booking.checked_in', { id: updated.id, userId: updated.userId, assetId: updated.assetId, checkedInAt: updated.checkedInAt }).catch(() => {})
     // actorId is the booking's own owner — this endpoint is deliberately
     // unauthenticated (a guest check-in link), but the identity is known
@@ -672,7 +749,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
             primaryZone: { select: { name: true } },
           },
         },
-        user: { select: { displayName: true } },
+        user: { select: { displayName: true, globalRole: true } },
       },
     })
     if (!booking) {
@@ -735,11 +812,18 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       if (!isNotAlreadyElapsed(newEndsAt)) {
         return reply.status(400).send({ error: { message: 'This time slot has already passed', code: 'ALREADY_ELAPSED' } })
       }
-      const gate = await assertBookable(prisma, request.user, booking.assetId, newStartsAt, newEndsAt)
+      // Checked against the booking's OWNER, not the acting caller — an
+      // admin/floor manager rescheduling on someone else's behalf must not
+      // let that person's booking silently bypass their own bookability
+      // gates (RESTRICTED allow-list, ASSIGNED-desk, group access) or
+      // maxAdvanceBookingDays cap just because the actor happens to be a
+      // SUPER_ADMIN. Mirrors how transfer/swap-accept already check the
+      // future occupant's bookability, not the acting party's.
+      const gate = await assertBookable(prisma, { id: booking.userId, globalRole: booking.user.globalRole }, booking.assetId, newStartsAt, newEndsAt)
       if (!gate.ok) {
         return reply.status(gate.status).send({ error: { message: gate.message, code: gate.code } })
       }
-      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      if (booking.user.globalRole !== GlobalRole.SUPER_ADMIN) {
         const org = await prisma.organisation.findFirst({ select: { maxAdvanceBookingDays: true } })
         if (!isWithinAdvanceBookingWindow(newStartsAt, org?.maxAdvanceBookingDays)) {
           return reply.status(400).send({
@@ -907,16 +991,27 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(409).send({ error: { message: 'Booking is not active', code: 'BOOKING_NOT_ACTIVE' } })
     }
 
-    // Cancel the booking. The guest check-in token is cleared here too —
-    // schema.prisma documents it as "cleared once used or once the booking
-    // is no longer CONFIRMED" (mirroring QueueEntry.claimToken's single-use
-    // pattern), but it was previously never actually nulled anywhere. Not
-    // exploitable today (the public check-in route independently gates on
-    // status === 'CONFIRMED'), but leaving a dead token sitting in the DB
-    // indefinitely contradicts the documented contract and is exactly the
-    // kind of latent gap that becomes a real bug the next time this code
-    // is touched.
-    await prisma.booking.update({ where: { id }, data: { status: 'CANCELLED', guestCheckInToken: null } })
+    // Cancel the booking. Claimed atomically (updateMany + status guard),
+    // same pattern /approve and /reject already use — an unconditional
+    // update() here let two concurrent cancel requests for the same booking
+    // (a double-click, or the owner and a floor manager racing) both pass
+    // the status check above and both run the full promote/notify pipeline
+    // below, double-promoting the queue for one single freed slot. The
+    // guest check-in token is cleared here too — schema.prisma documents it
+    // as "cleared once used or once the booking is no longer CONFIRMED"
+    // (mirroring QueueEntry.claimToken's single-use pattern), but it was
+    // previously never actually nulled anywhere. Not exploitable today (the
+    // public check-in route independently gates on status === 'CONFIRMED'),
+    // but leaving a dead token sitting in the DB indefinitely contradicts
+    // the documented contract and is exactly the kind of latent gap that
+    // becomes a real bug the next time this code is touched.
+    const claimed = await prisma.booking.updateMany({
+      where: { id, status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] } },
+      data: { status: 'CANCELLED', guestCheckInToken: null },
+    })
+    if (claimed.count === 0) {
+      return reply.status(409).send({ error: { message: 'Booking is not active', code: 'BOOKING_NOT_ACTIVE' } })
+    }
 
     dispatchWebhook('booking.cancelled', { id: booking.id, userId: booking.userId, assetId: booking.assetId }).catch(() => {})
     await recordAuditLog(prisma, {
@@ -976,10 +1071,11 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     // Notify floor subscribers of the newly-freed slot
     const cancelledAsset = await prisma.asset.findUnique({
       where: { id: booking.assetId },
-      select: { floorId: true, primaryZoneId: true },
+      select: { floorId: true, primaryZoneId: true, floor: { select: { buildingId: true } } },
     })
     if (cancelledAsset?.floorId) {
-      const slotDate = booking.startsAt.toISOString().slice(0, 10)
+      const tz = await resolveBuildingTimezone(prisma, cancelledAsset.floor?.buildingId ?? null)
+      const slotDate = localDateStr(booking.startsAt, tz)
       await fanOutFloorAvailable(
         booking.assetId,
         cancelledAsset.floorId,
@@ -1009,9 +1105,10 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       })
       dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
     }
-    const asset = await prisma.asset.findUnique({ where: { id: assetId }, select: { floorId: true, primaryZoneId: true } })
+    const asset = await prisma.asset.findUnique({ where: { id: assetId }, select: { floorId: true, primaryZoneId: true, floor: { select: { buildingId: true } } } })
     if (asset?.floorId) {
-      const slotDate = startsAt.toISOString().slice(0, 10)
+      const tz = await resolveBuildingTimezone(prisma, asset.floor?.buildingId ?? null)
+      const slotDate = localDateStr(startsAt, tz)
       await fanOutFloorAvailable(assetId, asset.floorId, asset.primaryZoneId, slotDate, requesterUserId)
         .catch((err) => fastify.log.warn({ err }, '[bookings] floor fan-out error'))
     }
@@ -1057,6 +1154,18 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (booking.status !== 'PENDING_APPROVAL') {
       return reply.status(409).send({ error: { message: 'Booking is not pending approval', code: 'BOOKING_NOT_PENDING' } })
     }
+    // A standalone booking whose slot has already ended shouldn't be
+    // confirmable after the fact (same isNotAlreadyElapsed guard reschedule/
+    // transfer/swap already use) — nothing previously stopped an approver
+    // from confirming, webhook-firing, and (for a guest booking) emailing a
+    // calendar invite for a meeting that already happened. Checked upfront
+    // only here, not for a recurring series: approving is a single
+    // whole-series decision, so an elapsed occurrence there is instead
+    // simply excluded from what gets claimed below, without failing the
+    // still-valid rest of the series.
+    if (!booking.recurringRuleId && !isNotAlreadyElapsed(booking.endsAt)) {
+      return reply.status(409).send({ error: { message: 'This booking has already ended', code: 'ALREADY_ELAPSED' } })
+    }
 
     const now = new Date()
     const affected = booking.recurringRuleId
@@ -1067,7 +1176,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         })
       : [{ id: booking.id, assetId: booking.assetId, startsAt: booking.startsAt, endsAt: booking.endsAt }]
 
-    // Claimed atomically (status: 'PENDING_APPROVAL' guard), not an
+    // Claimed atomically (status: 'PENDING_APPROVAL' + endsAt guard), not an
     // unconditional update — otherwise this can race a concurrent reject (or
     // the auto-reject-pending-approvals cron) that read PENDING_APPROVAL
     // before either commits: whichever side's write lands last would
@@ -1076,16 +1185,36 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     // ends up CANCELLED can still get a booking.created webhook and a
     // BOOKING_APPROVED email, or (worse) one that ends up CONFIRMED can
     // still have releaseRejectedSlot hand its still-occupied slot to the
-    // next queued user, a real path to a double-booked desk.
+    // next queued user, a real path to a double-booked desk. The endsAt
+    // filter is the recurring-series half of the elapsed guard above: an
+    // occurrence that ended before this call reached the database is
+    // silently left PENDING_APPROVAL (for the auto-reject cron to clean up)
+    // rather than confirmed after the fact.
     const claimed = await prisma.booking.updateMany({
-      where: { id: { in: affected.map((b) => b.id) }, status: 'PENDING_APPROVAL' },
+      where: { id: { in: affected.map((b) => b.id) }, status: 'PENDING_APPROVAL', endsAt: { gt: now } },
       data: { status: 'CONFIRMED', approvedAt: now, approvedByUserId: request.user.id, approvalExpiresAt: null },
     })
     if (claimed.count === 0) {
       return reply.status(409).send({ error: { message: 'Booking is not pending approval', code: 'BOOKING_NOT_PENDING' } })
     }
 
-    for (const b of affected) {
+    // Re-derive from what the write actually claimed, not the pre-write
+    // `affected` snapshot — for a recurring series, one of its occurrences
+    // can be individually withdrawn (DELETE /:id is not recurringRuleId-
+    // scoped and allows this) in the gap between the findMany above and the
+    // guarded updateMany. Looping over the stale `affected` list would still
+    // fire a booking.created webhook for an occurrence that's actually
+    // CANCELLED. None of `affected`'s ids could have been CONFIRMED before
+    // this call (the findMany above only selected PENDING_APPROVAL rows), so
+    // filtering the same id set down to status: 'CONFIRMED' now correctly
+    // identifies exactly the rows this call flipped.
+    const actuallyApproved = await prisma.booking.findMany({
+      where: { id: { in: affected.map((b) => b.id) }, status: 'CONFIRMED' },
+      select: { id: true, assetId: true, startsAt: true, endsAt: true },
+      orderBy: { startsAt: 'asc' },
+    })
+
+    for (const b of actuallyApproved) {
       dispatchWebhook('booking.created', { id: b.id, userId: booking.userId, assetId: b.assetId, startsAt: b.startsAt, endsAt: b.endsAt }).catch(() => {})
     }
     // One notification for the whole approval decision, referencing the
@@ -1094,7 +1223,7 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     await enqueueNotification({
       type: NotificationType.BOOKING_APPROVED,
       userId: booking.userId,
-      bookingId: affected[0].id,
+      bookingId: actuallyApproved[0].id,
     })
 
     // A guest booking (see #79) never got its invite at creation time if it
@@ -1187,14 +1316,33 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(409).send({ error: { message: 'Booking is not pending approval', code: 'BOOKING_NOT_PENDING' } })
     }
 
-    for (const b of affected) {
+    // Re-derive from what the write actually claimed, not the pre-write
+    // `affected` snapshot — same reasoning as approve above, but more
+    // important here: releaseRejectedSlot calls promoteNextQueueEntry with
+    // no idempotency guard, so re-running it for an occurrence that was
+    // actually cancelled by something else (an individual withdrawal via
+    // DELETE /:id, which is not recurringRuleId-scoped and can race a
+    // series-wide reject) would promote a SECOND, different queue entrant
+    // for a slot that was already freed and promoted once — a false "you
+    // got the desk" notification for a slot that isn't really newly
+    // available. `approvedByUserId: request.user.id` is a safe marker: a
+    // withdrawal never sets it, and the auto-reject cron always leaves it
+    // null (it has no acting user), so only rows THIS call actually
+    // rejected match both conditions.
+    const actuallyRejected = await prisma.booking.findMany({
+      where: { id: { in: affected.map((b) => b.id) }, status: 'CANCELLED', approvedByUserId: request.user.id },
+      select: { id: true, assetId: true, startsAt: true, endsAt: true },
+      orderBy: { startsAt: 'asc' },
+    })
+
+    for (const b of actuallyRejected) {
       dispatchWebhook('booking.cancelled', { id: b.id, userId: booking.userId, assetId: b.assetId }).catch(() => {})
       await releaseRejectedSlot(b.assetId, b.startsAt, b.endsAt, booking.userId)
     }
     await enqueueNotification({
       type: NotificationType.BOOKING_REJECTED,
       userId: booking.userId,
-      bookingId: affected[0].id,
+      bookingId: actuallyRejected[0].id,
     })
 
     await recordAuditLog(prisma, {
@@ -1286,8 +1434,13 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
   // GET /bookings/transfers — transfers sent and received (pending only for received) by the current user
   fastify.get('/transfers', { preHandler: [requireAuth] }, async (request, reply) => {
-    const bookingSelect = { select: { id: true, startsAt: true, endsAt: true, asset: { select: { name: true } } } } as const
-    const [sent, received] = await Promise.all([
+    const bookingSelect = {
+      select: {
+        id: true, startsAt: true, endsAt: true,
+        asset: { select: { name: true, floor: { select: { building: { select: { timezone: true } } } } } },
+      },
+    } as const
+    const [sent, received, org] = await Promise.all([
       prisma.bookingTransfer.findMany({
         where: { fromUserId: request.user.id },
         orderBy: { createdAt: 'desc' },
@@ -1298,8 +1451,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         orderBy: { createdAt: 'desc' },
         include: { booking: bookingSelect, fromUser: { select: { id: true, displayName: true, email: true } } },
       }),
+      prisma.organisation.findFirst({ select: { defaultTimezone: true } }),
     ])
-    return reply.status(200).send({ data: { sent, received } })
+    // Same resolvedTimezone convention as GET /bookings and every other
+    // booking-list endpoint in this file (#72) — without it, both the
+    // proposer's and recipient's dialogs/lists rendered the booking's time in
+    // each viewer's own browser timezone rather than the booking's building.
+    const withTz = <T extends { booking: { asset: { floor: { building: { timezone: string | null } } | null } | null } }>(rows: T[]) =>
+      rows.map((r) => ({ ...r, booking: { ...r.booking, resolvedTimezone: r.booking.asset?.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC' } }))
+    return reply.status(200).send({ data: { sent: withTz(sent), received: withTz(received) } })
   })
 
   // POST /bookings/transfers/:id/accept
@@ -1377,14 +1537,35 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         // Ownership changes, the time slot doesn't — bump icsSequence so a
         // re-sent REQUEST (to the new owner) is recognised as superseding
         // whatever the original owner's calendar app still has.
-        await tx.booking.update({
-          where: { id: fresh.bookingId },
+        //
+        // Guarded on status: 'CONFIRMED', not a bare update-by-id — the
+        // fresh.booking.status check above only reads the state as of a
+        // moment ago; DELETE /bookings/:id (direct cancellation) takes no
+        // lock on this asset at all, so it isn't coordinated by
+        // lockAssetForBooking above and can still commit a cancellation in
+        // the gap between that read and this write (the quota/zone-group
+        // checks in between are both real await points). Without this, a
+        // booking the owner just cancelled could still get its userId
+        // reassigned to the transfer recipient, leaving a CANCELLED booking
+        // that appears to belong to someone who never actually got a desk.
+        const bookingClaimed = await tx.booking.updateMany({
+          where: { id: fresh.bookingId, status: 'CONFIRMED' },
           data: { userId: request.user.id, icsSequence: { increment: 1 } },
         })
-        await tx.bookingTransfer.update({
-          where: { id },
+        if (bookingClaimed.count === 0) {
+          throw new BookingConflictError('BOOKING_NOT_ACTIVE', 'This booking is no longer active')
+        }
+        // Guarded on status: 'PENDING' here too, not just the `fresh` read
+        // above — decline/withdraw take no lock of their own, so without
+        // this, one of them could still land between that read and this
+        // write and get silently clobbered back to ACCEPTED.
+        const claimed = await tx.bookingTransfer.updateMany({
+          where: { id, status: 'PENDING' },
           data: { status: 'ACCEPTED', respondedAt: new Date() },
         })
+        if (claimed.count === 0) {
+          throw new BookingConflictError('NOT_PENDING', 'This transfer request is no longer pending')
+        }
       })
     } catch (err) {
       if (err instanceof BookingConflictError) {
@@ -1420,7 +1601,16 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (transfer.status !== 'PENDING') {
       return reply.status(409).send({ error: { message: 'This transfer request is no longer pending', code: 'NOT_PENDING' } })
     }
-    await prisma.bookingTransfer.update({ where: { id }, data: { status: 'DECLINED', respondedAt: new Date() } })
+    // Guarded on the write itself (status: 'PENDING'), not just the check
+    // above — without this, a decline racing the recipient's own accept (or
+    // the requester's withdraw) could land after accept already committed
+    // ACCEPTED + reassigned the booking, silently overwriting it back to
+    // DECLINED with no error to either side, while both outcomes' webhooks/
+    // notifications fire regardless.
+    const declined = await prisma.bookingTransfer.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'DECLINED', respondedAt: new Date() } })
+    if (declined.count === 0) {
+      return reply.status(409).send({ error: { message: 'This transfer request is no longer pending', code: 'NOT_PENDING' } })
+    }
     await enqueueNotification({ type: NotificationType.BOOKING_TRANSFER_DECLINED, userId: transfer.fromUserId, transferId: transfer.id })
     dispatchWebhook('booking.transfer_declined', { id: transfer.id, bookingId: transfer.bookingId, fromUserId: transfer.fromUserId, toUserId: transfer.toUserId }).catch(() => {})
     await recordAuditLog(prisma, {
@@ -1446,7 +1636,14 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (transfer.status !== 'PENDING') {
       return reply.status(409).send({ error: { message: 'This transfer request is no longer pending', code: 'NOT_PENDING' } })
     }
-    await prisma.bookingTransfer.update({ where: { id }, data: { status: 'CANCELLED', respondedAt: new Date() } })
+    // Guarded on the write itself — same reasoning as decline above: without
+    // this, a withdraw racing the recipient's accept could land after accept
+    // already committed, silently overwriting the record back to CANCELLED
+    // even though the booking really did change hands.
+    const cancelled = await prisma.bookingTransfer.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'CANCELLED', respondedAt: new Date() } })
+    if (cancelled.count === 0) {
+      return reply.status(409).send({ error: { message: 'This transfer request is no longer pending', code: 'NOT_PENDING' } })
+    }
     await recordAuditLog(prisma, {
       actorId: request.user.id,
       action: 'booking_transfer.cancelled',
@@ -1502,9 +1699,29 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         assetId: { not: booking.assetId },
         user: { visibleInColleagueSearch: true },
       },
-      select: { id: true, startsAt: true, endsAt: true, asset: { select: { id: true, name: true } } },
+      select: {
+        id: true,
+        startsAt: true,
+        endsAt: true,
+        asset: { select: { id: true, name: true, floor: { select: { id: true, buildingId: true } } } },
+      },
     })
-    return reply.status(200).send({ data: candidate })
+
+    // Same reasoning as the visibleInColleagueSearch filter above: without
+    // this, the endpoint would additionally leak which restricted-floor desk
+    // a colleague is sitting on to a caller who has no access to that floor
+    // at all — returning null (indistinguishable from "no match") rather than
+    // 403 so its existence isn't disclosed either.
+    if (candidate?.asset.floor && request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const allowed = await checkGroupAccess(request.user.id, candidate.asset.floor.buildingId, candidate.asset.floor.id)
+      if (!allowed) {
+        return reply.status(200).send({ data: null })
+      }
+    }
+
+    return reply.status(200).send({
+      data: candidate && { id: candidate.id, startsAt: candidate.startsAt, endsAt: candidate.endsAt, asset: { id: candidate.asset.id, name: candidate.asset.name } },
+    })
   })
 
   // POST /bookings/:id/swap-request
@@ -1593,8 +1810,13 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
   // GET /bookings/swaps
   fastify.get('/swaps', { preHandler: [requireAuth] }, async (request, reply) => {
-    const bookingSelect = { select: { id: true, startsAt: true, endsAt: true, asset: { select: { name: true } } } } as const
-    const [sent, received] = await Promise.all([
+    const bookingSelect = {
+      select: {
+        id: true, startsAt: true, endsAt: true,
+        asset: { select: { name: true, floor: { select: { building: { select: { timezone: true } } } } } },
+      },
+    } as const
+    const [sent, received, org] = await Promise.all([
       prisma.bookingSwap.findMany({
         where: { initiatorUserId: request.user.id },
         orderBy: { createdAt: 'desc' },
@@ -1605,8 +1827,16 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         orderBy: { createdAt: 'desc' },
         include: { bookingA: bookingSelect, bookingB: bookingSelect, initiator: { select: { id: true, displayName: true, email: true } } },
       }),
+      prisma.organisation.findFirst({ select: { defaultTimezone: true } }),
     ])
-    return reply.status(200).send({ data: { sent, received } })
+    // Same resolvedTimezone convention as /transfers above — bookingA and
+    // bookingB can be in different buildings entirely, so each gets its own
+    // resolved value rather than assuming one applies to both sides.
+    type SwapBooking = { asset: { floor: { building: { timezone: string | null } } | null } | null }
+    const tz = (b: SwapBooking) => b.asset?.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC'
+    const withTz = <T extends { bookingA: SwapBooking; bookingB: SwapBooking }>(rows: T[]) =>
+      rows.map((r) => ({ ...r, bookingA: { ...r.bookingA, resolvedTimezone: tz(r.bookingA) }, bookingB: { ...r.bookingB, resolvedTimezone: tz(r.bookingB) } }))
+    return reply.status(200).send({ data: { sent: withTz(sent), received: withTz(received) } })
   })
 
   // POST /bookings/swaps/:id/accept
@@ -1701,9 +1931,37 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
           throw new BookingConflictError('ZONE_GROUP_CONFLICT', 'You already have a booking in the same zone group for this time')
         }
 
-        await tx.booking.update({ where: { id: fresh.bookingAId }, data: { userId: fresh.recipientUserId, icsSequence: { increment: 1 } } })
-        await tx.booking.update({ where: { id: fresh.bookingBId }, data: { userId: fresh.initiatorUserId, icsSequence: { increment: 1 } } })
-        await tx.bookingSwap.update({ where: { id }, data: { status: 'ACCEPTED', respondedAt: new Date() } })
+        // Guarded on status: 'CONFIRMED', not a bare update-by-id — same
+        // reasoning as transfer accept above: DELETE /bookings/:id takes no
+        // lock on either asset, so it isn't coordinated by the locks taken
+        // at the top of this transaction and could still cancel either side
+        // in the gap between the status check above and these writes (the
+        // zone-group checks in between are real await points).
+        // icsSequence is deliberately left untouched here — unlike the
+        // reschedule/transfer paths, nothing about this write itself is
+        // re-sent as a REQUEST at a bumped value. The give-up side's
+        // BOOKING_CANCELLED job (enqueued below) does its own +1 off
+        // whatever value is current, and that's the only bump either
+        // booking needs; bumping here too would make that CANCEL land two
+        // sequence numbers ahead instead of one, contradicting the
+        // "CANCEL always uses sequence+1" invariant documented on the
+        // schema field.
+        const claimedA = await tx.booking.updateMany({ where: { id: fresh.bookingAId, status: 'CONFIRMED' }, data: { userId: fresh.recipientUserId } })
+        if (claimedA.count === 0) {
+          throw new BookingConflictError('BOOKING_NOT_ACTIVE', 'Both bookings must still be active')
+        }
+        const claimedB = await tx.booking.updateMany({ where: { id: fresh.bookingBId, status: 'CONFIRMED' }, data: { userId: fresh.initiatorUserId } })
+        if (claimedB.count === 0) {
+          throw new BookingConflictError('BOOKING_NOT_ACTIVE', 'Both bookings must still be active')
+        }
+        // Guarded on status: 'PENDING' here too, not just the `fresh` read
+        // above — decline/withdraw take no lock of their own, so without
+        // this, one of them could still land between that read and this
+        // write and get silently clobbered back to ACCEPTED.
+        const claimed = await tx.bookingSwap.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'ACCEPTED', respondedAt: new Date() } })
+        if (claimed.count === 0) {
+          throw new BookingConflictError('NOT_PENDING', 'This swap request is no longer pending')
+        }
       })
     } catch (err) {
       if (err instanceof BookingConflictError) {
@@ -1748,7 +2006,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (swap.status !== 'PENDING') {
       return reply.status(409).send({ error: { message: 'This swap request is no longer pending', code: 'NOT_PENDING' } })
     }
-    await prisma.bookingSwap.update({ where: { id }, data: { status: 'DECLINED', respondedAt: new Date() } })
+    // Guarded on the write itself — same reasoning as transfer decline: a
+    // decline racing the initiator's own accept (which takes no lock on
+    // this row) could otherwise land after accept already committed and
+    // reassigned both bookings, silently overwriting the record back to
+    // DECLINED with no error to either side.
+    const declined = await prisma.bookingSwap.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'DECLINED', respondedAt: new Date() } })
+    if (declined.count === 0) {
+      return reply.status(409).send({ error: { message: 'This swap request is no longer pending', code: 'NOT_PENDING' } })
+    }
     await enqueueNotification({ type: NotificationType.BOOKING_SWAP_DECLINED, userId: swap.initiatorUserId, swapId: swap.id })
     dispatchWebhook('booking.swap_declined', { id: swap.id, bookingAId: swap.bookingAId, bookingBId: swap.bookingBId, initiatorUserId: swap.initiatorUserId, recipientUserId: swap.recipientUserId }).catch(() => {})
     await recordAuditLog(prisma, {
@@ -1774,7 +2040,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
     if (swap.status !== 'PENDING') {
       return reply.status(409).send({ error: { message: 'This swap request is no longer pending', code: 'NOT_PENDING' } })
     }
-    await prisma.bookingSwap.update({ where: { id }, data: { status: 'CANCELLED', respondedAt: new Date() } })
+    // Guarded on the write itself — same reasoning as transfer withdraw: a
+    // withdraw racing the recipient's accept could otherwise land after
+    // accept already committed and reassigned both bookings, silently
+    // overwriting the record back to CANCELLED even though the swap really
+    // did go through.
+    const cancelled = await prisma.bookingSwap.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'CANCELLED', respondedAt: new Date() } })
+    if (cancelled.count === 0) {
+      return reply.status(409).send({ error: { message: 'This swap request is no longer pending', code: 'NOT_PENDING' } })
+    }
     await recordAuditLog(prisma, {
       actorId: request.user.id,
       action: 'booking_swap.cancelled',

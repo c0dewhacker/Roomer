@@ -238,6 +238,8 @@ export interface MyAssignment {
     primaryZone?: { id: string; name: string } | null
     category: { id: string; name: string }
     availabilityWindows: AvailabilityWindow[]
+    /** Resolved building IANA timezone (floor → building → org, see #72). */
+    resolvedTimezone?: string
     // Present on the raw API response but not needed by every consumer
     // (e.g. the Bookings page's desk-focused card) — declared optional so
     // callers that do need this equipment-tracking detail (My Assets) can
@@ -670,7 +672,8 @@ export const settingsApi = {
   getOrg: () => api.get<{ data: OrgSettings }>('/settings/organisation'),
   updateOrg: (body: Partial<Omit<OrgSettings, 'id'>>) =>
     api.patch<{ data: OrgSettings }>('/settings/organisation', body),
-  getPublic: () => api.get<{ data: { dateFormat: string } }>('/settings/public'),
+  getPublic: () =>
+    api.get<{ data: { dateFormat: string; maxAdvanceBookingDays: number; maxRecurringBookingWeeks: number } }>('/settings/public'),
   getScim: () =>
     api.get<{ data: { enabled: boolean; hasToken: boolean; endpointUrl: string } }>('/settings/scim'),
   patchScim: (body: { enabled: boolean }) =>
@@ -937,6 +940,8 @@ export interface WebhookDelivery {
   error: string | null
   attempt: number
   createdAt: string
+  /** When the shown outcome (success/error/statusCode/attempt) was last recorded — retries upsert the same row, so this can be well after createdAt. */
+  updatedAt: string
 }
 
 export const webhooksApi = {
@@ -949,7 +954,7 @@ export const webhooksApi = {
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/webhooks/${id}`),
   ping: (id: string) => api.post<{ data: { ok: true } }>(`/webhooks/${id}/ping`),
   deliveries: (id: string, page = 1, limit = 50) =>
-    api.get<{ data: WebhookDelivery[]; meta: { total: number; page: number; limit: number; totalPages: number } }>(
+    api.get<{ data: WebhookDelivery[]; meta: { total: number; page: number; limit: number; totalPages: number; maxAttempts: number } }>(
       `/webhooks/${id}/deliveries?page=${page}&limit=${limit}`,
     ),
 }

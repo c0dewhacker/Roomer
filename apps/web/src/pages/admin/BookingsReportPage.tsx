@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavConfig } from '@/hooks/useNavConfig'
 import { bookingsApi, buildingsApi } from '@/lib/api'
 import { downloadCsv } from '@/lib/csv'
-import { formatDate, formatDateRange } from '@/lib/utils'
+import { formatDate, formatDateRange, formatDateTime } from '@/lib/utils'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -32,6 +32,10 @@ interface Filters {
 
 function bookingCsvRow(b: Booking): string[] {
   const asset = b.asset ?? b.desk
+  // Building-local time (same as the on-screen table), not a raw UTC ISO
+  // string — a booking made for 2pm in a Sydney building previously
+  // exported as its UTC instant, which reads as a different, wrong
+  // wall-clock time to anyone opening the CSV.
   return [
     b.id,
     b.user?.displayName ?? '',
@@ -40,10 +44,10 @@ function bookingCsvRow(b: Booking): string[] {
     asset?.floor?.building?.name ?? '',
     asset?.floor?.name ?? '',
     asset?.primaryZone?.name ?? '',
-    b.startsAt,
-    b.endsAt,
+    formatDateTime(b.startsAt, b.resolvedTimezone),
+    formatDateTime(b.endsAt, b.resolvedTimezone),
     b.status,
-    b.checkedInAt ?? '',
+    b.checkedInAt ? formatDateTime(b.checkedInAt, b.resolvedTimezone) : '',
     b.notes ?? '',
   ]
 }
@@ -229,7 +233,7 @@ export default function BookingsReportPage() {
                         <td className="px-4 py-2.5 text-muted-foreground">
                           {[asset?.floor?.building?.name, asset?.floor?.name].filter(Boolean).join(' › ')}
                         </td>
-                        <td className="px-4 py-2.5 text-muted-foreground">{formatDateRange(b.startsAt, b.endsAt)}</td>
+                        <td className="px-4 py-2.5 text-muted-foreground">{formatDateRange(b.startsAt, b.endsAt, b.resolvedTimezone)}</td>
                         <td className="px-4 py-2.5">
                           <Badge variant={statusVariant[b.status] ?? 'secondary'} className="text-xs">{b.status}</Badge>
                         </td>

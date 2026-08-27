@@ -65,13 +65,22 @@ function RejectDialog({
   )
 }
 
+// Mirrors the backend's own guard (POST /:id/approve, bookings.ts) exactly:
+// a standalone request whose slot has already ended can't be approved after
+// the fact, but a recurring series is a single whole-series decision, so an
+// elapsed occurrence there doesn't block approving the still-valid rest —
+// only the individually-elapsed occurrence is silently excluded server-side.
+function elapsed(b: PendingBooking): boolean {
+  return !b.recurringRuleId && new Date(b.endsAt) <= new Date()
+}
+
 export default function ApprovalsAdminPage() {
   const { data: bookings, isLoading } = usePendingBookingApprovals()
   const approve = useApproveBooking()
   const [rejecting, setRejecting] = useState<PendingBooking | null>(null)
 
   return (
-    <div className="p-6 space-y-6 max-w-4xl">
+    <div className="p-6 space-y-6 max-w-4xl mx-auto">
       <div>
         <h1 className="text-2xl font-semibold flex items-center gap-2">
           <ClipboardCheck className="h-6 w-6" />
@@ -124,15 +133,24 @@ export default function ApprovalsAdminPage() {
                     {b.approvalExpiresAt && `Auto-rejected if not reviewed by ${formatDateTime(b.approvalExpiresAt, b.resolvedTimezone)}`}
                   </p>
                 </div>
-                <div className="flex gap-2 shrink-0">
-                  <Button size="sm" variant="outline" onClick={() => setRejecting(b)}>
-                    <X className="h-3.5 w-3.5 mr-1" />
-                    Decline
-                  </Button>
-                  <Button size="sm" disabled={approve.isPending} onClick={() => approve.mutate(b.id)}>
-                    <Check className="h-3.5 w-3.5 mr-1" />
-                    Approve
-                  </Button>
+                <div className="flex flex-col items-end gap-1 shrink-0">
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setRejecting(b)}>
+                      <X className="h-3.5 w-3.5 mr-1" />
+                      Decline
+                    </Button>
+                    <Button
+                      size="sm"
+                      disabled={approve.isPending || elapsed(b)}
+                      onClick={() => approve.mutate(b.id)}
+                    >
+                      <Check className="h-3.5 w-3.5 mr-1" />
+                      Approve
+                    </Button>
+                  </div>
+                  {elapsed(b) && (
+                    <p className="text-xs text-destructive">This request has already ended</p>
+                  )}
                 </div>
               </CardContent>
             </Card>

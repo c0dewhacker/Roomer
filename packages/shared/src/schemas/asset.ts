@@ -1,8 +1,9 @@
 import { z } from 'zod'
 import { BookableStatus } from '../types'
 
+// .trim() before .min(1) on name fields — see schemas/department.ts for why.
 export const createAssetSchema = z.object({
-  name: z.string().min(1, 'Asset name is required').max(255),
+  name: z.string().trim().min(1, 'Asset name is required').max(255),
   categoryId: z.string().min(1, 'Invalid category ID'),
   description: z.string().max(1000).optional(),
   serialNumber: z.string().max(255).optional(),
@@ -27,7 +28,7 @@ export const createAssetSchema = z.object({
 })
 
 export const updateAssetSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
+  name: z.string().trim().min(1).max(255).optional(),
   categoryId: z.string().min(1).optional(),
   description: z.string().max(1000).nullable().optional(),
   serialNumber: z.string().max(255).nullable().optional(),
@@ -56,7 +57,7 @@ export const assignAssetSchema = z.object({
 })
 
 export const createAssetCategorySchema = z.object({
-  name: z.string().min(1, 'Category name is required').max(255),
+  name: z.string().trim().min(1, 'Category name is required').max(255),
   description: z.string().max(1000).optional(),
   defaultIsBookable: z.boolean().optional(),
   defaultIcon: z.string().max(255).optional(),

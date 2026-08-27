@@ -31,9 +31,9 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog'
-import { formatDateRange, formatDate, formatCalendarDate, zoneQualifier } from '@/lib/utils'
+import { formatDateRange, formatDate, formatCalendarDate, zoneQualifier, toDatetimeLocalValue, fromDatetimeLocalValue } from '@/lib/utils'
 import { DateTimeLocalInput } from '@/components/ui/date-time-input'
-import { assetsApi, recurringBookingsApi, bookingsApi, usersApi } from '@/lib/api'
+import { assetsApi, recurringBookingsApi, bookingsApi, usersApi, settingsApi } from '@/lib/api'
 import type { Booking, RecurringBookingRule, BookingTransfer, BookingSwap } from '@/types'
 import { AssignedDeskCard } from '@/components/AssignedDeskCard'
 
@@ -53,11 +53,6 @@ const statusLabel: Record<string, string> = {
   PENDING_APPROVAL: 'Pending approval',
 }
 
-function toLocalDatetimeValue(iso: string): string {
-  const d = parseISO(iso)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
 
 // ─── Edit booking dialog ──────────────────────────────────────────────────────
 
@@ -71,8 +66,9 @@ function EditBookingDialog({
   onClose: () => void
 }) {
   const update = useUpdateBooking()
-  const [startsAt, setStartsAt] = useState(toLocalDatetimeValue(booking.startsAt))
-  const [endsAt, setEndsAt] = useState(toLocalDatetimeValue(booking.endsAt))
+  const timeZone = booking.resolvedTimezone ?? 'UTC'
+  const [startsAt, setStartsAt] = useState(toDatetimeLocalValue(booking.startsAt, timeZone))
+  const [endsAt, setEndsAt] = useState(toDatetimeLocalValue(booking.endsAt, timeZone))
   const [notes, setNotes] = useState(booking.notes ?? '')
 
   function handleSave() {
@@ -80,8 +76,8 @@ function EditBookingDialog({
       {
         id: booking.id,
         body: {
-          startsAt: new Date(startsAt).toISOString(),
-          endsAt: new Date(endsAt).toISOString(),
+          startsAt: fromDatetimeLocalValue(startsAt, timeZone).toISOString(),
+          endsAt: fromDatetimeLocalValue(endsAt, timeZone).toISOString(),
           notes: notes || undefined,
         },
       },
@@ -97,11 +93,19 @@ function EditBookingDialog({
         </DialogHeader>
         <div className="space-y-4 py-2">
           <div>
-            <Label>Start</Label>
+            <Label>
+              Start{zoneQualifier(timeZone, booking.startsAt) && (
+                <span className="text-muted-foreground font-normal"> ({zoneQualifier(timeZone, booking.startsAt)})</span>
+              )}
+            </Label>
             <DateTimeLocalInput value={startsAt} onChange={setStartsAt} className="mt-1.5" />
           </div>
           <div>
-            <Label>End</Label>
+            <Label>
+              End{zoneQualifier(timeZone, booking.endsAt) && (
+                <span className="text-muted-foreground font-normal"> ({zoneQualifier(timeZone, booking.endsAt)})</span>
+              )}
+            </Label>
             <DateTimeLocalInput value={endsAt} onChange={setEndsAt} min={startsAt} className="mt-1.5" />
           </div>
           <div>
@@ -183,7 +187,7 @@ function TransferBookingDialog({ booking, open, onClose }: { booking: Booking; o
         </DialogHeader>
         <div className="space-y-4 py-2">
           <p className="text-sm text-muted-foreground">
-            Hand your booking for <strong>{bookingAsset?.name}</strong> on {formatDate(booking.startsAt)} to a
+            Hand your booking for <strong>{bookingAsset?.name}</strong> on {formatDate(booking.startsAt, booking.resolvedTimezone)} to a
             colleague. They'll need to accept before it's theirs.
           </p>
           <div>
@@ -272,7 +276,7 @@ function SwapBookingDialog({ booking, open, onClose }: { booking: Booking; open:
         </DialogHeader>
         <div className="space-y-4 py-2">
           <p className="text-sm text-muted-foreground">
-            Trade your booking for <strong>{bookingAsset?.name}</strong> on {formatDate(booking.startsAt)} with a
+            Trade your booking for <strong>{bookingAsset?.name}</strong> on {formatDate(booking.startsAt, booking.resolvedTimezone)} with a
             colleague who has a booking at the exact same time. They'll need to accept.
           </p>
           <div>
@@ -335,21 +339,36 @@ function SwapBookingDialog({ booking, open, onClose }: { booking: Booking; open:
 
 function TransferAndSwapRequestsSection() {
   const qc = useQueryClient()
+  // Neither status changes driven by the other party (accept/decline) nor the
+  // periodic server-side expiry sweep are the viewing user's own mutation —
+  // without polling, a sent request still shows "Waiting for X to respond"
+  // long after X actually responded, and a received one still shows live
+  // Accept/Decline for a request already resolved elsewhere. Matches the
+  // convention established for queue/ballot polling.
   const { data: transfers } = useQuery({
     queryKey: ['bookings', 'transfers'],
     queryFn: () => bookingsApi.listTransfers(),
     select: (r) => r.data,
+    refetchInterval: 30_000,
   })
   const { data: swaps } = useQuery({
     queryKey: ['bookings', 'swaps'],
     queryFn: () => bookingsApi.listSwaps(),
     select: (r) => r.data,
+    refetchInterval: 30_000,
   })
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['bookings', 'transfers'] })
     qc.invalidateQueries({ queryKey: ['bookings', 'swaps'] })
     qc.invalidateQueries({ queryKey: ['bookings'] })
+    // Accepting a transfer/swap reassigns Booking.userId on an existing
+    // booking — same "who occupies this desk" change useCancelBooking/
+    // useUpdateBooking in useBookings.ts already invalidate ['floors'] for.
+    // Declining/withdrawing don't change any desk's occupancy, but sharing
+    // one invalidate() across all six mutations is simpler than splitting
+    // it, and an extra floor refetch on a no-op path is harmless.
+    qc.invalidateQueries({ queryKey: ['floors'] })
   }
 
   const acceptTransfer = useMutation({
@@ -383,9 +402,16 @@ function TransferAndSwapRequestsSection() {
     onError: (e: Error) => toast.error(e.message),
   })
 
-  const receivedTransfers = (transfers?.received ?? []).filter((t) => t.status === 'PENDING')
+  // The expiry sweep only runs every 15 minutes (expire-transfer-requests),
+  // so a request can sit at status: 'PENDING' for up to that long after its
+  // real expiresAt has passed — status alone isn't enough to decide whether
+  // Accept/Decline should still be live. Without this, clicking Accept on an
+  // already-expired request just produced a raw 409 instead of the button
+  // never having been offered.
+  const notExpired = (expiresAt: string) => new Date(expiresAt) > new Date()
+  const receivedTransfers = (transfers?.received ?? []).filter((t) => t.status === 'PENDING' && notExpired(t.expiresAt))
   const sentTransfers = (transfers?.sent ?? []).filter((t) => t.status === 'PENDING')
-  const receivedSwaps = (swaps?.received ?? []).filter((s) => s.status === 'PENDING')
+  const receivedSwaps = (swaps?.received ?? []).filter((s) => s.status === 'PENDING' && notExpired(s.expiresAt))
   const sentSwaps = (swaps?.sent ?? []).filter((s) => s.status === 'PENDING')
 
   const hasAnything = receivedTransfers.length + sentTransfers.length + receivedSwaps.length + sentSwaps.length > 0
@@ -406,7 +432,7 @@ function TransferAndSwapRequestsSection() {
                   <strong>{t.fromUser?.displayName}</strong> wants to transfer <strong>{t.booking?.asset.name}</strong> to you
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  {t.booking && formatDateRange(t.booking.startsAt, t.booking.endsAt)}
+                  {t.booking && formatDateRange(t.booking.startsAt, t.booking.endsAt, t.booking.resolvedTimezone)}
                 </p>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
@@ -422,7 +448,7 @@ function TransferAndSwapRequestsSection() {
                   <strong>{s.initiator?.displayName}</strong> wants to swap <strong>{s.bookingA?.asset.name}</strong> for your <strong>{s.bookingB?.asset.name}</strong>
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  {s.bookingA && formatDateRange(s.bookingA.startsAt, s.bookingA.endsAt)}
+                  {s.bookingA && formatDateRange(s.bookingA.startsAt, s.bookingA.endsAt, s.bookingA.resolvedTimezone)}
                 </p>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
@@ -511,6 +537,15 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
                     <UserPlus className="h-3 w-3" /> for {booking.guestName}
                   </Badge>
                 )}
+                {booking.recurringRuleId && (
+                  <Badge
+                    variant="outline"
+                    className="shrink-0 text-xs gap-1"
+                    title="Part of a recurring series — cancelling or editing this row only affects this occurrence, not the whole series"
+                  >
+                    <Repeat className="h-3 w-3" /> Recurring
+                  </Badge>
+                )}
                 {todayBooking && (
                   <Badge variant="outline" className="shrink-0 text-xs border-green-500 text-green-600">Today</Badge>
                 )}
@@ -558,6 +593,11 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
               {booking.notes && (
                 <p className="text-xs text-muted-foreground mt-1 italic">{booking.notes}</p>
               )}
+              {booking.status === 'CANCELLED' && booking.rejectionNote && (
+                <p className="text-xs text-destructive mt-1">
+                  <span className="font-medium">Declined:</span> {booking.rejectionNote}
+                </p>
+              )}
             </div>
 
             {canModify && (
@@ -599,7 +639,7 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
 
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive">
+                    <Button variant="ghost" size="icon" disabled={cancel.isPending} className="h-8 w-8 text-muted-foreground hover:text-destructive">
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </AlertDialogTrigger>
@@ -610,6 +650,10 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
                         Cancel your booking for <strong>{(booking.asset ?? booking.desk)?.name}</strong> on{' '}
                         {formatDate(booking.startsAt)}? This action cannot be undone.
                         Anyone in the queue will be notified.
+                        {booking.recurringRuleId && (
+                          <> This is one occurrence of a recurring series — only this date will be
+                          cancelled; the rest of the series stays active.</>
+                        )}
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
@@ -629,7 +673,7 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
               <div className="flex items-center gap-1 shrink-0">
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" title="Withdraw request">
+                    <Button variant="ghost" size="icon" disabled={cancel.isPending} className="h-8 w-8 text-muted-foreground hover:text-destructive" title="Withdraw request">
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </AlertDialogTrigger>
@@ -687,6 +731,22 @@ function EditRecurringEndDateDialog({
   const qc = useQueryClient()
   const [lastDate, setLastDate] = useState(rule.lastDate.slice(0, 10))
 
+  // Same maxRecurringBookingWeeks bound the create form now enforces
+  // (recurring.ts's extend check measures the span from rule.firstDate, not
+  // "today") — without it, extending a series past the actual limit only
+  // surfaced via a toast after submitting.
+  const { data: publicSettings } = useQuery({
+    queryKey: ['settings', 'public'],
+    queryFn: () => settingsApi.getPublic(),
+    select: (r) => r.data,
+  })
+  const maxRecurringWeeks = publicSettings?.maxRecurringBookingWeeks ?? 12
+  const maxLastDateStr = new Date(
+    rule.firstDate.slice(0, 10) + 'T00:00:00.000Z',
+  )
+  maxLastDateStr.setUTCDate(maxLastDateStr.getUTCDate() + maxRecurringWeeks * 7)
+  const maxLastDate = maxLastDateStr.toISOString().slice(0, 10)
+
   const update = useMutation({
     mutationFn: () => recurringBookingsApi.update(rule.id, { lastDate }),
     onSuccess: () => {
@@ -696,6 +756,10 @@ function EditRecurringEndDateDialog({
       // Same reasoning as cancel above — extending/shortening changes the
       // underlying Booking rows directly, not just the rule.
       qc.invalidateQueries({ queryKey: ['bookings'] })
+      // Shortening frees future desk-day slots (extending occupies new
+      // ones) — same floor-availability staleness useCancelBooking/
+      // useUpdateBooking in useBookings.ts already invalidate ['floors'] for.
+      qc.invalidateQueries({ queryKey: ['floors'] })
       onClose()
     },
     onError: (err: Error) => toast.error(err.message),
@@ -715,12 +779,14 @@ function EditRecurringEndDateDialog({
               type="date"
               value={lastDate}
               min={rule.firstDate.slice(0, 10)}
+              max={maxLastDate}
               onChange={(e) => setLastDate(e.target.value)}
               className="mt-1.5 flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
             />
             <p className="text-xs text-muted-foreground mt-1.5">
               Pick a later date to add more occurrences, or an earlier one to drop occurrences after it.
-              Occurrences up to and including the new date are never affected.
+              Occurrences up to and including the new date are never affected. Up to {maxRecurringWeeks} weeks
+              from the series' start.
             </p>
           </div>
         </div>
@@ -798,6 +864,10 @@ function RecurringRuleCard({ rule }: { rule: RecurringBookingRule }) {
       // ['bookings'] cache keeps showing those rows as CONFIRMED with live
       // Edit/Cancel buttons until an unrelated refetch happens to occur.
       qc.invalidateQueries({ queryKey: ['bookings'] })
+      // Cancelling a series frees every one of its future desk-day slots —
+      // same floor-availability staleness useCancelBooking/useUpdateBooking
+      // in useBookings.ts already invalidate ['floors'] for.
+      qc.invalidateQueries({ queryKey: ['floors'] })
     },
     onError: (err: Error) => toast.error(err.message),
   })

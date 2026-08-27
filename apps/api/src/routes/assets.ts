@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma.js'
 import { GlobalRole, BookableStatus, bulkUpdateAssetPositionsSchema, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole, getManagedFloorIds, getManagedBuildingIds, isFloorManagerForFloor } from '../middleware/requireRole.js'
-import { enqueueNotification, fanOutFloorAvailable, cancelFutureBookingsForAssets } from '../lib/queue.js'
+import { enqueueNotification, fanOutFloorAvailable, cancelFutureBookingsForAssets, cancelQueueEntriesForAssets } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { lockAssetForBooking, lockAssetForQueue, lockUserForBookingQuota, hasBlockingOverlap, checkZoneGroupOverlap, isOverlapConstraintViolation, assertBookable, assertUnderBookingQuota, isWithinAdvanceBookingWindow } from '../lib/booking.js'
 import { resolveQrCheckInMode } from '../lib/qr.js'
@@ -28,8 +28,11 @@ class ZoneGroupConflictError extends Error {
   }
 }
 
+// .trim() before .min(1) on every "name" field below — see
+// schemas/department.ts for why (whitespace-only input otherwise passes
+// validation and gets persisted, or silently coerced to blank downstream).
 const createCategorySchema = z.object({
-  name: z.string().min(1).max(255),
+  name: z.string().trim().min(1).max(255),
   description: z.string().optional(),
   defaultIsBookable: z.boolean().optional(),
   defaultIcon: z.string().max(255).optional(),
@@ -38,7 +41,7 @@ const createCategorySchema = z.object({
 
 const createAssetSchema = z.object({
   categoryId: z.string().min(1),
-  name: z.string().min(1).max(255),
+  name: z.string().trim().min(1).max(255),
   description: z.string().optional(),
   serialNumber: z.string().optional().transform((v) => v === '' ? undefined : v),
   assetTag: z.string().optional().transform((v) => v === '' ? undefined : v),
@@ -63,7 +66,7 @@ const createAssetSchema = z.object({
 
 const updateAssetSchema = z.object({
   categoryId: z.string().min(1).optional(),
-  name: z.string().min(1).max(255).optional(),
+  name: z.string().trim().min(1).max(255).optional(),
   description: z.string().optional(),
   serialNumber: z.string().optional().transform((v) => v === '' ? undefined : v),
   assetTag: z.string().optional().transform((v) => v === '' ? undefined : v),
@@ -95,8 +98,8 @@ const addZoneSchema = z.object({
 })
 
 const bulkImportRowSchema = z.object({
-  name: z.string().min(1).max(255),
-  categoryName: z.string().min(1).max(255),
+  name: z.string().trim().min(1).max(255),
+  categoryName: z.string().trim().min(1).max(255),
   bookingStatus: z.nativeEnum(BookableStatus).optional().default(BookableStatus.OPEN),
   bookingLabel: z.string().max(255).optional().default('Desk'),
   amenities: z.array(z.string()).optional().default([]),
@@ -144,26 +147,32 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       const created: { id: string; name: string }[] = []
       const errors: { row: number; name: string; error: string }[] = []
 
-      // Pre-resolve all referenced category names in one pass to avoid N+1
+      // Pre-resolve all referenced category names in one pass to avoid N+1.
+      // Matched case-insensitively (keyed by lowercase, same convention as
+      // departments.ts's own duplicate check) — Prisma's `in` filter can't
+      // do per-element case-insensitivity, so this fetches every category in
+      // the org rather than filtering by categoryNames at the query level;
+      // categories are a small, bounded set per org, so this stays cheap.
+      // Without it, a CSV row spelled "desk" against an existing "Desk"
+      // category created a second, duplicate category instead of reusing it.
       const categoryNames = [...new Set(assets.map((a) => a.categoryName))]
       const existingCategories = await prisma.assetCategory.findMany({
-        where: { name: { in: categoryNames } },
         select: { id: true, name: true },
       })
-      const categoryMap = new Map(existingCategories.map((c) => [c.name, c.id]))
+      const categoryMap = new Map(existingCategories.map((c) => [c.name.toLowerCase(), c.id]))
       for (const name of categoryNames) {
-        if (!categoryMap.has(name)) {
+        if (!categoryMap.has(name.toLowerCase())) {
           const cat = await prisma.assetCategory.create({
             data: { name, defaultIsBookable: true, defaultIcon: 'monitor' },
             select: { id: true },
           })
-          categoryMap.set(name, cat.id)
+          categoryMap.set(name.toLowerCase(), cat.id)
         }
       }
 
       for (const [index, row] of assets.entries()) {
         try {
-          const categoryId = categoryMap.get(row.categoryName)!
+          const categoryId = categoryMap.get(row.categoryName.toLowerCase())!
 
           // Resolve zone: match by name on this floor. A zoneName that doesn't
           // match anything on this floor (typo, wrong floor's zone name, etc.)
@@ -424,7 +433,8 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { id } = request.params as { id: string }
       const result = z.object({
-        name: z.string().min(1).max(255).optional(),
+        // .trim() before .min(1) — see schemas/department.ts for why.
+        name: z.string().trim().min(1).max(255).optional(),
         description: z.string().optional(),
         defaultIsBookable: z.boolean().optional(),
         defaultIcon: z.string().max(255).optional().nullable(),
@@ -487,8 +497,23 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       // was just written, leaving iconUrl pointing at nothing. (Unlike floor
       // plans/lease documents, which get a fresh unique path per upload and
       // genuinely need the old file cleaned up separately.)
-      // Store the relative storage path — the serve URL is /assets/categories/:id/icon
-      const category = await prisma.assetCategory.update({ where: { id }, data: { iconUrl: relPath } })
+      // Store the relative storage path — the serve URL is /assets/categories/:id/icon.
+      // Locks the category row first, same lock DELETE /categories/:id takes,
+      // and re-checks the row still exists: without this, a category deleted
+      // in the gap between the `existing` check above (slow: image
+      // processing happens after it) and this update would make the update
+      // throw P2025 unhandled (500) while the just-written file is never
+      // cleaned up — orphaned exactly like the delete side of this same race.
+      const category = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "AssetCategory" WHERE id = ${id} FOR UPDATE`
+        const stillExists = await tx.assetCategory.findUnique({ where: { id }, select: { id: true } })
+        if (!stillExists) return null
+        return tx.assetCategory.update({ where: { id }, data: { iconUrl: relPath } })
+      })
+      if (!category) {
+        await deleteFile(relPath).catch(() => {})
+        return reply.status(404).send({ error: { message: 'Category not found', code: 'NOT_FOUND' } })
+      }
       // Icon binary content is never logged — only that one was set/replaced.
       await recordAuditLog(prisma, {
         actorId: request.user.id,
@@ -545,8 +570,27 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
         })
       }
 
-      if (existing.iconUrl) await deleteFile(existing.iconUrl).catch(() => {})
-      const deleted = await prisma.assetCategory.delete({ where: { id } })
+      // Re-read iconUrl here, inside a transaction locking the category row,
+      // rather than trusting the `existing` snapshot taken above — a
+      // concurrent POST /categories/:id/icon that commits between that
+      // snapshot and this delete would leave `existing.iconUrl` stale (null,
+      // or an older path), so the icon file it just wrote is never unlinked
+      // and is orphaned once the category row (and its DB iconUrl column)
+      // is gone. Same race and fix shape as the floor-plan/lease-document
+      // delete-vs-upload race fixed elsewhere — category icons use a
+      // deterministic per-category path rather than a unique-per-upload one,
+      // so there's no list of paths to reconcile, just one fresh read.
+      const { deleted, iconUrlToDelete } = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "AssetCategory" WHERE id = ${id} FOR UPDATE`
+        const fresh = await tx.assetCategory.findUnique({ where: { id }, select: { iconUrl: true } })
+        if (!fresh) return { deleted: null, iconUrlToDelete: null }
+        const deleted = await tx.assetCategory.delete({ where: { id } })
+        return { deleted, iconUrlToDelete: fresh.iconUrl }
+      })
+      if (!deleted) {
+        return reply.status(404).send({ error: { message: 'Category not found', code: 'NOT_FOUND' } })
+      }
+      if (iconUrlToDelete) await deleteFile(iconUrlToDelete).catch(() => {})
       await recordAuditLog(prisma, {
         actorId: request.user.id,
         action: 'asset_category.deleted',
@@ -564,29 +608,40 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     const userId = request.user.id
     const now = new Date()
 
-    const assignments = await prisma.assetUserAssignment.findMany({
-      where: { userId },
-      include: {
-        asset: {
-          include: {
-            category: { select: { id: true, name: true } },
-            floor: {
-              select: {
-                id: true, name: true,
-                building: { select: { id: true, name: true } },
+    const [assignments, org] = await Promise.all([
+      prisma.assetUserAssignment.findMany({
+        where: { userId },
+        include: {
+          asset: {
+            include: {
+              category: { select: { id: true, name: true } },
+              floor: {
+                select: {
+                  id: true, name: true,
+                  building: { select: { id: true, name: true, timezone: true } },
+                },
               },
-            },
-            primaryZone: { select: { id: true, name: true } },
-            availabilityWindows: {
-              where: { ownerId: userId, endsAt: { gt: now } },
-              orderBy: { startsAt: 'asc' },
+              primaryZone: { select: { id: true, name: true } },
+              availabilityWindows: {
+                where: { ownerId: userId, endsAt: { gt: now } },
+                orderBy: { startsAt: 'asc' },
+              },
             },
           },
         },
-      },
-    })
+      }),
+      prisma.organisation.findFirst({ select: { defaultTimezone: true } }),
+    ])
 
-    return reply.status(200).send({ data: assignments })
+    // Resolved (floor → building → org, see #72) so the "make available"
+    // dialog can construct/display a new availability window in the desk's
+    // own building timezone rather than the viewer's browser timezone.
+    const data = assignments.map((a) => ({
+      ...a,
+      asset: { ...a.asset, resolvedTimezone: a.asset.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC' },
+    }))
+
+    return reply.status(200).send({ data })
   })
 
   // GET /assets/favourites — the current user's favourited bookable assets
@@ -703,8 +758,19 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(400).send({ error: { message: 'date query param required (YYYY-MM-DD)', code: 'INVALID_DATE' } })
     }
     const { date } = queryResult.data
-    const dayStart = new Date(`${date}T00:00:00.000Z`)
-    const dayEnd = new Date(`${date}T23:59:59.999Z`)
+    const [year, month, day] = date.split('-').map(Number)
+    // Widened DB pre-filter only — candidates span assets in potentially
+    // different buildings/timezones, so no single global UTC window can
+    // correctly represent "the requested day" for all of them at once (same
+    // reasoning as directory.ts's /whereabouts). The precise per-candidate
+    // window (below, after each asset's own building timezone is known) does
+    // the real overlap/gate check; ±26h margin covers every real-world UTC
+    // offset (max +14) either direction with room to spare.
+    const WIDEN_MS = 26 * 60 * 60 * 1000
+    const naiveDayStart = new Date(`${date}T00:00:00.000Z`)
+    const naiveDayEnd = new Date(`${date}T23:59:59.999Z`)
+    const widenedDayStart = new Date(naiveDayStart.getTime() - WIDEN_MS)
+    const widenedDayEnd = new Date(naiveDayEnd.getTime() + WIDEN_MS)
     const userId = request.user.id
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
 
@@ -767,28 +833,41 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     // internal inventory/management fields must not leak to every
     // authenticated user just because their booking history scored a desk
     // highly.
-    const candidates = await prisma.asset.findMany({
-      where: { id: { in: rankedIds }, isBookable: true },
-      select: {
-        id: true, name: true, bookingLabel: true, isBookable: true,
-        bookingStatus: true, amenities: true, capacity: true,
-        x: true, y: true, width: true, height: true, rotation: true,
-        category: { select: { id: true, name: true } },
-        floor: { select: { id: true, name: true, building: { select: { id: true, name: true } } } },
-        primaryZone: { select: { id: true, name: true } },
-        bookings: {
-          // PENDING_APPROVAL reserves the slot exactly like CONFIRMED (#74)
-          // — hasBlockingOverlap (lib/booking.ts), the floor-plan occupancy
-          // query, and the DB's own overlap exclusion constraint all treat
-          // it that way. This was the one place still only checking
-          // CONFIRMED, so a desk someone else had already requested (but
-          // not yet had approved) could still be suggested here, only to
-          // fail with ASSET_CONFLICT the moment the user tried to book it.
-          where: { status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { lt: dayEnd }, endsAt: { gt: dayStart } },
-          select: { id: true },
+    const [candidates, org] = await Promise.all([
+      prisma.asset.findMany({
+        // primaryZoneId: not null — an asset with no zone (e.g. left unmapped by
+        // a CSV import whose row didn't match an existing zone) never appears in
+        // GET /floors/:id/availability's desks list (that endpoint only walks
+        // floor.zones[].assets), so it can't be selected/booked from the floor
+        // plan at all. Suggesting it anyway meant "Book it" silently did
+        // nothing — the desk it pointed at was invisible to the very picker the
+        // button tries to drive.
+        where: { id: { in: rankedIds }, isBookable: true, primaryZoneId: { not: null } },
+        select: {
+          id: true, name: true, bookingLabel: true, isBookable: true,
+          bookingStatus: true, amenities: true, capacity: true,
+          x: true, y: true, width: true, height: true, rotation: true,
+          category: { select: { id: true, name: true } },
+          floor: { select: { id: true, name: true, building: { select: { id: true, name: true, timezone: true } } } },
+          primaryZone: { select: { id: true, name: true } },
+          bookings: {
+            // PENDING_APPROVAL reserves the slot exactly like CONFIRMED (#74)
+            // — hasBlockingOverlap (lib/booking.ts), the floor-plan occupancy
+            // query, and the DB's own overlap exclusion constraint all treat
+            // it that way. This was the one place still only checking
+            // CONFIRMED, so a desk someone else had already requested (but
+            // not yet had approved) could still be suggested here, only to
+            // fail with ASSET_CONFLICT the moment the user tried to book it.
+            // Widened window (see widenedDayStart/widenedDayEnd above) — the
+            // precise per-asset overlap check happens below, once this
+            // asset's own building timezone is known.
+            where: { status: { in: ['CONFIRMED', 'PENDING_APPROVAL'] }, startsAt: { lt: widenedDayEnd }, endsAt: { gt: widenedDayStart } },
+            select: { id: true, startsAt: true, endsAt: true },
+          },
         },
-      },
-    })
+      }),
+      prisma.organisation.findFirst({ select: { defaultTimezone: true } }),
+    ])
     const candidatesById = new Map(candidates.map((a) => [a.id, a]))
 
     const SUGGESTION_LIMIT = 3
@@ -796,8 +875,15 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     for (const assetId of rankedIds) {
       if (suggestions.length >= SUGGESTION_LIMIT) break
       const asset = candidatesById.get(assetId)
-      if (!asset || asset.bookings.length > 0) continue
-      const gate = await assertBookable(prisma, request.user, assetId, dayStart, dayEnd)
+      if (!asset) continue
+      // Precise per-candidate window: this asset's own building's local day
+      // (falling back to org default), not the naive global UTC day.
+      const tz = asset.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC'
+      const assetDayStart = zonedWallClockToUtc(year, month, day, 0, 0, tz)
+      const assetDayEnd = new Date(assetDayStart.getTime() + 24 * 60 * 60 * 1000 - 1)
+      const hasRealOverlap = asset.bookings.some((b) => b.startsAt < assetDayEnd && b.endsAt > assetDayStart)
+      if (hasRealOverlap) continue
+      const gate = await assertBookable(prisma, request.user, assetId, assetDayStart, assetDayEnd)
       if (!gate.ok) continue
       const { bookings: _bookings, ...rest } = asset
       suggestions.push(rest)
@@ -902,6 +988,19 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /assets/:id/availability-rules — recurring weekdays this asset is open to others
   fastify.get('/:id/availability-rules', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+
+    const asset = await prisma.asset.findUnique({ where: { id }, include: { floor: true } })
+    if (!asset) {
+      return reply.status(404).send({ error: { message: 'Asset not found', code: 'NOT_FOUND' } })
+    }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN && asset.floor) {
+      const allowed = await checkGroupAccess(request.user.id, asset.floor.buildingId, asset.floor.id)
+      if (!allowed) {
+        return reply.status(403).send({ error: { message: 'Your group does not have access to this building or floor', code: 'GROUP_ACCESS_DENIED' } })
+      }
+    }
+
     const rules = await prisma.assetAvailabilityRule.findMany({
       where: { assetId: id },
       select: { weekday: true },
@@ -1041,6 +1140,20 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
             throw new ZoneGroupConflictError('ZONE_GROUP_CONFLICT', 'This user already has a booking in the same zone group for this time')
           }
 
+          // Guarded on status: 'WAITING', not a bare update-by-id — `first`
+          // was read well before this transaction (assertBookable/advance-
+          // window/quota above are all real await points), and this
+          // transaction locks the ASSET (lockAssetForBooking), not the
+          // queue entry itself. DELETE /queue/:id (leave queue) locks under
+          // a different advisory class (lockAssetForQueue) and isn't
+          // coordinated by the lock above, so it could still cancel this
+          // exact entry in that gap. Without this guard, a user who just
+          // left the queue could still be claimed back in and given a real
+          // CONFIRMED booking for a slot they explicitly withdrew from.
+          const claimed = await tx.queueEntry.updateMany({ where: { id: first.id, status: 'WAITING' }, data: { status: 'CLAIMED' } })
+          if (claimed.count === 0) {
+            throw new ZoneGroupConflictError('ALREADY_LEFT', 'This queue entry is no longer waiting')
+          }
           const created = await tx.booking.create({
             data: {
               userId: first.userId,
@@ -1050,7 +1163,6 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
               status: 'CONFIRMED',
             },
           })
-          await tx.queueEntry.update({ where: { id: first.id }, data: { status: 'CLAIMED' } })
           return created
         })
       } catch (err) {
@@ -1649,6 +1761,11 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       // skipQueuePromotion: the asset is about to be destroyed, not just
       // unplaced, so there's no slot left for anyone to be promoted into.
       await cancelFutureBookingsForAssets([id], { skipQueuePromotion: true })
+      // QueueEntry.asset is also onDelete:Cascade — without this, a WAITING
+      // entry never transitions to CANCELLED and a PROMOTED entry holding a
+      // live claimToken just vanishes mid-window (see
+      // cancelQueueEntriesForAssets's own doc comment).
+      await cancelQueueEntriesForAssets([id])
 
       const before = await prisma.asset.findUnique({ where: { id }, select: { name: true, categoryId: true, floorId: true, primaryZoneId: true } })
       try {

@@ -213,7 +213,6 @@ export function AppRouter() {
             <Route path="/admin/buildings/:buildingId" element={<BuildingDetailAdminPage />} />
             <Route path="/admin/floors/:floorId" element={<Suspense fallback={<PageLoader />}><FloorAdminPage /></Suspense>} />
             <Route path="/admin/assets" element={<AssetsAdminPage />} />
-            <Route path="/admin/manager-requests" element={<ManagerRequestsAdminPage />} />
             <Route path="/admin/approvals" element={<ApprovalsAdminPage />} />
             <Route path="/admin/ballots" element={<BallotsAdminPage />} />
           </Route>
@@ -223,6 +222,13 @@ export function AppRouter() {
             <Route path="/admin/leases" element={<LeasesAdminPage />} />
             <Route path="/admin/reports" element={<Suspense fallback={<PageLoader />}><ReportsAdminPage /></Suspense>} />
             <Route path="/admin/bookings-report" element={<Suspense fallback={<PageLoader />}><BookingsReportPage /></Suspense>} />
+            {/* GET/approve /manager-requests only ever authorizes via
+                getManagedBuildingIds/canReview (SUPER_ADMIN or BUILDING_ADMIN)
+                — no isFloorManagerForFloor branch exists, unlike buildings/
+                floors/assets above. A floor-manager-only user let in here
+                would 403 on the list call and see a misleading "No pending
+                requests" empty state instead of a permission error. */}
+            <Route path="/admin/manager-requests" element={<ManagerRequestsAdminPage />} />
           </Route>
         </Route>
       </Route>

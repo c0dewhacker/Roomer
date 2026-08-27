@@ -10,7 +10,7 @@ import { findOrCreateDepartment } from '../lib/department.js'
 import { recordAuditLog } from '../lib/audit.js'
 import {
   userToScim, groupToScim, scimError, listResponse, parseScimFilter,
-  applyUserPatchOps, applyGroupPatchOps, hashScimToken, coerceScimActive, lockScimEmail,
+  applyUserPatchOps, applyGroupPatchOps, hashScimToken, coerceScimActive, lockScimEmail, lockScimGroupName,
   SCIM_SCHEMAS,
 } from '../lib/scim-helpers.js'
 import { env } from '../env.js'
@@ -35,6 +35,30 @@ async function isGroupPrivileged(groupId: string): Promise<boolean> {
   })
   if (!group) return false
   return group.globalRole === GlobalRole.SUPER_ADMIN || group._count.groupResourceRoles > 0
+}
+
+/**
+ * Same reasoning as isGroupPrivileged, applied to the user record itself —
+ * true when this user is a SUPER_ADMIN or holds any individual
+ * (non-group) BUILDING_ADMIN/FLOOR_MANAGER UserResourceRole.
+ *
+ * SSO account-linking (findOrCreateSsoUser, auth-enterprise.ts) matches
+ * purely by email, and refuses to link only when the existing account has
+ * a local password or a conflicting externalId. Without this guard, a SCIM
+ * PUT/PATCH — a narrower credential than SUPER_ADMIN, meant for
+ * directory-driven sync of ordinary users — could repoint a privileged,
+ * SSO-provisioned account's email to one the attacker controls and clear
+ * its externalId, then have the attacker log in via OIDC/SAML and get
+ * silently linked into that account, inheriting its role. Verified: this
+ * was exploitable end-to-end before this guard existed.
+ */
+async function isUserPrivileged(userId: string): Promise<boolean> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { globalRole: true, _count: { select: { resourceRoles: true } } },
+  })
+  if (!user) return false
+  return user.globalRole === GlobalRole.SUPER_ADMIN || user._count.resourceRoles > 0
 }
 
 
@@ -175,6 +199,16 @@ function registerUsers(fastify: FastifyInstance): void {
       // duplicate; this direction just under-reports on an attribute this
       // endpoint was never asked to support).
       else where = { id: { in: [] } }
+    } else if (q.filter !== undefined) {
+      // A filter string was actually supplied but didn't match this parser's
+      // grammar at all (an operator besides eq, a compound and/or, bracketed
+      // sub-filters) — same reasoning as the unrecognized-attribute case just
+      // above, and the exact bug that case's own comment was guarding
+      // against: parseScimFilter returns null for both "no filter given" and
+      // "filter given but unparseable", and this branch was the one place
+      // that distinction got lost, silently treating an unparseable filter
+      // as "no filter" and returning the entire directory as if it matched.
+      where = { id: { in: [] } }
     }
 
     const [users, total] = await Promise.all([
@@ -239,6 +273,19 @@ function registerUsers(fastify: FastifyInstance): void {
         await lockScimEmail(tx, email)
         const existing = await tx.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } }, select: { id: true } })
         if (existing) throw Object.assign(new Error('EMAIL_TAKEN'), { code: 'EMAIL_TAKEN' })
+        // externalId has no DB unique constraint (only an index), so unlike
+        // email this isn't enforced at the database level at all — without
+        // this check, an IdP-side identity recreation (a rehire flow, or a
+        // misbehaving connector) pushing a create with an externalId that
+        // already belongs to a different user creates a second live account
+        // sharing that external identity. manager.ts's manager-ref
+        // resolution matches by externalId and has no way to know which of
+        // two such accounts is "the" one, making manager linking
+        // non-deterministic between them.
+        if (externalId) {
+          const externalIdTaken = await tx.user.findFirst({ where: { externalId }, select: { id: true } })
+          if (externalIdTaken) throw Object.assign(new Error('EXTERNAL_ID_TAKEN'), { code: 'EXTERNAL_ID_TAKEN' })
+        }
         return tx.user.create({
           data: {
             email,
@@ -255,6 +302,10 @@ function registerUsers(fastify: FastifyInstance): void {
       if ((err as { code?: string })?.code === 'EMAIL_TAKEN') {
         return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
           .send(scimError(409, `User ${email} already exists`))
+      }
+      if ((err as { code?: string })?.code === 'EXTERNAL_ID_TAKEN') {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, `externalId ${externalId} already belongs to a different user`))
       }
       throw err
     }
@@ -301,6 +352,10 @@ function registerUsers(fastify: FastifyInstance): void {
   // PUT /Users/:id — full replace (Entra uses PATCH but some clients send PUT)
   fastify.put('/Users/:id', { preHandler: [scimAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (await isUserPrivileged(id)) {
+      return reply.status(403).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(403, 'Cannot modify a privileged user via SCIM — use the admin UI'))
+    }
     const body = request.body as Record<string, unknown>
     const email = (body.userName as string) ?? ((body.emails as Array<{ value: string }>)?.[0]?.value)
     const displayName = body.displayName as string | undefined
@@ -353,6 +408,15 @@ function registerUsers(fastify: FastifyInstance): void {
             select: { id: true },
           })
           if (collision) throw Object.assign(new Error('EMAIL_TAKEN'), { code: 'EMAIL_TAKEN' })
+        }
+        // See POST /Users — externalId has no DB unique constraint, so this
+        // has to be checked explicitly. A PUT is exactly how an IdP-side
+        // identity recreation would repoint an existing Roomer user's
+        // externalId, and without this check it could collide with a
+        // different user's already-provisioned externalId.
+        if (externalId) {
+          const externalIdTaken = await tx.user.findFirst({ where: { externalId, id: { not: id } }, select: { id: true } })
+          if (externalIdTaken) throw Object.assign(new Error('EXTERNAL_ID_TAKEN'), { code: 'EXTERNAL_ID_TAKEN' })
         }
         if (active === false) {
           await lockSuperAdminGuard(tx)
@@ -412,6 +476,10 @@ function registerUsers(fastify: FastifyInstance): void {
         return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
           .send(scimError(409, `userName ${email} is already in use`))
       }
+      if (e?.code === 'EXTERNAL_ID_TAKEN') {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, `externalId ${externalId} already belongs to a different user`))
+      }
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
     }
   })
@@ -419,6 +487,10 @@ function registerUsers(fastify: FastifyInstance): void {
   // PATCH /Users/:id — partial update
   fastify.patch('/Users/:id', { preHandler: [scimAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (await isUserPrivileged(id)) {
+      return reply.status(403).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(403, 'Cannot modify a privileged user via SCIM — use the admin UI'))
+    }
     const body = request.body as { Operations?: Array<{ op: string; path?: string; value?: unknown }> }
     const ops = body.Operations ?? []
 
@@ -455,6 +527,15 @@ function registerUsers(fastify: FastifyInstance): void {
             select: { id: true },
           })
           if (collision) throw Object.assign(new Error('EMAIL_TAKEN'), { code: 'EMAIL_TAKEN' })
+        }
+        // See POST /Users — externalId has no DB unique constraint, so this
+        // has to be checked explicitly rather than relying on a P2002.
+        if (userPatch.externalId) {
+          const externalIdTaken = await tx.user.findFirst({
+            where: { externalId: userPatch.externalId, id: { not: id } },
+            select: { id: true },
+          })
+          if (externalIdTaken) throw Object.assign(new Error('EXTERNAL_ID_TAKEN'), { code: 'EXTERNAL_ID_TAKEN' })
         }
         if (userPatch.accountStatus === 'BLOCKED') {
           await lockSuperAdminGuard(tx)
@@ -502,6 +583,10 @@ function registerUsers(fastify: FastifyInstance): void {
         return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
           .send(scimError(409, `userName ${userPatch.email} is already in use`))
       }
+      if (e?.code === 'EXTERNAL_ID_TAKEN') {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE)
+          .send(scimError(409, `externalId ${userPatch.externalId} already belongs to a different user`))
+      }
       reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `User ${id} not found`))
     }
   })
@@ -509,6 +594,16 @@ function registerUsers(fastify: FastifyInstance): void {
   // DELETE /Users/:id — deprovision
   fastify.delete('/Users/:id', { preHandler: [scimAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+    // Same guard as PUT/PATCH above (see isUserPrivileged's doc comment) —
+    // a SCIM DELETE sets accountStatus: 'BLOCKED', functionally identical to
+    // a PATCH with active:false, which is explicitly forbidden for a
+    // privileged user three handlers up. Without this, a leaked/over-scoped
+    // SCIM token could deprovision any BUILDING_ADMIN/FLOOR_MANAGER or
+    // non-last SUPER_ADMIN outright via this one unguarded path.
+    if (await isUserPrivileged(id)) {
+      return reply.status(403).header('Content-Type', SCIM_CONTENT_TYPE)
+        .send(scimError(403, 'Cannot modify a privileged user via SCIM — use the admin UI'))
+    }
 
     try {
       const user = await prisma.$transaction(async (tx) => {
@@ -560,12 +655,22 @@ function registerGroups(fastify: FastifyInstance): void {
     const parsed = parseScimFilter(q.filter)
     let where: Record<string, unknown> = {}
     if (parsed) {
-      if (parsed.attr === 'displayName') where = { name: parsed.value }
+      // Case-insensitive, matching the analogous userName/email filter above
+      // — an IdP's own pre-create existence probe (e.g. Entra ID checking
+      // `displayName eq "marketing"` before deciding whether to POST) must
+      // find an existing "Marketing" group regardless of case, or it will
+      // conclude none exists and create a duplicate. See lockScimGroupName.
+      if (parsed.attr === 'displayName') where = { name: { equals: parsed.value, mode: 'insensitive' } }
       else if (parsed.attr === 'externalId') where = { id: parsed.value }
       // See the same guard on GET /Users — an unsupported attribute (e.g.
       // `members eq`) must not fall through to "no filter" and return every
       // group unfiltered.
       else where = { id: { in: [] } }
+    } else if (q.filter !== undefined) {
+      // Same gap as GET /Users — a filter that doesn't match this parser's
+      // grammar at all (not just an unrecognized attribute) also mustn't
+      // silently mean "no filter, return everything."
+      where = { id: { in: [] } }
     }
 
     const org = await prisma.organisation.findFirst({ select: { id: true } })
@@ -606,10 +711,23 @@ function registerGroups(fastify: FastifyInstance): void {
     const org = await prisma.organisation.findFirst({ select: { id: true } })
     if (!org) return reply.status(500).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(500, 'No organisation'))
 
+    // Case-insensitive collision check under an advisory lock, same pattern
+    // and same reasoning as POST /Users' email check above — the DB unique
+    // constraint on UserGroup.name is exact-match only, so without the lock
+    // two concurrent creates for names differing only by case can both pass
+    // a plain findFirst before either commits. See lockScimGroupName.
     try {
-      const group = await prisma.userGroup.create({
-        data: { name: body.displayName, organisationId: org.id },
-        select: groupSelect,
+      const group = await prisma.$transaction(async (tx) => {
+        await lockScimGroupName(tx, body.displayName!)
+        const existing = await tx.userGroup.findFirst({
+          where: { organisationId: org.id, name: { equals: body.displayName!, mode: 'insensitive' } },
+          select: { id: true },
+        })
+        if (existing) throw Object.assign(new Error('GROUP_NAME_TAKEN'), { code: 'GROUP_NAME_TAKEN' })
+        return tx.userGroup.create({
+          data: { name: body.displayName!, organisationId: org.id },
+          select: groupSelect,
+        })
       })
       await recordAuditLog(prisma, {
         actorId: null,
@@ -620,8 +738,16 @@ function registerGroups(fastify: FastifyInstance): void {
         ipAddress: request.ip,
       }, request.log)
       reply.status(201).header('Content-Type', SCIM_CONTENT_TYPE).send(groupToScim(group, []))
-    } catch {
-      reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(409, `Group ${body.displayName} already exists`))
+    } catch (err) {
+      const code = (err as { code?: string })?.code
+      // GROUP_NAME_TAKEN is the expected path (the check above); P2002 is a
+      // defensive fallback matching groups.ts/departments.ts's own belt-and-
+      // suspenders pattern, not one this lock should actually let happen.
+      if (code === 'GROUP_NAME_TAKEN' || code === 'P2002') {
+        reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(409, `Group ${body.displayName} already exists`))
+        return
+      }
+      throw err
     }
   })
 
@@ -653,9 +779,30 @@ function registerGroups(fastify: FastifyInstance): void {
     const body = request.body as { Operations?: Array<{ op: string; path?: string; value?: unknown }> }
     const patch = applyGroupPatchOps(body.Operations ?? [])
 
-    const group = await prisma.userGroup.findUnique({ where: { id }, select: groupSelect })
+    const group = await prisma.userGroup.findUnique({
+      where: { id },
+      select: { ...groupSelect, members: patch.replaceMemberIds !== null ? { select: { userId: true } } : false },
+    })
     if (!group) {
       return reply.status(404).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(404, `Group ${id} not found`))
+    }
+
+    // A "replace members" op carries the complete new membership, not an
+    // addition — diff it against current membership here (applyGroupPatchOps
+    // has no DB access to do this itself) so a member dropped from the IdP's
+    // canonical list during a full-sync PATCH is actually removed, not just
+    // left in place because no explicit "remove" op named them individually.
+    if (patch.replaceMemberIds !== null) {
+      const currentMemberIds = new Set(
+        ((group as { members?: Array<{ userId: string }> }).members ?? []).map((m) => m.userId),
+      )
+      const newMemberIds = new Set(patch.replaceMemberIds)
+      for (const userId of patch.replaceMemberIds) {
+        if (!currentMemberIds.has(userId)) patch.addMemberIds.push(userId)
+      }
+      for (const userId of currentMemberIds) {
+        if (!newMemberIds.has(userId)) patch.removeMemberIds.push(userId)
+      }
     }
 
     if ((patch.addMemberIds.length > 0 || patch.removeMemberIds.length > 0) && await isGroupPrivileged(id)) {
@@ -664,7 +811,24 @@ function registerGroups(fastify: FastifyInstance): void {
     }
 
     if (patch.displayName) {
-      await prisma.userGroup.update({ where: { id }, data: { name: patch.displayName } })
+      // Same case-insensitive collision check as POST /Groups above,
+      // scoped to this group's org and excluding itself.
+      const org = await prisma.organisation.findFirst({ select: { id: true } })
+      const nameTaken = org && await prisma.userGroup.findFirst({
+        where: { organisationId: org.id, id: { not: id }, name: { equals: patch.displayName, mode: 'insensitive' } },
+        select: { id: true },
+      })
+      if (nameTaken) {
+        return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(409, `Group ${patch.displayName} already exists`))
+      }
+      try {
+        await prisma.userGroup.update({ where: { id }, data: { name: patch.displayName } })
+      } catch (err) {
+        if ((err as { code?: string }).code === 'P2002') {
+          return reply.status(409).header('Content-Type', SCIM_CONTENT_TYPE).send(scimError(409, `Group ${patch.displayName} already exists`))
+        }
+        throw err
+      }
       await recordAuditLog(prisma, {
         actorId: null,
         action: 'user_group.scim_updated',

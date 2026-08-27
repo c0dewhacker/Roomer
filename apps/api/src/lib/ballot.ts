@@ -1,11 +1,17 @@
 import { prisma } from './prisma.js'
 import { NotificationType } from '@roomer/shared'
 import { lockAssetForBooking, hasBlockingOverlap } from './booking.js'
-import { resolveBuildingTimezone, zonedWallClockToUtc } from './timezone.js'
+import { resolveBuildingTimezone, zonedWallClockToUtc, localDateStr } from './timezone.js'
 import { checkGroupAccess } from '../routes/groups.js'
 import { enqueueNotification, promoteNextQueueEntry, fanOutFloorAvailable, getBoss } from './queue.js'
 import { dispatchWebhook } from './webhook.js'
 import { recordAuditLog } from './audit.js'
+
+// Sentinel used to force a transaction rollback when a guarded updateMany
+// (status-conditioned write) matches 0 rows — thrown, never surfaced to a
+// caller, so both halves of a paired write roll back together instead of
+// leaving one committed and the other not.
+class BallotClaimLostError extends Error {}
 
 /**
  * The asset pool a Ballot draws from: every bookable, currently-open asset
@@ -276,12 +282,35 @@ export async function runDrawForRun(runId: string, actorId: string | null = null
       if (!hasAccess) continue
       const result = await tryAssign(entry.userId, candidate, run, run.ballot)
       if (result) {
-        assigned = result
-        availableAssets.splice(i, 1)
-        await prisma.ballotEntry.update({
-          where: { id: entry.id },
+        // Guarded on status: 'ENTERED', not a bare update-by-id — a user can
+        // withdraw (DELETE /runs/:runId/enter) while this draw is mid-flight
+        // (checkGroupAccess + tryAssign above are both real await points),
+        // which deletes the row outright. An unconditional update would
+        // throw "record not found" here, aborting the ENTIRE draw loop
+        // (every entrant not yet processed is left stuck at ENTERED forever,
+        // since the run itself is already irreversibly marked DRAWN above).
+        // updateMany never throws for a missing row — it just reports 0
+        // matched — so a mid-draw withdrawal degrades to "this one entrant's
+        // win is discarded" instead of "the whole run's draw crashes".
+        const claimed = await prisma.ballotEntry.updateMany({
+          where: { id: entry.id, status: 'ENTERED' },
           data: { status: 'WON', assetId: candidate.id, bookingId: result.bookingId },
         })
+        if (claimed.count === 0) {
+          // Withdrew mid-draw — the booking tryAssign just created is now
+          // orphaned from ballot bookkeeping (nothing points to it), so
+          // cancel it rather than leaving a stray CONFIRMED booking nobody's
+          // entry references. `assigned` stays null and the asset stays in
+          // the pool (never spliced out below): this entrant's own entry is
+          // gone, so the "mark LOST" fallback after this loop safely no-ops
+          // too (guarded the same way, see below) rather than counting a
+          // withdrawn entrant as having lost, and the asset they would have
+          // won is still free for the next entrant in this same draw.
+          await prisma.booking.update({ where: { id: result.bookingId }, data: { status: 'CANCELLED' } })
+          break
+        }
+        assigned = result
+        availableAssets.splice(i, 1)
         dispatchWebhook('booking.created', { id: result.bookingId, userId: entry.userId, assetId: candidate.id, startsAt: result.startsAt, endsAt: result.endsAt }).catch(() => {})
         await enqueueNotification({ type: NotificationType.BALLOT_WON, userId: entry.userId, ballotEntryId: entry.id })
         // Only touched when weighting is actually enabled — a losing streak
@@ -301,10 +330,18 @@ export async function runDrawForRun(runId: string, actorId: string | null = null
       i--
     }
     if (!assigned) {
-      await prisma.ballotEntry.update({ where: { id: entry.id }, data: { status: 'LOST' } })
-      await enqueueNotification({ type: NotificationType.BALLOT_LOST, userId: entry.userId, ballotEntryId: entry.id })
-      if (weightingEnabled) await incrementBallotStreak(entry.userId, run.ballotId, org!.ballotWeightScope)
-      lostCount++
+      // Guarded on status: 'ENTERED', same reasoning as the WON write above
+      // — a withdrawal (DELETE /runs/:runId/enter) deletes the row outright,
+      // and an unconditional update would throw and abort the whole draw.
+      // A count of 0 here means the entrant withdrew before ever being
+      // reached for a candidate asset; correctly skip the notification and
+      // streak increment for someone who's no longer actually entered.
+      const claimed = await prisma.ballotEntry.updateMany({ where: { id: entry.id, status: 'ENTERED' }, data: { status: 'LOST' } })
+      if (claimed.count > 0) {
+        await enqueueNotification({ type: NotificationType.BALLOT_LOST, userId: entry.userId, ballotEntryId: entry.id })
+        if (weightingEnabled) await incrementBallotStreak(entry.userId, run.ballotId, org!.ballotWeightScope)
+        lostCount++
+      }
     }
   }
 
@@ -349,10 +386,36 @@ export async function declineBallotEntry(entryId: string, userId: string): Promi
   const booking = entry.booking
   const assetId = entry.assetId
 
-  await prisma.$transaction([
-    prisma.booking.update({ where: { id: booking.id }, data: { status: 'CANCELLED' } }),
-    prisma.ballotEntry.update({ where: { id: entry.id }, data: { status: 'DECLINED' } }),
-  ])
+  // Guarded on status (status: 'CONFIRMED' / 'WON'), not a bare update-by-id
+  // — the entry.status !== 'WON' check above reads via a plain findUnique
+  // with no lock, so a double-click (or a client retry) sending two
+  // concurrent decline requests would otherwise both pass that check, both
+  // "succeed" here (an unconditional update is idempotent, so neither
+  // errors), and both go on to run the redraw-and-promote logic below for
+  // what both requests believe is the same just-freed slot — the second
+  // one's promoteNextQueueEntry call would hand the desk to a SECOND,
+  // different queue entrant for a slot that was already freed and promoted
+  // once by the first request.
+  // Both writes must either land together or not at all — returning a plain
+  // boolean from the transaction callback would let the booking-cancel
+  // write commit even when the entry-claim half loses the race (Prisma only
+  // rolls back on a thrown error, not on a falsy return value), leaving a
+  // real booking cancelled with nothing to show for it. Throwing on a lost
+  // claim forces both updateMany calls to roll back together.
+  const claimed = await prisma.$transaction(async (tx) => {
+    const bookingClaimed = await tx.booking.updateMany({ where: { id: booking.id, status: 'CONFIRMED' }, data: { status: 'CANCELLED' } })
+    const entryClaimed = await tx.ballotEntry.updateMany({ where: { id: entry.id, status: 'WON' }, data: { status: 'DECLINED' } })
+    if (bookingClaimed.count === 0 || entryClaimed.count === 0) {
+      throw new BallotClaimLostError()
+    }
+    return true
+  }).catch((err) => {
+    if (err instanceof BallotClaimLostError) return false
+    throw err
+  })
+  if (!claimed) {
+    return { ok: false, status: 409, code: 'ALREADY_RESOLVED', message: 'This entry has already been declined or resolved' }
+  }
   dispatchWebhook('booking.cancelled', { id: booking.id, userId: entry.userId, assetId }).catch(() => {})
   await recordAuditLog(prisma, {
     actorId: userId,
@@ -425,7 +488,8 @@ export async function declineBallotEntry(entryId: string, userId: string): Promi
       dispatchWebhook('queue.promoted', { id: nextQueued.id, userId: nextQueued.userId, assetId: nextQueued.assetId, claimDeadline: nextQueued.claimDeadline.toISOString() }).catch(() => {})
     }
     if (asset?.floorId) {
-      const slotDate = booking.startsAt.toISOString().slice(0, 10)
+      const tz = await resolveBuildingTimezone(prisma, asset.floor?.buildingId ?? null)
+      const slotDate = localDateStr(booking.startsAt, tz)
       await fanOutFloorAvailable(assetId, asset.floorId, null, slotDate, entry.userId).catch(() => {})
     }
   }

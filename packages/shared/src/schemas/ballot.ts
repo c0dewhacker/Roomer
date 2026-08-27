@@ -1,7 +1,8 @@
 import { z } from 'zod'
 
+// .trim() before .min(1) on name — see schemas/department.ts for why.
 export const createBallotSchema = z.object({
-  name: z.string().min(1, 'Name is required').max(255),
+  name: z.string().trim().min(1, 'Name is required').max(255),
   // Scope: at least one building or floor required, UNLESS scopeAllBuildings
   // is set (validated below) — the asset pool is the union of assets on any
   // listed floor, plus every floor of any listed building.
@@ -38,7 +39,7 @@ export const createBallotSchema = z.object({
 )
 
 export const updateBallotSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
+  name: z.string().trim().min(1).max(255).optional(),
   buildingIds: z.array(z.string().min(1)).optional(),
   floorIds: z.array(z.string().min(1)).optional(),
   scopeAllBuildings: z.boolean().optional(),

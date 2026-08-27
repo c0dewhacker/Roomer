@@ -11,13 +11,13 @@ import { useFloorData, useFloorAvailability, useAssetSuggestions } from '@/hooks
 import { useFloorSubscriptions } from '@/hooks/useSubscriptions'
 import { useMyManagerRequests, useCreateManagerRequest } from '@/hooks/useManagerRequests'
 import { useAuthStore } from '@/stores/auth'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import type { AssetWithStatus } from '@/types'
-import { ApiError } from '@/lib/api'
+import { ApiError, settingsApi } from '@/lib/api'
 
 const STATUS_LEGEND: Array<{ label: string; colour: string; status: string }> = [
   { label: 'Available', colour: 'bg-green-500', status: 'available' },
@@ -46,6 +46,16 @@ export default function FloorPage() {
   const [showSubscribeDialog, setShowSubscribeDialog] = useState(false)
   const { data: floor, isLoading, isError, error: floorError } = useFloorData(floorId!)
   const { data: desks } = useFloorAvailability(floorId!, selectedDate)
+  // Public endpoint, not getOrg()/'organisation' — that one is
+  // SUPER_ADMIN-gated and every non-admin user would silently 403 and fall
+  // back to the hardcoded default below, regardless of what the org
+  // actually has configured.
+  const { data: publicSettings } = useQuery({
+    queryKey: ['settings', 'public'],
+    queryFn: () => settingsApi.getPublic(),
+    select: (r) => r.data,
+  })
+  const maxAdvanceDays = publicSettings?.maxAdvanceBookingDays ?? 14
   const { data: subscriptions } = useFloorSubscriptions()
   const existingSubscription = subscriptions?.find((s) => s.floorId === floorId) ?? null
 
@@ -84,7 +94,14 @@ export default function FloorPage() {
   const dateStr = format(selectedDate, 'yyyy-MM-dd')
   const { data: suggestions } = useAssetSuggestions(selectedDate)
   const [dismissedSuggestionDate, setDismissedSuggestionDate] = useState<string | null>(null)
-  const topSuggestion = dismissedSuggestionDate !== dateStr ? (suggestions?.[0] ?? null) : null
+  const rawTopSuggestion = dismissedSuggestionDate !== dateStr ? (suggestions?.[0] ?? null) : null
+  // Defensive guard against the same class of bug the backend now filters at
+  // the source (an unzoned asset can't appear in `desks`, so clicking "Book
+  // it" would set a selectedDeskId nothing can ever match): if a same-floor
+  // suggestion isn't actually in the loaded desk list, don't offer it.
+  const topSuggestion = rawTopSuggestion && rawTopSuggestion.floor?.id === floorId && desks && !desks.some((d) => d.id === rawTopSuggestion.id)
+    ? null
+    : rawTopSuggestion
 
   // Keep selectedDesk in sync with fresh availability data so mutations (e.g. add permanent user)
   // are reflected immediately in the panel without re-clicking the desk.
@@ -163,7 +180,13 @@ export default function FloorPage() {
   }, [qc, floorId])
 
   const today = new Date()
-  const isPast = selectedDate < new Date(today.toDateString())
+  // Truncated to local midnight before use in date-boundary comparisons below
+  // (both isPast and the "next day" cap) — selectedDate is always a calendar
+  // day at midnight, so comparing it against the raw `today` instant (with
+  // whatever time-of-day it currently is) let the advance-window cap drift
+  // a day later than intended depending on what time the page was loaded.
+  const todayMidnight = new Date(today.toDateString())
+  const isPast = selectedDate < todayMidnight
 
   if (!floorId) return null
 
@@ -237,7 +260,7 @@ export default function FloorPage() {
             size="icon"
             className="h-8 w-8"
             onClick={handleNextDay}
-            disabled={selectedDate >= addDays(today, 14)}
+            disabled={selectedDate >= addDays(todayMidnight, maxAdvanceDays)}
           >
             <ChevronRight className="h-4 w-4" />
           </Button>

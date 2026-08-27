@@ -13,7 +13,11 @@ export const createBookingSchema = z.object({
   // guestName/guestEmail just record who they're hosting. guestEmail is
   // optional even for a guest booking (a host may not have it yet) but when
   // present a check-in link is emailed to it.
-  guestName: z.string().min(1).max(255).optional(),
+  // .trim() before .min(1) — see schemas/department.ts for why. Also matters
+  // here for the guestEmail-requires-guestName refine below: an untrimmed
+  // whitespace-only guestName is still truthy, so that check alone wouldn't
+  // catch it either.
+  guestName: z.string().trim().min(1).max(255).optional(),
   guestEmail: z.string().email().max(255).optional(),
 }).refine(
   (data) => new Date(data.startsAt) < new Date(data.endsAt),

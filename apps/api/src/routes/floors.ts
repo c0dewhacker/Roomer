@@ -5,11 +5,12 @@ import type { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { createFloorSchema, updateFloorSchema, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { isFloorManagerForFloor, isBuildingManagerForBuilding, requireGlobalRole } from '../middleware/requireRole.js'
+import { isFloorManagerForFloor, isBuildingManagerForBuilding, RESOURCE_ROLE_GRANT_LOCK_CLASS } from '../middleware/requireRole.js'
 import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage.js'
 import { checkGroupAccess } from './groups.js'
-import { cancelFutureBookingsForFloors } from '../lib/queue.js'
+import { cancelFutureBookingsForFloors, cancelQueueEntriesForFloors } from '../lib/queue.js'
 import { recordAuditLog } from '../lib/audit.js'
+import { zonedWallClockToUtc } from '../lib/timezone.js'
 import { z } from 'zod'
 
 /**
@@ -40,8 +41,21 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Floors'], ...route.schema } })
 
   // GET /floors/:id/access-summary — "who can access / manage this floor?"
-  fastify.get('/:id/access-summary', { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] }, async (request, reply) => {
+  // SUPER_ADMIN, building admin, or floor manager for this floor —
+  // isFloorManagerForFloor already treats building admins as inheriting
+  // floor-manager access, so this one check covers both. FloorAdminPage
+  // routes all three onto the page this powers via BuildingManagerOrAdminRoute,
+  // so this was silently 403ing for anyone who wasn't a literal SUPER_ADMIN.
+  fastify.get('/:id/access-summary', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const canManage = await isFloorManagerForFloor(request.user.id, id)
+      if (!canManage) {
+        return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
+    }
+
     const floor = await prisma.floor.findUnique({
       where: { id },
       select: { id: true, name: true, building: { select: { id: true, name: true } } },
@@ -154,7 +168,10 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.status(200).send({ data: floorWithServeUrls })
   })
 
-  // GET /floors/:id/managers — list floor managers (SUPER_ADMIN or building admin)
+  // GET /floors/:id/managers — list floor managers (SUPER_ADMIN, building
+  // admin, or a manager of this specific floor — this only checked building
+  // admin, so a pure floor manager with no building-wide role couldn't see
+  // even their own floor's manager list)
   fastify.get(
     '/:id/managers',
     { preHandler: [requireAuth] },
@@ -166,7 +183,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         if (!floor) {
           return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
         }
-        const ok = await isBuildingManagerForBuilding(request.user.id, floor.buildingId)
+        const ok = await isFloorManagerForFloor(request.user.id, id)
         if (!ok) {
           return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
         }
@@ -184,7 +201,8 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // GET /floors/:id/group-managers — list group floor managers (SUPER_ADMIN or building admin)
+  // GET /floors/:id/group-managers — list group floor managers (SUPER_ADMIN,
+  // building admin, or a manager of this specific floor — see /managers above)
   fastify.get(
     '/:id/group-managers',
     { preHandler: [requireAuth] },
@@ -196,7 +214,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         if (!floor) {
           return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
         }
-        const ok = await isBuildingManagerForBuilding(request.user.id, floor.buildingId)
+        const ok = await isFloorManagerForFloor(request.user.id, id)
         if (!ok) {
           return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
         }
@@ -249,16 +267,27 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(404).send({ error: { message: 'Group not found', code: 'NOT_FOUND' } })
       }
 
-      const existing = await prisma.groupResourceRole.findFirst({
-        where: { groupId, scopeType: 'FLOOR', floorId: id },
+      // See RESOURCE_ROLE_GRANT_LOCK_CLASS's doc comment — the find-then-create
+      // below needs a lock, not just the pre-check, since GroupResourceRole's
+      // unique constraint never actually fires for either scope.
+      const role = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${RESOURCE_ROLE_GRANT_LOCK_CLASS}, hashtext(${`${groupId}:FLOOR:${id}`}))`
+        const existing = await tx.groupResourceRole.findFirst({
+          where: { groupId, scopeType: 'FLOOR', floorId: id },
+        })
+        if (existing) {
+          throw Object.assign(new Error('ALREADY_EXISTS'), { code: 'ALREADY_EXISTS' })
+        }
+        return tx.groupResourceRole.create({
+          data: { groupId, role: 'FLOOR_MANAGER', scopeType: 'FLOOR', floorId: id },
+        })
+      }).catch((err) => {
+        if ((err as { code?: string })?.code === 'ALREADY_EXISTS') return null
+        throw err
       })
-      if (existing) {
+      if (!role) {
         return reply.status(409).send({ error: { message: 'Group is already a floor manager', code: 'ALREADY_EXISTS' } })
       }
-
-      const role = await prisma.groupResourceRole.create({
-        data: { groupId, role: 'FLOOR_MANAGER', scopeType: 'FLOOR', floorId: id },
-      })
       await recordAuditLog(prisma, {
         actorId: request.user.id,
         action: 'group_resource_role.granted',
@@ -292,7 +321,9 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(404).send({ error: { message: 'Group role not found', code: 'NOT_FOUND' } })
       }
 
-      await prisma.groupResourceRole.delete({ where: { id: role.id } })
+      // deleteMany on the full scope filter, not delete-by-id — see the
+      // matching comment in buildings.ts's DELETE /group-managers/:groupId.
+      await prisma.groupResourceRole.deleteMany({ where: { groupId, scopeType: 'FLOOR', floorId: id } })
       await recordAuditLog(prisma, {
         actorId: request.user.id,
         action: 'group_resource_role.revoked',
@@ -408,23 +439,33 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       // Must run before the delete: once the floor is gone, Asset.floorId is
       // SetNull and there's no longer any way to find which bookings were on it.
       await cancelFutureBookingsForFloors([id])
+      // Same policy for queue entries — a WAITING/PROMOTED entry on a desk
+      // about to become unplaced (and unreachable from any floor plan) is
+      // released the same way its bookings are, not left dangling.
+      await cancelQueueEntriesForFloors([id])
 
-      // Also fetch before the delete — FloorPlan cascades away with the floor,
-      // but its files on disk don't clean themselves up (same fix as the
-      // existing "replace floor plan" upload path above).
-      const floorPlan = await prisma.floorPlan.findUnique({ where: { floorId: id } })
-
-      // The pre-delete asset snapshot and the delete itself run inside one
-      // transaction, locking the floor row first — same race and same fix
-      // shape as zones.ts DELETE /:id: a concurrent PATCH /assets/:id that
-      // places an asset onto this floor needs an FK check against this row,
-      // so Postgres blocks it until we commit, then it fails outright (the
-      // floor being gone) instead of racing our snapshot below.
-      const result = await prisma.$transaction(async (tx) => {
+      // The pre-delete asset/floor-plan snapshot and the delete itself run
+      // inside one transaction, locking the floor row first — same race and
+      // same fix shape as zones.ts DELETE /:id: a concurrent PATCH /assets/:id
+      // that places an asset onto this floor needs an FK check against this
+      // row, so Postgres blocks it until we commit, then it fails outright
+      // (the floor being gone) instead of racing our snapshot below.
+      //
+      // floorPlan is read here too, not before the transaction — the upload
+      // path (POST /:id/floor-plan) takes the exact same FOR UPDATE lock
+      // before its own upsert, so a floorPlan snapshot taken before this
+      // transaction acquires the lock can miss a floor plan an upload
+      // committed in the gap: the delete's cascade would then remove that
+      // FloorPlan row with no matching entry in this function's cleanup
+      // list, permanently orphaning its files on disk. Reading it after the
+      // lock is acquired means it always reflects whatever the upload path
+      // last committed.
+      const { result, floorPlan } = await prisma.$transaction(async (tx) => {
         await tx.$queryRaw`SELECT id FROM "Floor" WHERE id = ${id} FOR UPDATE`
         const before = await tx.floor.findUnique({ where: { id }, select: { buildingId: true, name: true, level: true } })
-        if (!before) return null
+        if (!before) return { result: null, floorPlan: null }
         const floorAssetIds = (await tx.asset.findMany({ where: { floorId: id }, select: { id: true } })).map((a) => a.id)
+        const floorPlan = await tx.floorPlan.findUnique({ where: { floorId: id } })
         await tx.floor.delete({ where: { id } })
         if (floorAssetIds.length > 0) {
           // Asset.floorId/primaryZoneId SetNull automatically via cascade,
@@ -438,8 +479,8 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
             data: { x: null, y: null, width: null, height: null, rotation: null },
           })
         }
-        return before
-      }).catch(() => null)
+        return { result: before, floorPlan }
+      }).catch(() => ({ result: null, floorPlan: null }))
 
       if (!result) {
         return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
@@ -732,8 +773,37 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     const amenityFilterLower = amenityFilter.map((a) => a.toLowerCase())
 
     const currentUserId = request.user.id
-    const dayStart = new Date(`${date}T00:00:00.000Z`)
-    const dayEnd = new Date(`${date}T23:59:59.999Z`)
+
+    // Resolve the floor's building timezone BEFORE building the day window
+    // used below — every asset on a floor shares one building (see #72), so
+    // (unlike directory.ts's multi-building /whereabouts, which needs a
+    // widen-then-precise-filter two-pass approach) this can compute the
+    // exact local-day boundary upfront rather than a fixed UTC window. A
+    // fixed `${date}T00:00:00.000Z`..`23:59:59.999Z` window is only correct
+    // for a UTC building — for e.g. a Pacific/Honolulu (UTC-10) building, a
+    // booking made for the evening of the 15th local time lands at
+    // 2026-01-16T02:00–03:30Z, which a UTC-anchored window for "the 15th"
+    // misses entirely (it falls outside dayEnd), showing the desk as
+    // available when it's actually booked that evening — and misattributes
+    // it to the 16th instead when that day is queried.
+    const [floorForTz, orgForTz] = await Promise.all([
+      prisma.floor.findUnique({ where: { id }, select: { building: { select: { timezone: true } } } }),
+      prisma.organisation.findFirst({ select: { defaultTimezone: true } }),
+    ])
+    if (!floorForTz) {
+      return reply.status(404).send({ error: { message: 'Floor not found', code: 'NOT_FOUND' } })
+    }
+    const [year, month, day] = date.split('-').map(Number)
+    const availabilityTimezone = floorForTz.building?.timezone ?? orgForTz?.defaultTimezone ?? 'UTC'
+    const dayStart = zonedWallClockToUtc(year, month, day, 0, 0, availabilityTimezone)
+    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000 - 1)
+    // The requested date's own weekday, independent of dayStart — for a
+    // building ahead of UTC (e.g. Australia/Sydney, +10), local midnight of
+    // the requested day is the *previous* UTC calendar day, so
+    // dayStart.getUTCDay() would silently return the wrong weekday for any
+    // such building. Computed via Date.UTC on the plain Y/M/D triplet, which
+    // has no timezone ambiguity at all.
+    const requestedWeekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay()
 
     // Shared per-asset include shape — reused for both primary-zone assets
     // (zone.assets) and secondary-zone memberships (zone.assetZones.asset) so
@@ -818,8 +888,12 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
     // Resolved once for the whole floor (every asset on it shares the same
     // building — see #72), not per-asset: the frontend uses this to render
     // every booking time on this floor's plan in the building's own
-    // timezone rather than the viewer's browser timezone.
-    const resolvedTimezone = floor.building?.timezone ?? org?.defaultTimezone ?? 'UTC'
+    // timezone rather than the viewer's browser timezone. Reuses
+    // availabilityTimezone (computed above from the same building/org
+    // values, just fetched slightly earlier) rather than recomputing it, so
+    // the day window actually used in the queries above and the timezone
+    // reported to the client can never disagree.
+    const resolvedTimezone = availabilityTimezone
 
     // Fold secondary (AssetZone) memberships into each zone's asset list —
     // done once here so every computation below (amenity filter, queue-depth
@@ -886,7 +960,7 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
         // has marked recurringly available, not just via a one-off window. The
         // floor plan must reflect that or it shows "assigned"/unbookable for a
         // desk the booking endpoint would actually accept.
-        const hasAvailabilityRule = (asset.availabilityRules ?? []).some((r) => r.weekday === dayStart.getUTCDay())
+        const hasAvailabilityRule = (asset.availabilityRules ?? []).some((r) => r.weekday === requestedWeekday)
 
         let bookingStatus: AvailabilityStatus
 

@@ -10,9 +10,28 @@ import { recordAuditLog } from '../lib/audit.js'
 import path from 'path'
 import { z } from 'zod'
 
+/**
+ * Serializes DELETE /leases/:id against POST /leases/:id/documents for the
+ * same lease — without it, a document upload that commits between the
+ * delete's pre-cleanup snapshot and its actual buildingLease.delete is
+ * invisible to that snapshot: LeaseDocument cascades away with the lease,
+ * but the file it pointed at was never scheduled for unlink, leaking it on
+ * disk forever. Keyed on the lease id. 4251 — next unused
+ * pg_advisory_xact_lock classid; grep the whole repo for `_LOCK_CLASS = `
+ * before reusing (see SCIM_GROUP_NAME_LOCK_CLASS's own doc comment for why
+ * that matters).
+ *
+ * Exported so buildings.ts DELETE /:id can take it per-lease before its own
+ * pre-delete leaseDocuments snapshot — that route deletes every lease under
+ * a building via cascade, and locking only the Floor rows it already locks
+ * doesn't serialize against this lease-scoped lock at all.
+ */
+export const LEASE_DOCUMENT_LOCK_CLASS = 4251
+
+// .trim() before .min(1) on name — see schemas/department.ts for why.
 const createLeaseSchema = z.object({
   buildingId: z.string().min(1),
-  name: z.string().min(1).max(255),
+  name: z.string().trim().min(1).max(255),
   startDate: z.string().datetime(),
   endDate: z.string().datetime().optional(),
   landlord: z.string().max(255).optional(),
@@ -35,7 +54,7 @@ function datesAreOrdered(startDate: Date, endDate: Date | null): boolean {
 }
 
 const updateLeaseSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
+  name: z.string().trim().min(1).max(255).optional(),
   startDate: z.string().datetime().optional(),
   // Nullable (not just optional): the frontend sends `endDate: null` to clear
   // an existing end date and make the lease open-ended, distinct from
@@ -266,23 +285,38 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.delete('/:id', { preHandler: [requireAuth], config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { id } = request.params as { id: string }
 
-    const lease = await prisma.buildingLease.findUnique({
-      where: { id },
-      include: { documents: true },
-    })
-
-    if (!lease) {
+    // Lightweight pre-check for the auth decision only — buildingId doesn't
+    // change, so no lock needed for this read.
+    const authCheck = await prisma.buildingLease.findUnique({ where: { id }, select: { buildingId: true } })
+    if (!authCheck) {
       return reply.status(404).send({ error: { message: 'Lease not found', code: 'NOT_FOUND' } })
     }
-
     if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
-      const ok = await isBuildingManagerForBuilding(request.user.id, lease.buildingId)
+      const ok = await isBuildingManagerForBuilding(request.user.id, authCheck.buildingId)
       if (!ok) {
         return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
       }
     }
 
-    // Delete stored document files
+    // The documents snapshot and the delete run inside one transaction,
+    // under the lease-scoped advisory lock — see LEASE_DOCUMENT_LOCK_CLASS's
+    // doc comment. Taking the snapshot here (after acquiring the lock)
+    // rather than before this transaction means it always reflects whatever
+    // POST /:id/documents last committed, since that route takes the same
+    // lock before its own create.
+    const lease = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LEASE_DOCUMENT_LOCK_CLASS}, hashtext(${id}))`
+      const lease = await tx.buildingLease.findUnique({ where: { id }, include: { documents: true } })
+      if (!lease) return null
+      await tx.buildingLease.delete({ where: { id } })
+      return lease
+    }).catch(() => null)
+
+    if (!lease) {
+      return reply.status(404).send({ error: { message: 'Lease not found', code: 'NOT_FOUND' } })
+    }
+
+    // File I/O stays outside the transaction/lock.
     for (const doc of lease.documents) {
       const absPath = resolveStoragePath(doc.storagePath)
       try {
@@ -292,7 +326,6 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
-    await prisma.buildingLease.delete({ where: { id } })
     await recordAuditLog(prisma, {
       actorId: request.user.id,
       action: 'building_lease.deleted',
@@ -363,15 +396,32 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
       .replace(/[‮‏​]/g, '') // strip Unicode directional/zero-width overrides
       .slice(0, 255)
 
-    const doc = await prisma.leaseDocument.create({
-      data: {
-        leaseId: id,
-        filename: safeDisplayFilename,
-        storagePath: relPath,
-        mimeType: data.mimetype,
-        sizeBytes: buffer.length,
-      },
+    // Create under the same lease-scoped advisory lock DELETE /:id takes —
+    // see LEASE_DOCUMENT_LOCK_CLASS's doc comment. Re-checks the lease still
+    // exists after acquiring the lock: if a concurrent delete won the race
+    // and already committed, this file (already written to disk above,
+    // since that I/O has to happen before we know the outcome) would
+    // otherwise become an orphan with no DB row ever pointing at it.
+    const doc = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LEASE_DOCUMENT_LOCK_CLASS}, hashtext(${id}))`
+      const stillExists = await tx.buildingLease.findUnique({ where: { id }, select: { id: true } })
+      if (!stillExists) return null
+      return tx.leaseDocument.create({
+        data: {
+          leaseId: id,
+          filename: safeDisplayFilename,
+          storagePath: relPath,
+          mimeType: data.mimetype,
+          sizeBytes: buffer.length,
+        },
+      })
     })
+
+    if (!doc) {
+      await fs.promises.unlink(absPath).catch(() => {})
+      return reply.status(404).send({ error: { message: 'Lease not found', code: 'NOT_FOUND' } })
+    }
+
     await recordAuditLog(prisma, {
       actorId: request.user.id,
       action: 'lease_document.uploaded',

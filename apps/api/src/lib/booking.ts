@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client'
 import type { User } from '@prisma/client'
+import { toZonedTime } from 'date-fns-tz'
 import { GlobalRole } from '@roomer/shared'
 import { checkGroupAccess } from '../routes/groups.js'
 import { resolveBuildingTimezone, resolveWorkingHours, isWithinWorkingHours } from './timezone.js'
@@ -193,8 +194,23 @@ function deny(status: number, code: string, message: string): BookabilityResult 
  */
 export function isWithinAdvanceBookingWindow(startsAt: Date, maxAdvanceBookingDays: number | null | undefined): boolean {
   if (!maxAdvanceBookingDays) return true
-  const maxDate = new Date()
-  maxDate.setUTCDate(maxDate.getUTCDate() + maxAdvanceBookingDays)
+  const now = new Date()
+  // End of calendar day N (UTC) — not "N days from now, preserving the
+  // current time-of-day", which is what `new Date(); setUTCDate(+N)` computes.
+  // That tied the cutoff to whatever second the request happened to be
+  // submitted: the identical target slot on day N could be accepted or
+  // rejected purely depending on what time of day the *request* was made
+  // (e.g. a 9am request rejects a 5pm slot on day N with "cannot be made
+  // more than N days in advance"; the same request made at 6pm for the
+  // identical slot succeeds) — nothing to do with "N days in advance" as
+  // the admin-facing setting/error message promise, which implies a whole
+  // calendar day. Deliberately UTC, not the target asset's own building
+  // timezone: this is a coarse admin guard rail (unlike working-hours/
+  // approval-window precision elsewhere in this file), and threading a
+  // per-asset timezone through every one of this function's ~6 call sites
+  // (create, reschedule, recurring, queue-claim x2, auto-confirm) isn't
+  // worth it for a rail whose whole point is a generous, approximate cap.
+  const maxDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + maxAdvanceBookingDays, 23, 59, 59, 999))
   return startsAt <= maxDate
 }
 
@@ -253,29 +269,42 @@ export async function assertUnderBookingQuota(
  * because the queue-join path intentionally targets currently-booked slots.
  */
 /**
- * True when every UTC calendar day the [startsAt, endsAt] booking spans falls on
- * a weekday the assigned owner has marked as recurringly available. Returns false
- * when there are no rules. (Single-timezone; per-building tz is tracked in #72.)
+ * True when every LOCAL calendar day (in the asset's building timezone — see
+ * #72) the [startsAt, endsAt] booking spans falls on a weekday the assigned
+ * owner has marked as recurringly available. Returns false when there are no
+ * rules.
  */
 async function isCoveredByAvailabilityRules(
   client: Prisma.TransactionClient,
   assetId: string,
   startsAt: Date,
   endsAt: Date,
+  timeZone: string,
 ): Promise<boolean> {
   const rules = await client.assetAvailabilityRule.findMany({ where: { assetId }, select: { weekday: true } })
   if (rules.length === 0) return false
   const allowed = new Set(rules.map((r) => r.weekday))
 
-  // Walk each calendar day from the start day up to (but not past) the end instant.
-  // Strict `<` matches the half-open [startsAt, endsAt) semantics used everywhere
-  // else in this file (see hasBlockingOverlap) — a booking whose endsAt lands
-  // exactly on a day's UTC midnight boundary uses none of that day's time, so it
-  // must not require that day to be in the owner's allowed-weekday set too.
-  const cursor = new Date(Date.UTC(startsAt.getUTCFullYear(), startsAt.getUTCMonth(), startsAt.getUTCDate()))
-  while (cursor < endsAt) {
-    if (!allowed.has(cursor.getUTCDay())) return false
-    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  // toZonedTime shifts the instant so *native* (non-UTC) getters read back
+  // the target zone's wall-clock components regardless of the server
+  // process's own system timezone — same trick isWithinWorkingHours already
+  // uses. Never read the result via UTC getters or its raw .getTime(): both
+  // would silently reintroduce the server/UTC-timezone dependency this fix
+  // removes (this is exactly the bug that shipped originally — a UTC-anchored
+  // cursor read via getUTCDay()).
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000
+  const localStart = toZonedTime(startsAt, timeZone)
+  const localEnd = toZonedTime(endsAt, timeZone)
+  const startDay = Date.UTC(localStart.getFullYear(), localStart.getMonth(), localStart.getDate())
+  const endDay = Date.UTC(localEnd.getFullYear(), localEnd.getMonth(), localEnd.getDate())
+  // Matches the original half-open [startsAt, endsAt) semantics: a booking
+  // whose endsAt lands exactly on a local day's midnight uses none of that
+  // day's time, so it must not require that day to be in the allowed set.
+  const endsAtLocalMidnight = localEnd.getHours() === 0 && localEnd.getMinutes() === 0 && localEnd.getSeconds() === 0 && localEnd.getMilliseconds() === 0
+  const lastDayToCheck = endsAtLocalMidnight ? endDay - ONE_DAY_MS : endDay
+
+  for (let cursor = startDay; cursor <= lastDayToCheck; cursor += ONE_DAY_MS) {
+    if (!allowed.has(new Date(cursor).getUTCDay())) return false
   }
   return true
 }
@@ -301,6 +330,10 @@ export async function assertBookable(
   if (asset.bookingStatus === 'DISABLED') return deny(409, 'ASSET_DISABLED', 'Asset is disabled')
 
   const isSuperAdmin = user.globalRole === GlobalRole.SUPER_ADMIN
+  // Resolved once and reused below (availability-rule weekday check, working-
+  // hours check) — handles a floor-less asset (buildingId undefined) via its
+  // own org-default fallback.
+  const timeZone = await resolveBuildingTimezone(client, asset.floor?.buildingId)
 
   if (asset.bookingStatus === 'RESTRICTED' && !isSuperAdmin) {
     const onList = asset.allowList.some((e) => e.userId === user.id)
@@ -319,7 +352,7 @@ export async function assertBookable(
       const window = await client.assetAvailabilityWindow.findFirst({
         where: { assetId, startsAt: { lte: startsAt }, endsAt: { gte: endsAt } },
       })
-      if (!window && !(await isCoveredByAvailabilityRules(client, assetId, startsAt, endsAt))) {
+      if (!window && !(await isCoveredByAvailabilityRules(client, assetId, startsAt, endsAt, timeZone))) {
         return deny(403, 'ASSET_ASSIGNED', 'This asset is permanently assigned to another user')
       }
     }
@@ -339,7 +372,6 @@ export async function assertBookable(
   if (!isSuperAdmin && asset.floor) {
     const hours = await resolveWorkingHours(client, asset.floor.buildingId)
     if (hours.enforce) {
-      const timeZone = await resolveBuildingTimezone(client, asset.floor.buildingId)
       if (!isWithinWorkingHours(startsAt, endsAt, timeZone, hours.start, hours.end)) {
         return deny(400, 'OUTSIDE_WORKING_HOURS', `This booking falls outside the configured working hours (${hours.start}–${hours.end})`)
       }

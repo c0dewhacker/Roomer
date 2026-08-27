@@ -4,7 +4,7 @@ import crypto from 'crypto'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole, ResourceRoleType, ResourceScopeType, RoleSource } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { requireGlobalRole } from '../middleware/requireRole.js'
+import { requireGlobalRole, isFloorManagerForFloor, RESOURCE_ROLE_GRANT_LOCK_CLASS } from '../middleware/requireRole.js'
 import { enqueueNotification, cancelFutureBookingsForUser, cancelQueueEntriesForUser, releaseAssetAssignmentsForUser } from '../lib/queue.js'
 import { lockSuperAdminGuard, wouldRemoveLastActiveSuperAdmin } from '../lib/group-mapping.js'
 import { dispatchWebhook } from '../lib/webhook.js'
@@ -14,9 +14,10 @@ import { blockToken } from '../lib/token-blocklist.js'
 import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
+// .trim() before .min(1) on displayName — see schemas/department.ts for why.
 const createUserSchema = z.object({
   email: z.string().email(),
-  displayName: z.string().min(1).max(255),
+  displayName: z.string().trim().min(1).max(255),
   password: z.string().min(12),
   globalRole: z.nativeEnum(GlobalRole).optional(),
 })
@@ -31,7 +32,7 @@ const adminSetPasswordSchema = z.object({
 })
 
 const updateUserSchema = z.object({
-  displayName: z.string().min(1).max(255).optional(),
+  displayName: z.string().trim().min(1).max(255).optional(),
   accountStatus: z.enum(['ACTIVE', 'BLOCKED']).optional(),
   globalRole: z.nativeEnum(GlobalRole).optional(),
   // Self-serviceable privacy flag — controls visibility in the colleague finder.
@@ -69,7 +70,8 @@ const listUsersQuerySchema = z.object({
 
 const userImportRowSchema = z.object({
   email: z.string().email('Invalid email'),
-  display_name: z.string().min(1, 'display_name is required').max(255),
+  // .trim() before .min(1) — see schemas/department.ts for why.
+  display_name: z.string().trim().min(1, 'display_name is required').max(255),
   password: z.string().min(12).optional(),
   global_role: z.enum(['USER', 'SUPER_ADMIN']).default('USER'),
   access_groups: z.string().optional(),
@@ -104,7 +106,16 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
 
       const { email, displayName, password, globalRole } = result.data
 
-      const existing = await prisma.user.findUnique({ where: { email } })
+      // Case-insensitive, matching how every OTHER email check in this
+      // codebase already resolves an account (login's findFirst in auth.ts,
+      // SCIM's findFirst in scim.ts, SSO/LDAP JIT provisioning) — User.email
+      // is a plain case-sensitive @unique column with no citext, so a bare
+      // findUnique here missed an existing "john@x.com" when creating
+      // "John@x.com", letting two accounts differing only by email casing
+      // both exist. Login's case-insensitive resolution is then unable to
+      // guarantee which of the two it authenticates (Postgres gives no
+      // ordering guarantee to a findFirst with no explicit orderBy).
+      const existing = await prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } })
       if (existing) {
         return reply.status(409).send({
           error: { message: 'A user with this email already exists', code: 'ALREADY_EXISTS' },
@@ -192,7 +203,11 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
             updatedAt: true,
             _count: { select: { bookings: true } },
           },
-          orderBy: { displayName: 'asc' },
+          // Secondary sort on id — displayName is not unique (two users can
+          // easily share a name), and Postgres gives no ordering guarantee
+          // among tied rows across separate queries without a unique
+          // tiebreaker. Same class of bug as GET /bookings/report.
+          orderBy: [{ displayName: 'asc' }, { id: 'asc' }],
         }),
         prisma.user.count({ where }),
       ])
@@ -508,6 +523,25 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       if (!user) {
         return reply.status(404).send({ error: { message: 'User not found', code: 'NOT_FOUND' } })
       }
+      // A federated (OIDC/SAML/LDAP) account has no Roomer-owned credential
+      // to "reset" — the IdP is the sole source of truth for it. Setting a
+      // passwordHash here would silently open a second, parallel local-login
+      // path for that account: /auth/login only branches into the LDAP
+      // fallback when passwordHash is null (see the `!user?.passwordHash`
+      // check there), so once set, this account could be logged into with a
+      // plain email+password from then on — bypassing the IdP entirely,
+      // including its MFA and any deprovisioning done IdP-side, until
+      // someone notices and manually clears it. Same class of risk as the
+      // SCIM identity-hijack this session already fixed (#283), via a
+      // different vector.
+      if (user.provider !== 'LOCAL') {
+        return reply.status(409).send({
+          error: {
+            message: `This account signs in via ${user.provider} — it has no local password to reset. Manage its access through that identity provider instead.`,
+            code: 'NOT_A_LOCAL_ACCOUNT',
+          },
+        })
+      }
 
       const newHash = await bcryptjs.hash(result.data.password, 12)
       await prisma.user.update({
@@ -662,10 +696,15 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.status(200).send({ data: bookings, meta: { total, page, limit } })
   })
 
-  // POST /users/:id/resource-roles — assign resource role (admin)
+  // POST /users/:id/resource-roles — assign resource role (SUPER_ADMIN, or a
+  // floor manager/building admin assigning FLOOR_MANAGER on a floor they
+  // already manage — the only grant FloorAdminPage's FloorManagersPanel
+  // actually makes through this endpoint. Any other scope/role combination
+  // (granting BUILDING_ADMIN, or FLOOR_MANAGER on a floor the actor doesn't
+  // manage) stays SUPER_ADMIN-only.)
   fastify.post(
     '/:id/resource-roles',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
 
@@ -674,6 +713,17 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(400).send({
           error: { message: 'Validation failed', code: 'VALIDATION_ERROR', details: result.error.flatten() },
         })
+      }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage =
+          result.data.scopeType === 'FLOOR' &&
+          result.data.role === 'FLOOR_MANAGER' &&
+          result.data.floorId &&
+          (await isFloorManagerForFloor(request.user.id, result.data.floorId))
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
       }
 
       const user = await prisma.user.findUnique({ where: { id } })
@@ -698,38 +748,47 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       // FLOOR-scope row always has buildingId NULL — Postgres treats NULL <>
       // NULL for uniqueness, so that constraint never actually fires for
       // either scope and the same user could be assigned the same role twice.
-      // POST /buildings/:id/managers already guards its equivalent case with
-      // this same explicit findFirst (see its own comment) — this generic
-      // endpoint (the *only* grant path for FLOOR_MANAGER; there is no
-      // POST /floors/:id/managers) never had it. Without this, revoking one
-      // of the two duplicate grants via DELETE below (which deletes exactly
-      // the row id given, correctly for a single grant) left the other
-      // grant — and therefore the access — silently in place, looking to the
-      // admin like a successful, complete revocation.
-      const existing = await prisma.userResourceRole.findFirst({
-        where: {
-          userId: id,
-          role: result.data.role,
-          scopeType: result.data.scopeType,
-          buildingId: result.data.buildingId ?? null,
-          floorId: result.data.floorId ?? null,
-        },
+      // The findFirst pre-check alone only closes the sequential-request
+      // case — two concurrent grants for the same user+scope both pass it
+      // before either commits, same as GroupResourceRole's equivalent (now
+      // fixed the same way in buildings.ts/floors.ts's group-manager grant
+      // routes). Without the lock, revoking one of the resulting duplicate
+      // grants via DELETE below left the other grant — and therefore the
+      // access — silently in place, looking to the admin like a successful,
+      // complete revocation.
+      const lockKey = `${id}:${result.data.scopeType}:${result.data.buildingId ?? result.data.floorId ?? ''}:${result.data.role}`
+      const role = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${RESOURCE_ROLE_GRANT_LOCK_CLASS}, hashtext(${lockKey}))`
+        const existing = await tx.userResourceRole.findFirst({
+          where: {
+            userId: id,
+            role: result.data.role,
+            scopeType: result.data.scopeType,
+            buildingId: result.data.buildingId ?? null,
+            floorId: result.data.floorId ?? null,
+          },
+        })
+        if (existing) {
+          throw Object.assign(new Error('ALREADY_EXISTS'), { code: 'ALREADY_EXISTS' })
+        }
+        return tx.userResourceRole.create({
+          data: {
+            userId: id,
+            role: result.data.role,
+            scopeType: result.data.scopeType,
+            buildingId: result.data.buildingId ?? null,
+            floorId: result.data.floorId ?? null,
+          },
+        })
+      }).catch((err) => {
+        if ((err as { code?: string })?.code === 'ALREADY_EXISTS') return null
+        throw err
       })
-      if (existing) {
+      if (!role) {
         return reply.status(409).send({
           error: { message: 'Role already assigned', code: 'ALREADY_EXISTS' },
         })
       }
-
-      const role = await prisma.userResourceRole.create({
-        data: {
-          userId: id,
-          role: result.data.role,
-          scopeType: result.data.scopeType,
-          buildingId: result.data.buildingId ?? null,
-          floorId: result.data.floorId ?? null,
-        },
-      })
       await recordAuditLog(prisma, {
         actorId: request.user.id,
         action: 'user_resource_role.granted',
@@ -742,29 +801,48 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // DELETE /users/:id/resource-roles/:roleId — remove resource role (admin)
+  // DELETE /users/:id/resource-roles/:roleId — remove resource role
+  // (SUPER_ADMIN, or the same scoped FLOOR_MANAGER carve-out as the POST above)
   fastify.delete(
     '/:id/resource-roles/:roleId',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id, roleId } = request.params as { id: string; roleId: string }
 
-      try {
-        const deleted = await prisma.userResourceRole.delete({
-          where: { id: roleId, userId: id },
-        })
-        await recordAuditLog(prisma, {
-          actorId: request.user.id,
-          action: 'user_resource_role.revoked',
-          resourceType: 'UserResourceRole',
-          resourceId: roleId,
-          before: { userId: deleted.userId, role: deleted.role, scopeType: deleted.scopeType, buildingId: deleted.buildingId, floorId: deleted.floorId },
-          ipAddress: request.ip,
-        }, request.log)
-        return reply.status(200).send({ data: { ok: true } })
-      } catch {
+      const target = await prisma.userResourceRole.findUnique({ where: { id: roleId, userId: id } })
+      if (!target) {
         return reply.status(404).send({ error: { message: 'Role not found', code: 'NOT_FOUND' } })
       }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage =
+          target.scopeType === 'FLOOR' &&
+          target.role === 'FLOOR_MANAGER' &&
+          target.floorId &&
+          (await isFloorManagerForFloor(request.user.id, target.floorId))
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+
+      // deleteMany on the full scope filter, not delete-by-id — the grant
+      // side's unique constraint never actually fires (see
+      // RESOURCE_ROLE_GRANT_LOCK_CLASS), so a race could have left more than
+      // one row for this exact user+scope+role. Deleting only the given
+      // roleId left any duplicate siblings (and therefore the access)
+      // silently in place despite an apparently successful revoke.
+      await prisma.userResourceRole.deleteMany({
+        where: { userId: id, role: target.role, scopeType: target.scopeType, buildingId: target.buildingId, floorId: target.floorId },
+      })
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'user_resource_role.revoked',
+        resourceType: 'UserResourceRole',
+        resourceId: roleId,
+        before: { userId: target.userId, role: target.role, scopeType: target.scopeType, buildingId: target.buildingId, floorId: target.floorId },
+        ipAddress: request.ip,
+      }, request.log)
+      return reply.status(200).send({ data: { ok: true } })
     },
   )
 
@@ -833,7 +911,11 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
 
       for (const { index, row } of validRows) {
         try {
-          const existing = await prisma.user.findUnique({ where: { email: row.email } })
+          // Case-insensitive — same reasoning as POST /users above: a plain
+          // findUnique missed an existing "john@x.com" against a CSV row
+          // spelled "John@X.com", so a "sync my roster" re-import created a
+          // second, duplicate account instead of updating the existing one.
+          const existing = await prisma.user.findFirst({ where: { email: { equals: row.email, mode: 'insensitive' } } })
           let userId: string
 
           if (existing) {
@@ -858,8 +940,13 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
                   errors.push({ row: index + 2, message: `Cannot demote ${row.email} — they are the last active super admin; role left unchanged` })
                 }
               }
+              // By id, not { email: row.email } — the CSV's casing may not
+              // byte-match the existing row (that's exactly what the
+              // case-insensitive lookup above just found), and email is a
+              // plain, case-sensitive unique column, so an email-keyed where
+              // here would silently fail to match with a P2025.
               await tx.user.update({
-                where: { email: row.email },
+                where: { id: existing.id },
                 data: { displayName: row.display_name, globalRole: nextGlobalRole },
               })
             })

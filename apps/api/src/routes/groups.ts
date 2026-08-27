@@ -3,20 +3,21 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { requireGlobalRole } from '../middleware/requireRole.js'
+import { requireGlobalRole, getManagedBuildingIds, getManagedFloorIds } from '../middleware/requireRole.js'
 import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
 const globalRoleEnum = z.enum([GlobalRole.USER, GlobalRole.SUPER_ADMIN])
 
+// .trim() before .min(1) — see schemas/department.ts for why.
 const createGroupSchema = z.object({
-  name: z.string().min(1).max(255),
+  name: z.string().trim().min(1).max(255),
   description: z.string().optional(),
   globalRole: globalRoleEnum.optional(),
 })
 
 const updateGroupSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
+  name: z.string().trim().min(1).max(255).optional(),
   description: z.string().optional(),
   globalRole: globalRoleEnum.optional(),
 })
@@ -33,8 +34,23 @@ async function getOrgId(): Promise<string> {
 export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Groups'], ...route.schema } })
 
-  // GET /groups — list all groups
-  fastify.get('/', { preHandler: adminHandlers }, async (_request, reply) => {
+  // GET /groups — list all groups. SUPER_ADMIN, or anyone holding at least
+  // one BUILDING_ADMIN/FLOOR_MANAGER resource role (the same admission test
+  // router.tsx's BuildingManagerOrAdminRoute already uses) — BuildingDetailAdminPage
+  // and FloorAdminPage both need this list to populate their "assign an
+  // existing group as manager" picker, and were silently 403ing for every
+  // building admin/floor manager who wasn't also a SUPER_ADMIN.
+  fastify.get('/', { preHandler: [requireAuth] }, async (request, reply) => {
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const [managedBuildings, managedFloors] = await Promise.all([
+        getManagedBuildingIds(request.user.id),
+        getManagedFloorIds(request.user.id),
+      ])
+      if (managedBuildings.length === 0 && managedFloors.length === 0) {
+        return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
+    }
+
     const groups = await prisma.userGroup.findMany({
       include: {
         _count: { select: { members: true } },
@@ -56,6 +72,18 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     const orgId = await getOrgId()
+
+    // Case-insensitive check — the @@unique constraint below is exact-match
+    // only (UserGroup.name has no case-insensitive collation), so "Marketing"
+    // and "marketing" would otherwise create two rows that read as the same
+    // group everywhere they're displayed, without ever tripping the P2002
+    // catch below. Same pattern as departments.ts.
+    const existingGroup = await prisma.userGroup.findFirst({
+      where: { organisationId: orgId, name: { equals: result.data.name, mode: 'insensitive' } },
+    })
+    if (existingGroup) {
+      return reply.status(409).send({ error: { message: 'A group with this name already exists', code: 'ALREADY_EXISTS' } })
+    }
 
     try {
       const group = await prisma.userGroup.create({
@@ -80,8 +108,14 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
         ipAddress: request.ip,
       }, request.log)
       return reply.status(201).send({ data: group })
-    } catch {
-      return reply.status(409).send({ error: { message: 'Group name already exists', code: 'ALREADY_EXISTS' } })
+    } catch (err) {
+      // Narrowed to the actual unique-constraint violation — a blanket catch
+      // here mislabels any other failure (a transient DB error) as "already
+      // exists" instead of surfacing it as the real error it is.
+      if ((err as { code?: string }).code === 'P2002') {
+        return reply.status(409).send({ error: { message: 'A group with this name already exists', code: 'ALREADY_EXISTS' } })
+      }
+      throw err
     }
   })
 
@@ -123,7 +157,18 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     try {
-      const before = await prisma.userGroup.findUnique({ where: { id }, select: { name: true, description: true, globalRole: true } })
+      const before = await prisma.userGroup.findUnique({ where: { id }, select: { name: true, description: true, globalRole: true, organisationId: true } })
+      // Same case-insensitive check as POST above, scoped to this group's
+      // own org and excluding itself (renaming to the same name, same
+      // casing or not, is a no-op, not a collision).
+      if (before && result.data.name) {
+        const existingGroup = await prisma.userGroup.findFirst({
+          where: { organisationId: before.organisationId, id: { not: id }, name: { equals: result.data.name, mode: 'insensitive' } },
+        })
+        if (existingGroup) {
+          return reply.status(409).send({ error: { message: 'A group with this name already exists', code: 'ALREADY_EXISTS' } })
+        }
+      }
       const group = await prisma.userGroup.update({
         where: { id },
         data: result.data,
@@ -143,7 +188,14 @@ export async function groupRoutes(fastify: FastifyInstance): Promise<void> {
         ipAddress: request.ip,
       }, request.log)
       return reply.status(200).send({ data: group })
-    } catch {
+    } catch (err) {
+      // Renaming to a name that collides with another group in the org hits
+      // the same @@unique([organisationId, name]) constraint POST's create
+      // handler already guards against — without this narrowing, that
+      // failure was mislabelled "not found" instead of "already exists".
+      if ((err as { code?: string }).code === 'P2002') {
+        return reply.status(409).send({ error: { message: 'A group with this name already exists', code: 'ALREADY_EXISTS' } })
+      }
       return reply.status(404).send({ error: { message: 'Group not found', code: 'NOT_FOUND' } })
     }
   })

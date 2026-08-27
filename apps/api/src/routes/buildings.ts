@@ -2,10 +2,11 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
 import { createBuildingSchema, updateBuildingSchema, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { requireGlobalRole, getManagedBuildingIds } from '../middleware/requireRole.js'
+import { requireGlobalRole, getManagedBuildingIds, isBuildingManagerForBuilding, RESOURCE_ROLE_GRANT_LOCK_CLASS } from '../middleware/requireRole.js'
 import { canUserAccessBuilding } from './groups.js'
-import { cancelFutureBookingsForFloors } from '../lib/queue.js'
+import { cancelFutureBookingsForFloors, cancelQueueEntriesForFloors } from '../lib/queue.js'
 import { deleteFile } from '../lib/storage.js'
+import { LEASE_DOCUMENT_LOCK_CLASS } from './leases.js'
 import { recordAuditLog } from '../lib/audit.js'
 
 /**
@@ -40,8 +41,19 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Buildings'], ...route.schema } })
 
   // GET /buildings/:id/access-summary — "who can access / manage this building?"
-  fastify.get('/:id/access-summary', { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] }, async (request, reply) => {
+  // (SUPER_ADMIN or building admin for this building — same carve-out as
+  // PUT /:id below; BuildingManagerOrAdminRoute already routes building
+  // admins onto the page this powers, so this was silently 403ing for them.)
+  fastify.get('/:id/access-summary', { preHandler: [requireAuth] }, async (request, reply) => {
     const { id } = request.params as { id: string }
+
+    if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+      const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+      if (!canManage) {
+        return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+      }
+    }
+
     const building = await prisma.building.findUnique({ where: { id }, select: { id: true, name: true } })
     if (!building) return reply.status(404).send({ error: { message: 'Building not found', code: 'NOT_FOUND' } })
 
@@ -224,9 +236,16 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /buildings/:id/access-groups — list groups with access to this building
   fastify.get(
     '/:id/access-groups',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       const building = await prisma.building.findUnique({ where: { id } })
       if (!building) {
@@ -250,9 +269,17 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /buildings/:id/access-groups — grant a group access to this building
   fastify.post(
     '/:id/access-groups',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+
       const bodyResult = z.object({ groupId: z.string().min(1) }).safeParse(request.body)
       if (!bodyResult.success) {
         return reply.status(400).send({ error: { message: 'groupId required', code: 'VALIDATION_ERROR' } })
@@ -287,9 +314,16 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   // DELETE /buildings/:id/access-groups/:groupId — revoke a group's access
   fastify.delete(
     '/:id/access-groups/:groupId',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id, groupId } = request.params as { id: string; groupId: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       try {
         await prisma.groupBuildingAccess.delete({
@@ -310,14 +344,21 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // ─── Building manager management (SUPER_ADMIN) ───────────────────────────
+  // ─── Building manager management (SUPER_ADMIN or building admin) ────────
 
   // GET /buildings/:id/managers — list individual building managers
   fastify.get(
     '/:id/managers',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       const roles = await prisma.userResourceRole.findMany({
         where: { scopeType: 'BUILDING', buildingId: id, role: 'BUILDING_ADMIN' },
@@ -334,9 +375,17 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /buildings/:id/managers — assign a user as building manager
   fastify.post(
     '/:id/managers',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+
       const bodyResult = z.object({ userId: z.string().min(1) }).safeParse(request.body)
       if (!bodyResult.success) {
         return reply.status(400).send({ error: { message: 'userId is required', code: 'VALIDATION_ERROR' } })
@@ -382,9 +431,16 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   // DELETE /buildings/:id/managers/:userId — remove a user building manager
   fastify.delete(
     '/:id/managers/:userId',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id, userId } = request.params as { id: string; userId: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       // deleteMany (not findFirst+delete) so any duplicate grant already
       // sitting in the DB from before the create-side dedupe fix above is
@@ -411,9 +467,16 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /buildings/:id/group-managers — list group building managers
   fastify.get(
     '/:id/group-managers',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       const roles = await prisma.groupResourceRole.findMany({
         where: { scopeType: 'BUILDING', buildingId: id, role: 'BUILDING_ADMIN' },
@@ -437,9 +500,17 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /buildings/:id/group-managers — assign a group as building manager
   fastify.post(
     '/:id/group-managers',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+
       const bodyResult = z.object({ groupId: z.string().min(1) }).safeParse(request.body)
       if (!bodyResult.success) {
         return reply.status(400).send({ error: { message: 'groupId is required', code: 'VALIDATION_ERROR' } })
@@ -454,16 +525,27 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       if (!building) return reply.status(404).send({ error: { message: 'Building not found', code: 'NOT_FOUND' } })
       if (!group) return reply.status(404).send({ error: { message: 'Group not found', code: 'NOT_FOUND' } })
 
-      const existing = await prisma.groupResourceRole.findFirst({
-        where: { groupId, scopeType: 'BUILDING', buildingId: id },
+      // See RESOURCE_ROLE_GRANT_LOCK_CLASS's doc comment — the find-then-create
+      // below needs a lock, not just the pre-check, since GroupResourceRole's
+      // unique constraint never actually fires for either scope.
+      const role = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${RESOURCE_ROLE_GRANT_LOCK_CLASS}, hashtext(${`${groupId}:BUILDING:${id}`}))`
+        const existing = await tx.groupResourceRole.findFirst({
+          where: { groupId, scopeType: 'BUILDING', buildingId: id },
+        })
+        if (existing) {
+          throw Object.assign(new Error('ALREADY_EXISTS'), { code: 'ALREADY_EXISTS' })
+        }
+        return tx.groupResourceRole.create({
+          data: { groupId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id },
+        })
+      }).catch((err) => {
+        if ((err as { code?: string })?.code === 'ALREADY_EXISTS') return null
+        throw err
       })
-      if (existing) {
+      if (!role) {
         return reply.status(409).send({ error: { message: 'Group is already a building manager', code: 'ALREADY_EXISTS' } })
       }
-
-      const role = await prisma.groupResourceRole.create({
-        data: { groupId, role: 'BUILDING_ADMIN', scopeType: 'BUILDING', buildingId: id },
-      })
       await recordAuditLog(prisma, {
         actorId: request.user.id,
         action: 'group_resource_role.granted',
@@ -480,9 +562,16 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
   // DELETE /buildings/:id/group-managers/:groupId — remove a group building manager
   fastify.delete(
     '/:id/group-managers/:groupId',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id, groupId } = request.params as { id: string; groupId: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
 
       const role = await prisma.groupResourceRole.findFirst({
         where: { groupId, scopeType: 'BUILDING', buildingId: id, role: 'BUILDING_ADMIN' },
@@ -491,7 +580,14 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(404).send({ error: { message: 'Group role not found', code: 'NOT_FOUND' } })
       }
 
-      await prisma.groupResourceRole.delete({ where: { id: role.id } })
+      // deleteMany on the full scope filter, not delete-by-id — the grant
+      // side's unique constraint never actually fires (see
+      // RESOURCE_ROLE_GRANT_LOCK_CLASS), so a race could have left more than
+      // one row for this exact group+building+role. Deleting only the one
+      // row this findFirst happened to return left the others (and
+      // therefore the access) silently in place despite an apparently
+      // successful revoke.
+      await prisma.groupResourceRole.deleteMany({ where: { groupId, scopeType: 'BUILDING', buildingId: id, role: 'BUILDING_ADMIN' } })
       await recordAuditLog(prisma, {
         actorId: request.user.id,
         action: 'group_resource_role.revoked',
@@ -504,12 +600,27 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
     },
   )
 
-  // PUT /buildings/:id — update building (SUPER_ADMIN)  
+  // PUT /buildings/:id — update building (SUPER_ADMIN or building admin for
+  // this building). updateBuildingSchema's fields (name/address plus the
+  // noShowReleaseEnabled/qrCheckInMode/requiresApproval/timezone/working-
+  // hours overrides) are exactly what BuildingDetailAdminPage renders for a
+  // building admin, routed to them via BuildingManagerOrAdminRoute — this
+  // was still SUPER_ADMIN-only, so a building admin could never save any of
+  // it for their own building. PUT /floors/:id already gets this right via
+  // isFloorManagerForFloor; mirrors that here.
   fastify.put(
     '/:id',
-    { preHandler: [requireAuth, requireGlobalRole(GlobalRole.SUPER_ADMIN)] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
+
+      if (request.user.globalRole !== GlobalRole.SUPER_ADMIN) {
+        const canManage = await isBuildingManagerForBuilding(request.user.id, id)
+        if (!canManage) {
+          return reply.status(403).send({ error: { message: 'Insufficient permissions', code: 'FORBIDDEN' } })
+        }
+      }
+
       const result = updateBuildingSchema.safeParse(request.body)
       if (!result.success) {
         return reply.status(400).send({
@@ -553,36 +664,43 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
       // no longer any way to find which bookings were on those floors.
       const floors = await prisma.floor.findMany({ where: { buildingId: id }, select: { id: true } })
       await cancelFutureBookingsForFloors(floors.map((f) => f.id))
+      // Same policy for queue entries — see floors.ts DELETE /:id.
+      await cancelQueueEntriesForFloors(floors.map((f) => f.id))
 
-      // Also fetch before the delete — each floor's FloorPlan cascades away
-      // with it, but the files on disk don't clean themselves up.
-      const floorPlans = await prisma.floorPlan.findMany({
-        where: { floorId: { in: floors.map((f) => f.id) } },
-      })
+      // Lease ids under this building — buildingId on a lease doesn't change
+      // after creation, so this read is safe outside the lock below; it's
+      // only used to know which per-lease locks to acquire.
+      const leaseIds = (await prisma.buildingLease.findMany({ where: { buildingId: id }, select: { id: true } })).map((l) => l.id)
 
-      // Same reasoning as floor plans: BuildingLease/LeaseDocument cascade-delete
-      // with the building (schema.prisma), but the uploaded files on disk don't —
-      // and once the rows are gone there's no longer any record of the paths to
-      // clean up, so this leaks the files on disk forever.
-      const leaseDocuments = await prisma.leaseDocument.findMany({
-        where: { lease: { buildingId: id } },
-        select: { storagePath: true },
-      })
-
-      // The pre-delete asset snapshot and the delete itself run inside one
-      // transaction, locking every floor row under this building first —
-      // same race and fix shape as zones.ts/floors.ts DELETE /:id. Asset.
-      // floorId's FK checks against the Floor row, not the Building row
-      // directly, so a concurrent PATCH /assets/:id that places an asset
-      // onto one of this building's floors needs a lock on that same row;
-      // locking it here means Postgres blocks that write until we commit,
-      // then it fails outright (the floor being gone via cascade) instead of
-      // racing our snapshot below.
+      // The pre-delete asset/floor-plan/lease-document snapshot and the
+      // delete itself run inside one transaction, locking every floor row
+      // under this building first — same race and fix shape as
+      // zones.ts/floors.ts DELETE /:id. Asset.floorId's FK checks against
+      // the Floor row, not the Building row directly, so a concurrent PATCH
+      // /assets/:id that places an asset onto one of this building's floors
+      // needs a lock on that same row; locking it here means Postgres
+      // blocks that write until we commit, then it fails outright (the
+      // floor being gone via cascade) instead of racing our snapshot below.
+      //
+      // floorPlans/leaseDocuments are read here too, not before this
+      // transaction — same reasoning as floors.ts DELETE /:id's own fix: a
+      // floor-plan upload (locks its own Floor row, already covered by the
+      // FOR UPDATE below) or a lease-document upload (locks
+      // LEASE_DOCUMENT_LOCK_CLASS per lease id, NOT a Floor row, so it needs
+      // its own explicit acquire here) that commits in the gap would
+      // otherwise be invisible to a snapshot taken before the lock, leaking
+      // its file on disk once the cascade removes its DB row with no
+      // matching cleanup entry.
       const result = await prisma.$transaction(async (tx) => {
         await tx.$queryRaw`SELECT id FROM "Floor" WHERE "buildingId" = ${id} FOR UPDATE`
+        for (const leaseId of leaseIds) {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LEASE_DOCUMENT_LOCK_CLASS}, hashtext(${leaseId}))`
+        }
         const before = await tx.building.findUnique({ where: { id }, select: { name: true, address: true } })
         if (!before) return null
         const buildingAssetIds = (await tx.asset.findMany({ where: { floor: { buildingId: id } }, select: { id: true } })).map((a) => a.id)
+        const floorPlans = await tx.floorPlan.findMany({ where: { floorId: { in: floors.map((f) => f.id) } } })
+        const leaseDocuments = await tx.leaseDocument.findMany({ where: { lease: { buildingId: id } }, select: { storagePath: true } })
         await tx.building.delete({ where: { id } })
         if (buildingAssetIds.length > 0) {
           // Floor/Zone cascade-delete with the building, so Asset.floorId/
@@ -595,7 +713,7 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
             data: { x: null, y: null, width: null, height: null, rotation: null },
           })
         }
-        return before
+        return { before, floorPlans, leaseDocuments }
       }).catch(() => null)
 
       if (!result) {
@@ -603,12 +721,13 @@ export async function buildingRoutes(fastify: FastifyInstance): Promise<void> {
           error: { message: 'Building not found', code: 'NOT_FOUND' },
         })
       }
+      const { before: buildingBefore, floorPlans, leaseDocuments } = result
       await recordAuditLog(prisma, {
         actorId: request.user.id,
         action: 'building.deleted',
         resourceType: 'Building',
         resourceId: id,
-        before: result,
+        before: buildingBefore,
         ipAddress: request.ip,
       }, request.log)
 

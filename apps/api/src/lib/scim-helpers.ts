@@ -21,6 +21,32 @@ export async function lockScimEmail(tx: Prisma.TransactionClient, email: string)
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(${SCIM_EMAIL_LOCK_CLASS}, hashtext(${email.toLowerCase()}))`
 }
 
+/**
+ * Same race as lockScimEmail above, for UserGroup.name: the DB unique
+ * constraint is case-sensitive, so without a lock two concurrent SCIM
+ * `POST /Groups` calls for names differing only by case (e.g. "Marketing"
+ * vs "marketing") can both pass a case-insensitive collision check before
+ * either commits, leaving two live groups that read as the same group
+ * everywhere else in the app. Keyed on the lowercased name.
+ *
+ * 4250 — the next unused pg_advisory_xact_lock classid as of this writing.
+ * This constant was originally assigned 4249, which turned out to already
+ * be RESOURCE_ROLE_GRANT_LOCK_CLASS in middleware/requireRole.ts — a real
+ * collision (both use the two-arg hashtext overload), caught by grepping
+ * the whole repo (`grep -rn "_LOCK_CLASS = "`) rather than just lib/ and
+ * routes/, which is what let it slip through the first time. 4247 is also
+ * independently reused by lib/scim-helpers.ts's own SCIM_EMAIL_LOCK_CLASS,
+ * routes/manager-requests.ts, and routes/settings.ts (the last uses the
+ * single-arg overload, a disjoint lock space, so not a real collision) —
+ * always grep the full repo, not a subset of directories, before reusing an
+ * integer here.
+ */
+const SCIM_GROUP_NAME_LOCK_CLASS = 4250
+
+export async function lockScimGroupName(tx: Prisma.TransactionClient, name: string): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${SCIM_GROUP_NAME_LOCK_CLASS}, hashtext(${name.toLowerCase()}))`
+}
+
 export const SCIM_SCHEMAS = {
   USER: 'urn:ietf:params:scim:schemas:core:2.0:User',
   GROUP: 'urn:ietf:params:scim:schemas:core:2.0:Group',
@@ -273,18 +299,32 @@ export interface GroupPatch {
   displayName?: string
   addMemberIds: string[]
   removeMemberIds: string[]
+  // Set only when an operation replaces the WHOLE members list (RFC 7644
+  // §3.5.2.3 — the exact form some IdPs use for periodic full-membership
+  // reconciliation, as opposed to incremental add/remove diffs). This is the
+  // complete new membership, not an addition — the caller must diff it
+  // against current membership to know what to remove, since this function
+  // has no DB access of its own to do that itself.
+  replaceMemberIds: string[] | null
 }
 
 export function applyGroupPatchOps(
   operations: Array<{ op: string; path?: string; value?: unknown }>,
 ): GroupPatch {
-  const patch: GroupPatch = { addMemberIds: [], removeMemberIds: [] }
+  const patch: GroupPatch = { addMemberIds: [], removeMemberIds: [], replaceMemberIds: null }
 
   for (const op of operations) {
     const lower = op.op.toLowerCase()
     const path = op.path ?? ''
 
-    if (lower === 'replace' || lower === 'add') {
+    if (lower === 'replace' && (path === 'members' || path === '')) {
+      const members = (path === 'members' ? op.value : (op.value as Record<string, unknown>)?.members)
+      if (Array.isArray(members)) {
+        patch.replaceMemberIds = (members as Array<{ value?: string }>)
+          .map((m) => m.value)
+          .filter((v): v is string => !!v)
+      }
+    } else if (lower === 'replace' || lower === 'add') {
       if (path === 'displayName' && typeof op.value === 'string') patch.displayName = op.value
       if (path === 'members' || path === '') {
         const members = (path === 'members' ? op.value : (op.value as Record<string, unknown>)?.members)

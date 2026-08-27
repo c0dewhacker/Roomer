@@ -46,6 +46,26 @@ export default defineConfig({
         // Same app-shell-only precache scope as phase 1 — src/sw.ts's own
         // NavigationRoute denylist keeps /api/** out of the SPA fallback too.
         globPatterns: ['**/*.{js,css,html,png,svg,webmanifest}'],
+        // globPatterns above is unscoped by directory, so without this it
+        // also precached every lazy ROUTE chunk (router.tsx's lazy() calls),
+        // not just the shared shell — contradicting the comment above.  Most
+        // of those are small enough not to matter, but two are not:
+        // ReportsAdminPage (~430KB, a SUPER_ADMIN/BUILDING_ADMIN-only
+        // sustainability/analytics report) and pdf.worker.min (~1.26MB,
+        // pdfjs-dist's worker — only ever fetched, even for a regular user,
+        // at the moment a floor plan happens to be uploaded as a PDF rather
+        // than an image; see FloorPlanCanvas.tsx's `?url` import). Forcing
+        // ~1.7MB of admin/edge-case code into every visitor's SW install
+        // meant install could fail/retry on a slow connection for exactly
+        // the users who'd most benefit from a working precache, and
+        // defeated the route-based code-splitting the app already does.
+        // Deliberately NOT excluding FloorPlanCanvas/ReactKonva here even
+        // though they're also large — every regular user views a floor plan
+        // (the app's core action), so those genuinely belong in the
+        // app-shell-equivalent precache; only add a chunk here if it's both
+        // large AND narrowly-used, re-checking against a real `npm run
+        // build` chunk-size list before assuming that of a new one.
+        globIgnores: ['**/ReportsAdminPage-*.js', '**/pdf.worker.min-*.js'],
       },
       devOptions: {
         // Keep the SW out of `vite dev` entirely — this session's dev-proxy

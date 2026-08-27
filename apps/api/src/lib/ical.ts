@@ -93,6 +93,13 @@ export interface BookingIcsInput {
    * incoming CANCEL is even allowed to remove an existing event. */
   attendeeEmail: string
   attendeeName?: string | null
+  /**
+   * Overrides the default `{APP_URL}/bookings/:id` link. A guest has no
+   * account and can never load that authenticated app route — guest invites
+   * pass their check-in link instead so the URL a calendar app surfaces is
+   * actually reachable by whoever received the invite.
+   */
+  url?: string
 }
 
 /**
@@ -110,6 +117,17 @@ export function buildBookingIcs(booking: BookingIcsInput, method: IcalMethod = '
   const summary = `${isCancel ? 'Cancelled: ' : ''}Desk booking — ${booking.assetName}`
   const description = `Your Roomer desk booking for ${booking.assetName}.`
 
+  // REQUEST/CANCEL are iTIP scheduling methods (RFC 5546 §3.2/3.6) that
+  // require an ORGANIZER — several clients (Outlook especially) use its
+  // identity, matched against ATTENDEE, to decide whether an incoming CANCEL
+  // is even allowed to remove an event it didn't see the matching REQUEST
+  // for. PUBLISH is the opposite case: RFC 5546 §3.1 defines it as a plain
+  // FYI object with no scheduling relationship, and explicitly prohibits
+  // ATTENDEE on a PUBLISH component — carrying it anyway made the manual
+  // "download my own booking as .ics" endpoint emit a spec-noncompliant
+  // object that strict iTIP-validating clients could reject outright.
+  const includeAttendee = method !== 'PUBLISH'
+
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
@@ -125,14 +143,10 @@ export function buildBookingIcs(booking: BookingIcsInput, method: IcalMethod = '
     `SUMMARY:${escapeText(summary)}`,
     location ? `LOCATION:${escapeText(location)}` : '',
     `DESCRIPTION:${escapeText(description)}`,
-    `URL:${env.APP_URL}/bookings/${booking.id}`,
+    `URL:${booking.url ?? `${env.APP_URL}/bookings/${booking.id}`}`,
     `STATUS:${isCancel ? 'CANCELLED' : 'CONFIRMED'}`,
-    // REQUEST/CANCEL are iTIP scheduling methods (RFC 5546) that require an
-    // ORGANIZER — several clients (Outlook especially) use its identity,
-    // matched against ATTENDEE, to decide whether an incoming CANCEL is even
-    // allowed to remove an event it didn't see the matching REQUEST for.
-    `ORGANIZER;CN=${paramValue('Roomer')}:mailto:${env.EMAIL_FROM}`,
-    `ATTENDEE;CN=${paramValue(booking.attendeeName ?? booking.attendeeEmail)};PARTSTAT=${isCancel ? 'DECLINED' : 'ACCEPTED'}:mailto:${booking.attendeeEmail}`,
+    includeAttendee ? `ORGANIZER;CN=${paramValue('Roomer')}:mailto:${env.EMAIL_FROM}` : '',
+    includeAttendee ? `ATTENDEE;CN=${paramValue(booking.attendeeName ?? booking.attendeeEmail)};PARTSTAT=${isCancel ? 'DECLINED' : 'ACCEPTED'}:mailto:${booking.attendeeEmail}` : '',
     'END:VEVENT',
     'END:VCALENDAR',
   ].filter(Boolean)

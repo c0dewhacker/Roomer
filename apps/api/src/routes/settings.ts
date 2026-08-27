@@ -88,7 +88,8 @@ const ALLOWED_DATE_FORMATS = [
 ] as const
 
 const updateOrgSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
+  // .trim() before .min(1) — see schemas/department.ts for why.
+  name: z.string().trim().min(1).max(255).optional(),
   defaultBookingDurationHours: z.number().int().min(1).max(24).optional(),
   maxAdvanceBookingDays: z.number().int().min(1).max(365).optional(),
   maxBookingsPerUser: z.number().int().min(1).max(100).optional(),
@@ -108,7 +109,14 @@ const updateOrgSchema = z.object({
   // Org-wide fallback timezone + working hours (buildings can override —
   // see #72). enforceWorkingHours is a single org-wide on/off switch: the
   // hours themselves can be configured ahead of actually enforcing them.
-  defaultTimezone: z.string().refine((v) => Intl.supportedValuesOf('timeZone').includes(v), 'Not a recognised IANA timezone').optional(),
+  // 'UTC' is a valid, functional Intl/date-fns-tz timezone identifier (the
+  // Organisation schema's own default, and every fallback throughout this
+  // codebase) but Intl.supportedValuesOf('timeZone') only enumerates
+  // canonical IANA "Zone" entries, not the "UTC" link — it's absent from
+  // that list even though `new Intl.DateTimeFormat('en', { timeZone: 'UTC'
+  // })` works fine. Without the explicit allowance, saving ANY org setting
+  // 400'd the moment the form round-tripped the untouched default back.
+  defaultTimezone: z.string().refine((v) => v === 'UTC' || Intl.supportedValuesOf('timeZone').includes(v), 'Not a recognised IANA timezone').optional(),
   workingHoursStart: z.string().regex(/^\d{2}:\d{2}$/).optional(),
   workingHoursEnd: z.string().regex(/^\d{2}:\d{2}$/).optional(),
   enforceWorkingHours: z.boolean().optional(),
@@ -160,8 +168,12 @@ const oidcConfigSchema = z.object({
   scope: z.string().optional(),
   label: z.string().optional(),
   groupsClaimName: z.string().optional(),
-  departmentClaimName: z.string().optional(),
-  managerClaimName: z.string().optional(),
+  // nullish (not just optional) so the UI can explicitly clear a
+  // previously-set mapping — see the merge logic below (null → delete the
+  // key, '' → skip, matching ldapConfigSchema's syncBase/syncFilter, the
+  // one pair that already got this right).
+  departmentClaimName: z.string().nullish(),
+  managerClaimName: z.string().nullish(),
   groupMappings: z.array(groupMappingSchema).optional(),
 })
 
@@ -174,8 +186,10 @@ const samlConfigSchema = z.object({
   label: z.string().optional(),
   groupAttribute: z.string().optional(),
   groupMappings: z.array(groupMappingSchema).optional(),
-  departmentAttribute: z.string().optional(),
-  managerAttribute: z.string().optional(),
+  // nullish so the UI can explicitly clear a previously-set mapping — same
+  // fix as oidcConfigSchema's departmentClaimName/managerClaimName above.
+  departmentAttribute: z.string().nullish(),
+  managerAttribute: z.string().nullish(),
   // Refuse to disable signature verification in production — disabling either flag
   // turns SAML into an unauthenticated identity assertion (signature-stripping attack).
   wantAuthnResponseSigned: z.boolean()
@@ -203,7 +217,9 @@ const ldapConfigSchema = z.object({
   tlsRejectUnauthorized: z.boolean().optional(),
   groupAttribute: z.string().optional(),
   groupMappings: z.array(groupMappingSchema).optional(),
-  managerAttribute: z.string().optional(),
+  // nullish so the UI can explicitly clear a previously-set mapping — same
+  // fix as oidcConfigSchema/samlConfigSchema's department/manager fields.
+  managerAttribute: z.string().nullish(),
   // Directory sync settings — nullish so the UI can explicitly clear them
   syncBase: z.string().nullish(),
   syncFilter: z.string().nullish(),
@@ -459,9 +475,28 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
   )
 
   // GET /settings/public — public non-sensitive settings (dateFormat etc.)
+  //
+  // maxAdvanceBookingDays lives here too: booking UI (DeskPanel, FloorPage)
+  // needs it to compute date-picker bounds for every user, not just admins,
+  // but GET /organisation above is SUPER_ADMIN-gated. Before this, those
+  // components queried the admin endpoint, got a silent 403 for every
+  // non-admin user, and fell back to a hardcoded default that only happened
+  // to match reality when the org hadn't changed it from 14.
   fastify.get('/public', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (_request, reply) => {
-    const org = await prisma.organisation.findFirst({ select: { dateFormat: true } })
-    return reply.status(200).send({ data: { dateFormat: org?.dateFormat ?? 'dd/MM/yyyy' } })
+    const org = await prisma.organisation.findFirst({
+      select: { dateFormat: true, maxAdvanceBookingDays: true, maxRecurringBookingWeeks: true },
+    })
+    return reply.status(200).send({
+      data: {
+        dateFormat: org?.dateFormat ?? 'dd/MM/yyyy',
+        maxAdvanceBookingDays: org?.maxAdvanceBookingDays ?? 14,
+        // Same reasoning as maxAdvanceBookingDays above — the recurring-
+        // booking creation form needs this to bound its "repeat until"
+        // picker for every user, not just admins, and the default here must
+        // match recurring.ts's own ?? 12 fallback exactly.
+        maxRecurringBookingWeeks: org?.maxRecurringBookingWeeks ?? 12,
+      },
+    })
   })
 
   // GET /settings/branding — public (needed for login page theming)

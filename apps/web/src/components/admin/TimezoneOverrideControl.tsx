@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { IANA_TIMEZONES } from '@/lib/timezones'
+import { TimezoneSelect } from '@/components/TimezoneSelect'
 
 /**
  * Per-building timezone + working-hours override (see #72). Building.timezone
@@ -46,19 +45,13 @@ export function TimezoneOverrideControl({
         <p className="text-xs text-muted-foreground mb-2">
           Overrides the org default for this building's booking display and working-hours validation.
         </p>
-        <Select
+        <TimezoneSelect
           value={timezone ?? 'inherit'}
-          onValueChange={(v) => onChangeTimezone(v === 'inherit' ? null : v)}
+          onChange={(v) => onChangeTimezone(v === 'inherit' ? null : v)}
+          extraOption={{ value: 'inherit', label: 'Inherit org default' }}
           disabled={disabled}
-        >
-          <SelectTrigger className="h-8 w-64"><SelectValue /></SelectTrigger>
-          <SelectContent className="max-h-72">
-            <SelectItem value="inherit">Inherit org default</SelectItem>
-            {IANA_TIMEZONES.map((tz) => (
-              <SelectItem key={tz} value={tz}>{tz}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          className="h-8 w-64"
+        />
       </div>
       <div>
         <label className="flex items-center gap-2 cursor-pointer">

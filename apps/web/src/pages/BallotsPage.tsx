@@ -12,6 +12,7 @@ import {
 import {
   useAvailableBallots, useMyBallotEntries, useEnterBallot, useWithdrawBallotEntry, useDeclineBallotEntry,
 } from '@/hooks/useBallots'
+import { formatCalendarDate, formatDateRange } from '@/lib/utils'
 import type { BallotEntryStatus } from '@/types'
 
 const ENTRY_STATUS_LABEL: Record<BallotEntryStatus, string> = {
@@ -25,13 +26,16 @@ const ENTRY_STATUS_VARIANT: Record<BallotEntryStatus, 'default' | 'secondary' | 
   ENTERED: 'outline', WON: 'default', DECLINED: 'destructive', LOST: 'secondary',
 }
 
-function formatRange(startIso: string, endIso: string): string {
-  const start = new Date(startIso)
-  const end = new Date(endIso)
-  const sameDay = start.toDateString() === end.toDateString()
-  return sameDay
-    ? start.toLocaleDateString()
-    : `${start.toLocaleDateString()} – ${end.toLocaleDateString()}`
+// slotStartsAt/slotEndsAt are date-only fields (UTC midnight of the day
+// picked, no meaningful time-of-day — see ballot.ts's computeSlotDates),
+// same convention as RecurringBookingRule/BuildingLease's date fields.
+// formatCalendarDate re-anchors them as local midnight before formatting;
+// new Date(iso).toLocaleDateString() shifts the date itself back a day for
+// any viewer behind UTC.
+function formatSlotRange(startIso: string, endIso: string): string {
+  const startLabel = formatCalendarDate(startIso)
+  const endLabel = formatCalendarDate(endIso)
+  return startLabel === endLabel ? startLabel : `${startLabel} – ${endLabel}`
 }
 
 function OpenBallotsTab() {
@@ -48,23 +52,38 @@ function OpenBallotsTab() {
     <div className="space-y-3">
       {runs.map((r) => {
         const entered = r.myEntry?.status === 'ENTERED'
+        // The hourly draw sweep can lag registrationClosesAt by up to ~an
+        // hour, and the backend list endpoint doesn't filter out a run in
+        // that gap — without this check "Enter" stayed clickable the whole
+        // time, and only submitting it revealed registration had actually
+        // closed.
+        const registrationClosed = new Date().getTime() >= new Date(r.registrationClosesAt).getTime()
         return (
           <Card key={r.id}>
             <CardContent className="py-4 flex items-center justify-between gap-4">
               <div className="min-w-0">
                 <p className="font-medium">{r.ballot?.name}</p>
-                <p className="text-sm text-muted-foreground mt-1">Slot: {formatRange(r.slotStartsAt, r.slotEndsAt)}</p>
+                <p className="text-sm text-muted-foreground mt-1">Slot: {formatSlotRange(r.slotStartsAt, r.slotEndsAt)}</p>
                 <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
-                  <Clock className="h-3 w-3" /> Registration closes {new Date(r.registrationClosesAt).toLocaleString()}
+                  <Clock className="h-3 w-3" />
+                  {registrationClosed
+                    ? 'Registration closed — draw pending'
+                    : `Registration closes ${new Date(r.registrationClosesAt).toLocaleString()}`}
                 </p>
               </div>
               <div className="shrink-0">
                 {entered ? (
+                  // Withdraw has no registration-closed gate on the backend
+                  // (DELETE /runs/:runId/enter only checks the entry hasn't
+                  // been drawn yet) — a user can still back out during the
+                  // gap before the hourly draw sweep reaches this run, so
+                  // this button is deliberately NOT disabled by
+                  // registrationClosed the way Enter is below.
                   <Button size="sm" variant="outline" disabled={withdraw.isPending} onClick={() => withdraw.mutate(r.id)}>
                     Withdraw
                   </Button>
                 ) : (
-                  <Button size="sm" disabled={enter.isPending} onClick={() => enter.mutate(r.id)}>
+                  <Button size="sm" disabled={enter.isPending || registrationClosed} onClick={() => enter.mutate(r.id)}>
                     Enter
                   </Button>
                 )}
@@ -98,7 +117,7 @@ function MyEntriesTab() {
               </div>
               {e.status === 'WON' && e.asset && e.booking && (
                 <p className="text-sm text-muted-foreground mt-1">
-                  {e.asset.name} · {formatRange(e.booking.startsAt, e.booking.endsAt)}
+                  {e.asset.name} · {formatDateRange(e.booking.startsAt, e.booking.endsAt, e.booking.resolvedTimezone)}
                 </p>
               )}
             </div>

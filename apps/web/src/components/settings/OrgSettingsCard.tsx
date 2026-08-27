@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { settingsApi } from '@/lib/api'
 import { DATE_FORMAT_OPTIONS } from '@/lib/dateFormat'
-import { IANA_TIMEZONES } from '@/lib/timezones'
+import { TimezoneSelect } from '@/components/TimezoneSelect'
 import {
   Select,
   SelectContent,
@@ -236,14 +236,12 @@ export function OrgSettingsCard() {
             <p className="text-xs text-muted-foreground mb-2">
               Used to render and validate booking times for any building without its own timezone override. Bookings are always stored in UTC — changing this only affects display and working-hours validation, never reinterprets existing bookings.
             </p>
-            <Select value={watch('defaultTimezone')} onValueChange={(v) => setValue('defaultTimezone', v, { shouldDirty: true })}>
-              <SelectTrigger id="defaultTimezone" className="w-72"><SelectValue /></SelectTrigger>
-              <SelectContent className="max-h-72">
-                {IANA_TIMEZONES.map((tz) => (
-                  <SelectItem key={tz} value={tz}>{tz}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <TimezoneSelect
+              id="defaultTimezone"
+              value={watch('defaultTimezone')}
+              onChange={(v) => setValue('defaultTimezone', v, { shouldDirty: true })}
+              className="w-72"
+            />
           </div>
           <div className="grid grid-cols-2 gap-4 max-w-sm">
             <div>

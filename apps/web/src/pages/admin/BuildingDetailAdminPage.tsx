@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useForm, type Resolver } from 'react-hook-form'
 import { z } from 'zod'
@@ -63,10 +63,21 @@ function FloorDialog({
   existing?: Floor
 }) {
   const qc = useQueryClient()
-  const { register, handleSubmit, formState: { errors } } = useForm<FloorForm>({
+  const { register, handleSubmit, formState: { errors }, reset } = useForm<FloorForm>({
     resolver: zodResolver(floorSchema) as Resolver<FloorForm>,
     defaultValues: { name: existing?.name ?? '', level: existing?.level ?? 0 },
   })
+
+  // defaultValues only applies on this component's first mount — FloorDialog
+  // is nested inside FloorCard, which stays mounted across open/close toggles
+  // for the same floor (only remounts when key={floor.id} actually changes,
+  // i.e. when switching floors). Without resyncing here, canceling an edit
+  // left the changed-but-never-saved name/level in the form; reopening Edit
+  // on that same floor later showed the abandoned data instead of its real
+  // current values (same bug already fixed for Buildings/Assets/Leases).
+  useEffect(() => {
+    if (open) reset({ name: existing?.name ?? '', level: existing?.level ?? 0 })
+  }, [open, existing, reset])
 
   const create = useMutation({
     mutationFn: (d: FloorForm) => floorsApi.create({ buildingId, ...d }),
@@ -345,6 +356,10 @@ function BuildingManagersPanel({ buildingId, buildingName }: { buildingId: strin
     onSuccess: () => {
       toast.success('Building manager assigned')
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'managers'] })
+      // AccessSummaryDialog reads a separate ['access-summary', 'building', id]
+      // query — without this, "Access summary" kept showing the pre-change
+      // manager list for up to its 30s staleTime after an assign/remove here.
+      qc.invalidateQueries({ queryKey: ['access-summary', 'building', buildingId] })
       setSearch('')
       setSelectedUserId('')
     },
@@ -356,6 +371,7 @@ function BuildingManagersPanel({ buildingId, buildingName }: { buildingId: strin
     onSuccess: () => {
       toast.success('Building manager removed')
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'managers'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'building', buildingId] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -383,6 +399,7 @@ function BuildingManagersPanel({ buildingId, buildingName }: { buildingId: strin
     onSuccess: () => {
       toast.success('Group assigned as building manager')
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'group-managers'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'building', buildingId] })
       setSelectedGroupId('')
     },
     onError: (err: Error) => toast.error(err.message),
@@ -393,6 +410,7 @@ function BuildingManagersPanel({ buildingId, buildingName }: { buildingId: strin
     onSuccess: () => {
       toast.success('Group manager removed')
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'group-managers'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'building', buildingId] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -625,6 +643,7 @@ function BuildingAccessSection({ buildingId, buildingName }: { buildingId: strin
     onSuccess: () => {
       toast.success('Access group added')
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'access-groups'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'building', buildingId] })
       setSelectedGroupId('')
     },
     onError: (err: Error) => toast.error(err.message),
@@ -635,6 +654,7 @@ function BuildingAccessSection({ buildingId, buildingName }: { buildingId: strin
     onSuccess: () => {
       toast.success('Access group removed')
       qc.invalidateQueries({ queryKey: ['buildings', buildingId, 'access-groups'] })
+      qc.invalidateQueries({ queryKey: ['access-summary', 'building', buildingId] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -785,34 +805,53 @@ export default function BuildingDetailAdminPage() {
     enabled: !!buildingId,
   })
 
+  // Every one of these settings resolves down through each floor under this
+  // building (floors.ts: resolvedTimezone, and requiresApproval's zone ??
+  // building ?? org fallback chain both read Building fields directly) and
+  // is served via GET /floors/:id/availability, cached under
+  // ['floors', floorId, 'availability', dateStr] — a disjoint top-level key
+  // from ['buildings', buildingId], so invalidating only the latter (as
+  // these mutations did before) never touches a floor's own cached
+  // availability. DeskPanel's approval-required copy/button and every
+  // displayed booking time on FloorPage would then keep showing pre-edit
+  // values until an unrelated refetch or staleTime lapse. building?.floors
+  // is already loaded for the floor-list section below, so no extra fetch
+  // is needed to know which floor keys to invalidate.
+  const invalidateBuildingAndFloors = () => {
+    qc.invalidateQueries({ queryKey: ['buildings', buildingId] })
+    for (const f of building?.floors ?? []) {
+      qc.invalidateQueries({ queryKey: ['floors', f.id] })
+    }
+  }
+
   const saveNoShow = useMutation({
     mutationFn: (v: boolean | null) => buildingsApi.update(buildingId!, { noShowReleaseEnabled: v }),
-    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['buildings', buildingId] }) },
+    onSuccess: () => { toast.success('Saved'); invalidateBuildingAndFloors() },
     onError: (err: Error) => toast.error(err.message),
   })
 
   const saveQrMode = useMutation({
     mutationFn: (v: QrCheckInMode | null) => buildingsApi.update(buildingId!, { qrCheckInMode: v }),
-    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['buildings', buildingId] }) },
+    onSuccess: () => { toast.success('Saved'); invalidateBuildingAndFloors() },
     onError: (err: Error) => toast.error(err.message),
   })
 
   const saveRequiresApproval = useMutation({
     mutationFn: (v: boolean | null) => buildingsApi.update(buildingId!, { requiresApproval: v }),
-    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['buildings', buildingId] }) },
+    onSuccess: () => { toast.success('Saved'); invalidateBuildingAndFloors() },
     onError: (err: Error) => toast.error(err.message),
   })
 
   const saveTimezone = useMutation({
     mutationFn: (v: string | null) => buildingsApi.update(buildingId!, { timezone: v }),
-    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['buildings', buildingId] }) },
+    onSuccess: () => { toast.success('Saved'); invalidateBuildingAndFloors() },
     onError: (err: Error) => toast.error(err.message),
   })
 
   const saveWorkingHours = useMutation({
     mutationFn: (v: { start: string; end: string } | null) =>
       buildingsApi.update(buildingId!, { workingHoursStart: v?.start ?? null, workingHoursEnd: v?.end ?? null }),
-    onSuccess: () => { toast.success('Saved'); qc.invalidateQueries({ queryKey: ['buildings', buildingId] }) },
+    onSuccess: () => { toast.success('Saved'); invalidateBuildingAndFloors() },
     onError: (err: Error) => toast.error(err.message),
   })
 
@@ -848,7 +887,7 @@ export default function BuildingDetailAdminPage() {
 
       <AccessSummaryDialog kind="building" id={buildingId!} name={building?.name ?? 'Building'} open={accessOpen} onOpenChange={setAccessOpen} />
 
-      <div className="mb-6 max-w-sm space-y-3">
+      <div className="mb-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
         <NoShowOverrideControl scope="building" value={building?.noShowReleaseEnabled} onChange={(v) => saveNoShow.mutate(v)} disabled={saveNoShow.isPending} />
         <QrCheckInModeControl scope="building" value={building?.qrCheckInMode} onChange={(v) => saveQrMode.mutate(v)} disabled={saveQrMode.isPending} />
         <ApprovalOverrideControl scope="building" value={building?.requiresApproval} onChange={(v) => saveRequiresApproval.mutate(v)} disabled={saveRequiresApproval.isPending} />

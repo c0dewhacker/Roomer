@@ -117,6 +117,12 @@ export default function AssignmentImportDialog({
       setStep('result')
       qc.invalidateQueries({ queryKey: ['assets'] })
       qc.invalidateQueries({ queryKey: ['floors'] })
+      // Same two cache keys DeskPanel.tsx's single-assignment mutations and
+      // AssignedDeskCard.tsx invalidate — a bulk import assigns desks to
+      // users exactly like the one-at-a-time flow does, and those users'
+      // own "My Assigned Desks"/"My Assets" views read this data too.
+      qc.invalidateQueries({ queryKey: ['my-assignments'] })
+      qc.invalidateQueries({ queryKey: ['assets', 'my'] })
     },
     onError: (err: Error) => {
       const details = err instanceof ApiError ? (err.fieldErrors ?? err.message) : err.message

@@ -97,7 +97,13 @@ export async function auditLogRoutes(fastify: FastifyInstance): Promise<void> {
         where,
         skip,
         take: limit,
-        orderBy: { createdAt: 'desc' },
+        // Secondary sort on id — createdAt alone is not a safe pagination
+        // key (millisecond-precision timestamps can tie under bulk
+        // operations, e.g. a CSV import or bulk position update writing many
+        // rows in the same tick), and Postgres gives no ordering guarantee
+        // among tied rows across separate queries without a unique
+        // tiebreaker. Same class of bug as GET /bookings/report.
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
         include: { actor: { select: { id: true, displayName: true, email: true } } },
       }),
       prisma.auditLog.count({ where }),

@@ -29,12 +29,20 @@ interface PushPayload {
 }
 
 self.addEventListener('push', (event) => {
-  if (!event.data) return
-  let payload: PushPayload
-  try {
-    payload = event.data.json() as PushPayload
-  } catch {
-    return
+  // Always show *something*, even for a missing/malformed payload — a
+  // userVisibleOnly:true subscription (which this is) promises the browser
+  // every push results in a visible notification; silently dropping one
+  // breaks that contract and repeated drops can get the browser to throttle
+  // or revoke the subscription outright. Not reachable from Roomer's own
+  // server today (PushPayload's title/body are required server-side), but
+  // a malformed push could still arrive from a stale/misbehaving sender.
+  let payload: PushPayload = { title: 'New notification', body: 'You have a new notification.' }
+  if (event.data) {
+    try {
+      payload = event.data.json() as PushPayload
+    } catch {
+      // keep the fallback payload above
+    }
   }
   event.waitUntil(
     self.registration.showNotification(payload.title, {

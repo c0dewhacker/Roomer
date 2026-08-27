@@ -83,7 +83,7 @@ export default function ManagerRequestsAdminPage() {
   const [rejecting, setRejecting] = useState<FloorManagerRequest | null>(null)
 
   return (
-    <div className="p-6 space-y-6 max-w-4xl">
+    <div className="p-6 space-y-6 max-w-4xl mx-auto">
       <div>
         <h1 className="text-2xl font-semibold flex items-center gap-2">
           <ShieldPlus className="h-6 w-6" />
@@ -136,9 +136,9 @@ export default function ManagerRequestsAdminPage() {
                   )}
                   <p className="text-xs text-muted-foreground flex items-center gap-1">
                     <Clock className="h-3 w-3" />
-                    Requested {formatDate(r.createdAt)}
-                    {r.status === 'PENDING' && ` · expires ${formatDate(r.expiresAt)}`}
-                    {r.reviewedAt && r.reviewedBy && ` · reviewed by ${r.reviewedBy.displayName} on ${formatDate(r.reviewedAt)}`}
+                    Requested {formatDate(r.createdAt, r.resolvedTimezone)}
+                    {r.status === 'PENDING' && ` · expires ${formatDate(r.expiresAt, r.resolvedTimezone)}`}
+                    {r.reviewedAt && r.reviewedBy && ` · reviewed by ${r.reviewedBy.displayName} on ${formatDate(r.reviewedAt, r.resolvedTimezone)}`}
                   </p>
                 </div>
                 {r.status === 'PENDING' && (

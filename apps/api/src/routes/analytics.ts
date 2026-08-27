@@ -5,24 +5,144 @@ import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { getManagedBuildingIds } from '../middleware/requireRole.js'
 import { wantsCsv, sendCsv } from '../lib/csv.js'
+import { resolveBuildingTimezone, resolveWorkingHours, zonedWallClockToUtc, calendarDaysUntil } from '../lib/timezone.js'
 import { z } from 'zod'
 
 const analyticsQuerySchema = z.object({
-  startDate: z.string().optional(),
-  endDate: z.string().optional(),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'startDate must be YYYY-MM-DD').optional(),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'endDate must be YYYY-MM-DD').optional(),
   buildingId: z.string().optional(),
   floorId: z.string().optional(),
 })
 
-function defaultDateRange(): { startDate: Date; endDate: Date } {
-  const endDate = new Date()
-  const startDate = new Date()
-  startDate.setDate(startDate.getDate() - 30)
-  return { startDate, endDate }
+/**
+ * Effective [startDate, endDate] as plain YYYY-MM-DD calendar-date strings —
+ * either the caller's explicit query params, or a default rolling window
+ * ending "today" (UTC — there's no single relevant building to anchor an
+ * unscoped default window to). Every consumer below compares these against
+ * each row's OWN building's timezone (Postgres's AT TIME ZONE for raw SQL
+ * queries, or resolveBuildingTimezone/zonedWallClockToUtc for Prisma ORM
+ * queries) rather than a fixed UTC instant — the previous
+ * `new Date(value + 'T00:00:00.000Z')` anchored every date string to UTC
+ * midnight regardless of which building's calendar day was actually meant,
+ * silently including/excluding up to a full day's data near the boundary
+ * for any building whose timezone isn't UTC (see #274's release notes —
+ * this was deliberately deferred out of the 1.0 release, fixed here).
+ */
+function effectiveDateRangeStrings(startDateParam: string | undefined, endDateParam: string | undefined, defaultDays: number): { startDateStr: string; endDateStr: string } {
+  const today = new Date()
+  const endDateStr = endDateParam ?? today.toISOString().slice(0, 10)
+  const startDateStr = startDateParam ?? new Date(today.getTime() - defaultDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  return { startDateStr, endDateStr }
 }
 
-function parseDateParam(value: string | undefined, suffix: 'T00:00:00.000Z' | 'T23:59:59.999Z', fallback: Date): Date {
-  return value ? new Date(value + suffix) : fallback
+/**
+ * Naive (no timezone suffix) local-day boundary strings for a calendar-date
+ * range — passed as `::timestamp` literals into a raw SQL query and compared
+ * against a column already converted to per-row local wall-clock time via
+ * `AT TIME ZONE`, so the comparison happens entirely in "local time" space
+ * rather than as a UTC instant.
+ *
+ * IMPORTANT for every raw-SQL AT TIME ZONE usage below: Booking.startsAt is
+ * `timestamp(3) WITHOUT time zone` in Postgres (Prisma's plain `DateTime`
+ * default, no `@db.Timestamptz`), even though the values it holds are real
+ * UTC instants. `AT TIME ZONE` is overloaded and does the OPPOSITE
+ * conversion depending on the operand's type: on a `timestamptz` it converts
+ * TO local wall-clock time (what every fix here needs); on a bare
+ * `timestamp` it does the reverse — reinterprets the naive value AS ALREADY
+ * being local time in that zone and converts it TO a UTC instant. Applying
+ * `AT TIME ZONE tz` directly to `b."startsAt"` silently produces the wrong
+ * answer (verified live: it degenerates to comparing against the raw UTC
+ * date, exactly the bug this fix exists to remove). The correct idiom,
+ * used everywhere below, is the double conversion:
+ * `(b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE tz` — the first
+ * application reinterprets the naive value as UTC (correct, since that's
+ * what it actually is) and produces a real `timestamptz`; the second then
+ * converts that instant to local wall-clock time in `tz`.
+ */
+function localDayBoundsSql(startDateStr: string, endDateStr: string): { startLocal: string; endLocal: string } {
+  return { startLocal: `${startDateStr} 00:00:00`, endLocal: `${endDateStr} 23:59:59.999` }
+}
+
+/** UTC-midnight Date objects for the calendar-date range — used only for the
+ * timezone-agnostic countWorkingDays() weekday arithmetic below, never for
+ * comparing against a real booking instant (see effectiveDateRangeStrings). */
+function calendarDateObjects(startDateStr: string, endDateStr: string): { startDate: Date; endDate: Date } {
+  return { startDate: new Date(startDateStr + 'T00:00:00.000Z'), endDate: new Date(endDateStr + 'T23:59:59.999Z') }
+}
+
+function addDaysToDateStr(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  const dt = new Date(Date.UTC(y, m - 1, d))
+  dt.setUTCDate(dt.getUTCDate() + days)
+  return dt.toISOString().slice(0, 10)
+}
+
+/**
+ * Precise local-calendar-day [start, endExclusive) instant bounds for a
+ * single building, resolved via the building's own timezone (or the org
+ * default when buildingId is null) — for Prisma ORM query paths that can't
+ * express a per-row `AT TIME ZONE` comparison in SQL, so the widen+JS-filter
+ * pattern (see resolveBuildingTimezone call sites below) needs a real,
+ * precise instant boundary per building instead. Half-open (< endExclusive,
+ * not <= endInclusive) because zonedWallClockToUtc only takes hour/minute,
+ * not seconds — a "day+1 at 00:00" exclusive upper bound is exact where an
+ * inclusive "day at 23:59" would silently drop the last minute.
+ */
+async function localDayBoundsForBuilding(
+  buildingId: string | null,
+  startDateStr: string,
+  endDateStr: string,
+  cache: Map<string | null, { start: Date; endExclusive: Date }>,
+): Promise<{ start: Date; endExclusive: Date }> {
+  const cached = cache.get(buildingId)
+  if (cached) return cached
+  const tz = await resolveBuildingTimezone(prisma, buildingId)
+  const [sy, sm, sd] = startDateStr.split('-').map(Number)
+  const endExclusiveStr = addDaysToDateStr(endDateStr, 1)
+  const [ey, em, ed] = endExclusiveStr.split('-').map(Number)
+  const bounds = {
+    start: zonedWallClockToUtc(sy, sm, sd, 0, 0, tz),
+    endExclusive: zonedWallClockToUtc(ey, em, ed, 0, 0, tz),
+  }
+  cache.set(buildingId, bounds)
+  return bounds
+}
+
+/**
+ * Working-hours span in hours for a building (or the org default when
+ * buildingId is null), cached per building the same way
+ * localDayBoundsForBuilding is — a report can span floors across several
+ * differently-configured buildings at once. Used to convert desk-days into
+ * desk-HOURS capacity: the utilisation endpoints below previously divided a
+ * raw count of Booking rows by desk-days, silently assuming "1 booking = 1
+ * full desk-day" — wrong the moment hot-desking splits a day into several
+ * non-overlapping bookings (each one inflates the count, pushing reported
+ * utilisation past 100%) — and separately, the desk-days-style metrics in
+ * /departments and /manager-rollup divided booked hours by a hardcoded 8,
+ * ignoring the org/building's actual configured working hours (default
+ * 07:00-19:00, a 12-hour span, understating desk-days by 50% at default
+ * settings alone).
+ */
+async function workingHoursSpanForBuilding(
+  buildingId: string | null,
+  cache: Map<string | null, number>,
+): Promise<number> {
+  const cached = cache.get(buildingId)
+  if (cached !== undefined) return cached
+  const hours = await resolveWorkingHours(prisma, buildingId)
+  const [sh, sm] = hours.start.split(':').map(Number)
+  const [eh, em] = hours.end.split(':').map(Number)
+  const span = (eh * 60 + em - (sh * 60 + sm)) / 60
+  cache.set(buildingId, span > 0 ? span : 8)
+  return cache.get(buildingId)!
+}
+
+/** Hours of overlap between [aStart, aEnd) and [bStart, bEnd), never negative. */
+function overlapHours(aStart: Date, aEnd: Date, bStart: Date, bEnd: Date): number {
+  const start = aStart > bStart ? aStart : bStart
+  const end = aEnd < bEnd ? aEnd : bEnd
+  return Math.max(0, (end.getTime() - start.getTime()) / 3600000)
 }
 
 function countWorkingDays(start: Date, end: Date): number {
@@ -74,10 +194,17 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      const defaults = defaultDateRange()
-      const startDate = parseDateParam(result.data.startDate, 'T00:00:00.000Z', defaults.startDate)
-      const endDate = parseDateParam(result.data.endDate, 'T23:59:59.999Z', defaults.endDate)
-      const workingDays = countWorkingDays(startDate, endDate)
+      const { startDateStr, endDateStr } = effectiveDateRangeStrings(result.data.startDate, result.data.endDate, 30)
+      const { startDate: calStart, endDate: calEnd } = calendarDateObjects(startDateStr, endDateStr)
+      const workingDays = countWorkingDays(calStart, calEnd)
+
+      // Widened DB pre-filter (±14h covers every real-world UTC offset) — the
+      // precise per-building local-day filter happens in JS below via
+      // localDayBoundsForBuilding, since floors in this result can belong to
+      // different-timezone buildings and Prisma's query builder can't express
+      // a per-row AT TIME ZONE comparison the way raw SQL can.
+      const widenedStart = new Date(calStart.getTime() - 14 * 60 * 60 * 1000)
+      const widenedEnd = new Date(calEnd.getTime() + 14 * 60 * 60 * 1000)
 
       // Build floor/building filters
       const floorWhere: Record<string, unknown> = {}
@@ -106,9 +233,9 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
                       // COMPLETED — CONFIRMED-only silently undercounted historical usage
                       // toward zero the further back a booking's endsAt was.
                       status: { in: ['CONFIRMED', 'COMPLETED'] },
-                      startsAt: { gte: startDate, lte: endDate },
+                      startsAt: { gte: widenedStart, lte: widenedEnd },
                     },
-                    select: { id: true },
+                    select: { id: true, startsAt: true, endsAt: true, assetId: true },
                   },
                 },
               },
@@ -117,16 +244,32 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         },
       })
 
-      const data = floors.flatMap((floor) =>
-        floor.zones.map((zone) => {
+      const buildingDayBoundsCache = new Map<string | null, { start: Date; endExclusive: Date }>()
+      const workingHoursCache = new Map<string | null, number>()
+      const data = (await Promise.all(floors.flatMap((floor) =>
+        floor.zones.map(async (zone) => {
+          const { start, endExclusive } = await localDayBoundsForBuilding(floor.building.id, startDateStr, endDateStr, buildingDayBoundsCache)
+          const hoursPerDay = await workingHoursSpanForBuilding(floor.building.id, workingHoursCache)
           const bookableDesks = zone.assets.filter((a) => a.bookingStatus === 'OPEN' || a.bookingStatus === 'RESTRICTED')
           const assignedDesks = zone.assets.filter((a) => a.bookingStatus === 'ASSIGNED')
           const disabledDesks = zone.assets.filter((a) => a.bookingStatus === 'DISABLED')
-          const bookingCount = zone.assets.reduce((sum, a) => sum + a.bookings.length, 0)
+          // Informational raw count — unrelated to the utilisation % below,
+          // which is hours-based (see workingHoursSpanForBuilding's comment).
+          const bookingCount = zone.assets.reduce((sum, a) => sum + a.bookings.filter((b) => b.startsAt >= start && b.startsAt < endExclusive).length, 0)
           // Capacity = OPEN + RESTRICTED + ASSIGNED (non-disabled); DISABLED are out of service
           const activeDesks = bookableDesks.length + assignedDesks.length
-          const capacity = activeDesks * workingDays
-          const utilisation = capacity > 0 ? Math.round((bookingCount / capacity) * 100) : 0
+          // Booked hours only from currently-active (non-disabled) desks,
+          // matching the denominator — an asset that was heavily used before
+          // being disabled shouldn't drag this zone's utilisation toward 0%
+          // just because its own capacity is now excluded; its history is out
+          // of scope for a "current desk utilisation" figure the same way its
+          // capacity already is.
+          const activeAssetIds = new Set([...bookableDesks, ...assignedDesks].map((a) => a.id))
+          const bookedHours = zone.assets
+            .filter((a) => activeAssetIds.has(a.id))
+            .reduce((sum, a) => sum + a.bookings.reduce((s, b) => s + overlapHours(b.startsAt, b.endsAt, start, endExclusive), 0), 0)
+          const capacity = activeDesks * workingDays * hoursPerDay
+          const utilisation = capacity > 0 ? Math.round((bookedHours / capacity) * 100) : 0
 
           return {
             floorId: floor.id,
@@ -144,7 +287,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
             utilisationPct: utilisation,
           }
         }),
-      )
+      )))
 
       if (wantsCsv(request)) {
         return sendCsv(reply, 'zone-utilisation.csv',
@@ -186,61 +329,73 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      const defaults = defaultDateRange()
-      const startDate = parseDateParam(result.data.startDate, 'T00:00:00.000Z', defaults.startDate)
-      const endDate = parseDateParam(result.data.endDate, 'T23:59:59.999Z', defaults.endDate)
+      const { startDateStr, endDateStr } = effectiveDateRangeStrings(result.data.startDate, result.data.endDate, 30)
+      const { startLocal, endLocal } = localDayBoundsSql(startDateStr, endDateStr)
 
       type BookingCountRow = { date: Date; count: bigint }
 
       let rows: BookingCountRow[]
 
       if (result.data.floorId) {
+        const floorForTz = await prisma.floor.findUnique({ where: { id: result.data.floorId }, select: { buildingId: true } })
+        const tz = await resolveBuildingTimezone(prisma, floorForTz?.buildingId ?? null)
         rows = await prisma.$queryRaw<BookingCountRow[]>`
-          SELECT DATE(b."startsAt") AS date, COUNT(*)::bigint AS count
+          SELECT DATE((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE ${tz}) AS date, COUNT(*)::bigint AS count
           FROM "Booking" b
           JOIN "Asset" a ON a.id = b."assetId"
-          WHERE b."startsAt" >= ${startDate}
-            AND b."startsAt" <= ${endDate}
+          WHERE ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE ${tz}) >= ${startLocal}::timestamp
+            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE ${tz}) <= ${endLocal}::timestamp
             AND b.status IN ('CONFIRMED', 'COMPLETED')
             AND a."floorId" = ${result.data.floorId}
-          GROUP BY DATE(b."startsAt")
-          ORDER BY DATE(b."startsAt") ASC
+          GROUP BY date
+          ORDER BY date ASC
         `
       } else if (result.data.buildingId) {
+        const tz = await resolveBuildingTimezone(prisma, result.data.buildingId)
         rows = await prisma.$queryRaw<BookingCountRow[]>`
-          SELECT DATE(b."startsAt") AS date, COUNT(*)::bigint AS count
+          SELECT DATE((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE ${tz}) AS date, COUNT(*)::bigint AS count
           FROM "Booking" b
           JOIN "Asset" a ON a.id = b."assetId"
           JOIN "Floor" f ON f.id = a."floorId"
-          WHERE b."startsAt" >= ${startDate}
-            AND b."startsAt" <= ${endDate}
+          WHERE ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE ${tz}) >= ${startLocal}::timestamp
+            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE ${tz}) <= ${endLocal}::timestamp
             AND b.status IN ('CONFIRMED', 'COMPLETED')
             AND f."buildingId" = ${result.data.buildingId}
-          GROUP BY DATE(b."startsAt")
-          ORDER BY DATE(b."startsAt") ASC
+          GROUP BY date
+          ORDER BY date ASC
         `
       } else if (!isSuperAdmin) {
+        const orgDefaultTz = await resolveBuildingTimezone(prisma, null)
         rows = await prisma.$queryRaw<BookingCountRow[]>`
-          SELECT DATE(b."startsAt") AS date, COUNT(*)::bigint AS count
+          SELECT DATE((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) AS date, COUNT(*)::bigint AS count
           FROM "Booking" b
           JOIN "Asset" a ON a.id = b."assetId"
           JOIN "Floor" f ON f.id = a."floorId"
-          WHERE b."startsAt" >= ${startDate}
-            AND b."startsAt" <= ${endDate}
+          JOIN "Building" bld ON bld.id = f."buildingId"
+          WHERE ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) >= ${startLocal}::timestamp
+            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) <= ${endLocal}::timestamp
             AND b.status IN ('CONFIRMED', 'COMPLETED')
             AND f."buildingId" = ANY(${managedBuildingIds})
-          GROUP BY DATE(b."startsAt")
-          ORDER BY DATE(b."startsAt") ASC
+          GROUP BY date
+          ORDER BY date ASC
         `
       } else {
+        // LEFT JOIN (not INNER) — an asset with no floor (Asset.floorId is
+        // nullable) still has its bookings counted here, same as the
+        // previous unjoined query; COALESCE falls back to the org default
+        // timezone for those rows since they have no building to resolve.
+        const orgDefaultTz = await resolveBuildingTimezone(prisma, null)
         rows = await prisma.$queryRaw<BookingCountRow[]>`
-          SELECT DATE("startsAt") AS date, COUNT(*)::bigint AS count
-          FROM "Booking"
-          WHERE "startsAt" >= ${startDate}
-            AND "startsAt" <= ${endDate}
-            AND status IN ('CONFIRMED', 'COMPLETED')
-          GROUP BY DATE("startsAt")
-          ORDER BY DATE("startsAt") ASC
+          SELECT DATE((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) AS date, COUNT(*)::bigint AS count
+          FROM "Booking" b
+          LEFT JOIN "Asset" a ON a.id = b."assetId"
+          LEFT JOIN "Floor" f ON f.id = a."floorId"
+          LEFT JOIN "Building" bld ON bld.id = f."buildingId"
+          WHERE ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) >= ${startLocal}::timestamp
+            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) <= ${endLocal}::timestamp
+            AND b.status IN ('CONFIRMED', 'COMPLETED')
+          GROUP BY date
+          ORDER BY date ASC
         `
       }
 
@@ -276,10 +431,15 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      const defaults = defaultDateRange()
-      const startDate = parseDateParam(result.data.startDate, 'T00:00:00.000Z', defaults.startDate)
-      const endDate = parseDateParam(result.data.endDate, 'T23:59:59.999Z', defaults.endDate)
-      const workingDays = countWorkingDays(startDate, endDate)
+      const { startDateStr, endDateStr } = effectiveDateRangeStrings(result.data.startDate, result.data.endDate, 30)
+      const { startDate: calStart, endDate: calEnd } = calendarDateObjects(startDateStr, endDateStr)
+      const workingDays = countWorkingDays(calStart, calEnd)
+      // Widened DB pre-filter (±14h) — see /utilisation above for why: the
+      // precise per-building local-day filter happens in JS below since
+      // Prisma's count()/findMany() can't express a per-row AT TIME ZONE
+      // comparison the way raw SQL can.
+      const widenedStart = new Date(calStart.getTime() - 14 * 60 * 60 * 1000)
+      const widenedEnd = new Date(calEnd.getTime() + 14 * 60 * 60 * 1000)
 
       // result.data.buildingId (the Reports page's Building filter) was
       // accepted here but never referenced — only the non-admin managed-
@@ -299,34 +459,66 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         ? { asset: { floor: { buildingId: buildingIdFilter } } }
         : {}
 
-      const bookingWhere: Record<string, unknown> = { startsAt: { gte: startDate, lte: endDate }, ...bookingBuildingFilter }
+      const bookingWhere: Record<string, unknown> = { startsAt: { gte: widenedStart, lte: widenedEnd }, ...bookingBuildingFilter }
 
-      const [confirmed, cancelled, noShowCount, completed, uniqueBookers, bookableDesks, assignedDesks, disabledDesks, queueDepth] = await Promise.all([
-        prisma.booking.count({ where: { ...bookingWhere, status: 'CONFIRMED' } }),
-        prisma.booking.count({ where: { ...bookingWhere, status: 'CANCELLED' } }),
-        prisma.booking.count({ where: { ...bookingWhere, status: 'CANCELLED', noShow: true } }),
-        prisma.booking.count({ where: { ...bookingWhere, status: 'COMPLETED' } }),
+      const [widenedBookings, bookableAssets, assignedAssets, disabledDesks, queueDepth] = await Promise.all([
         prisma.booking.findMany({
-          where: { ...bookingWhere, status: { in: ['CONFIRMED', 'COMPLETED'] } },
-          select: { userId: true },
-          distinct: ['userId'],
+          where: { ...bookingWhere, status: { in: ['CONFIRMED', 'CANCELLED', 'COMPLETED'] } },
+          select: { id: true, assetId: true, status: true, noShow: true, userId: true, startsAt: true, endsAt: true, asset: { select: { floor: { select: { buildingId: true } } } } },
         }),
-        // OPEN + RESTRICTED = freely bookable assets
-        prisma.asset.count({ where: { isBookable: true, bookingStatus: { in: ['OPEN', 'RESTRICTED'] }, ...assetBuildingFilter } }),
-        prisma.asset.count({ where: { isBookable: true, bookingStatus: 'ASSIGNED', ...assetBuildingFilter } }),
+        // Fetched per-asset (not just counted) with each one's building —
+        // capacity below needs to sum per-building desk-hours, since
+        // buildings in scope can have different working-hours configs, not
+        // a single combined desk count times one hours-per-day figure.
+        prisma.asset.findMany({
+          where: { isBookable: true, bookingStatus: { in: ['OPEN', 'RESTRICTED'] }, ...assetBuildingFilter },
+          select: { id: true, floor: { select: { buildingId: true } } },
+        }),
+        prisma.asset.findMany({
+          where: { isBookable: true, bookingStatus: 'ASSIGNED', ...assetBuildingFilter },
+          select: { id: true, floor: { select: { buildingId: true } } },
+        }),
         prisma.asset.count({ where: { isBookable: true, bookingStatus: 'DISABLED', ...assetBuildingFilter } }),
         prisma.queueEntry.count({ where: { status: 'WAITING', ...queueBuildingFilter } }),
       ])
+      const bookableDesks = bookableAssets.length
+      const assignedDesks = assignedAssets.length
+      const activeAssets = [...bookableAssets, ...assignedAssets]
 
-      const totalDesks = bookableDesks + assignedDesks + disabledDesks
+      const summaryDayBoundsCache = new Map<string | null, { start: Date; endExclusive: Date }>()
+      const summaryHoursCache = new Map<string | null, number>()
+      const activeAssetIds = new Set(activeAssets.map((a) => a.id))
+      const inRangeBookings = []
+      for (const b of widenedBookings) {
+        const buildingId = b.asset.floor?.buildingId ?? null
+        const { start, endExclusive } = await localDayBoundsForBuilding(buildingId, startDateStr, endDateStr, summaryDayBoundsCache)
+        if (b.startsAt >= start && b.startsAt < endExclusive) inRangeBookings.push({ ...b, buildingId, rangeStart: start, rangeEnd: endExclusive })
+      }
+      const confirmed = inRangeBookings.filter((b) => b.status === 'CONFIRMED').length
+      const cancelled = inRangeBookings.filter((b) => b.status === 'CANCELLED').length
+      const noShowCount = inRangeBookings.filter((b) => b.status === 'CANCELLED' && b.noShow).length
+      const completed = inRangeBookings.filter((b) => b.status === 'COMPLETED').length
+      const uniqueBookers = new Set(inRangeBookings.filter((b) => b.status === 'CONFIRMED' || b.status === 'COMPLETED').map((b) => b.userId))
+
+      const totalDesks = activeAssets.length + disabledDesks
       const totalAttempted = confirmed + cancelled + completed
       // "cancelled" includes no-show releases — separate them so each rate is distinct.
       const manualCancelled = Math.max(0, cancelled - noShowCount)
       const cancellationRate = totalAttempted > 0 ? Math.round((manualCancelled / totalAttempted) * 100) : 0
       const noShowRate = totalAttempted > 0 ? Math.round((noShowCount / totalAttempted) * 100) : 0
-      // Capacity = all non-disabled desks (OPEN + RESTRICTED + ASSIGNED); disabled are truly out of service
-      const activeDesks = bookableDesks + assignedDesks
-      const totalCapacity = activeDesks * workingDays
+      // Capacity = Σ over each in-scope building of (its non-disabled desk
+      // count × workingDays × its own working-hours span) — buildings can
+      // be configured with different working hours, so this can't collapse
+      // to one combined desk count times a single hours-per-day figure.
+      const desksByBuilding = new Map<string | null, number>()
+      for (const a of activeAssets) {
+        const buildingId = a.floor?.buildingId ?? null
+        desksByBuilding.set(buildingId, (desksByBuilding.get(buildingId) ?? 0) + 1)
+      }
+      let totalCapacity = 0
+      for (const [buildingId, count] of desksByBuilding) {
+        totalCapacity += count * workingDays * (await workingHoursSpanForBuilding(buildingId, summaryHoursCache))
+      }
       // "Happened" = confirmed (still upcoming/in-progress) + completed
       // (handleAutoCompleteBookings flips a booking's status 30 minutes
       // after it ends) — the headline booking/utilisation figures below
@@ -334,8 +526,13 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       // `confirmed` alone silently collapsed toward zero for any
       // backward-looking range, since almost every booking in the past has
       // already transitioned to COMPLETED by the time anyone views this.
+      // Hours-based (not a raw event count) and scoped to currently-active
+      // desks only, same reasoning as /utilisation and /floor-utilisation.
       const happened = confirmed + completed
-      const overallUtilisationPct = totalCapacity > 0 ? Math.round((happened / totalCapacity) * 100) : 0
+      const happenedHours = inRangeBookings
+        .filter((b) => (b.status === 'CONFIRMED' || b.status === 'COMPLETED') && activeAssetIds.has(b.assetId))
+        .reduce((sum, b) => sum + overlapHours(b.startsAt, b.endsAt, b.rangeStart, b.rangeEnd), 0)
+      const overallUtilisationPct = totalCapacity > 0 ? Math.round((happenedHours / totalCapacity) * 100) : 0
 
       return reply.status(200).send({
         data: {
@@ -345,7 +542,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           cancellationRate,
           noShowBookings: noShowCount,
           noShowRate,
-          uniqueBookers: uniqueBookers.length,
+          uniqueBookers: uniqueBookers.size,
           avgDailyBookings: Math.round((happened / workingDays) * 10) / 10,
           totalDesks,
           bookableDesks,
@@ -379,9 +576,10 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      const defaults = defaultDateRange()
-      const startDate = result.data.startDate ? new Date(result.data.startDate + 'T00:00:00.000Z') : defaults.startDate
-      const endDate = result.data.endDate ? new Date(result.data.endDate + 'T23:59:59.999Z') : defaults.endDate
+      const { startDateStr, endDateStr } = effectiveDateRangeStrings(result.data.startDate, result.data.endDate, 30)
+      const { startDate: calStart, endDate: calEnd } = calendarDateObjects(startDateStr, endDateStr)
+      const widenedStart = new Date(calStart.getTime() - 14 * 60 * 60 * 1000)
+      const widenedEnd = new Date(calEnd.getTime() + 14 * 60 * 60 * 1000)
 
       // Same gap as /summary above — result.data.buildingId was accepted but
       // never referenced, only the non-admin managed-buildings scope was ever applied.
@@ -392,11 +590,20 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         ? { asset: { floor: { buildingId: buildingIdFilter } } }
         : {}
 
-      const [confirmed, cancelled, completed] = await Promise.all([
-        prisma.booking.count({ where: { startsAt: { gte: startDate, lte: endDate }, status: 'CONFIRMED', ...buildingFilter } }),
-        prisma.booking.count({ where: { startsAt: { gte: startDate, lte: endDate }, status: 'CANCELLED', ...buildingFilter } }),
-        prisma.booking.count({ where: { startsAt: { gte: startDate, lte: endDate }, status: 'COMPLETED', ...buildingFilter } }),
-      ])
+      const widenedRows = await prisma.booking.findMany({
+        where: { startsAt: { gte: widenedStart, lte: widenedEnd }, status: { in: ['CONFIRMED', 'CANCELLED', 'COMPLETED'] }, ...buildingFilter },
+        select: { status: true, startsAt: true, asset: { select: { floor: { select: { buildingId: true } } } } },
+      })
+      const statusDayBoundsCache = new Map<string | null, { start: Date; endExclusive: Date }>()
+      let confirmed = 0, cancelled = 0, completed = 0
+      for (const b of widenedRows) {
+        const buildingId = b.asset.floor?.buildingId ?? null
+        const { start, endExclusive } = await localDayBoundsForBuilding(buildingId, startDateStr, endDateStr, statusDayBoundsCache)
+        if (b.startsAt < start || b.startsAt >= endExclusive) continue
+        if (b.status === 'CONFIRMED') confirmed++
+        else if (b.status === 'CANCELLED') cancelled++
+        else if (b.status === 'COMPLETED') completed++
+      }
 
       const data = [
         { status: 'CONFIRMED', label: 'Confirmed', count: confirmed },
@@ -430,9 +637,8 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      const defaults = defaultDateRange()
-      const startDate = result.data.startDate ? new Date(result.data.startDate + 'T00:00:00.000Z') : defaults.startDate
-      const endDate = result.data.endDate ? new Date(result.data.endDate + 'T23:59:59.999Z') : defaults.endDate
+      const { startDateStr, endDateStr } = effectiveDateRangeStrings(result.data.startDate, result.data.endDate, 30)
+      const { startLocal, endLocal } = localDayBoundsSql(startDateStr, endDateStr)
 
       // result.data.buildingId was accepted but never referenced — only the
       // super-admin/managed-buildings branches existed, so picking a specific
@@ -440,39 +646,48 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       type DowRow = { dow: string; count: bigint }
       let rows: DowRow[]
       if (result.data.buildingId) {
+        const tz = await resolveBuildingTimezone(prisma, result.data.buildingId)
         rows = await prisma.$queryRaw<DowRow[]>`
-          SELECT EXTRACT(DOW FROM b."startsAt") AS dow, COUNT(*)::bigint AS count
+          SELECT EXTRACT(DOW FROM ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE ${tz})) AS dow, COUNT(*)::bigint AS count
           FROM "Booking" b
           JOIN "Asset" a ON a.id = b."assetId"
           JOIN "Floor" f ON f.id = a."floorId"
-          WHERE b."startsAt" >= ${startDate}
-            AND b."startsAt" <= ${endDate}
+          WHERE ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE ${tz}) >= ${startLocal}::timestamp
+            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE ${tz}) <= ${endLocal}::timestamp
             AND b.status IN ('CONFIRMED', 'COMPLETED')
             AND f."buildingId" = ${result.data.buildingId}
-          GROUP BY EXTRACT(DOW FROM b."startsAt")
+          GROUP BY dow
           ORDER BY dow ASC
         `
       } else if (isSuperAdmin) {
+        // LEFT JOIN — see /bookings above for why a floor-less asset's
+        // bookings must still be included (falling back to the org default tz).
+        const orgDefaultTz = await resolveBuildingTimezone(prisma, null)
         rows = await prisma.$queryRaw<DowRow[]>`
-          SELECT EXTRACT(DOW FROM "startsAt") AS dow, COUNT(*)::bigint AS count
-          FROM "Booking"
-          WHERE "startsAt" >= ${startDate}
-            AND "startsAt" <= ${endDate}
-            AND status IN ('CONFIRMED', 'COMPLETED')
-          GROUP BY EXTRACT(DOW FROM "startsAt")
+          SELECT EXTRACT(DOW FROM ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz}))) AS dow, COUNT(*)::bigint AS count
+          FROM "Booking" b
+          LEFT JOIN "Asset" a ON a.id = b."assetId"
+          LEFT JOIN "Floor" f ON f.id = a."floorId"
+          LEFT JOIN "Building" bld ON bld.id = f."buildingId"
+          WHERE ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) >= ${startLocal}::timestamp
+            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) <= ${endLocal}::timestamp
+            AND b.status IN ('CONFIRMED', 'COMPLETED')
+          GROUP BY dow
           ORDER BY dow ASC
         `
       } else {
+        const orgDefaultTz = await resolveBuildingTimezone(prisma, null)
         rows = await prisma.$queryRaw<DowRow[]>`
-          SELECT EXTRACT(DOW FROM b."startsAt") AS dow, COUNT(*)::bigint AS count
+          SELECT EXTRACT(DOW FROM ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz}))) AS dow, COUNT(*)::bigint AS count
           FROM "Booking" b
           JOIN "Asset" a ON a.id = b."assetId"
           JOIN "Floor" f ON f.id = a."floorId"
-          WHERE b."startsAt" >= ${startDate}
-            AND b."startsAt" <= ${endDate}
+          JOIN "Building" bld ON bld.id = f."buildingId"
+          WHERE ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) >= ${startLocal}::timestamp
+            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) <= ${endLocal}::timestamp
             AND b.status IN ('CONFIRMED', 'COMPLETED')
             AND f."buildingId" = ANY(${managedBuildingIds})
-          GROUP BY EXTRACT(DOW FROM b."startsAt")
+          GROUP BY dow
           ORDER BY dow ASC
         `
       }
@@ -514,11 +729,11 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      const defaults = defaultDateRange()
-      const startDate = result.data.startDate ? new Date(result.data.startDate + 'T00:00:00.000Z') : defaults.startDate
-      const endDate = result.data.endDate ? new Date(result.data.endDate + 'T23:59:59.999Z') : defaults.endDate
-
-      const workingDays = countWorkingDays(startDate, endDate)
+      const { startDateStr, endDateStr } = effectiveDateRangeStrings(result.data.startDate, result.data.endDate, 30)
+      const { startDate: calStart, endDate: calEnd } = calendarDateObjects(startDateStr, endDateStr)
+      const workingDays = countWorkingDays(calStart, calEnd)
+      const widenedStart = new Date(calStart.getTime() - 14 * 60 * 60 * 1000)
+      const widenedEnd = new Date(calEnd.getTime() + 14 * 60 * 60 * 1000)
 
       const floorWhere: Record<string, unknown> = {}
       if (result.data.buildingId) {
@@ -540,8 +755,8 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
                     // See /utilisation above — includes COMPLETED alongside
                     // CONFIRMED so historical usage isn't undercounted once
                     // handleAutoCompleteBookings flips old bookings' status.
-                    where: { status: { in: ['CONFIRMED', 'COMPLETED'] }, startsAt: { gte: startDate, lte: endDate } },
-                    select: { id: true },
+                    where: { status: { in: ['CONFIRMED', 'COMPLETED'] }, startsAt: { gte: widenedStart, lte: widenedEnd } },
+                    select: { id: true, startsAt: true, endsAt: true, assetId: true },
                   },
                 },
               },
@@ -551,14 +766,28 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         orderBy: [{ building: { name: 'asc' } }, { name: 'asc' }],
       })
 
-      const data = floors.map((floor) => {
+      const floorUtilDayBoundsCache = new Map<string | null, { start: Date; endExclusive: Date }>()
+      const floorUtilHoursCache = new Map<string | null, number>()
+      const data = await Promise.all(floors.map(async (floor) => {
+        const { start, endExclusive } = await localDayBoundsForBuilding(floor.building.id, startDateStr, endDateStr, floorUtilDayBoundsCache)
+        const hoursPerDay = await workingHoursSpanForBuilding(floor.building.id, floorUtilHoursCache)
         const allAssets = floor.zones.flatMap((z) => z.assets)
-        const bookableDesks = allAssets.filter((a) => a.bookingStatus === 'OPEN' || a.bookingStatus === 'RESTRICTED').length
-        const assignedDesks = allAssets.filter((a) => a.bookingStatus === 'ASSIGNED').length
+        const bookableAssets = allAssets.filter((a) => a.bookingStatus === 'OPEN' || a.bookingStatus === 'RESTRICTED')
+        const assignedAssets = allAssets.filter((a) => a.bookingStatus === 'ASSIGNED')
         const disabledDesks = allAssets.filter((a) => a.bookingStatus === 'DISABLED').length
-        const bookingCount = allAssets.reduce((s, a) => s + a.bookings.length, 0)
+        const bookableDesks = bookableAssets.length
+        const assignedDesks = assignedAssets.length
+        // Informational raw count — unrelated to the hours-based utilisation
+        // % below (see workingHoursSpanForBuilding's comment on /utilisation).
+        const bookingCount = allAssets.reduce((s, a) => s + a.bookings.filter((b) => b.startsAt >= start && b.startsAt < endExclusive).length, 0)
+        // See /utilisation above — booked hours scoped to currently-active
+        // (non-disabled) desks only, matching the capacity denominator.
+        const activeAssetIds = new Set([...bookableAssets, ...assignedAssets].map((a) => a.id))
+        const bookedHours = allAssets
+          .filter((a) => activeAssetIds.has(a.id))
+          .reduce((sum, a) => sum + a.bookings.reduce((s, b) => s + overlapHours(b.startsAt, b.endsAt, start, endExclusive), 0), 0)
         // Capacity = all non-disabled assets; DISABLED are out of service and excluded
-        const capacity = (bookableDesks + assignedDesks) * workingDays
+        const capacity = (bookableDesks + assignedDesks) * workingDays * hoursPerDay
         return {
           floorId: floor.id,
           floorName: floor.name,
@@ -569,9 +798,9 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           assignedDesks,
           disabledDesks,
           bookingCount,
-          utilisationPct: capacity > 0 ? Math.round((bookingCount / capacity) * 100) : 0,
+          utilisationPct: capacity > 0 ? Math.round((bookedHours / capacity) * 100) : 0,
         }
-      })
+      }))
 
       if (wantsCsv(request)) {
         return sendCsv(reply, 'floor-utilisation.csv',
@@ -613,22 +842,23 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      const defaults = defaultDateRange()
-      const startDate = result.data.startDate ? new Date(result.data.startDate + 'T00:00:00.000Z') : defaults.startDate
-      const endDate = result.data.endDate ? new Date(result.data.endDate + 'T23:59:59.999Z') : defaults.endDate
+      const { startDateStr, endDateStr } = effectiveDateRangeStrings(result.data.startDate, result.data.endDate, 30)
+      const { startLocal, endLocal } = localDayBoundsSql(startDateStr, endDateStr)
 
       type TopUserRow = { userId: string; displayName: string; email: string; count: bigint }
 
       let rows: TopUserRow[]
 
       if (result.data.floorId) {
+        const floorForTz = await prisma.floor.findUnique({ where: { id: result.data.floorId }, select: { buildingId: true } })
+        const tz = await resolveBuildingTimezone(prisma, floorForTz?.buildingId ?? null)
         rows = await prisma.$queryRaw<TopUserRow[]>`
           SELECT b."userId", u."displayName", u.email, COUNT(*)::bigint AS count
           FROM "Booking" b
           JOIN "User" u ON u.id = b."userId"
           JOIN "Asset" a ON a.id = b."assetId"
-          WHERE b."startsAt" >= ${startDate}
-            AND b."startsAt" <= ${endDate}
+          WHERE ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE ${tz}) >= ${startLocal}::timestamp
+            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE ${tz}) <= ${endLocal}::timestamp
             AND b.status IN ('CONFIRMED', 'COMPLETED')
             AND a."floorId" = ${result.data.floorId}
           GROUP BY b."userId", u."displayName", u.email
@@ -636,14 +866,15 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           LIMIT 20
         `
       } else if (result.data.buildingId) {
+        const tz = await resolveBuildingTimezone(prisma, result.data.buildingId)
         rows = await prisma.$queryRaw<TopUserRow[]>`
           SELECT b."userId", u."displayName", u.email, COUNT(*)::bigint AS count
           FROM "Booking" b
           JOIN "User" u ON u.id = b."userId"
           JOIN "Asset" a ON a.id = b."assetId"
           JOIN "Floor" f ON f.id = a."floorId"
-          WHERE b."startsAt" >= ${startDate}
-            AND b."startsAt" <= ${endDate}
+          WHERE ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE ${tz}) >= ${startLocal}::timestamp
+            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE ${tz}) <= ${endLocal}::timestamp
             AND b.status IN ('CONFIRMED', 'COMPLETED')
             AND f."buildingId" = ${result.data.buildingId}
           GROUP BY b."userId", u."displayName", u.email
@@ -651,14 +882,16 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           LIMIT 20
         `
       } else if (!isSuperAdmin) {
+        const orgDefaultTz = await resolveBuildingTimezone(prisma, null)
         rows = await prisma.$queryRaw<TopUserRow[]>`
           SELECT b."userId", u."displayName", u.email, COUNT(*)::bigint AS count
           FROM "Booking" b
           JOIN "User" u ON u.id = b."userId"
           JOIN "Asset" a ON a.id = b."assetId"
           JOIN "Floor" f ON f.id = a."floorId"
-          WHERE b."startsAt" >= ${startDate}
-            AND b."startsAt" <= ${endDate}
+          JOIN "Building" bld ON bld.id = f."buildingId"
+          WHERE ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) >= ${startLocal}::timestamp
+            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) <= ${endLocal}::timestamp
             AND b.status IN ('CONFIRMED', 'COMPLETED')
             AND f."buildingId" = ANY(${managedBuildingIds})
           GROUP BY b."userId", u."displayName", u.email
@@ -666,12 +899,18 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           LIMIT 20
         `
       } else {
+        // LEFT JOIN — see /bookings above for why a floor-less asset's
+        // bookings must still be included (falling back to the org default tz).
+        const orgDefaultTz = await resolveBuildingTimezone(prisma, null)
         rows = await prisma.$queryRaw<TopUserRow[]>`
           SELECT b."userId", u."displayName", u.email, COUNT(*)::bigint AS count
           FROM "Booking" b
           JOIN "User" u ON u.id = b."userId"
-          WHERE b."startsAt" >= ${startDate}
-            AND b."startsAt" <= ${endDate}
+          LEFT JOIN "Asset" a ON a.id = b."assetId"
+          LEFT JOIN "Floor" f ON f.id = a."floorId"
+          LEFT JOIN "Building" bld ON bld.id = f."buildingId"
+          WHERE ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) >= ${startLocal}::timestamp
+            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) <= ${endLocal}::timestamp
             AND b.status IN ('CONFIRMED', 'COMPLETED')
           GROUP BY b."userId", u."displayName", u.email
           ORDER BY count DESC
@@ -707,9 +946,8 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(400).send({ error: { message: 'Invalid query parameters', code: 'VALIDATION_ERROR' } })
       }
 
-      const { startDate: sd, endDate: ed } = defaultDateRange()
-      const startDate = parseDateParam(result.data.startDate, 'T00:00:00.000Z', sd)
-      const endDate = parseDateParam(result.data.endDate, 'T23:59:59.999Z', ed)
+      const { startDateStr, endDateStr } = effectiveDateRangeStrings(result.data.startDate, result.data.endDate, 30)
+      const { startLocal, endLocal } = localDayBoundsSql(startDateStr, endDateStr)
 
       type DeptRow = {
         departmentId: string
@@ -725,40 +963,103 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       // JOIN's own ON clause (not a WHERE) so it only narrows which bookings
       // count toward bookingCount/deskDays — memberCount (department
       // headcount) stays building-agnostic, and departments/users with no
-      // matching booking are still preserved via the LEFT JOIN.
+      // matching booking are still preserved via the LEFT JOIN. The date
+      // range itself is also evaluated in the ON clause (via a correlated
+      // EXISTS against the booking_tz CTE, not a WHERE) for the same reason —
+      // a WHERE on b."startsAt" would drop departments/users with zero
+      // bookings entirely, since NULL never satisfies a comparison.
       const buildingFilter = result.data.buildingId
         ? Prisma.sql`AND EXISTS (
             SELECT 1 FROM "Asset" a JOIN "Floor" f ON f.id = a."floorId"
             WHERE a.id = b."assetId" AND f."buildingId" = ${result.data.buildingId}
           )`
         : Prisma.empty
+      const orgDefaultTz = await resolveBuildingTimezone(prisma, null)
 
       const rows = await prisma.$queryRaw<DeptRow[]>`
-        SELECT
-          d.id                                                                         AS "departmentId",
-          d.name                                                                       AS "departmentName",
-          COUNT(DISTINCT b.id)::bigint                                                 AS "bookingCount",
-          ROUND(
-            CAST(
-              COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0)
-              AS NUMERIC
-            ), 2
-          )::text                                                                      AS "deskDays",
-          COUNT(DISTINCT u.id)::bigint                                                 AS "memberCount"
-        FROM "Department" d
-        LEFT JOIN "User" u   ON u."departmentId" = d.id
-        LEFT JOIN "Booking" b ON b."userId" = u.id
-          AND b."startsAt" >= ${startDate}
-          AND b."startsAt" <= ${endDate}
-          AND b.status IN ('CONFIRMED', 'COMPLETED')
-          ${buildingFilter}
-        GROUP BY d.id, d.name
-        ORDER BY ROUND(
-          CAST(
-            COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0)
-            AS NUMERIC
-          ), 2
-        ) DESC NULLS LAST
+        WITH org_defaults AS (
+          SELECT "workingHoursStart", "workingHoursEnd" FROM "Organisation" LIMIT 1
+        ),
+        booking_tz AS (
+          SELECT
+            b.id AS booking_id,
+            COALESCE(bld.timezone, ${orgDefaultTz}) AS tz,
+            -- Working-hours span for THIS booking's own building (falling
+            -- back to the org default), used below instead of a hardcoded
+            -- 8-hour day — the org default alone is a 12-hour window
+            -- (07:00-19:00), so dividing by 8 unconditionally overstated
+            -- desk-days by 50% at default settings.
+            EXTRACT(EPOCH FROM (
+              COALESCE(bld."workingHoursEnd", od."workingHoursEnd", '19:00')::time
+              - COALESCE(bld."workingHoursStart", od."workingHoursStart", '07:00')::time
+            )) / 3600 AS hours_span
+          FROM "Booking" b
+          LEFT JOIN "Asset" a ON a.id = b."assetId"
+          LEFT JOIN "Floor" f ON f.id = a."floorId"
+          LEFT JOIN "Building" bld ON bld.id = f."buildingId"
+          CROSS JOIN org_defaults od
+        )
+        SELECT * FROM (
+        (
+          SELECT
+            d.id                                                                         AS "departmentId",
+            d.name                                                                       AS "departmentName",
+            COUNT(DISTINCT b.id)::bigint                                                 AS "bookingCount",
+            ROUND(
+              CAST(
+                COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / NULLIF(bt.hours_span, 0)), 0)
+                AS NUMERIC
+              ), 2
+            )::text                                                                       AS "deskDays",
+            COUNT(DISTINCT u.id)::bigint                                                 AS "memberCount"
+          FROM "Department" d
+          LEFT JOIN "User" u   ON u."departmentId" = d.id
+          LEFT JOIN "Booking" b ON b."userId" = u.id
+            AND b.status IN ('CONFIRMED', 'COMPLETED')
+            AND EXISTS (
+              SELECT 1 FROM booking_tz btx
+              WHERE btx.booking_id = b.id
+                AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE btx.tz) >= ${startLocal}::timestamp
+                AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE btx.tz) <= ${endLocal}::timestamp
+            )
+            ${buildingFilter}
+          LEFT JOIN booking_tz bt ON bt.booking_id = b.id
+          GROUP BY d.id, d.name
+        )
+        UNION ALL
+        -- Users with no department assigned previously vanished from this
+        -- report entirely (FROM "Department" can never match a NULL
+        -- departmentId), silently understating total org-wide activity —
+        -- surfaced here as an explicit "Unassigned" row instead, only when
+        -- at least one such user actually exists.
+        (
+          SELECT
+            'unassigned'                                                                 AS "departmentId",
+            'Unassigned'                                                                 AS "departmentName",
+            COUNT(DISTINCT b.id)::bigint                                                 AS "bookingCount",
+            ROUND(
+              CAST(
+                COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / NULLIF(bt.hours_span, 0)), 0)
+                AS NUMERIC
+              ), 2
+            )::text                                                                       AS "deskDays",
+            COUNT(DISTINCT u.id)::bigint                                                 AS "memberCount"
+          FROM "User" u
+          LEFT JOIN "Booking" b ON b."userId" = u.id
+            AND b.status IN ('CONFIRMED', 'COMPLETED')
+            AND EXISTS (
+              SELECT 1 FROM booking_tz btx
+              WHERE btx.booking_id = b.id
+                AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE btx.tz) >= ${startLocal}::timestamp
+                AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE btx.tz) <= ${endLocal}::timestamp
+            )
+            ${buildingFilter}
+          LEFT JOIN booking_tz bt ON bt.booking_id = b.id
+          WHERE u."departmentId" IS NULL
+          HAVING COUNT(u.id) > 0
+        )
+        ) combined
+        ORDER BY "deskDays"::numeric DESC NULLS LAST
       `
 
       const data = rows.map((r) => ({
@@ -792,9 +1093,8 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       if (!result.success) {
         return reply.status(400).send({ error: { message: 'userId and valid dates are required', code: 'VALIDATION_ERROR' } })
       }
-      const { startDate: sd, endDate: ed } = defaultDateRange()
-      const startDate = parseDateParam(result.data.startDate, 'T00:00:00.000Z', sd)
-      const endDate = parseDateParam(result.data.endDate, 'T23:59:59.999Z', ed)
+      const { startDateStr, endDateStr } = effectiveDateRangeStrings(result.data.startDate, result.data.endDate, 30)
+      const { startLocal, endLocal } = localDayBoundsSql(startDateStr, endDateStr)
       const userId = result.data.userId
 
       const root = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, displayName: true, email: true } })
@@ -806,13 +1106,45 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       // JOIN's own ON clause (not a WHERE) so it only narrows which bookings
       // count toward bookingCount/deskDays — peopleCount (subtree headcount)
       // stays building-agnostic, and people with no matching booking are
-      // still preserved via the LEFT JOIN.
+      // still preserved via the LEFT JOIN. Same reasoning applies to the date
+      // range itself (see /departments above for why it's a correlated EXISTS
+      // against booking_tz, not a WHERE).
       const buildingFilter = result.data.buildingId
         ? Prisma.sql`AND EXISTS (
             SELECT 1 FROM "Asset" a JOIN "Floor" f ON f.id = a."floorId"
             WHERE a.id = b."assetId" AND f."buildingId" = ${result.data.buildingId}
           )`
         : Prisma.empty
+      const orgDefaultTz = await resolveBuildingTimezone(prisma, null)
+      const bookingTzCte = Prisma.sql`
+        org_defaults AS (
+          SELECT "workingHoursStart", "workingHoursEnd" FROM "Organisation" LIMIT 1
+        ),
+        booking_tz AS (
+          SELECT
+            b.id AS booking_id,
+            COALESCE(bld.timezone, ${orgDefaultTz}) AS tz,
+            -- See /departments above — this booking's own building's
+            -- working-hours span, not a hardcoded 8-hour day.
+            EXTRACT(EPOCH FROM (
+              COALESCE(bld."workingHoursEnd", od."workingHoursEnd", '19:00')::time
+              - COALESCE(bld."workingHoursStart", od."workingHoursStart", '07:00')::time
+            )) / 3600 AS hours_span
+          FROM "Booking" b
+          LEFT JOIN "Asset" a ON a.id = b."assetId"
+          LEFT JOIN "Floor" f ON f.id = a."floorId"
+          LEFT JOIN "Building" bld ON bld.id = f."buildingId"
+          CROSS JOIN org_defaults od
+        )
+      `
+      const dateRangeExists = Prisma.sql`
+        AND EXISTS (
+          SELECT 1 FROM booking_tz btx
+          WHERE btx.booking_id = b.id
+            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE btx.tz) >= ${startLocal}::timestamp
+            AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE btx.tz) <= ${endLocal}::timestamp
+        )
+      `
 
       type Totals = { peopleCount: bigint; bookingCount: bigint; deskDays: string | null }
       // UNION (not UNION ALL) so a manager cycle (A→B→A from bad IdP data) can't
@@ -822,15 +1154,18 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           SELECT id FROM "User" WHERE id = ${userId}
           UNION
           SELECT u.id FROM "User" u JOIN subtree s ON u."managerId" = s.id
-        )
+        ),
+        ${bookingTzCte}
         SELECT
           COUNT(DISTINCT s.id)::bigint AS "peopleCount",
           COUNT(DISTINCT b.id)::bigint AS "bookingCount",
-          ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0) AS NUMERIC), 2)::text AS "deskDays"
+          ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / NULLIF(bt.hours_span, 0)), 0) AS NUMERIC), 2)::text AS "deskDays"
         FROM subtree s
         LEFT JOIN "Booking" b ON b."userId" = s.id
-          AND b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate} AND b.status IN ('CONFIRMED', 'COMPLETED')
+          AND b.status IN ('CONFIRMED', 'COMPLETED')
+          ${dateRangeExists}
           ${buildingFilter}
+        LEFT JOIN booking_tz bt ON bt.booking_id = b.id
       `
 
       type BranchRow = Totals & { rootId: string; rootName: string }
@@ -840,20 +1175,23 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
           SELECT id, id AS root FROM "User" WHERE "managerId" = ${userId}
           UNION
           SELECT u.id, br.root FROM "User" u JOIN branch br ON u."managerId" = br.id
-        )
+        ),
+        ${bookingTzCte}
         SELECT
           br.root AS "rootId",
           ru."displayName" AS "rootName",
           COUNT(DISTINCT br.id)::bigint AS "peopleCount",
           COUNT(DISTINCT b.id)::bigint AS "bookingCount",
-          ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0) AS NUMERIC), 2)::text AS "deskDays"
+          ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / NULLIF(bt.hours_span, 0)), 0) AS NUMERIC), 2)::text AS "deskDays"
         FROM branch br
         JOIN "User" ru ON ru.id = br.root
         LEFT JOIN "Booking" b ON b."userId" = br.id
-          AND b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate} AND b.status IN ('CONFIRMED', 'COMPLETED')
+          AND b.status IN ('CONFIRMED', 'COMPLETED')
+          ${dateRangeExists}
           ${buildingFilter}
+        LEFT JOIN booking_tz bt ON bt.booking_id = b.id
         GROUP BY br.root, ru."displayName"
-        ORDER BY ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / 8), 0) AS NUMERIC), 2) DESC NULLS LAST
+        ORDER BY ROUND(CAST(COALESCE(SUM(EXTRACT(EPOCH FROM (b."endsAt" - b."startsAt")) / 3600 / NULLIF(bt.hours_span, 0)), 0) AS NUMERIC), 2) DESC NULLS LAST
       `
 
       return reply.status(200).send({
@@ -899,34 +1237,41 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      const defaults = defaultDateRange()
-      const startDate = parseDateParam(result.data.startDate, 'T00:00:00.000Z', defaults.startDate)
-      const endDate = parseDateParam(result.data.endDate, 'T23:59:59.999Z', defaults.endDate)
+      const { startDateStr, endDateStr } = effectiveDateRangeStrings(result.data.startDate, result.data.endDate, 30)
+      const { startLocal, endLocal } = localDayBoundsSql(startDateStr, endDateStr)
+      const orgDefaultTz = await resolveBuildingTimezone(prisma, null)
 
       const buildingIdFilter = result.data.buildingId
         ? [result.data.buildingId]
         : !isSuperAdmin ? managedBuildingIds : null
 
+      // Building is already always joined here (buildingName is selected
+      // regardless of filter), so bld.timezone is available per row in both
+      // branches — no LEFT JOIN/floor-less-asset concern the way /bookings
+      // above has, since this endpoint is inherently building-scoped already.
       type DailyRow = { buildingId: string; buildingName: string; day: string; count: bigint }
       const dailyRows = buildingIdFilter
         ? await prisma.$queryRaw<DailyRow[]>`
-            SELECT f."buildingId" AS "buildingId", bld.name AS "buildingName", DATE(b."startsAt") AS day, COUNT(*)::bigint AS count
+            SELECT f."buildingId" AS "buildingId", bld.name AS "buildingName", DATE((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) AS day, COUNT(*)::bigint AS count
             FROM "Booking" b
             JOIN "Asset" a ON a.id = b."assetId"
             JOIN "Floor" f ON f.id = a."floorId"
             JOIN "Building" bld ON bld.id = f."buildingId"
-            WHERE b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate}
+            WHERE ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) >= ${startLocal}::timestamp
+              AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) <= ${endLocal}::timestamp
               AND b.status IN ('CONFIRMED', 'COMPLETED') AND f."buildingId" = ANY(${buildingIdFilter})
-            GROUP BY f."buildingId", bld.name, DATE(b."startsAt")
+            GROUP BY f."buildingId", bld.name, day
           `
         : await prisma.$queryRaw<DailyRow[]>`
-            SELECT f."buildingId" AS "buildingId", bld.name AS "buildingName", DATE(b."startsAt") AS day, COUNT(*)::bigint AS count
+            SELECT f."buildingId" AS "buildingId", bld.name AS "buildingName", DATE((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) AS day, COUNT(*)::bigint AS count
             FROM "Booking" b
             JOIN "Asset" a ON a.id = b."assetId"
             JOIN "Floor" f ON f.id = a."floorId"
             JOIN "Building" bld ON bld.id = f."buildingId"
-            WHERE b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate} AND b.status IN ('CONFIRMED', 'COMPLETED')
-            GROUP BY f."buildingId", bld.name, DATE(b."startsAt")
+            WHERE ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) >= ${startLocal}::timestamp
+              AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) <= ${endLocal}::timestamp
+              AND b.status IN ('CONFIRMED', 'COMPLETED')
+            GROUP BY f."buildingId", bld.name, day
           `
 
       const byBuilding = new Map<string, { buildingName: string; days: number[] }>()
@@ -958,9 +1303,23 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         deskCountByBuilding.set(buildingId, (deskCountByBuilding.get(buildingId) ?? 0) + d._count.id)
       }
 
+      // Days with zero bookings never produce a row from the GROUP BY query
+      // above, so `days` only holds counts for days that had ≥1 booking.
+      // The average must still be taken over the full requested range —
+      // dividing by `days.length` instead silently drops zero-booking days
+      // from the denominator too, overstating the average (a building
+      // booked only on weekdays would report its weekday-only average as
+      // if that were the whole period's average).
+      // Midnight-to-midnight on both ends (not calendarDateObjects, whose
+      // end value is 23:59:59.999 — mixing that with a midnight start would
+      // over-count by one day for any range).
+      const rangeStartMidnight = new Date(startDateStr + 'T00:00:00.000Z')
+      const rangeEndMidnight = new Date(endDateStr + 'T00:00:00.000Z')
+      const totalDaysInRange = Math.round((rangeEndMidnight.getTime() - rangeStartMidnight.getTime()) / 86_400_000) + 1
+
       const data = [...byBuilding.entries()].map(([buildingId, { buildingName, days }]) => {
         const peak = days.length > 0 ? Math.max(...days) : 0
-        const average = days.length > 0 ? Math.round((days.reduce((s, d) => s + d, 0) / days.length) * 10) / 10 : 0
+        const average = totalDaysInRange > 0 ? Math.round((days.reduce((s, d) => s + d, 0) / totalDaysInRange) * 10) / 10 : 0
         const currentDeskCount = deskCountByBuilding.get(buildingId) ?? 0
         return {
           buildingId,
@@ -1006,10 +1365,21 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      const endDate = result.data.endDate ? new Date(result.data.endDate + 'T23:59:59.999Z') : new Date()
-      const startDate = result.data.startDate
-        ? new Date(result.data.startDate + 'T00:00:00.000Z')
-        : new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() - 5, 1))
+      // Custom default (last 6 months, not the usual 30 days) — start of the
+      // month 5 months before endDate's month, matching the previous
+      // Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() - 5, 1) logic
+      // exactly, just expressed as calendar-date strings.
+      const today = new Date()
+      const endDateStr = result.data.endDate ?? today.toISOString().slice(0, 10)
+      let startDateStr: string
+      if (result.data.startDate) {
+        startDateStr = result.data.startDate
+      } else {
+        const [ey, em] = endDateStr.split('-').map(Number)
+        startDateStr = new Date(Date.UTC(ey, em - 1 - 5, 1)).toISOString().slice(0, 10)
+      }
+      const { startLocal, endLocal } = localDayBoundsSql(startDateStr, endDateStr)
+      const orgDefaultTz = await resolveBuildingTimezone(prisma, null)
 
       const buildingIdFilter = result.data.buildingId
         ? [result.data.buildingId]
@@ -1018,20 +1388,27 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       type MonthRow = { month: Date; count: bigint }
       const monthRows = buildingIdFilter
         ? await prisma.$queryRaw<MonthRow[]>`
-            SELECT DATE_TRUNC('month', b."startsAt") AS month, COUNT(*)::bigint AS count
+            SELECT DATE_TRUNC('month', (b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) AS month, COUNT(*)::bigint AS count
             FROM "Booking" b
             JOIN "Asset" a ON a.id = b."assetId"
             JOIN "Floor" f ON f.id = a."floorId"
-            WHERE b."startsAt" >= ${startDate} AND b."startsAt" <= ${endDate}
+            JOIN "Building" bld ON bld.id = f."buildingId"
+            WHERE ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) >= ${startLocal}::timestamp
+              AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) <= ${endLocal}::timestamp
               AND b.status IN ('CONFIRMED', 'COMPLETED') AND f."buildingId" = ANY(${buildingIdFilter})
-            GROUP BY DATE_TRUNC('month', b."startsAt")
+            GROUP BY month
             ORDER BY month ASC
           `
         : await prisma.$queryRaw<MonthRow[]>`
-            SELECT DATE_TRUNC('month', "startsAt") AS month, COUNT(*)::bigint AS count
-            FROM "Booking"
-            WHERE "startsAt" >= ${startDate} AND "startsAt" <= ${endDate} AND status IN ('CONFIRMED', 'COMPLETED')
-            GROUP BY DATE_TRUNC('month', "startsAt")
+            SELECT DATE_TRUNC('month', (b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) AS month, COUNT(*)::bigint AS count
+            FROM "Booking" b
+            LEFT JOIN "Asset" a ON a.id = b."assetId"
+            LEFT JOIN "Floor" f ON f.id = a."floorId"
+            LEFT JOIN "Building" bld ON bld.id = f."buildingId"
+            WHERE ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) >= ${startLocal}::timestamp
+              AND ((b."startsAt" AT TIME ZONE 'UTC') AT TIME ZONE COALESCE(bld.timezone, ${orgDefaultTz})) <= ${endLocal}::timestamp
+              AND b.status IN ('CONFIRMED', 'COMPLETED')
+            GROUP BY month
             ORDER BY month ASC
           `
 
@@ -1115,9 +1492,22 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
       })
 
       const now = new Date()
-      const data = buildings
-        .map((b) => {
-          const active = b.leases.find((l) => l.startDate <= now && (!l.endDate || l.endDate >= now)) ?? b.leases[0]
+      const data = (await Promise.all(buildings
+        .map(async (b) => {
+          // lease.startDate/endDate are date-only values (UTC midnight of an
+          // admin-picked calendar day, same convention as leases.ts's
+          // endDate), not real instants — classified via calendarDaysUntil
+          // against the building's own timezone, the same fix leases.ts's
+          // PUT handler and the lease-expiry cron already apply to this
+          // exact field. Comparing them as raw instants against `now` (as
+          // this used to) flips "active" a day early/late depending on the
+          // building's UTC offset, near local midnight.
+          const tz = await resolveBuildingTimezone(prisma, b.id)
+          const active = b.leases.find((l) => {
+            const daysUntilStart = calendarDaysUntil(l.startDate, now, tz)
+            const daysUntilEnd = l.endDate ? calendarDaysUntil(l.endDate, now, tz) : null
+            return daysUntilStart <= 0 && (daysUntilEnd === null || daysUntilEnd >= 0)
+          }) ?? b.leases[0]
           const deskCount = b.floors.reduce((sum, f) => sum + f.assets.length, 0)
           if (!active || !active.rentAmount || deskCount === 0) return null
           const costPerSeatPerDay = Math.round((active.rentAmount / 30 / deskCount) * 100) / 100
@@ -1129,7 +1519,7 @@ export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
             deskCount,
             costPerSeatPerDay,
           }
-        })
+        })))
         .filter((d): d is NonNullable<typeof d> => d !== null)
 
       if (wantsCsv(request)) {

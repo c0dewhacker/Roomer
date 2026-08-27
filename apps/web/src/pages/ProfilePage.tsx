@@ -29,6 +29,7 @@ const PUSH_ELIGIBLE_TYPES: Array<{ key: string; label: string }> = [
   { key: 'BOOKING_TRANSFER_REQUESTED', label: 'Someone wants to transfer you a booking' },
   { key: 'BOOKING_SWAP_REQUESTED', label: 'Someone wants to swap desks with you' },
   { key: 'QUEUE_CLAIM_EXPIRING', label: 'Claim expiring soon' },
+  { key: 'BOOKING_PENDING_APPROVAL', label: 'Someone requested a booking that needs your approval' },
 ]
 
 const profileSchema = z.object({

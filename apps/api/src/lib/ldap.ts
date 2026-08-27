@@ -193,6 +193,22 @@ async function runLdapSync(cfg: LdapConfig): Promise<LdapSyncResult> {
 
       try {
         const existing = await prisma.user.findUnique({ where: { email } })
+        // Same two guards findOrCreateSsoUser (OIDC/SAML, auth-enterprise.ts)
+        // and the interactive LDAP login path (auth.ts) already apply before
+        // linking — this batch sync was the one caller still skipping them.
+        // A local-password account must never be silently taken over by a
+        // directory sync, and an account already linked to a DIFFERENT
+        // directory entry must never be silently re-pointed — otherwise a
+        // recycled email address reassigned to a new employee after the
+        // previous one left would quietly inherit the previous person's
+        // entire account, role, group memberships, and booking history the
+        // next time this sync runs.
+        if (existing?.passwordHash) {
+          throw new Error(`Skipped: ${email} is a local-password account, not linked to LDAP`)
+        }
+        if (existing?.externalId && existing.externalId !== dn) {
+          throw new Error(`Skipped: ${email} is already linked to a different directory identity (${existing.externalId})`)
+        }
         if (existing) {
           await prisma.user.update({
             where: { email },

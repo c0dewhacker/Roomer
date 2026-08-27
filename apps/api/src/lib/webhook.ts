@@ -8,6 +8,15 @@ import { decryptStringMaybe } from './encryption.js'
 import { resolveValidatedHost as resolveValidatedHostShared } from './url-safety.js'
 import type { Job, JobResult } from 'pg-boss'
 
+// pg-boss's own retryLimit for a real (non-ping) delivery job, below — named
+// so the admin UI can tell a still-retrying delivery apart from a
+// permanently-exhausted one without duplicating this number. attempt is
+// 1-based (see the retryCount->attempt conversion below), so the last
+// possible attempt is WEBHOOK_RETRY_LIMIT + 1 (one initial send + this many
+// retries).
+export const WEBHOOK_RETRY_LIMIT = 5
+export const WEBHOOK_MAX_ATTEMPTS = WEBHOOK_RETRY_LIMIT + 1
+
 export const WEBHOOK_EVENTS = [
   'booking.created',
   'booking.modified',
@@ -91,6 +100,32 @@ const assetInclude = {
 async function enrichPayload(event: WebhookEvent, data: unknown): Promise<unknown> {
   const d = data as Record<string, unknown>
 
+  // Checked before the generic booking.* branch below, which these event
+  // names would otherwise also match (booking.transfer_requested etc. all
+  // start with "booking."). That branch looks up d.id against the Booking
+  // table — but d.id here is the BookingTransfer/BookingSwap row's own id,
+  // a completely independent cuid() space from Booking's, so the lookup
+  // always misses and enrichment silently no-ops for every one of these
+  // event types. Transfer events carry bookingId; swap events carry
+  // bookingAId/bookingBId (two bookings, not one) — the *_expired events
+  // don't carry a booking id in their payload at all yet, so there's
+  // nothing to enrich for those two.
+  if (event.startsWith('booking.transfer_') || event.startsWith('booking.swap_')) {
+    const ids = [d.bookingId, d.bookingAId, d.bookingBId].filter((v): v is string => typeof v === 'string')
+    if (ids.length === 0) return data
+    const bookings = await prisma.booking.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, asset: { select: { id: true, name: true, ...assetInclude } } },
+    }).catch(() => [])
+    if (typeof d.bookingId === 'string') {
+      const asset = bookings.find((b) => b.id === d.bookingId)?.asset
+      return { ...d, ...(asset && { asset }) }
+    }
+    const assetA = bookings.find((b) => b.id === d.bookingAId)?.asset
+    const assetB = bookings.find((b) => b.id === d.bookingBId)?.asset
+    return { ...d, ...(assetA && { assetA }), ...(assetB && { assetB }) }
+  }
+
   if (event.startsWith('booking.')) {
     const booking = await prisma.booking.findUnique({
       where: { id: d.id as string },
@@ -163,7 +198,7 @@ export async function dispatchWebhook(event: WebhookEvent, data: unknown): Promi
         event,
         payload,
       } satisfies WebhookDeliveryJobData,
-      retryLimit: 5,
+      retryLimit: WEBHOOK_RETRY_LIMIT,
       retryDelay: 60,
       retryBackoff: true,
       expireInSeconds: 86400,
@@ -227,7 +262,7 @@ export async function deliverWebhookJob(jobs: Job<WebhookDeliveryJobData>[]): Pr
   return results
 }
 
-async function deliverOne({ endpointId, deliveryId, url, event, payload }: WebhookDeliveryJobData, attempt: number): Promise<boolean> {
+async function deliverOne({ endpointId, deliveryId, event, payload }: WebhookDeliveryJobData, attempt: number): Promise<boolean> {
   let statusCode: number | null = null
   let success = false
   let error: string | null = null
@@ -235,8 +270,15 @@ async function deliverOne({ endpointId, deliveryId, url, event, payload }: Webho
   try {
     // Look up + decrypt the signing secret at delivery time (it is not stored in
     // the job payload). A deleted endpoint means there is nothing to deliver.
-    const ep = await prisma.webhookEndpoint.findUnique({ where: { id: endpointId }, select: { secret: true, enabled: true } })
+    // Also re-reads `url`, not just `secret`/`enabled` — the job payload's own
+    // `url` is a snapshot from enqueue time, the same staleness problem
+    // `enabled` already guards against a few lines below: an admin editing the
+    // endpoint's URL mid-retry-storm (e.g. rotating to a new vendor) must not
+    // leave already-queued retries silently posting to the old address for up
+    // to 24h.
+    const ep = await prisma.webhookEndpoint.findUnique({ where: { id: endpointId }, select: { url: true, secret: true, enabled: true } })
     if (!ep) return true
+    const { url } = ep
     // The endpoint may have been disabled after this delivery was queued, or
     // between retries of a failing one — without this, an admin disabling a
     // misbehaving or leaked endpoint mid-retry-storm doesn't stop it; pg-boss

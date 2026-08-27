@@ -1,8 +1,10 @@
 import type { FastifyInstance } from 'fastify'
+import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole } from '../middleware/requireRole.js'
+import { recordAuditLog } from '../lib/audit.js'
 import { GlobalRole } from '@roomer/shared'
 
 // ─── Palette used when zone_colour is omitted ─────────────────────────────────
@@ -32,17 +34,22 @@ const BULK_IMPORT_LOCK_CLASS = 4248
 // ─── Validation ───────────────────────────────────────────────────────────────
 
 const rowSchema = z.object({
-  building_name: z.string().min(1, 'building_name is required'),
+  // .trim() before .min(1) on every required name column — without it, a CSV
+  // cell containing a single space passed validation, then the route's own
+  // manual .trim() calls below (building_name.trim(), etc.) silently reduced
+  // it to an empty string, creating a blank-named building/floor/zone/asset
+  // with no error ever surfaced (see schemas/department.ts for the same fix).
+  building_name: z.string().trim().min(1, 'building_name is required'),
   building_address: z.string().optional(),
-  floor_name: z.string().min(1, 'floor_name is required'),
+  floor_name: z.string().trim().min(1, 'floor_name is required'),
   floor_level: z.union([z.coerce.number().int(), z.literal('')]).transform((v) => (v === '' ? 0 : Number(v))),
-  zone_name: z.string().min(1, 'zone_name is required'),
+  zone_name: z.string().trim().min(1, 'zone_name is required'),
   zone_colour: z
     .string()
     .regex(/^(#[0-9a-fA-F]{6})?$/, 'zone_colour must be a hex colour or empty')
     .optional(),
-  asset_name: z.string().min(1, 'asset_name is required'),
-  asset_category: z.string().min(1, 'asset_category is required'),
+  asset_name: z.string().trim().min(1, 'asset_name is required'),
+  asset_category: z.string().trim().min(1, 'asset_category is required'),
   asset_status: z
     .enum(['OPEN', 'RESTRICTED', 'ASSIGNED', 'DISABLED'])
     .default('OPEN'),
@@ -80,7 +87,7 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
 
       // Validate every row and collect errors
       type ValidatedRow = z.infer<typeof rowSchema>
-      const validRows: Array<{ index: number; row: ValidatedRow }> = []
+      let validRows: Array<{ index: number; row: ValidatedRow }> = []
       const errors: Array<{ row: number; message: string }> = []
 
       for (let i = 0; i < body.data.rows.length; i++) {
@@ -177,8 +184,15 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
       // batch-destroying error.
       const categoryCache = new Map<string, { id: string; defaultIsBookable: boolean | null }>()
       for (const name of new Set(validRows.map(({ row }) => row.asset_category.trim()))) {
+        // Case-insensitive — matches the convention departments.ts's own
+        // duplicate-name check already uses. Without it, re-running this
+        // import (or a CSV with inconsistent capitalization across rows)
+        // for what's clearly the same category/building/floor/zone created
+        // a second, duplicate row differing only in casing instead of
+        // reusing the existing one — the exact find-or-create idempotency
+        // this loop exists for.
         const existing = await prisma.assetCategory.findFirst({
-          where: { name },
+          where: { name: { equals: name, mode: 'insensitive' } },
           select: { id: true, defaultIsBookable: true },
         })
         if (existing) {
@@ -207,13 +221,44 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
       await prisma.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(${BULK_IMPORT_LOCK_CLASS}, hashtext(${org.id}))`
 
+        // The asset_tag conflict check above ran before this transaction
+        // acquired the lock — a second concurrent /bulk request (for the same
+        // org, or racing this one before either had serialised) could commit
+        // one of these exact tags in the gap between that check and now. A
+        // raw P2002 from tx.asset.create below would abort this ENTIRE
+        // transaction (Postgres fails the whole tx after any unhandled
+        // statement error, not just the offending statement), silently
+        // rolling back every other valid row in this batch — precisely the
+        // failure mode the pre-transaction check exists to avoid, just
+        // reintroduced by the TOCTOU gap. Re-checking here, now that this
+        // request is the only one holding the org's import lock, closes it:
+        // any tag that conflicts at this point becomes a normal itemized row
+        // error instead of a batch-destroying crash.
+        if (tagsToCheck.length > 0) {
+          const stillConflicting = new Set(
+            (await tx.asset.findMany({ where: { assetTag: { in: tagsToCheck } }, select: { assetTag: true } }))
+              .map((a) => a.assetTag),
+          )
+          if (stillConflicting.size > 0) {
+            validRows = validRows.filter(({ index, row }) => {
+              const tag = row.asset_tag?.trim()
+              if (tag && stillConflicting.has(tag)) {
+                errors.push({ row: index + 2, message: `asset_tag "${tag}" is already used by an existing asset` })
+                return false
+              }
+              return true
+            })
+          }
+        }
+
         for (const { row } of validRows) {
           // ── Building ───────────────────────────────────────────────────────
           const buildingKey = row.building_name.trim()
           let buildingId = buildingCache.get(buildingKey)
           if (!buildingId) {
+            // Case-insensitive — see the asset-category lookup above for why.
             const existing = await tx.building.findFirst({
-              where: { name: buildingKey },
+              where: { name: { equals: buildingKey, mode: 'insensitive' } },
               select: { id: true },
             })
             if (existing) {
@@ -238,7 +283,7 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
           let floorId = floorCache.get(floorKey)
           if (!floorId) {
             const existing = await tx.floor.findFirst({
-              where: { buildingId, name: row.floor_name.trim() },
+              where: { buildingId, name: { equals: row.floor_name.trim(), mode: 'insensitive' } },
               select: { id: true },
             })
             if (existing) {
@@ -260,7 +305,7 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
           if (!zoneId) {
             const colour = row.zone_colour?.trim() || paletteColour(zoneIndexCounter++)
             const existing = await tx.zone.findFirst({
-              where: { floorId, name: row.zone_name.trim() },
+              where: { floorId, name: { equals: row.zone_name.trim(), mode: 'insensitive' } },
               select: { id: true },
             })
             if (existing) {
@@ -308,6 +353,23 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }, { timeout: 120_000 }) // up to 2000 rows, each doing several sequential lookups/creates — the
       // 5s Prisma default is not enough headroom (measured ~3.2s for 500 unique rows locally)
+
+      // One summary row for the whole batch, not one per created row — this
+      // can create hundreds of buildings/floors/zones/assets in a single call.
+      // Distinct resourceType/action from assets.ts's own /bulk-import (which
+      // only ever creates assets on one existing floor) so the two don't show
+      // up as indistinguishable entries in the audit log.
+      await recordAuditLog(prisma, {
+        actorId: request.user.id,
+        action: 'import.bulk_csv',
+        resourceType: 'Import',
+        resourceId: randomUUID(),
+        after: {
+          buildingsCreated, floorsCreated, zonesCreated, assetsCreated,
+          errorCount: errors.length, totalRows: body.data.rows.length,
+        },
+        ipAddress: request.ip,
+      }, request.log)
 
       return reply.status(200).send({
         data: {

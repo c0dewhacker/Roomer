@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { formatDateTime } from '@/lib/utils'
 import { Clock, MapPin, CheckCircle, XCircle } from 'lucide-react'
 import { useQueueEntries, useLeaveQueue, useClaimDesk } from '@/hooks/useBookings'
@@ -34,6 +35,19 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
   const cfg = statusConfig[entry.status] ?? { label: entry.status, variant: 'outline' as const }
   const isActive = entry.status === 'WAITING' || entry.status === 'PROMOTED'
 
+  // The 30s poll on useQueueEntries is the only other thing that would catch
+  // a passed claimDeadline — without a client-side tick, "Claim" stayed
+  // clickable up to ~30s after the server would already reject it with
+  // CLAIM_EXPIRED, and nothing on screen told the user their window was
+  // closing. Only ticks while there's an actual deadline to watch.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (entry.status !== 'PROMOTED' || !entry.claimDeadline) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [entry.status, entry.claimDeadline])
+  const claimExpired = entry.status === 'PROMOTED' && !!entry.claimDeadline && now >= new Date(entry.claimDeadline).getTime()
+
   return (
     <Card className={entry.status === 'PROMOTED' ? 'border-green-500 shadow-md' : ''}>
       <CardContent className="p-4">
@@ -60,13 +74,15 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
 
             {entry.status === 'WAITING' && (
               <p className="text-xs text-muted-foreground mt-0.5">
-                Position <strong>#{entry.position}</strong> · Expires {formatDateTime(entry.expiresAt)}
+                Position <strong>#{entry.position}</strong> · Expires {formatDateTime(entry.expiresAt, entry.asset?.resolvedTimezone)}
               </p>
             )}
 
             {entry.status === 'PROMOTED' && entry.claimDeadline && (
-              <p className="text-xs font-medium text-green-700 mt-1">
-                Claim before {formatDateTime(entry.claimDeadline)}
+              <p className={`text-xs font-medium mt-1 ${claimExpired ? 'text-destructive' : 'text-green-700'}`}>
+                {claimExpired
+                  ? 'Claim window expired — refreshing…'
+                  : `Claim before ${formatDateTime(entry.claimDeadline, entry.asset?.resolvedTimezone)}`}
               </p>
             )}
           </div>
@@ -77,7 +93,7 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
                 <Button
                   size="sm"
                   onClick={() => claim.mutate(entry.id)}
-                  disabled={claim.isPending}
+                  disabled={claim.isPending || claimExpired}
                   className="bg-green-600 hover:bg-green-700"
                 >
                   <CheckCircle className="mr-1.5 h-3.5 w-3.5" />

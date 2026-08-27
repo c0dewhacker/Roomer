@@ -253,7 +253,7 @@ export interface BallotEntry {
   run?: BallotRun & { ballot: { id: string; name: string } }
   user?: { id: string; displayName: string; email: string }
   asset?: { id: string; name: string } | null
-  booking?: { id: string; startsAt: string; endsAt: string; status: BookingStatus } | null
+  booking?: { id: string; startsAt: string; endsAt: string; status: BookingStatus; resolvedTimezone?: string } | null
 }
 
 export interface Booking {
@@ -309,6 +309,7 @@ interface BookingSummary {
   startsAt: string
   endsAt: string
   asset: { name: string }
+  resolvedTimezone?: string
 }
 
 interface UserRef {
@@ -357,7 +358,7 @@ export interface QueueEntry {
   status: QueueEntryStatus
   expiresAt: string
   claimDeadline?: string
-  asset?: Asset & { zone?: Zone }
+  asset?: Asset & { zone?: Zone; resolvedTimezone?: string }
   /** @deprecated Use assetId */
   deskId?: string
   /** @deprecated Use asset */
@@ -512,6 +513,7 @@ export interface FloorManagerRequest {
   user?: { id: string; displayName: string; email: string }
   floor?: { id: string; name: string; building: { id: string; name: string } }
   reviewedBy?: { id: string; displayName: string } | null
+  resolvedTimezone?: string
 }
 
 export interface AuditLogEntry {

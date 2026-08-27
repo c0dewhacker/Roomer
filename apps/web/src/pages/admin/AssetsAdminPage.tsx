@@ -166,15 +166,20 @@ function AssetDialog({
     setAmenityInput('')
   }, [existing, reset])
 
+  // Both also invalidate ['floors'] — a create/update can set bookingStatus,
+  // name, or bookingLabel, all of which DeskPanel/the floor plan render via
+  // ['floors', floorId, 'availability', date]. The assign/removeUser
+  // mutations further down this same file already invalidate both; create/
+  // update were the inconsistent ones.
   const create = useMutation({
     mutationFn: (d: AssetForm) => assetsApi.create({ ...d, amenities, capacity: d.capacity ? Number(d.capacity) : undefined }),
-    onSuccess: () => { toast.success('Asset created'); qc.invalidateQueries({ queryKey: ['assets'] }); onClose(); reset() },
+    onSuccess: () => { toast.success('Asset created'); qc.invalidateQueries({ queryKey: ['assets'] }); qc.invalidateQueries({ queryKey: ['floors'] }); onClose(); reset() },
     onError: (err: Error) => toast.error(err.message),
   })
 
   const update = useMutation({
     mutationFn: (d: AssetForm) => assetsApi.update(existing!.id, { ...d, amenities, capacity: d.capacity ? Number(d.capacity) : null }),
-    onSuccess: () => { toast.success('Asset updated'); qc.invalidateQueries({ queryKey: ['assets'] }); onClose() },
+    onSuccess: () => { toast.success('Asset updated'); qc.invalidateQueries({ queryKey: ['assets'] }); qc.invalidateQueries({ queryKey: ['floors'] }); onClose() },
     onError: (err: Error) => toast.error(err.message),
   })
 
@@ -517,7 +522,17 @@ function CategoryDialog({ open, onClose, existing }: { open: boolean; onClose: (
       if (iconFile) await uploadIcon.mutateAsync({ id: existing!.id, file: iconFile })
       return res
     },
-    onSuccess: () => { toast.success('Category updated'); qc.invalidateQueries({ queryKey: ['asset-categories'] }); onClose() },
+    onSuccess: () => {
+      toast.success('Category updated')
+      qc.invalidateQueries({ queryKey: ['asset-categories'] })
+      // Every existing asset in this category already joins its name/colour
+      // for display — the admin asset list (['assets']) and DeskPanel's
+      // "Category:" line (['floors', ..., 'availability', ...], read via
+      // ['floors']) both show the pre-rename value otherwise.
+      qc.invalidateQueries({ queryKey: ['assets'] })
+      qc.invalidateQueries({ queryKey: ['floors'] })
+      onClose()
+    },
     onError: (err: Error) => toast.error(err.message),
   })
 

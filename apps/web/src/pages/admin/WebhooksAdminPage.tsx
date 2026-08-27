@@ -3,6 +3,7 @@ import { formatDistanceToNow } from 'date-fns'
 import { Plus, Trash2, Send, Eye, CheckCircle2, XCircle, Pencil, Copy, Check, AlertTriangle } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { webhooksApi, ApiError, type WebhookEndpoint, type WebhookDelivery } from '@/lib/api'
+import { formatDateTime } from '@/lib/utils'
 import { toast } from 'sonner'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -226,7 +227,15 @@ function DeliveryLogSheet({ endpoint, onClose }: { endpoint: WebhookEndpoint; on
     queryKey: ['webhook-deliveries', endpoint.id, page],
     queryFn: () => webhooksApi.deliveries(endpoint.id, page),
     select: (r) => r,
+    // pg-boss keeps retrying a failing delivery in the background — nothing
+    // this sheet does triggers a re-render when a retry lands, so without
+    // polling an admin actively watching an incident sees no signal short of
+    // closing and reopening the sheet (and even then, only once staleTime
+    // has passed). Same 30_000 convention as every other admin list fixed
+    // this session.
+    refetchInterval: 30_000,
   })
+  const maxAttempts = data?.meta?.maxAttempts
 
   return (
     <Sheet open onOpenChange={(o) => !o && onClose()}>
@@ -254,18 +263,29 @@ function DeliveryLogSheet({ endpoint, onClose }: { endpoint: WebhookEndpoint; on
                 <TableBody>
                   {data?.data.length === 0 ? (
                     <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">No deliveries yet</TableCell></TableRow>
-                  ) : data?.data.map((d: WebhookDelivery) => (
+                  ) : data?.data.map((d: WebhookDelivery) => {
+                    // Each retry upserts the same row rather than inserting a
+                    // new one, so a failed attempt N of maxAttempts is either
+                    // still retrying (N < maxAttempts) or permanently
+                    // exhausted (N === maxAttempts) — otherwise indistinguishable
+                    // from the shown status alone.
+                    const stillRetrying = !d.success && !!maxAttempts && d.attempt < maxAttempts
+                    return (
                     <TableRow key={d.id}>
                       <TableCell>{d.success ? <CheckCircle2 className="h-4 w-4 text-green-500" /> : <XCircle className="h-4 w-4 text-destructive" />}</TableCell>
                       <TableCell className="font-mono text-xs">{d.event}</TableCell>
                       <TableCell>{d.statusCode ?? '—'}</TableCell>
-                      <TableCell>{d.attempt}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{new Date(d.createdAt).toLocaleString()}</TableCell>
+                      <TableCell>
+                        {d.attempt}{maxAttempts ? ` / ${maxAttempts}` : ''}
+                        {stillRetrying && <Badge variant="outline" className="ml-1.5 text-xs">retrying…</Badge>}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{formatDateTime(d.updatedAt)}</TableCell>
                       <TableCell className="max-w-[16rem] truncate text-xs text-destructive" title={d.error ?? undefined}>
                         {d.error ?? '—'}
                       </TableCell>
                     </TableRow>
-                  ))}
+                    )
+                  })}
                 </TableBody>
               </Table>
               </div>
@@ -299,6 +319,11 @@ export default function WebhooksAdminPage() {
     queryKey: ['webhooks'],
     queryFn: () => webhooksApi.list(),
     select: (r) => r.data,
+    // The Health column (consecutiveFailures/lastSuccessAt) changes from
+    // background deliveries/retries this client doesn't drive — without
+    // polling, an admin watching to see if a fix took effect gets no signal
+    // short of a manual reload.
+    refetchInterval: 30_000,
   })
 
   const { data: allEvents = [] } = useQuery({
@@ -410,7 +435,19 @@ export default function WebhooksAdminPage() {
                         <Button size="icon" variant="ghost" title="View deliveries" onClick={() => setViewingDeliveries(ep)}>
                           <Eye className="h-4 w-4" />
                         </Button>
-                        <Button size="icon" variant="ghost" title="Send ping" onClick={() => ping.mutate(ep.id)} disabled={ping.isPending}>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          title="Send ping"
+                          onClick={() => ping.mutate(ep.id)}
+                          // ping is one mutation instance shared by every row
+                          // — gating on ping.isPending alone disabled every
+                          // OTHER endpoint's button for the full ~10s ping
+                          // timeout while any single one was in flight.
+                          // ping.variables narrows this to the row actually
+                          // being pinged.
+                          disabled={ping.isPending && ping.variables === ep.id}
+                        >
                           <Send className="h-4 w-4" />
                         </Button>
                         <Button size="icon" variant="ghost" title="Edit" onClick={() => setEditing(ep)}>

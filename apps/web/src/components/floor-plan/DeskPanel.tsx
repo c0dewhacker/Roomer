@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { format, addHours, startOfDay, addDays } from 'date-fns'
-import { formatDateTime } from '@/lib/utils'
+import { format, startOfDay, addWeeks } from 'date-fns'
+import { formatDateTime, zonedWallClockToUtc } from '@/lib/utils'
 import { MapPin, Clock, Users, CheckCircle, XCircle, AlertCircle, Shield, UserPlus, UserMinus, ChevronDown, ChevronUp, Pencil, X, Repeat, Star } from 'lucide-react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
@@ -156,6 +156,13 @@ function AddAssignmentDialog({
     onSuccess: () => {
       toast.success('User assigned to desk')
       qc.invalidateQueries({ queryKey: ['floors'] })
+      // Both BookingsPage's "My Assigned Desks" and AssetsPage's "My Assets"
+      // fetch this exact assetsApi.getMyAssignments() data under these two
+      // cache keys (see AssignedDeskCard.tsx's own mutations, which already
+      // invalidate both) — without this, the newly-assigned user's own view
+      // keeps showing the old assignment state until the cache goes stale.
+      qc.invalidateQueries({ queryKey: ['my-assignments'] })
+      qc.invalidateQueries({ queryKey: ['assets', 'my'] })
       onClose()
       setSearch('')
       setSelectedUserId('')
@@ -533,6 +540,13 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   // Same reasoning for the visitor fields — a different asset means a fresh
   // booking, not "still booking for the same visitor as before".
   useEffect(() => { setIsGuestBooking(false); setGuestName(''); setGuestEmail('') }, [desk?.id])
+  // ...and for the queue-join expiry — DeskPanel isn't remounted when the
+  // selected desk changes (FloorPage renders one unkeyed instance), so
+  // without this a custom expiry typed for one desk silently carries over
+  // into a "Join Queue" submission for a completely different one, with a
+  // timestamp that has no relationship to that desk's wanted time (it can
+  // even already be in the past).
+  useEffect(() => { setQueueExpiry('') }, [desk?.id])
   const [showAdmin, setShowAdmin] = useState(false)
   const [editAssetOpen, setEditAssetOpen] = useState(false)
   const [addAllowListOpen, setAddAllowListOpen] = useState(false)
@@ -553,14 +567,54 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
   )
   const canManageDesk = isAdmin || isFloorManager
 
-  const { data: orgSettings } = useQuery({
-    queryKey: ['settings', 'organisation'],
-    queryFn: () => settingsApi.getOrg(),
+  // Public endpoint, not getOrg()/'organisation' — that one is
+  // SUPER_ADMIN-gated and every non-admin user booking a desk would silently
+  // 403 and fall back to the hardcoded default below, regardless of what the
+  // org actually has configured.
+  const { data: publicSettings } = useQuery({
+    queryKey: ['settings', 'public'],
+    queryFn: () => settingsApi.getPublic(),
     select: (r) => r.data,
   })
-  const maxAdvanceDays = orgSettings?.maxAdvanceBookingDays ?? 14
-  const maxEndDateStr = format(addDays(date, maxAdvanceDays), 'yyyy-MM-dd')
+  const maxAdvanceDays = publicSettings?.maxAdvanceBookingDays ?? 14
+  // Anchored to today, not the selected start `date` — "max advance
+  // booking days" means no part of a booking can be more than N days out
+  // from now (matching isWithinAdvanceBookingWindow's actual, backend-
+  // enforced semantics for startsAt), not "up to N more days past whatever
+  // start date is already selected". The previous version let picking a
+  // start date near the edge of the advance window (e.g. day 13 of 14)
+  // produce an end-date max far beyond the real policy boundary (day 27),
+  // effectively repurposing this setting as an unintended ~N-day cap on
+  // booking *duration* instead — there is no separate max-duration concept
+  // or backend check at all, so this UI max was the only thing limiting
+  // how long a multi-day booking could span.
+  //
+  // Computed from UTC getters, not date-fns `addDays`/`format` (which read
+  // local getters): the backend's isWithinAdvanceBookingWindow deliberately
+  // cuts off at end-of-day-N in UTC, not the browser's local timezone. When
+  // local time is ahead of UTC (e.g. Australia/Sydney), the local calendar
+  // day is already one day ahead of the UTC calendar day for part of every
+  // day, which shifted this max one day later than what the backend would
+  // actually accept.
+  const now = new Date()
+  const maxEndDateStr = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + maxAdvanceDays),
+  )
+    .toISOString()
+    .slice(0, 10)
   const isMultiDay = format(endDate, 'yyyy-MM-dd') !== format(date, 'yyyy-MM-dd')
+
+  // Recurring series span is bounded by maxRecurringBookingWeeks, measured
+  // from the series' own first occurrence (this panel's selected `date`) —
+  // see recurring.ts's spanWeeks check, which is entirely calendar-date
+  // arithmetic (firstDate/lastDate as UTC-midnight dates, no real instant
+  // involved), so plain addWeeks on the local `date` matches it exactly
+  // without needing the UTC-getter reconstruction maxEndDateStr above uses
+  // for the "now"-anchored advance-booking window. Without this, "Repeat
+  // until" had no upper bound at all — a user could fill in a span far past
+  // the actual limit and only find out via a toast after submitting.
+  const maxRecurringWeeks = publicSettings?.maxRecurringBookingWeeks ?? 12
+  const maxRecurringLastDateStr = format(addWeeks(date, maxRecurringWeeks), 'yyyy-MM-dd')
 
   // Reset AM/PM preset when multi-day selection is made
   useEffect(() => {
@@ -600,6 +654,9 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
     onSuccess: () => {
       toast.success('User removed from desk')
       qc.invalidateQueries({ queryKey: ['floors'] })
+      // See the `assign` mutation above — same two cache keys.
+      qc.invalidateQueries({ queryKey: ['my-assignments'] })
+      qc.invalidateQueries({ queryKey: ['assets', 'my'] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -609,6 +666,9 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
     onSuccess: () => {
       toast.success('Primary user updated')
       qc.invalidateQueries({ queryKey: ['floors'] })
+      // See the `assign` mutation above — same two cache keys.
+      qc.invalidateQueries({ queryKey: ['my-assignments'] })
+      qc.invalidateQueries({ queryKey: ['assets', 'my'] })
     },
     onError: (err: Error) => toast.error(err.message),
   })
@@ -672,29 +732,77 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
     onError: (err: Error) => toast.error(err.message),
   })
 
+  // Computed before the `if (!desk) return null` below — hooks can't be
+  // called conditionally, so myQueueEntry/the claim-deadline tick have to
+  // run on every render regardless of whether desk is present yet, using
+  // desk?.id rather than assuming desk is already non-null here.
+  const myQueueEntry = queueEntries?.find(
+    (q) => q.assetId === desk?.id && (q.status === 'WAITING' || q.status === 'PROMOTED'),
+  )
+
+  // The 30s poll backing queueEntries is the only other thing that would
+  // catch a passed claimDeadline — without a client-side tick, "Claim Desk"
+  // stayed clickable up to ~30s after the server would already reject it
+  // with CLAIM_EXPIRED, with nothing on screen indicating the window had
+  // closed. Only ticks while there's an actual promoted deadline to watch.
+  const [claimNow, setClaimNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (myQueueEntry?.status !== 'PROMOTED' || !myQueueEntry.claimDeadline) return
+    const id = setInterval(() => setClaimNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [myQueueEntry?.status, myQueueEntry?.claimDeadline])
+  const claimExpired = myQueueEntry?.status === 'PROMOTED' && !!myQueueEntry.claimDeadline
+    && claimNow >= new Date(myQueueEntry.claimDeadline).getTime()
+
   if (!desk) return null
 
   const categoryName = desk.category?.name ?? 'Asset'
 
+  // A one-off booking must resolve against the *desk's building* timezone
+  // (desk.resolvedTimezone — see #72), not the booker's browser, exactly
+  // like the recurring-booking flow above already does server-side.
+  // zonedWallClockToUtc reads year/month/day off `date`/`endDate` via plain
+  // local getters (fine — those Date objects only ever represent a
+  // browser-agnostic *calendar day* the user picked, never a specific
+  // instant) and combines them with the desired local hour:minute,
+  // converted through the building's own timezone rather than through
+  // date-fns' startOfDay/addHours/setHours, which all silently operate in
+  // the browser's timezone instead.
   const getBookingTimes = () => {
-    const base = startOfDay(date)
-    const endBase = startOfDay(endDate)
+    // resolvedTimezone is always populated at runtime by useFloorAvailability
+    // (every asset on a floor shares the floor's one resolved value) — the
+    // `?? 'UTC'` is a defensive fallback only, matching the backend's own
+    // ultimate fallback (Building.timezone ?? org default ?? 'UTC'), never
+    // the browser's timezone, so a missing value fails toward the same
+    // building-agnostic default the server would use, not toward the exact
+    // bug this fix removes.
+    const tz = desk?.resolvedTimezone ?? 'UTC'
+    const startYmd = { y: date.getFullYear(), m: date.getMonth() + 1, d: date.getDate() }
+    const endYmd = { y: endDate.getFullYear(), m: endDate.getMonth() + 1, d: endDate.getDate() }
     if (timePreset === 'full') {
-      return { start: base, end: new Date(endBase.getTime() + 23 * 3600000 + 59 * 60000) }
+      return {
+        start: zonedWallClockToUtc(startYmd.y, startYmd.m, startYmd.d, 0, 0, tz),
+        end: zonedWallClockToUtc(endYmd.y, endYmd.m, endYmd.d, 23, 59, tz),
+      }
     }
     if (timePreset === 'am') {
-      return { start: addHours(base, 8), end: addHours(base, 13) }
+      return {
+        start: zonedWallClockToUtc(startYmd.y, startYmd.m, startYmd.d, 8, 0, tz),
+        end: zonedWallClockToUtc(startYmd.y, startYmd.m, startYmd.d, 13, 0, tz),
+      }
     }
     if (timePreset === 'pm') {
-      return { start: addHours(base, 13), end: addHours(base, 18) }
+      return {
+        start: zonedWallClockToUtc(startYmd.y, startYmd.m, startYmd.d, 13, 0, tz),
+        end: zonedWallClockToUtc(startYmd.y, startYmd.m, startYmd.d, 18, 0, tz),
+      }
     }
     const [sh, sm] = customStart.split(':').map(Number)
     const [eh, em] = customEnd.split(':').map(Number)
-    const s = new Date(base)
-    s.setHours(sh, sm, 0, 0)
-    const e = new Date(endBase)
-    e.setHours(eh, em, 0, 0)
-    return { start: s, end: e }
+    return {
+      start: zonedWallClockToUtc(startYmd.y, startYmd.m, startYmd.d, sh, sm, tz),
+      end: zonedWallClockToUtc(endYmd.y, endYmd.m, endYmd.d, eh, em, tz),
+    }
   }
 
   const handleBook = async () => {
@@ -748,10 +856,6 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
       // onError in useJoinQueue handles the toast
     }
   }
-
-  const myQueueEntry = queueEntries?.find(
-    (q) => q.assetId === desk.id && (q.status === 'WAITING' || q.status === 'PROMOTED'),
-  )
 
   const isMyAssignedDesk = !!(
     desk.assignedUsers?.some((u) => u.id === user?.id) &&
@@ -1037,9 +1141,13 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                           type="date"
                           value={recurringLastDate}
                           min={format(date, 'yyyy-MM-dd')}
+                          max={maxRecurringLastDateStr}
                           onChange={(e) => setRecurringLastDate(e.target.value)}
                           className="mt-1"
                         />
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Up to {maxRecurringWeeks} weeks from the first occurrence
+                        </p>
                       </div>
                     </div>
                   )}
@@ -1283,7 +1391,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                     You'll be notified when this desk becomes available.
                   </p>
                   <p className="text-xs text-yellow-600 mt-1">
-                    Queue expires: {formatDateTime(myQueueEntry.expiresAt)}
+                    Queue expires: {formatDateTime(myQueueEntry.expiresAt, desk.resolvedTimezone)}
                   </p>
                 </div>
                 <AlertDialog>
@@ -1321,17 +1429,19 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
             {/* Promoted: claim desk */}
             {myQueueEntry?.status === 'PROMOTED' && (
               <div className="space-y-3">
-                <div className="rounded-md bg-green-50 p-3 border border-green-200">
-                  <p className="text-sm font-semibold text-green-800">Desk available for you!</p>
+                <div className={`rounded-md p-3 border ${claimExpired ? 'bg-destructive/10 border-destructive/30' : 'bg-green-50 border-green-200'}`}>
+                  <p className={`text-sm font-semibold ${claimExpired ? 'text-destructive' : 'text-green-800'}`}>
+                    {claimExpired ? 'Claim window expired' : 'Desk available for you!'}
+                  </p>
                   {myQueueEntry.claimDeadline && (
-                    <p className="text-xs text-green-600 mt-1">
-                      Claim before: {formatDateTime(myQueueEntry.claimDeadline)}
+                    <p className={`text-xs mt-1 ${claimExpired ? 'text-destructive' : 'text-green-600'}`}>
+                      {claimExpired ? 'Refreshing…' : `Claim before: ${formatDateTime(myQueueEntry.claimDeadline, desk.resolvedTimezone)}`}
                     </p>
                   )}
                 </div>
                 <Button
                   onClick={() => claimDesk.mutate(myQueueEntry.id)}
-                  disabled={claimDesk.isPending}
+                  disabled={claimDesk.isPending || claimExpired}
                   className="w-full bg-green-600 hover:bg-green-700"
                 >
                   <CheckCircle className="mr-2 h-4 w-4" />

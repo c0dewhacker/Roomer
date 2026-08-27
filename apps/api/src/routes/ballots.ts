@@ -7,6 +7,7 @@ import { getManagedBuildingIds, getManagedFloorIds } from '../middleware/require
 import { checkGroupAccess } from './groups.js'
 import { ensureNextBallotRun, runDrawForRun, declineBallotEntry, resolveBallotAssetPool } from '../lib/ballot.js'
 import { recordAuditLog } from '../lib/audit.js'
+import { resolveBuildingTimezone } from '../lib/timezone.js'
 
 /**
  * True when the caller may create/manage a ballot over this scope: SUPER_ADMIN,
@@ -293,7 +294,14 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
     const { runId } = request.params as { runId: string }
     const run = await prisma.ballotRun.findUnique({ where: { id: runId }, include: { ballot: true } })
     if (!run) return reply.status(404).send({ error: { message: 'Run not found', code: 'NOT_FOUND' } })
-    if (run.status !== 'OPEN' || run.registrationClosesAt < new Date()) {
+    // <= (not <) so the exact registrationClosesAt instant is already
+    // closed — matches the draw-eligibility sweep in lib/ballot.ts, which
+    // selects runs via `registrationClosesAt: { lte: new Date() }` (i.e.
+    // already eligible to draw at that same instant). "Closes at X" should
+    // mean X itself is closed; the stricter `<` here left a one-instant
+    // window where a request landing at exactly that millisecond could be
+    // accepted into a run the sweep already considers ready to draw.
+    if (run.status !== 'OPEN' || run.registrationClosesAt <= new Date()) {
       return reply.status(409).send({ error: { message: 'Registration is not open for this run', code: 'REGISTRATION_CLOSED' } })
     }
     const isSuperAdmin = request.user.globalRole === GlobalRole.SUPER_ADMIN
@@ -325,7 +333,19 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
     if (entry.status !== 'ENTERED') {
       return reply.status(409).send({ error: { message: 'This ballot has already been drawn', code: 'ALREADY_DRAWN' } })
     }
-    await prisma.ballotEntry.delete({ where: { id: entry.id } })
+    // Guarded on status: 'ENTERED', not a bare delete-by-id — the check
+    // above reads via a plain findUnique with no lock, so a withdrawal
+    // racing the exact moment the draw cron reaches this same entry could
+    // otherwise delete a row the draw is mid-way through marking WON/LOST.
+    // runDrawForRun's own writes are now guarded the same way (updateMany +
+    // status check), so whichever side actually wins the row in the
+    // database is the one that takes effect; this one correctly reports
+    // "already drawn" instead of silently deleting a just-won entry out
+    // from under its own real, already-created booking.
+    const withdrawn = await prisma.ballotEntry.deleteMany({ where: { id: entry.id, status: 'ENTERED' } })
+    if (withdrawn.count === 0) {
+      return reply.status(409).send({ error: { message: 'This ballot has already been drawn', code: 'ALREADY_DRAWN' } })
+    }
     await recordAuditLog(prisma, {
       actorId: request.user.id,
       action: 'ballot_entry.withdrawn',
@@ -344,11 +364,28 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
       include: {
         run: { include: { ballot: { select: { id: true, name: true } } } },
         asset: { select: { id: true, name: true } },
-        booking: { select: { id: true, startsAt: true, endsAt: true, status: true } },
+        booking: { select: { id: true, startsAt: true, endsAt: true, status: true, asset: { select: { floor: { select: { buildingId: true } } } } } },
       },
       orderBy: { createdAt: 'desc' },
     })
-    return reply.status(200).send({ data: entries })
+    // A won entry's booking is a real, timezone-resolved instant (unlike
+    // slotStartsAt/slotEndsAt below, which are date-only) — attach the same
+    // resolvedTimezone every other booking listing exposes (see GET / and
+    // /pending-approvals in bookings.ts) so the frontend renders it in the
+    // building's own timezone instead of the viewer's browser timezone.
+    const tzCache = new Map<string, Promise<string>>()
+    const resolveTz = (buildingId: string | null | undefined) => {
+      const key = buildingId ?? ''
+      if (!tzCache.has(key)) tzCache.set(key, resolveBuildingTimezone(prisma, buildingId))
+      return tzCache.get(key)!
+    }
+    const withTz = await Promise.all(entries.map(async (e) => {
+      if (!e.booking) return e
+      const resolvedTimezone = await resolveTz(e.booking.asset?.floor?.buildingId)
+      const { asset: _bookingAsset, ...booking } = e.booking
+      return { ...e, booking: { ...booking, resolvedTimezone } }
+    }))
+    return reply.status(200).send({ data: withTz })
   })
 
   // POST /ballots/entries/:id/decline — decline a won assignment
