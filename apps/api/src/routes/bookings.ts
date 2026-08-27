@@ -1434,8 +1434,13 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
   // GET /bookings/transfers — transfers sent and received (pending only for received) by the current user
   fastify.get('/transfers', { preHandler: [requireAuth] }, async (request, reply) => {
-    const bookingSelect = { select: { id: true, startsAt: true, endsAt: true, asset: { select: { name: true } } } } as const
-    const [sent, received] = await Promise.all([
+    const bookingSelect = {
+      select: {
+        id: true, startsAt: true, endsAt: true,
+        asset: { select: { name: true, floor: { select: { building: { select: { timezone: true } } } } } },
+      },
+    } as const
+    const [sent, received, org] = await Promise.all([
       prisma.bookingTransfer.findMany({
         where: { fromUserId: request.user.id },
         orderBy: { createdAt: 'desc' },
@@ -1446,8 +1451,15 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         orderBy: { createdAt: 'desc' },
         include: { booking: bookingSelect, fromUser: { select: { id: true, displayName: true, email: true } } },
       }),
+      prisma.organisation.findFirst({ select: { defaultTimezone: true } }),
     ])
-    return reply.status(200).send({ data: { sent, received } })
+    // Same resolvedTimezone convention as GET /bookings and every other
+    // booking-list endpoint in this file (#72) — without it, both the
+    // proposer's and recipient's dialogs/lists rendered the booking's time in
+    // each viewer's own browser timezone rather than the booking's building.
+    const withTz = <T extends { booking: { asset: { floor: { building: { timezone: string | null } } | null } | null } }>(rows: T[]) =>
+      rows.map((r) => ({ ...r, booking: { ...r.booking, resolvedTimezone: r.booking.asset?.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC' } }))
+    return reply.status(200).send({ data: { sent: withTz(sent), received: withTz(received) } })
   })
 
   // POST /bookings/transfers/:id/accept
@@ -1798,8 +1810,13 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
 
   // GET /bookings/swaps
   fastify.get('/swaps', { preHandler: [requireAuth] }, async (request, reply) => {
-    const bookingSelect = { select: { id: true, startsAt: true, endsAt: true, asset: { select: { name: true } } } } as const
-    const [sent, received] = await Promise.all([
+    const bookingSelect = {
+      select: {
+        id: true, startsAt: true, endsAt: true,
+        asset: { select: { name: true, floor: { select: { building: { select: { timezone: true } } } } } },
+      },
+    } as const
+    const [sent, received, org] = await Promise.all([
       prisma.bookingSwap.findMany({
         where: { initiatorUserId: request.user.id },
         orderBy: { createdAt: 'desc' },
@@ -1810,8 +1827,16 @@ export async function bookingRoutes(fastify: FastifyInstance): Promise<void> {
         orderBy: { createdAt: 'desc' },
         include: { bookingA: bookingSelect, bookingB: bookingSelect, initiator: { select: { id: true, displayName: true, email: true } } },
       }),
+      prisma.organisation.findFirst({ select: { defaultTimezone: true } }),
     ])
-    return reply.status(200).send({ data: { sent, received } })
+    // Same resolvedTimezone convention as /transfers above — bookingA and
+    // bookingB can be in different buildings entirely, so each gets its own
+    // resolved value rather than assuming one applies to both sides.
+    type SwapBooking = { asset: { floor: { building: { timezone: string | null } } | null } | null }
+    const tz = (b: SwapBooking) => b.asset?.floor?.building?.timezone ?? org?.defaultTimezone ?? 'UTC'
+    const withTz = <T extends { bookingA: SwapBooking; bookingB: SwapBooking }>(rows: T[]) =>
+      rows.map((r) => ({ ...r, bookingA: { ...r.bookingA, resolvedTimezone: tz(r.bookingA) }, bookingB: { ...r.bookingB, resolvedTimezone: tz(r.bookingB) } }))
+    return reply.status(200).send({ data: { sent: withTz(sent), received: withTz(received) } })
   })
 
   // POST /bookings/swaps/:id/accept

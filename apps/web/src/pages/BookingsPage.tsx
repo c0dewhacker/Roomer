@@ -187,7 +187,7 @@ function TransferBookingDialog({ booking, open, onClose }: { booking: Booking; o
         </DialogHeader>
         <div className="space-y-4 py-2">
           <p className="text-sm text-muted-foreground">
-            Hand your booking for <strong>{bookingAsset?.name}</strong> on {formatDate(booking.startsAt)} to a
+            Hand your booking for <strong>{bookingAsset?.name}</strong> on {formatDate(booking.startsAt, booking.resolvedTimezone)} to a
             colleague. They'll need to accept before it's theirs.
           </p>
           <div>
@@ -276,7 +276,7 @@ function SwapBookingDialog({ booking, open, onClose }: { booking: Booking; open:
         </DialogHeader>
         <div className="space-y-4 py-2">
           <p className="text-sm text-muted-foreground">
-            Trade your booking for <strong>{bookingAsset?.name}</strong> on {formatDate(booking.startsAt)} with a
+            Trade your booking for <strong>{bookingAsset?.name}</strong> on {formatDate(booking.startsAt, booking.resolvedTimezone)} with a
             colleague who has a booking at the exact same time. They'll need to accept.
           </p>
           <div>
@@ -339,15 +339,23 @@ function SwapBookingDialog({ booking, open, onClose }: { booking: Booking; open:
 
 function TransferAndSwapRequestsSection() {
   const qc = useQueryClient()
+  // Neither status changes driven by the other party (accept/decline) nor the
+  // periodic server-side expiry sweep are the viewing user's own mutation —
+  // without polling, a sent request still shows "Waiting for X to respond"
+  // long after X actually responded, and a received one still shows live
+  // Accept/Decline for a request already resolved elsewhere. Matches the
+  // convention established for queue/ballot polling.
   const { data: transfers } = useQuery({
     queryKey: ['bookings', 'transfers'],
     queryFn: () => bookingsApi.listTransfers(),
     select: (r) => r.data,
+    refetchInterval: 30_000,
   })
   const { data: swaps } = useQuery({
     queryKey: ['bookings', 'swaps'],
     queryFn: () => bookingsApi.listSwaps(),
     select: (r) => r.data,
+    refetchInterval: 30_000,
   })
 
   const invalidate = () => {
@@ -394,9 +402,16 @@ function TransferAndSwapRequestsSection() {
     onError: (e: Error) => toast.error(e.message),
   })
 
-  const receivedTransfers = (transfers?.received ?? []).filter((t) => t.status === 'PENDING')
+  // The expiry sweep only runs every 15 minutes (expire-transfer-requests),
+  // so a request can sit at status: 'PENDING' for up to that long after its
+  // real expiresAt has passed — status alone isn't enough to decide whether
+  // Accept/Decline should still be live. Without this, clicking Accept on an
+  // already-expired request just produced a raw 409 instead of the button
+  // never having been offered.
+  const notExpired = (expiresAt: string) => new Date(expiresAt) > new Date()
+  const receivedTransfers = (transfers?.received ?? []).filter((t) => t.status === 'PENDING' && notExpired(t.expiresAt))
   const sentTransfers = (transfers?.sent ?? []).filter((t) => t.status === 'PENDING')
-  const receivedSwaps = (swaps?.received ?? []).filter((s) => s.status === 'PENDING')
+  const receivedSwaps = (swaps?.received ?? []).filter((s) => s.status === 'PENDING' && notExpired(s.expiresAt))
   const sentSwaps = (swaps?.sent ?? []).filter((s) => s.status === 'PENDING')
 
   const hasAnything = receivedTransfers.length + sentTransfers.length + receivedSwaps.length + sentSwaps.length > 0
@@ -417,7 +432,7 @@ function TransferAndSwapRequestsSection() {
                   <strong>{t.fromUser?.displayName}</strong> wants to transfer <strong>{t.booking?.asset.name}</strong> to you
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  {t.booking && formatDateRange(t.booking.startsAt, t.booking.endsAt)}
+                  {t.booking && formatDateRange(t.booking.startsAt, t.booking.endsAt, t.booking.resolvedTimezone)}
                 </p>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
@@ -433,7 +448,7 @@ function TransferAndSwapRequestsSection() {
                   <strong>{s.initiator?.displayName}</strong> wants to swap <strong>{s.bookingA?.asset.name}</strong> for your <strong>{s.bookingB?.asset.name}</strong>
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  {s.bookingA && formatDateRange(s.bookingA.startsAt, s.bookingA.endsAt)}
+                  {s.bookingA && formatDateRange(s.bookingA.startsAt, s.bookingA.endsAt, s.bookingA.resolvedTimezone)}
                 </p>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">

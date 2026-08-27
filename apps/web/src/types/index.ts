@@ -309,6 +309,7 @@ interface BookingSummary {
   startsAt: string
   endsAt: string
   asset: { name: string }
+  resolvedTimezone?: string
 }
 
 interface UserRef {
