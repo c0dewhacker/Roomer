@@ -14,9 +14,10 @@ import { blockToken } from '../lib/token-blocklist.js'
 import { recordAuditLog } from '../lib/audit.js'
 import { z } from 'zod'
 
+// .trim() before .min(1) on displayName — see schemas/department.ts for why.
 const createUserSchema = z.object({
   email: z.string().email(),
-  displayName: z.string().min(1).max(255),
+  displayName: z.string().trim().min(1).max(255),
   password: z.string().min(12),
   globalRole: z.nativeEnum(GlobalRole).optional(),
 })
@@ -31,7 +32,7 @@ const adminSetPasswordSchema = z.object({
 })
 
 const updateUserSchema = z.object({
-  displayName: z.string().min(1).max(255).optional(),
+  displayName: z.string().trim().min(1).max(255).optional(),
   accountStatus: z.enum(['ACTIVE', 'BLOCKED']).optional(),
   globalRole: z.nativeEnum(GlobalRole).optional(),
   // Self-serviceable privacy flag — controls visibility in the colleague finder.
@@ -69,7 +70,8 @@ const listUsersQuerySchema = z.object({
 
 const userImportRowSchema = z.object({
   email: z.string().email('Invalid email'),
-  display_name: z.string().min(1, 'display_name is required').max(255),
+  // .trim() before .min(1) — see schemas/department.ts for why.
+  display_name: z.string().trim().min(1, 'display_name is required').max(255),
   password: z.string().min(12).optional(),
   global_role: z.enum(['USER', 'SUPER_ADMIN']).default('USER'),
   access_groups: z.string().optional(),

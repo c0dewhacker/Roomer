@@ -28,9 +28,10 @@ import { z } from 'zod'
  */
 export const LEASE_DOCUMENT_LOCK_CLASS = 4251
 
+// .trim() before .min(1) on name — see schemas/department.ts for why.
 const createLeaseSchema = z.object({
   buildingId: z.string().min(1),
-  name: z.string().min(1).max(255),
+  name: z.string().trim().min(1).max(255),
   startDate: z.string().datetime(),
   endDate: z.string().datetime().optional(),
   landlord: z.string().max(255).optional(),
@@ -53,7 +54,7 @@ function datesAreOrdered(startDate: Date, endDate: Date | null): boolean {
 }
 
 const updateLeaseSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
+  name: z.string().trim().min(1).max(255).optional(),
   startDate: z.string().datetime().optional(),
   // Nullable (not just optional): the frontend sends `endDate: null` to clear
   // an existing end date and make the lease open-ended, distinct from

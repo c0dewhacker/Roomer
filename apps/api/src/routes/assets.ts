@@ -28,8 +28,11 @@ class ZoneGroupConflictError extends Error {
   }
 }
 
+// .trim() before .min(1) on every "name" field below — see
+// schemas/department.ts for why (whitespace-only input otherwise passes
+// validation and gets persisted, or silently coerced to blank downstream).
 const createCategorySchema = z.object({
-  name: z.string().min(1).max(255),
+  name: z.string().trim().min(1).max(255),
   description: z.string().optional(),
   defaultIsBookable: z.boolean().optional(),
   defaultIcon: z.string().max(255).optional(),
@@ -38,7 +41,7 @@ const createCategorySchema = z.object({
 
 const createAssetSchema = z.object({
   categoryId: z.string().min(1),
-  name: z.string().min(1).max(255),
+  name: z.string().trim().min(1).max(255),
   description: z.string().optional(),
   serialNumber: z.string().optional().transform((v) => v === '' ? undefined : v),
   assetTag: z.string().optional().transform((v) => v === '' ? undefined : v),
@@ -63,7 +66,7 @@ const createAssetSchema = z.object({
 
 const updateAssetSchema = z.object({
   categoryId: z.string().min(1).optional(),
-  name: z.string().min(1).max(255).optional(),
+  name: z.string().trim().min(1).max(255).optional(),
   description: z.string().optional(),
   serialNumber: z.string().optional().transform((v) => v === '' ? undefined : v),
   assetTag: z.string().optional().transform((v) => v === '' ? undefined : v),
@@ -95,8 +98,8 @@ const addZoneSchema = z.object({
 })
 
 const bulkImportRowSchema = z.object({
-  name: z.string().min(1).max(255),
-  categoryName: z.string().min(1).max(255),
+  name: z.string().trim().min(1).max(255),
+  categoryName: z.string().trim().min(1).max(255),
   bookingStatus: z.nativeEnum(BookableStatus).optional().default(BookableStatus.OPEN),
   bookingLabel: z.string().max(255).optional().default('Desk'),
   amenities: z.array(z.string()).optional().default([]),
@@ -424,7 +427,8 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { id } = request.params as { id: string }
       const result = z.object({
-        name: z.string().min(1).max(255).optional(),
+        // .trim() before .min(1) — see schemas/department.ts for why.
+        name: z.string().trim().min(1).max(255).optional(),
         description: z.string().optional(),
         defaultIsBookable: z.boolean().optional(),
         defaultIcon: z.string().max(255).optional().nullable(),

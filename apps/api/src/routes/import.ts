@@ -34,17 +34,22 @@ const BULK_IMPORT_LOCK_CLASS = 4248
 // ─── Validation ───────────────────────────────────────────────────────────────
 
 const rowSchema = z.object({
-  building_name: z.string().min(1, 'building_name is required'),
+  // .trim() before .min(1) on every required name column — without it, a CSV
+  // cell containing a single space passed validation, then the route's own
+  // manual .trim() calls below (building_name.trim(), etc.) silently reduced
+  // it to an empty string, creating a blank-named building/floor/zone/asset
+  // with no error ever surfaced (see schemas/department.ts for the same fix).
+  building_name: z.string().trim().min(1, 'building_name is required'),
   building_address: z.string().optional(),
-  floor_name: z.string().min(1, 'floor_name is required'),
+  floor_name: z.string().trim().min(1, 'floor_name is required'),
   floor_level: z.union([z.coerce.number().int(), z.literal('')]).transform((v) => (v === '' ? 0 : Number(v))),
-  zone_name: z.string().min(1, 'zone_name is required'),
+  zone_name: z.string().trim().min(1, 'zone_name is required'),
   zone_colour: z
     .string()
     .regex(/^(#[0-9a-fA-F]{6})?$/, 'zone_colour must be a hex colour or empty')
     .optional(),
-  asset_name: z.string().min(1, 'asset_name is required'),
-  asset_category: z.string().min(1, 'asset_category is required'),
+  asset_name: z.string().trim().min(1, 'asset_name is required'),
+  asset_category: z.string().trim().min(1, 'asset_category is required'),
   asset_status: z
     .enum(['OPEN', 'RESTRICTED', 'ASSIGNED', 'DISABLED'])
     .default('OPEN'),

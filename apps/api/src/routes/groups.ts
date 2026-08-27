@@ -9,14 +9,15 @@ import { z } from 'zod'
 
 const globalRoleEnum = z.enum([GlobalRole.USER, GlobalRole.SUPER_ADMIN])
 
+// .trim() before .min(1) — see schemas/department.ts for why.
 const createGroupSchema = z.object({
-  name: z.string().min(1).max(255),
+  name: z.string().trim().min(1).max(255),
   description: z.string().optional(),
   globalRole: globalRoleEnum.optional(),
 })
 
 const updateGroupSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
+  name: z.string().trim().min(1).max(255).optional(),
   description: z.string().optional(),
   globalRole: globalRoleEnum.optional(),
 })

@@ -88,7 +88,8 @@ const ALLOWED_DATE_FORMATS = [
 ] as const
 
 const updateOrgSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
+  // .trim() before .min(1) — see schemas/department.ts for why.
+  name: z.string().trim().min(1).max(255).optional(),
   defaultBookingDurationHours: z.number().int().min(1).max(24).optional(),
   maxAdvanceBookingDays: z.number().int().min(1).max(365).optional(),
   maxBookingsPerUser: z.number().int().min(1).max(100).optional(),
