@@ -14,6 +14,15 @@ export function useMyBookings(status?: 'upcoming' | 'past' | 'all') {
     queryKey: ['bookings', status ?? 'all'],
     queryFn: () => bookingsApi.list(status),
     select: (res) => ({ bookings: res.data, total: res.meta?.total ?? res.data.length }),
+    // Approval/rejection (by an admin, or the auto-reject cron) isn't driven
+    // by this client, so a "Pending approval" badge here can go stale the
+    // same way the approvals list itself could (see useBookingApprovals.ts).
+    // Only polls while there's actually something to watch — this query
+    // backs the main bookings list for every user regardless of whether
+    // they have any pending request, so an unconditional interval here
+    // would poll far more often than useQueueEntries/useBallots's
+    // narrower, already-time-sensitive surfaces.
+    refetchInterval: (query) => (query.state.data?.data ?? []).some((b) => b.status === 'PENDING_APPROVAL') ? 30_000 : false,
   })
 }
 
