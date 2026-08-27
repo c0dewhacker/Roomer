@@ -940,6 +940,8 @@ export interface WebhookDelivery {
   error: string | null
   attempt: number
   createdAt: string
+  /** When the shown outcome (success/error/statusCode/attempt) was last recorded — retries upsert the same row, so this can be well after createdAt. */
+  updatedAt: string
 }
 
 export const webhooksApi = {
@@ -952,7 +954,7 @@ export const webhooksApi = {
   delete: (id: string) => api.delete<{ data: { ok: true } }>(`/webhooks/${id}`),
   ping: (id: string) => api.post<{ data: { ok: true } }>(`/webhooks/${id}/ping`),
   deliveries: (id: string, page = 1, limit = 50) =>
-    api.get<{ data: WebhookDelivery[]; meta: { total: number; page: number; limit: number; totalPages: number } }>(
+    api.get<{ data: WebhookDelivery[]; meta: { total: number; page: number; limit: number; totalPages: number; maxAttempts: number } }>(
       `/webhooks/${id}/deliveries?page=${page}&limit=${limit}`,
     ),
 }

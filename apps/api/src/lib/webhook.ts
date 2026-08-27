@@ -8,6 +8,15 @@ import { decryptStringMaybe } from './encryption.js'
 import { resolveValidatedHost as resolveValidatedHostShared } from './url-safety.js'
 import type { Job, JobResult } from 'pg-boss'
 
+// pg-boss's own retryLimit for a real (non-ping) delivery job, below — named
+// so the admin UI can tell a still-retrying delivery apart from a
+// permanently-exhausted one without duplicating this number. attempt is
+// 1-based (see the retryCount->attempt conversion below), so the last
+// possible attempt is WEBHOOK_RETRY_LIMIT + 1 (one initial send + this many
+// retries).
+export const WEBHOOK_RETRY_LIMIT = 5
+export const WEBHOOK_MAX_ATTEMPTS = WEBHOOK_RETRY_LIMIT + 1
+
 export const WEBHOOK_EVENTS = [
   'booking.created',
   'booking.modified',
@@ -189,7 +198,7 @@ export async function dispatchWebhook(event: WebhookEvent, data: unknown): Promi
         event,
         payload,
       } satisfies WebhookDeliveryJobData,
-      retryLimit: 5,
+      retryLimit: WEBHOOK_RETRY_LIMIT,
       retryDelay: 60,
       retryBackoff: true,
       expireInSeconds: 86400,

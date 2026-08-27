@@ -5,7 +5,7 @@ import { prisma } from '../lib/prisma.js'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireGlobalRole } from '../middleware/requireRole.js'
 import { GlobalRole } from '@roomer/shared'
-import { WEBHOOK_EVENTS, assertPublicWebhookUrl, dispatchPing } from '../lib/webhook.js'
+import { WEBHOOK_EVENTS, WEBHOOK_MAX_ATTEMPTS, assertPublicWebhookUrl, dispatchPing } from '../lib/webhook.js'
 import { encrypt } from '../lib/encryption.js'
 import { recordAuditLog } from '../lib/audit.js'
 
@@ -174,14 +174,17 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
         orderBy: { createdAt: 'desc' },
         skip,
         take: limitNum,
-        select: { id: true, event: true, statusCode: true, success: true, error: true, attempt: true, createdAt: true },
+        select: { id: true, event: true, statusCode: true, success: true, error: true, attempt: true, createdAt: true, updatedAt: true },
       }),
       prisma.webhookDelivery.count({ where: { endpointId: id } }),
     ])
 
     return reply.send({
       data: deliveries,
-      meta: { total, page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum) },
+      // maxAttempts lets the UI tell "will retry again" apart from
+      // "permanently exhausted" without duplicating the retry-limit
+      // constant that only lib/webhook.ts otherwise knows about.
+      meta: { total, page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum), maxAttempts: WEBHOOK_MAX_ATTEMPTS },
     })
   })
 }
