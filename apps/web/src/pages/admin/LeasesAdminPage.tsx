@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useForm, type Resolver } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -81,6 +81,29 @@ function LeaseDialog({
       notes: existing?.notes ?? '',
     },
   })
+
+  // defaultValues only applies on this component's first mount — LeaseDialog
+  // is a single persistent instance reused for every "Add"/"Edit" click on
+  // this card (see BuildingsAdminPage/AssetsAdminPage for the same fix),
+  // so without resyncing here, canceling out of an edit left the changed-
+  // but-never-saved values sitting in the form; reopening Edit later showed
+  // that abandoned data instead of the lease's real current values, and
+  // saving from there would silently overwrite the lease with what was
+  // explicitly canceled.
+  useEffect(() => {
+    if (open) {
+      reset({
+        buildingId: existing?.buildingId ?? '',
+        name: existing?.name ?? '',
+        startDate: existing?.startDate ? existing.startDate.slice(0, 10) : '',
+        endDate: existing?.endDate ? existing.endDate.slice(0, 10) : '',
+        landlord: existing?.landlord ?? '',
+        rentAmount: existing?.rentAmount ?? '',
+        currency: existing?.currency ?? 'AUD',
+        notes: existing?.notes ?? '',
+      })
+    }
+  }, [open, existing, reset])
 
   const create = useMutation({
     mutationFn: (d: LeaseForm) =>
