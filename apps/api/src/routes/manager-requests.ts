@@ -6,6 +6,7 @@ import { isBuildingManagerForBuilding, isFloorManagerForFloor, getManagedBuildin
 import { enqueueNotification } from '../lib/queue.js'
 import { dispatchWebhook } from '../lib/webhook.js'
 import { recordAuditLog } from '../lib/audit.js'
+import { resolveBuildingTimezone } from '../lib/timezone.js'
 import { z } from 'zod'
 
 // How long an unactioned request stays open before the expire-manager-requests
@@ -31,6 +32,20 @@ const createRequestSchema = z.object({
 const reviewRequestSchema = z.object({
   reviewNote: z.string().max(1000).optional(),
 })
+
+// Same resolvedTimezone convention as every other list endpoint in this
+// codebase (bookings.ts, queue.ts, ballots.ts) — without it, createdAt/
+// expiresAt/reviewedAt on this page rendered in the reviewer's own browser
+// timezone rather than the floor's building, unlike the structurally
+// identical booking-approvals page.
+async function withResolvedTimezone<T extends { floor: { building: { id: string } } }>(requests: T[]): Promise<Array<T & { resolvedTimezone: string }>> {
+  const tzCache = new Map<string, Promise<string>>()
+  const resolveTz = (buildingId: string) => {
+    if (!tzCache.has(buildingId)) tzCache.set(buildingId, resolveBuildingTimezone(prisma, buildingId))
+    return tzCache.get(buildingId)!
+  }
+  return Promise.all(requests.map(async (r) => ({ ...r, resolvedTimezone: await resolveTz(r.floor.building.id) })))
+}
 
 /** SUPER_ADMIN, or a BUILDING_ADMIN for the given building. */
 async function canReview(userId: string, globalRole: string, buildingId: string): Promise<boolean> {
@@ -120,7 +135,7 @@ export async function managerRequestRoutes(fastify: FastifyInstance): Promise<vo
         reviewedBy: { select: { id: true, displayName: true } },
       },
     })
-    return reply.status(200).send({ data: requests })
+    return reply.status(200).send({ data: await withResolvedTimezone(requests) })
   })
 
   // GET /manager-requests — admin dashboard: SUPER_ADMIN sees every request,
@@ -151,7 +166,7 @@ export async function managerRequestRoutes(fastify: FastifyInstance): Promise<vo
         reviewedBy: { select: { id: true, displayName: true } },
       },
     })
-    return reply.status(200).send({ data: requests })
+    return reply.status(200).send({ data: await withResolvedTimezone(requests) })
   })
 
   // POST /manager-requests/:id/approve

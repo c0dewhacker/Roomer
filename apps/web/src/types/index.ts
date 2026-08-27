@@ -513,6 +513,7 @@ export interface FloorManagerRequest {
   user?: { id: string; displayName: string; email: string }
   floor?: { id: string; name: string; building: { id: string; name: string } }
   reviewedBy?: { id: string; displayName: string } | null
+  resolvedTimezone?: string
 }
 
 export interface AuditLogEntry {

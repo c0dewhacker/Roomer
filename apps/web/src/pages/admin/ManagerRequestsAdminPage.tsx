@@ -136,9 +136,9 @@ export default function ManagerRequestsAdminPage() {
                   )}
                   <p className="text-xs text-muted-foreground flex items-center gap-1">
                     <Clock className="h-3 w-3" />
-                    Requested {formatDate(r.createdAt)}
-                    {r.status === 'PENDING' && ` · expires ${formatDate(r.expiresAt)}`}
-                    {r.reviewedAt && r.reviewedBy && ` · reviewed by ${r.reviewedBy.displayName} on ${formatDate(r.reviewedAt)}`}
+                    Requested {formatDate(r.createdAt, r.resolvedTimezone)}
+                    {r.status === 'PENDING' && ` · expires ${formatDate(r.expiresAt, r.resolvedTimezone)}`}
+                    {r.reviewedAt && r.reviewedBy && ` · reviewed by ${r.reviewedBy.displayName} on ${formatDate(r.reviewedAt, r.resolvedTimezone)}`}
                   </p>
                 </div>
                 {r.status === 'PENDING' && (
