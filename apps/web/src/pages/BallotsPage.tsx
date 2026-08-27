@@ -57,7 +57,7 @@ function OpenBallotsTab() {
         // that gap — without this check "Enter" stayed clickable the whole
         // time, and only submitting it revealed registration had actually
         // closed.
-        const registrationClosed = Date.now() >= new Date(r.registrationClosesAt).getTime()
+        const registrationClosed = new Date().getTime() >= new Date(r.registrationClosesAt).getTime()
         return (
           <Card key={r.id}>
             <CardContent className="py-4 flex items-center justify-between gap-4">

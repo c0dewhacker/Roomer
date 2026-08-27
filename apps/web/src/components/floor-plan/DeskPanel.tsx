@@ -732,6 +732,28 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
     onError: (err: Error) => toast.error(err.message),
   })
 
+  // Computed before the `if (!desk) return null` below — hooks can't be
+  // called conditionally, so myQueueEntry/the claim-deadline tick have to
+  // run on every render regardless of whether desk is present yet, using
+  // desk?.id rather than assuming desk is already non-null here.
+  const myQueueEntry = queueEntries?.find(
+    (q) => q.assetId === desk?.id && (q.status === 'WAITING' || q.status === 'PROMOTED'),
+  )
+
+  // The 30s poll backing queueEntries is the only other thing that would
+  // catch a passed claimDeadline — without a client-side tick, "Claim Desk"
+  // stayed clickable up to ~30s after the server would already reject it
+  // with CLAIM_EXPIRED, with nothing on screen indicating the window had
+  // closed. Only ticks while there's an actual promoted deadline to watch.
+  const [claimNow, setClaimNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (myQueueEntry?.status !== 'PROMOTED' || !myQueueEntry.claimDeadline) return
+    const id = setInterval(() => setClaimNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [myQueueEntry?.status, myQueueEntry?.claimDeadline])
+  const claimExpired = myQueueEntry?.status === 'PROMOTED' && !!myQueueEntry.claimDeadline
+    && claimNow >= new Date(myQueueEntry.claimDeadline).getTime()
+
   if (!desk) return null
 
   const categoryName = desk.category?.name ?? 'Asset'
@@ -834,24 +856,6 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
       // onError in useJoinQueue handles the toast
     }
   }
-
-  const myQueueEntry = queueEntries?.find(
-    (q) => q.assetId === desk.id && (q.status === 'WAITING' || q.status === 'PROMOTED'),
-  )
-
-  // The 30s poll backing queueEntries is the only other thing that would
-  // catch a passed claimDeadline — without a client-side tick, "Claim Desk"
-  // stayed clickable up to ~30s after the server would already reject it
-  // with CLAIM_EXPIRED, with nothing on screen indicating the window had
-  // closed. Only ticks while there's an actual promoted deadline to watch.
-  const [claimNow, setClaimNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (myQueueEntry?.status !== 'PROMOTED' || !myQueueEntry.claimDeadline) return
-    const id = setInterval(() => setClaimNow(Date.now()), 1000)
-    return () => clearInterval(id)
-  }, [myQueueEntry?.status, myQueueEntry?.claimDeadline])
-  const claimExpired = myQueueEntry?.status === 'PROMOTED' && !!myQueueEntry.claimDeadline
-    && claimNow >= new Date(myQueueEntry.claimDeadline).getTime()
 
   const isMyAssignedDesk = !!(
     desk.assignedUsers?.some((u) => u.id === user?.id) &&
