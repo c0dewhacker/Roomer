@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useForm, type Resolver } from 'react-hook-form'
 import { z } from 'zod'
@@ -63,10 +63,21 @@ function FloorDialog({
   existing?: Floor
 }) {
   const qc = useQueryClient()
-  const { register, handleSubmit, formState: { errors } } = useForm<FloorForm>({
+  const { register, handleSubmit, formState: { errors }, reset } = useForm<FloorForm>({
     resolver: zodResolver(floorSchema) as Resolver<FloorForm>,
     defaultValues: { name: existing?.name ?? '', level: existing?.level ?? 0 },
   })
+
+  // defaultValues only applies on this component's first mount — FloorDialog
+  // is nested inside FloorCard, which stays mounted across open/close toggles
+  // for the same floor (only remounts when key={floor.id} actually changes,
+  // i.e. when switching floors). Without resyncing here, canceling an edit
+  // left the changed-but-never-saved name/level in the form; reopening Edit
+  // on that same floor later showed the abandoned data instead of its real
+  // current values (same bug already fixed for Buildings/Assets/Leases).
+  useEffect(() => {
+    if (open) reset({ name: existing?.name ?? '', level: existing?.level ?? 0 })
+  }, [open, existing, reset])
 
   const create = useMutation({
     mutationFn: (d: FloorForm) => floorsApi.create({ buildingId, ...d }),
