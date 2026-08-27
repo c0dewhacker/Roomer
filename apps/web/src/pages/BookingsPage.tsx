@@ -33,7 +33,7 @@ import {
 } from '@/components/ui/dialog'
 import { formatDateRange, formatDate, formatCalendarDate, zoneQualifier, toDatetimeLocalValue, fromDatetimeLocalValue } from '@/lib/utils'
 import { DateTimeLocalInput } from '@/components/ui/date-time-input'
-import { assetsApi, recurringBookingsApi, bookingsApi, usersApi } from '@/lib/api'
+import { assetsApi, recurringBookingsApi, bookingsApi, usersApi, settingsApi } from '@/lib/api'
 import type { Booking, RecurringBookingRule, BookingTransfer, BookingSwap } from '@/types'
 import { AssignedDeskCard } from '@/components/AssignedDeskCard'
 
@@ -537,6 +537,15 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
                     <UserPlus className="h-3 w-3" /> for {booking.guestName}
                   </Badge>
                 )}
+                {booking.recurringRuleId && (
+                  <Badge
+                    variant="outline"
+                    className="shrink-0 text-xs gap-1"
+                    title="Part of a recurring series — cancelling or editing this row only affects this occurrence, not the whole series"
+                  >
+                    <Repeat className="h-3 w-3" /> Recurring
+                  </Badge>
+                )}
                 {todayBooking && (
                   <Badge variant="outline" className="shrink-0 text-xs border-green-500 text-green-600">Today</Badge>
                 )}
@@ -641,6 +650,10 @@ function BookingRow({ booking, showCancel }: { booking: Booking; showCancel: boo
                         Cancel your booking for <strong>{(booking.asset ?? booking.desk)?.name}</strong> on{' '}
                         {formatDate(booking.startsAt)}? This action cannot be undone.
                         Anyone in the queue will be notified.
+                        {booking.recurringRuleId && (
+                          <> This is one occurrence of a recurring series — only this date will be
+                          cancelled; the rest of the series stays active.</>
+                        )}
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
@@ -718,6 +731,22 @@ function EditRecurringEndDateDialog({
   const qc = useQueryClient()
   const [lastDate, setLastDate] = useState(rule.lastDate.slice(0, 10))
 
+  // Same maxRecurringBookingWeeks bound the create form now enforces
+  // (recurring.ts's extend check measures the span from rule.firstDate, not
+  // "today") — without it, extending a series past the actual limit only
+  // surfaced via a toast after submitting.
+  const { data: publicSettings } = useQuery({
+    queryKey: ['settings', 'public'],
+    queryFn: () => settingsApi.getPublic(),
+    select: (r) => r.data,
+  })
+  const maxRecurringWeeks = publicSettings?.maxRecurringBookingWeeks ?? 12
+  const maxLastDateStr = new Date(
+    rule.firstDate.slice(0, 10) + 'T00:00:00.000Z',
+  )
+  maxLastDateStr.setUTCDate(maxLastDateStr.getUTCDate() + maxRecurringWeeks * 7)
+  const maxLastDate = maxLastDateStr.toISOString().slice(0, 10)
+
   const update = useMutation({
     mutationFn: () => recurringBookingsApi.update(rule.id, { lastDate }),
     onSuccess: () => {
@@ -750,12 +779,14 @@ function EditRecurringEndDateDialog({
               type="date"
               value={lastDate}
               min={rule.firstDate.slice(0, 10)}
+              max={maxLastDate}
               onChange={(e) => setLastDate(e.target.value)}
               className="mt-1.5 flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
             />
             <p className="text-xs text-muted-foreground mt-1.5">
               Pick a later date to add more occurrences, or an earlier one to drop occurrences after it.
-              Occurrences up to and including the new date are never affected.
+              Occurrences up to and including the new date are never affected. Up to {maxRecurringWeeks} weeks
+              from the series' start.
             </p>
           </div>
         </div>

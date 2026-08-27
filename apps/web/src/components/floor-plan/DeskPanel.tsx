@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { format, startOfDay } from 'date-fns'
+import { format, startOfDay, addWeeks } from 'date-fns'
 import { formatDateTime, zonedWallClockToUtc } from '@/lib/utils'
 import { MapPin, Clock, Users, CheckCircle, XCircle, AlertCircle, Shield, UserPlus, UserMinus, ChevronDown, ChevronUp, Pencil, X, Repeat, Star } from 'lucide-react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet'
@@ -604,6 +604,18 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
     .slice(0, 10)
   const isMultiDay = format(endDate, 'yyyy-MM-dd') !== format(date, 'yyyy-MM-dd')
 
+  // Recurring series span is bounded by maxRecurringBookingWeeks, measured
+  // from the series' own first occurrence (this panel's selected `date`) —
+  // see recurring.ts's spanWeeks check, which is entirely calendar-date
+  // arithmetic (firstDate/lastDate as UTC-midnight dates, no real instant
+  // involved), so plain addWeeks on the local `date` matches it exactly
+  // without needing the UTC-getter reconstruction maxEndDateStr above uses
+  // for the "now"-anchored advance-booking window. Without this, "Repeat
+  // until" had no upper bound at all — a user could fill in a span far past
+  // the actual limit and only find out via a toast after submitting.
+  const maxRecurringWeeks = publicSettings?.maxRecurringBookingWeeks ?? 12
+  const maxRecurringLastDateStr = format(addWeeks(date, maxRecurringWeeks), 'yyyy-MM-dd')
+
   // Reset AM/PM preset when multi-day selection is made
   useEffect(() => {
     if (isMultiDay && (timePreset === 'am' || timePreset === 'pm')) {
@@ -1125,9 +1137,13 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                           type="date"
                           value={recurringLastDate}
                           min={format(date, 'yyyy-MM-dd')}
+                          max={maxRecurringLastDateStr}
                           onChange={(e) => setRecurringLastDate(e.target.value)}
                           className="mt-1"
                         />
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Up to {maxRecurringWeeks} weeks from the first occurrence
+                        </p>
                       </div>
                     </div>
                   )}

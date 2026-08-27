@@ -484,12 +484,17 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
   // to match reality when the org hadn't changed it from 14.
   fastify.get('/public', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (_request, reply) => {
     const org = await prisma.organisation.findFirst({
-      select: { dateFormat: true, maxAdvanceBookingDays: true },
+      select: { dateFormat: true, maxAdvanceBookingDays: true, maxRecurringBookingWeeks: true },
     })
     return reply.status(200).send({
       data: {
         dateFormat: org?.dateFormat ?? 'dd/MM/yyyy',
         maxAdvanceBookingDays: org?.maxAdvanceBookingDays ?? 14,
+        // Same reasoning as maxAdvanceBookingDays above — the recurring-
+        // booking creation form needs this to bound its "repeat until"
+        // picker for every user, not just admins, and the default here must
+        // match recurring.ts's own ?? 12 fallback exactly.
+        maxRecurringBookingWeeks: org?.maxRecurringBookingWeeks ?? 12,
       },
     })
   })
