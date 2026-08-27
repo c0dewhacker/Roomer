@@ -106,7 +106,16 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
 
       const { email, displayName, password, globalRole } = result.data
 
-      const existing = await prisma.user.findUnique({ where: { email } })
+      // Case-insensitive, matching how every OTHER email check in this
+      // codebase already resolves an account (login's findFirst in auth.ts,
+      // SCIM's findFirst in scim.ts, SSO/LDAP JIT provisioning) — User.email
+      // is a plain case-sensitive @unique column with no citext, so a bare
+      // findUnique here missed an existing "john@x.com" when creating
+      // "John@x.com", letting two accounts differing only by email casing
+      // both exist. Login's case-insensitive resolution is then unable to
+      // guarantee which of the two it authenticates (Postgres gives no
+      // ordering guarantee to a findFirst with no explicit orderBy).
+      const existing = await prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } })
       if (existing) {
         return reply.status(409).send({
           error: { message: 'A user with this email already exists', code: 'ALREADY_EXISTS' },
@@ -902,7 +911,11 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
 
       for (const { index, row } of validRows) {
         try {
-          const existing = await prisma.user.findUnique({ where: { email: row.email } })
+          // Case-insensitive — same reasoning as POST /users above: a plain
+          // findUnique missed an existing "john@x.com" against a CSV row
+          // spelled "John@X.com", so a "sync my roster" re-import created a
+          // second, duplicate account instead of updating the existing one.
+          const existing = await prisma.user.findFirst({ where: { email: { equals: row.email, mode: 'insensitive' } } })
           let userId: string
 
           if (existing) {
@@ -927,8 +940,13 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
                   errors.push({ row: index + 2, message: `Cannot demote ${row.email} — they are the last active super admin; role left unchanged` })
                 }
               }
+              // By id, not { email: row.email } — the CSV's casing may not
+              // byte-match the existing row (that's exactly what the
+              // case-insensitive lookup above just found), and email is a
+              // plain, case-sensitive unique column, so an email-keyed where
+              // here would silently fail to match with a P2025.
               await tx.user.update({
-                where: { email: row.email },
+                where: { id: existing.id },
                 data: { displayName: row.display_name, globalRole: nextGlobalRole },
               })
             })
