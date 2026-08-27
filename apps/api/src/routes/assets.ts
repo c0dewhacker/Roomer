@@ -147,26 +147,32 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       const created: { id: string; name: string }[] = []
       const errors: { row: number; name: string; error: string }[] = []
 
-      // Pre-resolve all referenced category names in one pass to avoid N+1
+      // Pre-resolve all referenced category names in one pass to avoid N+1.
+      // Matched case-insensitively (keyed by lowercase, same convention as
+      // departments.ts's own duplicate check) — Prisma's `in` filter can't
+      // do per-element case-insensitivity, so this fetches every category in
+      // the org rather than filtering by categoryNames at the query level;
+      // categories are a small, bounded set per org, so this stays cheap.
+      // Without it, a CSV row spelled "desk" against an existing "Desk"
+      // category created a second, duplicate category instead of reusing it.
       const categoryNames = [...new Set(assets.map((a) => a.categoryName))]
       const existingCategories = await prisma.assetCategory.findMany({
-        where: { name: { in: categoryNames } },
         select: { id: true, name: true },
       })
-      const categoryMap = new Map(existingCategories.map((c) => [c.name, c.id]))
+      const categoryMap = new Map(existingCategories.map((c) => [c.name.toLowerCase(), c.id]))
       for (const name of categoryNames) {
-        if (!categoryMap.has(name)) {
+        if (!categoryMap.has(name.toLowerCase())) {
           const cat = await prisma.assetCategory.create({
             data: { name, defaultIsBookable: true, defaultIcon: 'monitor' },
             select: { id: true },
           })
-          categoryMap.set(name, cat.id)
+          categoryMap.set(name.toLowerCase(), cat.id)
         }
       }
 
       for (const [index, row] of assets.entries()) {
         try {
-          const categoryId = categoryMap.get(row.categoryName)!
+          const categoryId = categoryMap.get(row.categoryName.toLowerCase())!
 
           // Resolve zone: match by name on this floor. A zoneName that doesn't
           // match anything on this floor (typo, wrong floor's zone name, etc.)

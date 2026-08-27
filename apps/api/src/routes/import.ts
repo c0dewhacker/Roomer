@@ -184,8 +184,15 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
       // batch-destroying error.
       const categoryCache = new Map<string, { id: string; defaultIsBookable: boolean | null }>()
       for (const name of new Set(validRows.map(({ row }) => row.asset_category.trim()))) {
+        // Case-insensitive — matches the convention departments.ts's own
+        // duplicate-name check already uses. Without it, re-running this
+        // import (or a CSV with inconsistent capitalization across rows)
+        // for what's clearly the same category/building/floor/zone created
+        // a second, duplicate row differing only in casing instead of
+        // reusing the existing one — the exact find-or-create idempotency
+        // this loop exists for.
         const existing = await prisma.assetCategory.findFirst({
-          where: { name },
+          where: { name: { equals: name, mode: 'insensitive' } },
           select: { id: true, defaultIsBookable: true },
         })
         if (existing) {
@@ -249,8 +256,9 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
           const buildingKey = row.building_name.trim()
           let buildingId = buildingCache.get(buildingKey)
           if (!buildingId) {
+            // Case-insensitive — see the asset-category lookup above for why.
             const existing = await tx.building.findFirst({
-              where: { name: buildingKey },
+              where: { name: { equals: buildingKey, mode: 'insensitive' } },
               select: { id: true },
             })
             if (existing) {
@@ -275,7 +283,7 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
           let floorId = floorCache.get(floorKey)
           if (!floorId) {
             const existing = await tx.floor.findFirst({
-              where: { buildingId, name: row.floor_name.trim() },
+              where: { buildingId, name: { equals: row.floor_name.trim(), mode: 'insensitive' } },
               select: { id: true },
             })
             if (existing) {
@@ -297,7 +305,7 @@ export async function importRoutes(fastify: FastifyInstance): Promise<void> {
           if (!zoneId) {
             const colour = row.zone_colour?.trim() || paletteColour(zoneIndexCounter++)
             const existing = await tx.zone.findFirst({
-              where: { floorId, name: row.zone_name.trim() },
+              where: { floorId, name: { equals: row.zone_name.trim(), mode: 'insensitive' } },
               select: { id: true },
             })
             if (existing) {
