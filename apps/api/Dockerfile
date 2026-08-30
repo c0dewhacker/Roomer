@@ -1,7 +1,7 @@
 # ─── Stage 1: base ────────────────────────────────────────────────────────────
 # Shared base with pnpm enabled. Pin the pnpm version to match the repo's
 # lockfile format (pnpm 10.x).
-FROM node:24-alpine AS base
+FROM node:26-alpine AS base
 RUN corepack enable && corepack prepare pnpm@10.30.1 --activate
 WORKDIR /repo
 
@@ -60,7 +60,7 @@ RUN cp apps/api/prisma.config.ts /deploy/prisma.config.ts
 RUN cd /deploy && node_modules/.bin/prisma generate
 
 # ─── Stage 4: runner ──────────────────────────────────────────────────────────
-FROM node:24-alpine AS runner
+FROM node:26-alpine AS runner
 
 WORKDIR /app
 
