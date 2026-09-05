@@ -62,6 +62,15 @@ EXPOSE 80
 # Substitute environment variables in the nginx template, then start nginx.
 # API_URL defaults to http://api:3001 (the docker-compose service name).
 ENV API_URL=http://api:3001
+# Space- or comma-separated CIDRs of any proxy sitting IN FRONT of this nginx
+# (ingress controller, cloud LB, CDN), used to resolve the real client IP. Empty
+# by default: clients reach this nginx directly, so $remote_addr is already the
+# client and no X-Forwarded-For sent to us may be trusted.
+ENV TRUSTED_PROXY_CIDRS=""
 CMD ["/bin/sh", "-c", \
-    "envsubst '${API_URL}' < /etc/nginx/templates/default.conf.template \
+    "mkdir -p /etc/nginx/snippets && : > /etc/nginx/snippets/realip.conf && \
+     for cidr in $(echo \"$TRUSTED_PROXY_CIDRS\" | tr ',' ' '); do \
+       echo \"set_real_ip_from $cidr;\" >> /etc/nginx/snippets/realip.conf; \
+     done && \
+     envsubst '${API_URL}' < /etc/nginx/templates/default.conf.template \
      > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]

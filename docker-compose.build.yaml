@@ -51,7 +51,13 @@ services:
       ROOMER_HOST: "0.0.0.0"
       ROOMER_CORS_ORIGIN: ${APP_ORIGIN:-http://localhost}
       ROOMER_COOKIE_SECURE: ${ROOMER_COOKIE_SECURE:-true}
-      ROOMER_TRUST_PROXY: "true"
+      # Peers trusted to set X-Forwarded-For, which is what request.ip
+      # resolves to (rate-limit keying + audit-log ipAddress). The web
+      # service's nginx reaches the API over the private compose network.
+      # Must NOT be "true" — that trusts the whole X-Forwarded-For chain,
+      # letting a client set its own request.ip and mint a fresh rate-limit
+      # bucket per request.
+      ROOMER_TRUST_PROXY: "loopback,uniquelocal"
       ROOMER_APP_URL: ${APP_ORIGIN:-http://localhost}
       ROOMER_FILE_STORAGE_PATH: /app/uploads
       ROOMER_SMTP_HOST: mailpit

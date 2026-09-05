@@ -58,8 +58,11 @@ export async function buildApp(): Promise<FastifyInstance> {
       env.NODE_ENV === 'development'
         ? { level: 'info', transport: { target: 'pino-pretty' } }
         : { level: 'warn' },
-    // Only trust X-Forwarded-For when explicitly enabled via TRUST_PROXY=true.
-    // Without this, an attacker can spoof X-Forwarded-For to bypass IP-keyed rate limits.
+    // How much of the X-Forwarded-For chain to trust when resolving
+    // request.ip — a hop count (or explicit proxy addresses) in production,
+    // false when the API is exposed directly. Never a bare `true`: that
+    // trusts the entire chain and hands request.ip to the client, which
+    // defeats the IP-keyed rate limiting below. See env.ts's TRUST_PROXY.
     trustProxy: env.TRUST_PROXY,
     // Explicit body size cap. Fastify's default is 1 MiB; we set it explicitly
     // so future changes to route-level limits are deliberate rather than implicit.

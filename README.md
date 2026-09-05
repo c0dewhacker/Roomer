@@ -325,7 +325,7 @@ All API environment variables. Every variable accepts a `ROOMER_` prefix (e.g. `
 | `HOST` | `0.0.0.0` | API bind address |
 | `CORS_ORIGIN` | `http://localhost:5173` | Allowed frontend origin |
 | `COOKIE_SECURE` | `false` in dev | Require HTTPS for session cookies |
-| `TRUST_PROXY` | `false` in dev | Trust `X-Forwarded-For` headers |
+| `TRUST_PROXY` | `loopback,uniquelocal` in prod, `false` in dev | Peers trusted to set `X-Forwarded-For`, which resolves `request.ip` (rate-limit keying, audit-log IPs). `false` = trust nothing; otherwise a comma-separated list of proxy IPs/CIDRs, or the presets `loopback` / `linklocal` / `uniquelocal`. `true` and hop counts are rejected — `true` trusts the whole chain (clients could spoof their own IP), and fastify ≥5.12.1 no longer supports hop counts |
 | `ALLOW_BEARER_AUTH` | `true` in dev | Accept `Authorization: Bearer` tokens |
 | `SWAGGER_ENABLED` | `true` in dev | Expose Swagger UI at `/docs` |
 | `ROOMER_METRICS_ENABLED` | `false` | Set to `true` to expose a Prometheus `/metrics` endpoint. Unauthenticated unless `METRICS_TOKEN` is set — protect at the network/ingress level. |
