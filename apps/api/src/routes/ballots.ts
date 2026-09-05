@@ -28,6 +28,14 @@ import { resolveBuildingTimezone } from '../lib/timezone.js'
 async function canManageBallotScope(userId: string, isSuperAdmin: boolean, buildingIds: string[], floorIds: string[], scopeAllBuildings: boolean): Promise<boolean> {
   if (isSuperAdmin) return true
   if (scopeAllBuildings) return false
+  // An empty scope is nobody's to manage. Both .every() calls below are
+  // vacuously true on empty arrays, so without this an empty-scope ballot
+  // passed this check for EVERY authenticated user — letting anyone read its
+  // entrant list (names + emails), rename it, trigger runs, or delete it.
+  // createBallotSchema's refine keeps an empty scope out at creation time, but
+  // updateBallotSchema has no equivalent cross-field rule, so PATCH could
+  // still put an existing ballot into that state (also guarded below).
+  if (buildingIds.length === 0 && floorIds.length === 0) return false
   const [managedBuildingIds, managedFloorIds] = await Promise.all([getManagedBuildingIds(userId), getManagedFloorIds(userId)])
   const buildingSet = new Set(managedBuildingIds)
   const floorSet = new Set(managedFloorIds)
@@ -146,6 +154,20 @@ export async function ballotRoutes(fastify: FastifyInstance): Promise<void> {
     const newBuildingIds = result.data.buildingIds ?? existing.buildingIds
     const newFloorIds = result.data.floorIds ?? existing.floorIds
     const newScopeAllBuildings = result.data.scopeAllBuildings ?? existing.scopeAllBuildings
+    // createBallotSchema refines "at least one building or floor, unless
+    // scopeAllBuildings"; updateBallotSchema can't express that on its own
+    // because PATCH is partial (the rule is only decidable against the merged
+    // result), so it's enforced here. Without it a ballot could be updated
+    // into an empty scope, which resolveBallotAssetPool resolves to an empty
+    // asset pool — the ballot stays ACTIVE and keeps opening runs that draw
+    // nothing, with nothing in the UI explaining why. Checked for super admins
+    // too, and before the permission check below, so the caller gets this
+    // reason rather than a misleading "insufficient permissions".
+    if (!newScopeAllBuildings && newBuildingIds.length === 0 && newFloorIds.length === 0) {
+      return reply.status(400).send({
+        error: { message: 'Select at least one building or floor, or scope this ballot to all buildings', code: 'VALIDATION_ERROR' },
+      })
+    }
     if (!(await canManageBallotScope(request.user.id, isSuperAdmin, newBuildingIds, newFloorIds, newScopeAllBuildings))) {
       return reply.status(403).send({ error: { message: 'Insufficient permissions for the new scope', code: 'FORBIDDEN' } })
     }
