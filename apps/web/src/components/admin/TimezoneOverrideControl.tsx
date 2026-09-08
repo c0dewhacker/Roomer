@@ -27,16 +27,15 @@ export function TimezoneOverrideControl({
   disabled?: boolean
 }) {
   const hasHoursOverride = !!(workingHoursStart && workingHoursEnd)
-  const [overrideHours, setOverrideHours] = useState(hasHoursOverride)
-  const [start, setStart] = useState(workingHoursStart ?? '07:00')
-  const [end, setEnd] = useState(workingHoursEnd ?? '19:00')
+  const [overrideHours, setOverrideHours] = useState(() => hasHoursOverride)
+  const [start, setStart] = useState(() => workingHoursStart ?? '07:00')
+  const [end, setEnd] = useState(() => workingHoursEnd ?? '19:00')
 
   useEffect(() => {
     setOverrideHours(hasHoursOverride)
     if (workingHoursStart) setStart(workingHoursStart)
     if (workingHoursEnd) setEnd(workingHoursEnd)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workingHoursStart, workingHoursEnd])
+  }, [hasHoursOverride, workingHoursStart, workingHoursEnd])
 
   return (
     <div className="rounded-md border p-3 space-y-3">

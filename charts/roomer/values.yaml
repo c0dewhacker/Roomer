@@ -35,6 +35,14 @@ web:
     # Always required when tag is "latest" so Kubernetes re-pulls on each rollout.
     pullPolicy: Always
   replicaCount: 1
+  # CIDRs of any proxy sitting IN FRONT of this nginx — here, the ingress
+  # controller, whose pods are on the cluster network. nginx uses these to
+  # resolve the real client IP from the ingress's X-Forwarded-For before
+  # passing a single, trustworthy value to the API (which keys rate limiting
+  # and audit-log IPs on it). Narrow this to your ingress controller's actual
+  # pod CIDR if you can; anything listed here is trusted to assert a client IP.
+  # Leave empty if the ingress is disabled and clients reach nginx directly.
+  trustedProxyCidrs: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
   resources:
     requests:
       cpu: 50m
@@ -82,7 +90,15 @@ config:
   # Public URL for the API itself (used for SCIM endpoint display)
   apiPublicUrl: "https://roomer.example.com/api"
   cookieSecure: "true"
-  trustProxy: "true"
+  # Peers trusted to set X-Forwarded-For — this is what request.ip resolves to,
+  # which keys the rate limiters and is recorded on every audit-log row. In this
+  # chart the ingress controller forwards to the web service's nginx, which
+  # proxies /api/ to the API; both are pod IPs on the cluster network, so the
+  # "uniquelocal" preset (10/8, 172.16/12, 192.168/16, fc00::/7) covers them.
+  # Add your pod/service CIDR explicitly if it falls outside those ranges.
+  # Must NOT be "true": that trusts the entire X-Forwarded-For chain, so a client
+  # can set its own request.ip and get a fresh rate-limit bucket per request.
+  trustProxy: "loopback,uniquelocal"
   allowBearerAuth: "false"
   swaggerEnabled: "false"
   metricsEnabled: "false"

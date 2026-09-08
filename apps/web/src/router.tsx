@@ -1,36 +1,36 @@
 import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, Outlet } from 'react-router-dom'
 import { useAuth } from './hooks/useAuth'
-import Layout from './components/layout/Layout'
 import LoginPage from './pages/LoginPage'
-import BookingsPage from './pages/BookingsPage'
-import QueuePage from './pages/QueuePage'
-import QueueClaimPage from './pages/QueueClaimPage'
-import GuestCheckInPage from './pages/GuestCheckInPage'
-import ProfilePage from './pages/ProfilePage'
-import WhosInPage from './pages/WhosInPage'
-import BallotsPage from './pages/BallotsPage'
-import BuildingsAdminPage from './pages/admin/BuildingsAdminPage'
-import BuildingDetailAdminPage from './pages/admin/BuildingDetailAdminPage'
-import UsersAdminPage from './pages/admin/UsersAdminPage'
-import SettingsLayout from './pages/admin/settings/SettingsLayout'
-import OrganisationSettingsPage from './pages/admin/settings/OrganisationSettingsPage'
-import EmailSettingsPage from './pages/admin/settings/EmailSettingsPage'
-import SsoSettingsPage from './pages/admin/settings/SsoSettingsPage'
-import ProvisioningSettingsPage from './pages/admin/settings/ProvisioningSettingsPage'
-import BrandingSettingsPage from './pages/admin/settings/BrandingSettingsPage'
-import AssetsPage from './pages/AssetsPage'
-import BuildingsPage from './pages/BuildingsPage'
-import BuildingPage from './pages/BuildingPage'
-import AssetsAdminPage from './pages/admin/AssetsAdminPage'
-import LeasesAdminPage from './pages/admin/LeasesAdminPage'
-import GroupsAdminPage from './pages/admin/GroupsAdminPage'
-import DepartmentsAdminPage from './pages/admin/DepartmentsAdminPage'
-import WebhooksAdminPage from './pages/admin/WebhooksAdminPage'
-import ManagerRequestsAdminPage from './pages/admin/ManagerRequestsAdminPage'
-import ApprovalsAdminPage from './pages/admin/ApprovalsAdminPage'
-import BallotsAdminPage from './pages/admin/BallotsAdminPage'
-import QrScanPage from './pages/QrScanPage'
+const Layout = lazy(() => import('./components/layout/Layout'))
+const BookingsPage = lazy(() => import('./pages/BookingsPage'))
+const QueuePage = lazy(() => import('./pages/QueuePage'))
+const QueueClaimPage = lazy(() => import('./pages/QueueClaimPage'))
+const GuestCheckInPage = lazy(() => import('./pages/GuestCheckInPage'))
+const ProfilePage = lazy(() => import('./pages/ProfilePage'))
+const WhosInPage = lazy(() => import('./pages/WhosInPage'))
+const BallotsPage = lazy(() => import('./pages/BallotsPage'))
+const BuildingsAdminPage = lazy(() => import('./pages/admin/BuildingsAdminPage'))
+const BuildingDetailAdminPage = lazy(() => import('./pages/admin/BuildingDetailAdminPage'))
+const UsersAdminPage = lazy(() => import('./pages/admin/UsersAdminPage'))
+const SettingsLayout = lazy(() => import('./pages/admin/settings/SettingsLayout'))
+const OrganisationSettingsPage = lazy(() => import('./pages/admin/settings/OrganisationSettingsPage'))
+const EmailSettingsPage = lazy(() => import('./pages/admin/settings/EmailSettingsPage'))
+const SsoSettingsPage = lazy(() => import('./pages/admin/settings/SsoSettingsPage'))
+const ProvisioningSettingsPage = lazy(() => import('./pages/admin/settings/ProvisioningSettingsPage'))
+const BrandingSettingsPage = lazy(() => import('./pages/admin/settings/BrandingSettingsPage'))
+const AssetsPage = lazy(() => import('./pages/AssetsPage'))
+const BuildingsPage = lazy(() => import('./pages/BuildingsPage'))
+const BuildingPage = lazy(() => import('./pages/BuildingPage'))
+const AssetsAdminPage = lazy(() => import('./pages/admin/AssetsAdminPage'))
+const LeasesAdminPage = lazy(() => import('./pages/admin/LeasesAdminPage'))
+const GroupsAdminPage = lazy(() => import('./pages/admin/GroupsAdminPage'))
+const DepartmentsAdminPage = lazy(() => import('./pages/admin/DepartmentsAdminPage'))
+const WebhooksAdminPage = lazy(() => import('./pages/admin/WebhooksAdminPage'))
+const ManagerRequestsAdminPage = lazy(() => import('./pages/admin/ManagerRequestsAdminPage'))
+const ApprovalsAdminPage = lazy(() => import('./pages/admin/ApprovalsAdminPage'))
+const BallotsAdminPage = lazy(() => import('./pages/admin/BallotsAdminPage'))
+const QrScanPage = lazy(() => import('./pages/QrScanPage'))
 import { Loader2 } from 'lucide-react'
 
 // Lazy-load pages that pull in large dependencies (pdfjs-dist, react-konva, recharts)
@@ -168,7 +168,7 @@ function RootRedirect() {
 
 export function AppRouter() {
   return (
-    <Routes>
+    <Suspense fallback={<PageLoader />}><Routes>
       <Route path="/" element={<RootRedirect />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/queue/claim" element={<QueueClaimPage />} />
@@ -234,6 +234,6 @@ export function AppRouter() {
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    </Routes></Suspense>
   )
 }

@@ -12,7 +12,9 @@
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
     "db:seed": "tsx --env-file=.env prisma/seed.ts",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:integration": "node --import tsx --test tests/integration/*.test.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
@@ -33,7 +35,7 @@
     "date-fns": "^4.4.0",
     "date-fns-tz": "^3.2.0",
     "dxf-parser": "^1.1.2",
-    "fastify": "^5.12.0",
+    "fastify": "^5.12.1",
     "fastify-plugin": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
     "ldapjs": "^3.0.7",

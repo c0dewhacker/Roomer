@@ -1,15 +1,36 @@
-name: Lint
+name: Checks
 
 on:
+  # Direct pushes to develop, not just PRs. develop is pushed to directly as a
+  # matter of course here, and with only a pull_request trigger those commits
+  # got no build, lint or test run at all — a batch of them accumulated
+  # unverified and the first CI to see them would have been the develop->main
+  # release PR, well after the fact.
+  push:
+    branches: [develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 jobs:
   lint:
-    name: ESLint
+    name: Build, lint and test
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: roomer_test
+          POSTGRES_PASSWORD: roomer_test
+          POSTGRES_DB: roomer_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U roomer_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://roomer_test:roomer_test@localhost:5432/roomer_test
+      TEST_DATABASE_URL: postgresql://roomer_test:roomer_test@localhost:5432/roomer_test
     steps:
       - uses: actions/checkout@v7
 
@@ -27,5 +48,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Lint (all packages)
-        run: pnpm turbo lint
+      - name: Generate Prisma client
+        run: pnpm --filter @roomer/api exec prisma generate
+
+      - name: Migrate test database
+        run: pnpm --filter @roomer/api exec prisma migrate deploy
+
+      - name: Build, lint and test
+        run: pnpm turbo build lint test
+
+      - name: PostgreSQL concurrency regression tests
+        run: pnpm --filter @roomer/api test:integration
+
+      - name: Public proxy smoke test
+        run: bash scripts/test-proxy.sh

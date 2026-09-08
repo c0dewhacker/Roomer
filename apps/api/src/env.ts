@@ -60,11 +60,48 @@ const envSchema = z.object({
   COOKIE_SECURE: z.string()
     .default(isProd ? 'true' : 'false')
     .transform((v) => v === 'true'),
-  // Set to "true" only in production/staging behind a trusted reverse proxy.
-  // When false, X-Forwarded-For headers are ignored (prevents rate-limit bypass).
+  // Which upstream peers are trusted to set X-Forwarded-For. This decides what
+  // request.ip resolves to, which keys every rate limiter in app.ts and is
+  // recorded as ipAddress on every audit-log row.
+  //
+  //   "false"       — trust nothing; request.ip is the socket peer. Correct
+  //                   when the API is exposed directly (the dev default).
+  //   "<ip/cidr,…>" — trust these proxy addresses. proxy-addr's preset names
+  //                   work too: "loopback" (127.0.0.1/8, ::1/128),
+  //                   "linklocal", "uniquelocal" (10/8, 172.16/12, 192.168/16,
+  //                   fc00::/7). "loopback,uniquelocal" covers both shipped
+  //                   deployments, where nginx reaches the API over a private
+  //                   container/pod network.
+  //
+  // Must never be a bare "true": that trusts the ENTIRE forwarded chain, so
+  // request.ip becomes the left-most X-Forwarded-For entry — a value the
+  // client supplies. nginx.conf forwards `$proxy_add_x_forwarded_for`, which
+  // *appends* the real peer to whatever the client already sent, so under
+  // "true" a request carrying `X-Forwarded-For: 9.9.9.9` resolved to 9.9.9.9.
+  // That let any caller mint a fresh rate-limit bucket per request by varying
+  // one header — defeating both the global limiter and the tighter
+  // login/refresh/SSO one, whose whole point per app.ts is that IP keying
+  // "can't be evaded by varying a header" — and forge the IP on every audit
+  // row. Verified against fastify 5.12.3.
+  //
+  // A hop count is rejected rather than accepted: fastify supported numeric
+  // hop-count trust until 5.12.1, which removed it (GHSA-3m5p-2c4r-xxw2) by
+  // making a number mean "trust nothing". Silently accepting one would put
+  // every user behind the proxy on a single shared bucket keyed by the proxy's
+  // own address — the global 300/min limit would then throttle the whole
+  // deployment at once, which is a much quieter failure than refusing to boot.
   TRUST_PROXY: z.string()
-    .default(isProd ? 'true' : 'false')
-    .transform((v) => v === 'true'),
+    .default(isProd ? 'loopback,uniquelocal' : 'false')
+    .refine((v) => !/^\d+$/.test(v.trim()), {
+      message: 'TRUST_PROXY no longer accepts a hop count (fastify >=5.12.1 removed it). Use "false", or the trusted proxy addresses — e.g. "loopback,uniquelocal" behind the bundled nginx.',
+    })
+    .refine((v) => v.trim() !== 'true', {
+      message: 'TRUST_PROXY must not be "true" — that trusts the whole X-Forwarded-For chain and lets clients spoof request.ip. Use the trusted proxy addresses instead, e.g. "loopback,uniquelocal".',
+    })
+    .transform((v): boolean | string => {
+      const trimmed = v.trim()
+      return trimmed === '' || trimmed === 'false' ? false : trimmed
+    }),
   // Set to "true" to allow Authorization: Bearer <token> in addition to cookies.
   // Disabled by default in production — opt-in only for programmatic API clients
   // that cannot use cookies (e.g. server-to-server, CI, mobile native apps).

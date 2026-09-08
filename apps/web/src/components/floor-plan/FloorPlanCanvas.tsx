@@ -159,14 +159,14 @@ export function FloorPlanCanvas({
   // Always stores the latest position in the ref so a frame that runs after
   // several pointer-moves still applies the most recent one, not a stale
   // in-between value.
-  const pendingPanFrame = useRef<number | null>(null)
-  const latestPanPosition = useRef<{ x: number; y: number } | null>(null)
+  const pendingPanFrameRef = useRef<number | null>(null)
+  const latestPanPositionRef = useRef<{ x: number; y: number } | null>(null)
   const setPositionThrottled = useCallback((next: { x: number; y: number }) => {
-    latestPanPosition.current = next
-    if (pendingPanFrame.current !== null) return
-    pendingPanFrame.current = requestAnimationFrame(() => {
-      pendingPanFrame.current = null
-      if (latestPanPosition.current) setPosition(latestPanPosition.current)
+    latestPanPositionRef.current = next
+    if (pendingPanFrameRef.current !== null) return
+    pendingPanFrameRef.current = requestAnimationFrame(() => {
+      pendingPanFrameRef.current = null
+      if (latestPanPositionRef.current) setPosition(latestPanPositionRef.current)
     })
   }, [])
 
@@ -284,10 +284,17 @@ export function FloorPlanCanvas({
     setPosition({ x: centreX, y: centreY })
   }, [bgImage, dimensions.width, dimensions.height, effectiveWidth, effectiveHeight, assets, localPositions])
 
+  // Keep auto-fit tied to canvas/image size changes. Calling the callback
+  // directly from the effect would also make a desk drag re-fit the entire
+  // view because localPositions is a legitimate callback dependency.
+  const fitToCanvasRef = useRef(fitToCanvas)
   useEffect(() => {
-    fitToCanvas()
+    fitToCanvasRef.current = fitToCanvas
+  }, [fitToCanvas])
+
+  useEffect(() => {
+    fitToCanvasRef.current()
   // Only auto-fit when the image first loads or displayScale changes — not on every pan/zoom
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bgImage, effectiveWidth, effectiveHeight, dimensions.width, dimensions.height])
 
   const handleWheel = useCallback(
@@ -456,9 +463,9 @@ export function FloorPlanCanvas({
             // throttle — cancel any still-pending frame first so it can't
             // fire afterward and stomp this authoritative value with a
             // slightly-stale one.
-            if (pendingPanFrame.current !== null) {
-              cancelAnimationFrame(pendingPanFrame.current)
-              pendingPanFrame.current = null
+            if (pendingPanFrameRef.current !== null) {
+              cancelAnimationFrame(pendingPanFrameRef.current)
+              pendingPanFrameRef.current = null
             }
             setPosition({ x: e.target.x(), y: e.target.y() })
           }

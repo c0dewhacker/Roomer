@@ -1,4 +1,5 @@
-import { useNavigate } from 'react-router-dom'
+import { QueryError } from '@/components/QueryError'
+import { Link } from 'react-router-dom'
 import { Building2, ChevronRight, Layers } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { buildingsApi } from '@/lib/api'
@@ -6,9 +7,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 
 export default function BuildingsPage() {
-  const navigate = useNavigate()
-
-  const { data: buildings, isLoading } = useQuery({
+  const { data: buildings, isLoading, isError, refetch } = useQuery({
     queryKey: ['buildings'],
     queryFn: () => buildingsApi.list(),
     select: (r) => r.data,
@@ -23,11 +22,12 @@ export default function BuildingsPage() {
         </p>
       </div>
 
+      {isError && <QueryError message="Could not load buildings. Your access may still be unchanged." retry={() => void refetch()} />}
       {isLoading ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => <Skeleton key={i} className="h-20" />)}
         </div>
-      ) : (buildings ?? []).length === 0 ? (
+      ) : !isError && (buildings ?? []).length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12 text-center">
             <Building2 className="h-12 w-12 text-muted-foreground/30 mb-3" />
@@ -37,29 +37,27 @@ export default function BuildingsPage() {
       ) : (
         <div className="space-y-3">
           {(buildings ?? []).map((b) => (
-            <Card
-              key={b.id}
-              className="cursor-pointer hover:shadow-md transition-shadow"
-              onClick={() => navigate(`/buildings/${b.id}`)}
-            >
-              <CardContent className="p-4 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                    <Building2 className="h-5 w-5 text-primary" />
+            <Link key={b.id} to={`/buildings/${b.id}`} className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <Card className="hover:shadow-md transition-shadow">
+                <CardContent className="p-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                      <Building2 className="h-5 w-5 text-primary" />
+                    </div>
+                    <div>
+                      <p className="font-medium">{b.name}</p>
+                      {b.address && (
+                        <p className="text-xs text-muted-foreground">{b.address}</p>
+                      )}
+                    </div>
                   </div>
-                  <div>
-                    <p className="font-medium">{b.name}</p>
-                    {b.address && (
-                      <p className="text-xs text-muted-foreground">{b.address}</p>
-                    )}
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Layers className="h-4 w-4" />
+                    <ChevronRight className="h-4 w-4" />
                   </div>
-                </div>
-                <div className="flex items-center gap-2 text-muted-foreground">
-                  <Layers className="h-4 w-4" />
-                  <ChevronRight className="h-4 w-4" />
-                </div>
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
+            </Link>
           ))}
         </div>
       )}

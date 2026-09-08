@@ -10,11 +10,11 @@ type State = 'loading' | 'success' | 'not_started' | 'ended' | 'invalid' | 'erro
 
 export default function GuestCheckInPage() {
   const [params] = useSearchParams()
+  const token = params.get('token')
   const [state, setState] = useState<State>('loading')
   const [guestName, setGuestName] = useState<string | null>(null)
 
   useEffect(() => {
-    const token = params.get('token')
     if (!token) {
       setState('invalid')
       return
@@ -35,8 +35,7 @@ export default function GuestCheckInPage() {
           setState('error')
         }
       })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [token])
 
   if (state === 'loading') {
     return (

@@ -60,6 +60,8 @@ spec:
           env:
             - name: API_URL
               value: "http://{{ include "roomer.api.fullname" . }}:3001"
+            - name: TRUSTED_PROXY_CIDRS
+              value: {{ .Values.web.trustedProxyCidrs | default "" | quote }}
           livenessProbe:
             httpGet:
               path: /

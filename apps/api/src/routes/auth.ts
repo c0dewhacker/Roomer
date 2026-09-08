@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import type { FastifyInstance } from 'fastify'
 import bcryptjs from 'bcryptjs'
 import { prisma } from '../lib/prisma.js'
@@ -203,6 +204,11 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
 
   // POST /auth/logout
   fastify.post('/logout', { preHandler: [requireAuth], config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const logoutBody = z.object({ pushEndpoint: z.string().url().optional() }).safeParse(request.body ?? {})
+    if (!logoutBody.success) return reply.status(400).send({ error: { message: 'Invalid logout request', code: 'VALIDATION_ERROR' } })
+    if (logoutBody.data.pushEndpoint) {
+      await prisma.pushSubscription.deleteMany({ where: { endpoint: logoutBody.data.pushEndpoint, userId: request.user.id } })
+    }
     // Blocklist the current token JTI so it cannot be replayed even before expiry.
     // This is the critical step that makes logout actually invalidate the JWT.
     const rawToken = request.cookies?.[TOKEN_COOKIE] ??

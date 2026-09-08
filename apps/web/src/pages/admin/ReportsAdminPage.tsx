@@ -553,11 +553,11 @@ function UtilisationTrendChart({ params }: { params: AnalyticsParams }) {
       <CardHeader className="flex flex-row items-center justify-between pb-2">
         <div>
           <CardTitle className="text-base">Utilisation Trend</CardTitle>
-          <CardDescription className="text-xs">Month-over-month desk utilisation — last 6 months by default</CardDescription>
+          <CardDescription className="text-xs">Month-over-month desk utilisation — last 6 months by default, measured against today's desk count</CardDescription>
         </div>
         {data && data.length > 0 && (
           <ExportBtn onClick={() => downloadCsv('utilisation-trend.csv', [
-            ['Month', 'Bookings', 'Utilisation %'],
+            ['Month', 'Bookings', 'Utilisation % (of current desk count)'],
             ...data.map((d) => [d.month, String(d.bookingCount), String(d.utilisationPct)]),
           ])} />
         )}
@@ -575,10 +575,24 @@ function UtilisationTrendChart({ params }: { params: AnalyticsParams }) {
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
               <XAxis dataKey="month" tick={{ fontSize: 11 }} tickFormatter={(v) => { try { return format(parseISO(`${v}-01`), 'MMM yyyy') } catch { return v } }} />
               <YAxis tick={{ fontSize: 11 }} unit="%" />
-              <Tooltip labelFormatter={(v) => { try { return format(parseISO(`${v}-01`), 'MMMM yyyy') } catch { return v } }} formatter={(v) => [`${v}%`, 'Utilisation']} />
+              <Tooltip labelFormatter={(v) => { try { return format(parseISO(`${v}-01`), 'MMMM yyyy') } catch { return v } }} formatter={(v) => [`${v}% of today's desks`, 'Utilisation']} />
               <Area type="monotone" dataKey="utilisationPct" name="Utilisation" stroke={PALETTE.primary} fill="url(#trendGrad)" strokeWidth={2} dot={{ r: 3 }} />
             </AreaChart>
           </ResponsiveContainer>
+        )}
+        {/* #338 — every month is divided by the desk count as it is *today*,
+            not the count that existed in that month, because historical desk
+            inventory isn't retained. Adding or removing desks therefore shifts
+            the whole curve, including months that are already past, so a
+            change in this line is not on its own evidence that behaviour
+            changed. Stated here rather than silently presented as a clean
+            drift signal. */}
+        {data && data.length > 0 && (
+          <p className="text-xs text-muted-foreground mt-2">
+            Each month is measured against the desk count as it is today, not the count at the time —
+            historical desk inventory isn't retained. If desks have been added or removed since, earlier
+            months shift too, so a change here doesn't isolate a change in booking behaviour.
+          </p>
         )}
       </CardContent>
     </Card>

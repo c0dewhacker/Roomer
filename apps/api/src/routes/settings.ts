@@ -1,4 +1,3 @@
-import fs from 'fs'
 import type { FastifyInstance } from 'fastify'
 import { GlobalRole, QrCheckInMode } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
@@ -11,11 +10,12 @@ import { syncLdapUsers, getLdapConfig } from '../lib/ldap.js'
 import { hashScimToken, generateScimToken } from '../lib/scim-helpers.js'
 import { findAuthConfig, listAuthConfigs, upsertAuthConfig } from '../lib/prisma.js'
 import { idpGroupMatchesAny } from '../lib/group-mapping.js'
-import { saveBrandingImage, resolveStoragePath, deleteFile } from '../lib/storage.js'
+import { saveBrandingImage, deleteFile } from '../lib/storage.js'
 import { DEFAULT_TEMPLATE_STRINGS, interpolateTemplate, stripHtmlToText, formatDate, sendEmail, resetMailer } from '../lib/mailer.js'
 import { encrypt } from '../lib/encryption.js'
 import { ENV_SMTP_OVERRIDES, getStoredEmailConfig, getEffectiveSmtpForDisplay, type StoredEmailConfig } from '../lib/smtp-config.js'
 import { recordAuditLog } from '../lib/audit.js'
+import { redactSecrets, serveUploadedFile } from './settings-helpers.js'
 import { z } from 'zod'
 
 // Distinct from lib/booking.ts's lock classes (4242-4245) and
@@ -231,30 +231,6 @@ const configSchemas: Record<ProviderKey, z.ZodTypeAny> = {
   OIDC: oidcConfigSchema,
   SAML: samlConfigSchema,
   LDAP: ldapConfigSchema,
-}
-
-function redactSecrets(provider: ProviderKey, config: Record<string, unknown>): Record<string, unknown> {
-  const redacted = { ...config }
-  if (provider === 'OIDC' && redacted.clientSecret) redacted.clientSecret = '**redacted**'
-  if (provider === 'LDAP' && redacted.bindCredentials) redacted.bindCredentials = '**redacted**'
-  return redacted
-}
-
-async function serveUploadedFile(
-  reply: import('fastify').FastifyReply,
-  relativePath: string,
-  notFoundMessage: string,
-): Promise<void> {
-  const absPath = resolveStoragePath(relativePath)
-  try {
-    await fs.promises.access(absPath, fs.constants.R_OK)
-  } catch {
-    reply.status(404).send({ error: { message: notFoundMessage, code: 'FILE_NOT_FOUND' } })
-    return
-  }
-  reply.header('Content-Type', 'image/png')
-  reply.header('Cache-Control', 'public, max-age=300')
-  reply.send(fs.createReadStream(absPath))
 }
 
 export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {

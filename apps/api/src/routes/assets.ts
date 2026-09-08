@@ -15,6 +15,7 @@ import { z } from 'zod'
 import { checkGroupAccess } from './groups.js'
 import { saveCategoryIcon, deleteFile, resolveStoragePath } from '../lib/storage.js'
 import { recordAuditLog } from '../lib/audit.js'
+import { createCategorySchema, createAssetSchema, updateAssetSchema, addToAllowListSchema, addZoneSchema, bulkImportSchema } from './asset-schemas.js'
 
 // Same "capped, not paginated" contract as audit-log.ts's CSV_EXPORT_LIMIT —
 // this export has no page/limit query param (it's meant to return everything
@@ -27,92 +28,6 @@ class ZoneGroupConflictError extends Error {
     this.name = 'ZoneGroupConflictError'
   }
 }
-
-// .trim() before .min(1) on every "name" field below — see
-// schemas/department.ts for why (whitespace-only input otherwise passes
-// validation and gets persisted, or silently coerced to blank downstream).
-const createCategorySchema = z.object({
-  name: z.string().trim().min(1).max(255),
-  description: z.string().optional(),
-  defaultIsBookable: z.boolean().optional(),
-  defaultIcon: z.string().max(255).optional(),
-  colour: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'colour must be a 6-digit hex colour').default('#6366f1'),
-})
-
-const createAssetSchema = z.object({
-  categoryId: z.string().min(1),
-  name: z.string().trim().min(1).max(255),
-  description: z.string().optional(),
-  serialNumber: z.string().optional().transform((v) => v === '' ? undefined : v),
-  assetTag: z.string().optional().transform((v) => v === '' ? undefined : v),
-  purchaseDate: z.string().datetime().optional(),
-  warrantyExpiry: z.string().datetime().optional(),
-  notes: z.string().optional(),
-  // Bookable-asset fields
-  isBookable: z.boolean().optional(),
-  bookingLabel: z.string().max(255).optional(),
-  amenities: z.array(z.string()).optional(),
-  bookingStatus: z.nativeEnum(BookableStatus).optional(),
-  primaryZoneId: z.string().optional(),
-  floorId: z.string().optional(),
-  x: z.number().optional(),
-  y: z.number().optional(),
-  width: z.number().positive().optional(),
-  height: z.number().positive().optional(),
-  rotation: z.number().min(-360).max(360).optional(),
-  // Occupant capacity — a room/shared space sets this, a desk leaves it unset.
-  capacity: z.number().int().positive().max(1000).optional(),
-})
-
-const updateAssetSchema = z.object({
-  categoryId: z.string().min(1).optional(),
-  name: z.string().trim().min(1).max(255).optional(),
-  description: z.string().optional(),
-  serialNumber: z.string().optional().transform((v) => v === '' ? undefined : v),
-  assetTag: z.string().optional().transform((v) => v === '' ? undefined : v),
-  status: z.enum(['AVAILABLE', 'ASSIGNED', 'MAINTENANCE', 'RETIRED', 'DISABLED']).optional(),
-  purchaseDate: z.string().datetime().optional(),
-  warrantyExpiry: z.string().datetime().optional(),
-  notes: z.string().optional(),
-  // Bookable-asset fields
-  isBookable: z.boolean().optional(),
-  bookingLabel: z.string().max(255).nullable().optional(),
-  amenities: z.array(z.string()).optional(),
-  bookingStatus: z.nativeEnum(BookableStatus).optional(),
-  primaryZoneId: z.string().nullable().optional(),
-  floorId: z.string().nullable().optional(),
-  x: z.number().nullable().optional(),
-  y: z.number().nullable().optional(),
-  width: z.number().positive().nullable().optional(),
-  height: z.number().positive().nullable().optional(),
-  rotation: z.number().min(-360).max(360).nullable().optional(),
-  capacity: z.number().int().positive().max(1000).nullable().optional(),
-})
-
-const addToAllowListSchema = z.object({
-  userId: z.string().min(1, 'Invalid user ID'),
-})
-
-const addZoneSchema = z.object({
-  zoneId: z.string().min(1, 'Invalid zone ID'),
-})
-
-const bulkImportRowSchema = z.object({
-  name: z.string().trim().min(1).max(255),
-  categoryName: z.string().trim().min(1).max(255),
-  bookingStatus: z.nativeEnum(BookableStatus).optional().default(BookableStatus.OPEN),
-  bookingLabel: z.string().max(255).optional().default('Desk'),
-  amenities: z.array(z.string()).optional().default([]),
-  serialNumber: z.string().optional(),
-  assetTag: z.string().optional(),
-  notes: z.string().optional(),
-  zoneName: z.string().optional(),
-})
-
-const bulkImportSchema = z.object({
-  floorId: z.string().min(1),
-  assets: z.array(bulkImportRowSchema).min(1).max(500),
-})
 
 export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Assets'], ...route.schema } })

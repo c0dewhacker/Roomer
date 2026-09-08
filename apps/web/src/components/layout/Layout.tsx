@@ -6,7 +6,7 @@ import { SidebarNav } from './navStyles/SidebarNav'
 import { TopNav } from './navStyles/TopNav'
 import { FloatingNav } from './navStyles/FloatingNav'
 import { RailNav } from './navStyles/RailNav'
-import { cn } from '@/lib/utils'
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useBranding } from '@/hooks/useBranding'
 
 function Banner({ text, bgColor, textColor }: { text: string; bgColor: string; textColor: string }) {
@@ -85,23 +85,19 @@ export default function Layout() {
           <SidebarNav />
         </aside>
 
-        {/* Mobile sidebar overlay */}
-        {sidebarOpen && (
-          <div className="fixed inset-0 z-40 bg-black/50 md:hidden" onClick={() => setSidebarOpen(false)} />
-        )}
-
-        {/* Mobile sidebar drawer */}
-        <aside
-          className={cn(
-            'fixed inset-y-0 left-0 z-50 w-60 border-r bg-background transition-transform duration-200 md:hidden',
-            sidebarOpen ? 'translate-x-0' : '-translate-x-full',
-          )}
-        >
-          <Sidebar onNavigate={() => setSidebarOpen(false)} />
-        </aside>
+        <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
+          <SheetContent side="left" className="w-60 p-0" aria-describedby={undefined}
+            onCloseAutoFocus={(event) => {
+              event.preventDefault()
+              document.getElementById('mobile-menu-trigger')?.focus()
+            }}>
+            <SheetTitle className="sr-only">Navigation</SheetTitle>
+            <Sidebar onNavigate={() => setSidebarOpen(false)} />
+          </SheetContent>
+        </Sheet>
 
         <div className="flex flex-1 flex-col overflow-hidden">
-          <TopBar onMenuClick={() => setSidebarOpen((o) => !o)} hideBrand />
+          <TopBar menuOpen={sidebarOpen} onMenuClick={() => setSidebarOpen((o) => !o)} hideBrand />
           <main className="flex-1 overflow-auto">
             <Outlet />
           </main>

@@ -5,8 +5,9 @@ import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { getManagedBuildingIds } from '../middleware/requireRole.js'
 import { wantsCsv, sendCsv } from '../lib/csv.js'
-import { resolveBuildingTimezone, resolveWorkingHours, zonedWallClockToUtc, calendarDaysUntil } from '../lib/timezone.js'
+import { resolveBuildingTimezone, calendarDaysUntil } from '../lib/timezone.js'
 import { z } from 'zod'
+import { effectiveDateRangeStrings, localDayBoundsSql, calendarDateObjects, localDayBoundsForBuilding, workingHoursSpanForBuilding, overlapHours, countWorkingDays } from './analytics-helpers.js'
 
 const analyticsQuerySchema = z.object({
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'startDate must be YYYY-MM-DD').optional(),
@@ -29,12 +30,6 @@ const analyticsQuerySchema = z.object({
  * for any building whose timezone isn't UTC (see #274's release notes —
  * this was deliberately deferred out of the 1.0 release, fixed here).
  */
-function effectiveDateRangeStrings(startDateParam: string | undefined, endDateParam: string | undefined, defaultDays: number): { startDateStr: string; endDateStr: string } {
-  const today = new Date()
-  const endDateStr = endDateParam ?? today.toISOString().slice(0, 10)
-  const startDateStr = startDateParam ?? new Date(today.getTime() - defaultDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-  return { startDateStr, endDateStr }
-}
 
 /**
  * Naive (no timezone suffix) local-day boundary strings for a calendar-date
@@ -60,23 +55,11 @@ function effectiveDateRangeStrings(startDateParam: string | undefined, endDatePa
  * what it actually is) and produces a real `timestamptz`; the second then
  * converts that instant to local wall-clock time in `tz`.
  */
-function localDayBoundsSql(startDateStr: string, endDateStr: string): { startLocal: string; endLocal: string } {
-  return { startLocal: `${startDateStr} 00:00:00`, endLocal: `${endDateStr} 23:59:59.999` }
-}
 
 /** UTC-midnight Date objects for the calendar-date range — used only for the
  * timezone-agnostic countWorkingDays() weekday arithmetic below, never for
  * comparing against a real booking instant (see effectiveDateRangeStrings). */
-function calendarDateObjects(startDateStr: string, endDateStr: string): { startDate: Date; endDate: Date } {
-  return { startDate: new Date(startDateStr + 'T00:00:00.000Z'), endDate: new Date(endDateStr + 'T23:59:59.999Z') }
-}
 
-function addDaysToDateStr(dateStr: string, days: number): string {
-  const [y, m, d] = dateStr.split('-').map(Number)
-  const dt = new Date(Date.UTC(y, m - 1, d))
-  dt.setUTCDate(dt.getUTCDate() + days)
-  return dt.toISOString().slice(0, 10)
-}
 
 /**
  * Precise local-calendar-day [start, endExclusive) instant bounds for a
@@ -89,25 +72,6 @@ function addDaysToDateStr(dateStr: string, days: number): string {
  * not seconds — a "day+1 at 00:00" exclusive upper bound is exact where an
  * inclusive "day at 23:59" would silently drop the last minute.
  */
-async function localDayBoundsForBuilding(
-  buildingId: string | null,
-  startDateStr: string,
-  endDateStr: string,
-  cache: Map<string | null, { start: Date; endExclusive: Date }>,
-): Promise<{ start: Date; endExclusive: Date }> {
-  const cached = cache.get(buildingId)
-  if (cached) return cached
-  const tz = await resolveBuildingTimezone(prisma, buildingId)
-  const [sy, sm, sd] = startDateStr.split('-').map(Number)
-  const endExclusiveStr = addDaysToDateStr(endDateStr, 1)
-  const [ey, em, ed] = endExclusiveStr.split('-').map(Number)
-  const bounds = {
-    start: zonedWallClockToUtc(sy, sm, sd, 0, 0, tz),
-    endExclusive: zonedWallClockToUtc(ey, em, ed, 0, 0, tz),
-  }
-  cache.set(buildingId, bounds)
-  return bounds
-}
 
 /**
  * Working-hours span in hours for a building (or the org default when
@@ -124,42 +88,9 @@ async function localDayBoundsForBuilding(
  * 07:00-19:00, a 12-hour span, understating desk-days by 50% at default
  * settings alone).
  */
-async function workingHoursSpanForBuilding(
-  buildingId: string | null,
-  cache: Map<string | null, number>,
-): Promise<number> {
-  const cached = cache.get(buildingId)
-  if (cached !== undefined) return cached
-  const hours = await resolveWorkingHours(prisma, buildingId)
-  const [sh, sm] = hours.start.split(':').map(Number)
-  const [eh, em] = hours.end.split(':').map(Number)
-  const span = (eh * 60 + em - (sh * 60 + sm)) / 60
-  cache.set(buildingId, span > 0 ? span : 8)
-  return cache.get(buildingId)!
-}
 
 /** Hours of overlap between [aStart, aEnd) and [bStart, bEnd), never negative. */
-function overlapHours(aStart: Date, aEnd: Date, bStart: Date, bEnd: Date): number {
-  const start = aStart > bStart ? aStart : bStart
-  const end = aEnd < bEnd ? aEnd : bEnd
-  return Math.max(0, (end.getTime() - start.getTime()) / 3600000)
-}
 
-function countWorkingDays(start: Date, end: Date): number {
-  // start/end are always parsed with an explicit UTC 'Z' suffix — use the UTC
-  // variants throughout so both the weekday check and the day-by-day walk
-  // stay aligned with those boundaries regardless of the server's local
-  // timezone (a local-time walk can skip or double-count a day, and
-  // getDay() can misclassify the weekday, whenever local time differs from UTC).
-  let days = 0
-  const cursor = new Date(start)
-  while (cursor <= end) {
-    const d = cursor.getUTCDay()
-    if (d !== 0 && d !== 6) days++
-    cursor.setUTCDate(cursor.getUTCDate() + 1)
-  }
-  return days || 1
-}
 
 export async function analyticsRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRoute', (route) => { route.schema = { tags: ['Analytics'], ...route.schema } })

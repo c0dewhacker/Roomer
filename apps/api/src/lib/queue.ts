@@ -14,6 +14,7 @@ import { getBuildingAdminUserIds } from '../middleware/requireRole.js'
 import { sendPushNotification } from './push.js'
 import { recordAuditLog } from './audit.js'
 import { checkGroupAccess } from '../routes/groups.js'
+import { PUSH_ELIGIBLE_TYPES, PUSH_URL_KEYS, CLAIM_DEADLINE_MS, CLAIM_WARNING_WINDOW_MS, FLOOR_NOTIFICATION_LOCK_CLASS } from './queue-config.js'
 
 // Types worth interrupting someone's phone for — the rest stay in-app/email
 // only. Scoped per the #76 phase-2 design discussion: the 3 originally named
@@ -22,20 +23,6 @@ import { checkGroupAccess } from '../routes/groups.js'
 // claim-expiring nudge. Deliberately excludes the *outcome* notifications
 // (accepted/declined/expired, confirmed/cancelled, etc.) — those aren't
 // time-sensitive enough to justify a push.
-const PUSH_ELIGIBLE_TYPES = new Set<NotificationType>([
-  NotificationType.QUEUE_PROMOTED,
-  NotificationType.BOOKING_REMINDER,
-  NotificationType.FLOOR_AVAILABLE,
-  NotificationType.BOOKING_TRANSFER_REQUESTED,
-  NotificationType.BOOKING_SWAP_REQUESTED,
-  NotificationType.QUEUE_CLAIM_EXPIRING,
-  NotificationType.BOOKING_PENDING_APPROVAL,
-])
-
-// Priority order for picking a push notification's click-through target from
-// whichever URL each branch happened to put in templateVars.
-const PUSH_URL_KEYS = ['claimUrl', 'bookingUrl', 'floorUrl', 'queueUrl', 'bookingsUrl'] as const
-
 let boss: PgBoss | null = null
 
 export function getBoss(): PgBoss {
@@ -46,7 +33,6 @@ export function getBoss(): PgBoss {
 }
 
 /** How long a promoted queue entry has to be claimed before it expires. */
-export const CLAIM_DEADLINE_MS = 2 * 60 * 60 * 1000 // 2 hours
 
 /**
  * Atomically promote the highest-position WAITING queue entry overlapping
@@ -1895,7 +1881,6 @@ async function handleSendBookingReminders(): Promise<void> {
 // ─── Worker: warn-claim-expiring (cron every 5 min) ──────────────────────────
 
 /** How far ahead of the claim deadline to send the "closing soon" warning. */
-const CLAIM_WARNING_WINDOW_MS = 30 * 60 * 1000 // 30 minutes
 
 async function handleWarnClaimExpiring(): Promise<void> {
   const now = new Date()
@@ -2190,7 +2175,6 @@ export async function enqueueNotification(data: NotificationJobData): Promise<vo
  * keyed per asset/user, not per floor. pg_advisory_xact_lock's classid is one
  * global namespace, not scoped per-file — check lib/booking.ts before adding
  * another class number here. */
-const FLOOR_NOTIFICATION_LOCK_CLASS = 4244
 
 export async function fanOutFloorAvailable(
   assetId: string,
