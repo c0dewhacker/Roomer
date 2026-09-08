@@ -46,6 +46,21 @@ export async function pushRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.status(200).send({ data: { publicKey: getVapidPublicKey() } })
   })
 
+  fastify.post('/status', { preHandler: [requireAuth] }, async (request, reply) => {
+    const parsed = unsubscribeSchema.safeParse(request.body)
+    if (!parsed.success) return reply.status(400).send({ error: { message: 'Invalid endpoint', code: 'VALIDATION_ERROR' } })
+    const sub = await prisma.pushSubscription.findFirst({ where: { endpoint: parsed.data.endpoint, userId: request.user.id }, select: { id: true } })
+    // A browser endpoint is effectively a device credential. If the current
+    // account does not own it, detach the stale server record as well as
+    // telling the client to unsubscribe the browser-side registration.
+    if (!sub) {
+      await prisma.pushSubscription.deleteMany({
+        where: { endpoint: parsed.data.endpoint, userId: { not: request.user.id } },
+      })
+    }
+    return { data: { subscribed: !!sub } }
+  })
+
   // POST /push/subscribe — upsert by endpoint, since re-subscribing the same
   // browser (e.g. after the user cleared site permissions) yields a fresh
   // endpoint/keys triple for what's conceptually the same device.

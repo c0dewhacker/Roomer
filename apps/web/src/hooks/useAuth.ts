@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { authApi, ApiError } from '../lib/api'
+import { getDeviceSubscription, reconcileDevicePush } from '../lib/push-device'
 import { useAuthStore } from '../stores/auth'
 
 // The access token cookie is a fixed 8-hour JWT (apps/api/src/lib/jwt.ts,
@@ -72,6 +73,10 @@ export function useAuth() {
     return () => clearInterval(interval)
   }, [user, qc])
 
+  useEffect(() => {
+    if (user?.id) void reconcileDevicePush().catch(() => {})
+  }, [user?.id])
+
   const loginMutation = useMutation({
     mutationFn: ({ email, password }: { email: string; password: string }) =>
       authApi.login(email, password),
@@ -91,17 +96,22 @@ export function useAuth() {
   })
 
   const logoutMutation = useMutation({
-    mutationFn: () => authApi.logout(),
+    mutationFn: async () => {
+      // A broken/stale service-worker registration must not prevent logout.
+      // The server can still revoke the session even if the browser cannot
+      // currently inspect its push registration.
+      const subscription = await getDeviceSubscription().catch(() => null)
+      const response = await authApi.logout(subscription?.endpoint)
+      await subscription?.unsubscribe().catch(() => false)
+      return response
+    },
     onSuccess: () => {
       setUser(null)
       qc.clear()
       navigate('/login', { replace: true })
     },
-    onError: () => {
-      // Force local logout even if API fails
-      setUser(null)
-      qc.clear()
-      navigate('/login', { replace: true })
+    onError: (err: Error) => {
+      toast.error(err.message || 'Logout could not be completed. Please retry.')
     },
   })
 

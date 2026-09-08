@@ -1,5 +1,4 @@
 import type { FastifyInstance } from 'fastify'
-import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { createBallotSchema, updateBallotSchema, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'

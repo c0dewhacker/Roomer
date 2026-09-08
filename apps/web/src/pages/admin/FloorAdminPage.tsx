@@ -32,22 +32,9 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
+import { DESK_STATUSES, STATUS_LABELS, STATUS_VARIANTS, type ZoneData, type ZoneGroupData, type DeskData } from './floor-admin-model'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-
-type ZoneData = { id: string; name: string; colour: string; zoneGroupId: string | null; requiresApproval: boolean | null; assets: AssetData[] }
-type ZoneGroupData = { id: string; name: string; floorId: string }
-type AssetData = { id: string; name: string; status: string; amenities: string[]; isBookable?: boolean }
-/** @deprecated use AssetData */
-type DeskData = AssetData
-
-const DESK_STATUSES = ['OPEN', 'RESTRICTED', 'ASSIGNED', 'DISABLED'] as const
-const STATUS_LABELS: Record<string, string> = {
-  OPEN: 'Open', RESTRICTED: 'Restricted', ASSIGNED: 'Assigned', DISABLED: 'Disabled',
-}
-const STATUS_VARIANTS: Record<string, 'default' | 'secondary' | 'outline' | 'destructive'> = {
-  OPEN: 'secondary', RESTRICTED: 'outline', ASSIGNED: 'default', DISABLED: 'destructive',
-}
 
 // ─── Zone Dialog ─────────────────────────────────────────────────────────────
 
@@ -337,7 +324,7 @@ function AddAssetToFloorDialog({
       setSelectedAssetId('')
       setSelectedZoneId(defaultZoneId ?? zones[0]?.id ?? '')
     }
-  }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, defaultZoneId, zones])
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>

@@ -33,6 +33,7 @@ import { getDateFormat } from '@/lib/dateFormat'
 import { useAuthStore } from '@/stores/auth'
 import { assetsApi, usersApi, settingsApi, recurringBookingsApi } from '@/lib/api'
 import type { AssetWithStatus } from '@/types'
+import { WEEKDAYS, type TimePreset } from './desk-panel-model'
 
 interface DeskPanelProps {
   desk: AssetWithStatus | null
@@ -42,8 +43,6 @@ interface DeskPanelProps {
   onClose: () => void
   onBookingCreated: () => void
 }
-
-type TimePreset = 'full' | 'am' | 'pm' | 'custom'
 
 // ─── Add to Allow-List Dialog ─────────────────────────────────────────────────
 
@@ -453,11 +452,6 @@ function EditAssetDialog({
 }
 
 // ─── Available-Days Editor (assigned desk owner) ──────────────────────────────
-
-const WEEKDAYS = [
-  { value: 1, label: 'Mon' }, { value: 2, label: 'Tue' }, { value: 3, label: 'Wed' },
-  { value: 4, label: 'Thu' }, { value: 5, label: 'Fri' }, { value: 6, label: 'Sat' }, { value: 0, label: 'Sun' },
-]
 
 function AvailableDaysEditor({ deskId }: { deskId: string }) {
   const qc = useQueryClient()

@@ -1,3 +1,5 @@
+import { DeskList } from '@/components/floor-plan/DeskList'
+import { QueryError } from '@/components/QueryError'
 import { useState, useCallback, useMemo } from 'react'
 import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { format, addDays } from 'date-fns'
@@ -42,10 +44,11 @@ export default function FloorPage() {
   const [selectedDeskId, setSelectedDeskId] = useState<string | null>(null)
   const qc = useQueryClient()
 
+  const [deskView, setDeskView] = useState<'map' | 'list'>('map')
   const [showWhoIsIn, setShowWhoIsIn] = useState(false)
   const [showSubscribeDialog, setShowSubscribeDialog] = useState(false)
   const { data: floor, isLoading, isError, error: floorError } = useFloorData(floorId!)
-  const { data: desks } = useFloorAvailability(floorId!, selectedDate)
+  const { data: desks, isLoading: desksLoading, isError: desksError, refetch: refetchDesks } = useFloorAvailability(floorId!, selectedDate)
   // Public endpoint, not getOrg()/'organisation' — that one is
   // SUPER_ADMIN-gated and every non-admin user would silently 403 and fall
   // back to the hardcoded default below, regardless of what the org
@@ -129,7 +132,7 @@ export default function FloorPage() {
   }, [desks])
 
   // ─── Amenity filter ─────────────────────────────────────────────────────────
-  const [selectedAmenities, setSelectedAmenities] = useState<Set<string>>(new Set())
+  const [selectedAmenities, setSelectedAmenities] = useState<Set<string>>(() => new Set())
 
   // Amenities are free text entered independently via the asset form, CSV
   // import, and manual edits, with nothing normalising casing between them —
@@ -179,7 +182,7 @@ export default function FloorPage() {
     setSelectedDeskId(null)
   }, [qc, floorId])
 
-  const today = new Date()
+  const [today] = useState(() => new Date())
   // Truncated to local midnight before use in date-boundary comparisons below
   // (both isPast and the "next day" cap) — selectedDate is always a calendar
   // day at midnight, so comparing it against the raw `today` instant (with
@@ -425,13 +428,20 @@ export default function FloorPage() {
         </div>
       )}
 
+      <div className="flex gap-2 border-b px-4 py-2" role="group" aria-label="Desk view">
+        <Button variant={deskView === 'map' ? 'default' : 'outline'} aria-pressed={deskView === 'map'} onClick={() => setDeskView('map')}>Floor plan</Button>
+        <Button variant={deskView === 'list' ? 'default' : 'outline'} aria-pressed={deskView === 'list'} onClick={() => setDeskView('list')}>Desk list</Button>
+      </div>
+      {desksError && <QueryError message="Could not load desk availability." retry={() => void refetchDesks()} />}
       {/* Canvas area + Who's in panel */}
       <div className="flex flex-1 overflow-hidden">
-        <div className="flex-1 overflow-hidden">
-          {isLoading ? (
+        <div className="min-w-0 flex-1 overflow-auto">
+          {desksError ? null : isLoading || desksLoading ? (
             <div className="flex h-full items-center justify-center">
               <Skeleton className="h-3/4 w-3/4" />
             </div>
+          ) : deskView === 'list' ? (
+            <DeskList desks={(desks ?? []).filter((desk) => !dimmedAssetIds?.has(desk.id))} onSelect={handleDeskClick} />
           ) : (
             <FloorPlanCanvas
               floorId={floorId}

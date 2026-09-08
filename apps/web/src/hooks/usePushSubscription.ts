@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { pushApi } from '../lib/api'
+import { reconcileDevicePush } from '../lib/push-device'
+import { useAuthStore } from '../stores/auth'
 
 // pushManager.subscribe() needs the VAPID public key as a raw Uint8Array,
 // not the base64url string the backend hands out.
@@ -17,6 +19,7 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
 export type PushStatus = 'unsupported' | 'unconfigured' | 'checking' | 'subscribed' | 'unsubscribed'
 
 export function usePushSubscription() {
+  const userId = useAuthStore((state) => state.user?.id)
   const supported = typeof navigator !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window
 
   // staleTime: Infinity — the VAPID keypair is deployment-wide and static; no
@@ -42,10 +45,14 @@ export function usePushSubscription() {
       setStatus('unconfigured')
       return
     }
-    const reg = await navigator.serviceWorker.ready
-    const sub = await reg.pushManager.getSubscription()
-    setStatus(sub ? 'subscribed' : 'unsubscribed')
-  }, [supported, vapidLoading, vapidData])
+    try {
+      const subscribed = userId ? await reconcileDevicePush() : false
+      setStatus(subscribed ? 'subscribed' : 'unsubscribed')
+    } catch {
+      setStatus('unsubscribed')
+      toast.error('Could not verify notification settings. Please retry.')
+    }
+  }, [supported, vapidLoading, vapidData, userId])
 
   useEffect(() => {
     refresh()

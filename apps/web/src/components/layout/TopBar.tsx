@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { User, LogOut, Settings, Menu, Sun, Moon, Info, ExternalLink } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
@@ -29,17 +29,25 @@ const APP_REPO_URL = import.meta.env.VITE_APP_REPO_URL || ''
 interface TopBarProps {
   onMenuClick?: () => void
   hideBrand?: boolean
+  menuOpen?: boolean
 }
 
-export function TopBar({ onMenuClick, hideBrand }: TopBarProps) {
+export function TopBar({ onMenuClick, hideBrand, menuOpen }: TopBarProps) {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
   const [aboutOpen, setAboutOpen] = useState(false)
   const { theme, setTheme } = useThemeStore()
   const branding = useBranding()
-  const isDark =
-    theme === 'dark' ||
-    (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  const [systemDark, setSystemDark] = useState(
+    () => window.matchMedia('(prefers-color-scheme: dark)').matches,
+  )
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const update = (event: MediaQueryListEvent) => setSystemDark(event.matches)
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+  const isDark = theme === 'dark' || (theme === 'system' && systemDark)
 
   // A double space, or a leading/trailing space, in displayName produces an
   // empty-string part when split on a literal ' ' — n[0] on that is
@@ -55,7 +63,7 @@ export function TopBar({ onMenuClick, hideBrand }: TopBarProps) {
   return (
     <header className="flex h-14 items-center justify-between border-b bg-background px-4">
       <div className="flex items-center gap-3">
-        <Button variant="ghost" size="icon" className="md:hidden" onClick={onMenuClick} aria-label="Open menu">
+        <Button variant="ghost" size="icon" className="md:hidden" onClick={onMenuClick} id="mobile-menu-trigger" aria-label="Open menu" aria-expanded={menuOpen} aria-haspopup="dialog">
           <Menu className="h-5 w-5" />
         </Button>
         {!hideBrand && (branding?.logoPath ? (

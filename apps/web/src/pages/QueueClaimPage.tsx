@@ -9,12 +9,12 @@ type State = 'loading' | 'success' | 'already_claimed' | 'expired' | 'invalid' |
 
 export default function QueueClaimPage() {
   const [params] = useSearchParams()
+  const token = params.get('token')
   const navigate = useNavigate()
   const [state, setState] = useState<State>('loading')
   const [booking, setBooking] = useState<Booking | null>(null)
 
   useEffect(() => {
-    const token = params.get('token')
     if (!token) {
       setState('invalid')
       return
@@ -38,8 +38,7 @@ export default function QueueClaimPage() {
           setState('error')
         }
       })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [token])
 
   if (state === 'loading') {
     return (

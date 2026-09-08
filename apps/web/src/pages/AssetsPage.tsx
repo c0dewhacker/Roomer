@@ -1,3 +1,4 @@
+import { QueryError } from '@/components/QueryError'
 import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { Package, Star, MapPin, CalendarPlus } from 'lucide-react'
@@ -154,7 +155,7 @@ function FavouritesSection() {
 }
 
 export default function AssetsPage() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['assets', 'my'],
     // getMyAssignments (not list({mine:true})) — the same assetUserAssignment
     // query, but with floor/primaryZone/availabilityWindows included, so
@@ -174,11 +175,12 @@ export default function AssetsPage() {
 
       <FavouritesSection />
 
+      {isError && <QueryError message="Could not load your assets." retry={() => void refetch()} />}
       {isLoading ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => <Skeleton key={i} className="h-24 w-full" />)}
         </div>
-      ) : (data ?? []).length === 0 ? (
+      ) : !isError && (data ?? []).length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <Package className="h-12 w-12 text-muted-foreground/30 mb-3" />
           <p className="text-sm text-muted-foreground">No assets assigned to you</p>

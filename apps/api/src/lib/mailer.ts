@@ -3,6 +3,8 @@ import type { Transporter } from 'nodemailer'
 import { env } from '../env.js'
 import { getEffectiveSmtp } from './smtp-config.js'
 import type { Booking, User, Asset, QueueEntry } from '@roomer/shared'
+export { escapeHtml, formatDate, interpolateTemplate, stripHtmlToText } from './mailer-template.js'
+import { baseHtml, escapeHtml, formatDate } from './mailer-template.js'
 
 let transporter: Transporter | null = null
 let cachedFrom: string | null = null
@@ -52,102 +54,6 @@ export async function sendEmail(opts: SendEmailOptions): Promise<void> {
       },
     }),
   })
-}
-
-// ─── Template helpers ─────────────────────────────────────────────────────────
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
-/**
- * `timeZone` is a booking's resolved building timezone (see #72) — when the
- * caller has one (every booking-related email does, via queue.ts), the
- * email now shows the booking's actual building-local time instead of an
- * arbitrary UTC pin, matching how the web app renders the same booking
- * (apps/web/src/lib/utils.ts's formatDate, given the same resolved
- * timezone). Explicitly labelled either way (UTC or the zone's short name,
- * e.g. AEST) so it's never ambiguous which clock a shown time belongs to.
- * Falls back to UTC for the handful of non-booking emails (leases, manager
- * requests) that have no per-instance building association plumbed
- * through yet.
- */
-export function formatDate(date: Date | string, timeZone = 'UTC'): string {
-  const d = new Date(date)
-  const formatted = d.toLocaleString('en-GB', {
-    weekday: 'short',
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZone,
-  })
-  const zoneLabel = new Intl.DateTimeFormat('en', { timeZone, timeZoneName: 'short' })
-    .formatToParts(d)
-    .find((p) => p.type === 'timeZoneName')?.value ?? timeZone
-  return `${formatted} ${zoneLabel}`
-}
-
-function baseHtml(title: string, body: string): string {
-  // title is the plain-text subject line (also sent verbatim as the SMTP
-  // Subject header and interpolated raw into the `text` fallback below) —
-  // it must be escaped here, not by the caller, since every render*()
-  // function builds it from raw user-controlled strings (displayName,
-  // asset/floor/building name, ballot name). Escaping it a second time at
-  // the call site (as every one of them used to, before this fix) would
-  // double-escape it into the visible subject line instead — this is the
-  // one place it's rendered as HTML, so this is the one place it should be
-  // escaped.
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${escapeHtml(title)}</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f4f4f5; margin: 0; padding: 20px; }
-    .card { background: #fff; border-radius: 8px; max-width: 560px; margin: 0 auto; padding: 32px; }
-    h1 { font-size: 22px; color: #18181b; margin-top: 0; }
-    p { color: #52525b; line-height: 1.6; }
-    .detail { background: #f4f4f5; border-radius: 6px; padding: 16px; margin: 16px 0; }
-    .detail dt { font-size: 12px; color: #71717a; text-transform: uppercase; letter-spacing: 0.05em; }
-    .detail dd { font-size: 15px; color: #18181b; margin: 2px 0 12px 0; font-weight: 500; }
-    .btn { display: inline-block; background: #6366f1; color: #fff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; margin-top: 16px; }
-    .footer { text-align: center; color: #a1a1aa; font-size: 12px; margin-top: 24px; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    ${body}
-    <div class="footer">Roomer — Desk &amp; Asset Management</div>
-  </div>
-</body>
-</html>`
-}
-
-// ─── Custom template interpolation ────────────────────────────────────────────
-
-const URL_VARS = new Set(['bookingUrl', 'bookingsUrl', 'queueUrl', 'claimUrl', 'floorUrl', 'appUrl'])
-
-export function interpolateTemplate(template: string, vars: Record<string, string>): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (_, key: string) => {
-    const val = vars[key] ?? ''
-    return URL_VARS.has(key) ? val : escapeHtml(val)
-  })
-}
-
-export function stripHtmlToText(html: string): string {
-  return html
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/[<>]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
 }
 
 // ─── Default parameterised template strings (shown in the editor as starting points) ──
