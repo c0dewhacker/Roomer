@@ -813,6 +813,14 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
       toast.error("Enter your visitor's name")
       return
     }
+    // Required as of #264 — a guest booking doesn't count against the host's
+    // own booking limit, so it has to name a contactable person. Checked here
+    // as well as server-side so the host gets an inline message rather than a
+    // rejected submit.
+    if (isGuestBooking && !guestEmail.trim()) {
+      toast.error("Enter your visitor's email — they need it to receive their check-in link")
+      return
+    }
     try {
       await createBooking.mutateAsync({
         assetId: desk.id,
@@ -820,7 +828,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
         endsAt: end.toISOString(),
         attendeeCount: attendeeCount ? Number(attendeeCount) : undefined,
         guestName: isGuestBooking ? guestName.trim() : undefined,
-        guestEmail: isGuestBooking && guestEmail.trim() ? guestEmail.trim() : undefined,
+        guestEmail: isGuestBooking ? guestEmail.trim() : undefined,
       })
       onBookingCreated()
     } catch {
@@ -1176,7 +1184,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                           />
                         </div>
                         <div>
-                          <Label htmlFor="guest-email" className="text-xs">Visitor email (optional)</Label>
+                          <Label htmlFor="guest-email" className="text-xs">Visitor email *</Label>
                           <Input
                             id="guest-email"
                             type="email"
@@ -1186,7 +1194,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                             placeholder="jane@example.com"
                           />
                           <p className="text-xs text-muted-foreground mt-1">
-                            If provided, your visitor gets an email with a check-in link. This booking won't count toward your own booking limit.
+                            Your visitor gets an email with their check-in link. This booking won't count toward your own booking limit.
                           </p>
                         </div>
                       </div>
@@ -1205,7 +1213,7 @@ export function DeskPanel({ desk, date, floorId: _floorId, floorZones = [], onCl
                   disabled={
                     isRecurring
                       ? createRecurring.isPending || !recurringLastDate
-                      : createBooking.isPending || (isGuestBooking && !guestName.trim())
+                      : createBooking.isPending || (isGuestBooking && (!guestName.trim() || !guestEmail.trim()))
                   }
                   className="w-full"
                 >
