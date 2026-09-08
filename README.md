@@ -344,6 +344,22 @@ All API environment variables. Every variable accepts a `ROOMER_` prefix (e.g. `
 > Email/SMTP can also be configured in the admin UI (**Settings → Email**). Any of the `SMTP_*` / `EMAIL_FROM` variables above, when set, **override** the UI value at runtime (captured at startup) and appear locked in the form.
 | `APP_URL` | `http://localhost:5173` | Public URL used in email links |
 
+### Upgrading to 1.1.0 — `TRUST_PROXY=true` is no longer accepted
+
+If your deployment sets `TRUST_PROXY=true`, change it before upgrading — the API now refuses to start with that value.
+
+Use the peers you actually trust to set `X-Forwarded-For`. Behind the bundled nginx (Docker Compose or the Helm chart), that is:
+
+```env
+ROOMER_TRUST_PROXY=loopback,uniquelocal
+```
+
+The shipped `docker-compose.yml`, `docker-compose.build.yaml` and Helm chart are already updated, so stock deployments need no action — this only affects a hand-written `.env` or custom manifests.
+
+**Why it's a hard failure rather than a silent default.** `true` told the server to trust the *entire* `X-Forwarded-For` chain, which made `request.ip` the left-most entry — a value the client sends. Since nginx appends the real peer to whatever the client supplied, anyone could set their own `request.ip`, mint a fresh rate-limit bucket per request, and forge the IP recorded on every audit-log row. The correct replacement depends on your own topology, and guessing it wrong fails *quietly*: everyone collapses onto a single bucket keyed by the proxy's address, so the global 300 req/min limit throttles the whole deployment at once. Refusing to boot is the louder, safer failure.
+
+Hop counts (`TRUST_PROXY=1`) are rejected for the same reason — fastify removed numeric hop-count trust in 5.12.1, where a number now means "trust nothing".
+
 ---
 
 ## Roles
