@@ -1,6 +1,13 @@
 name: Checks
 
 on:
+  # Direct pushes to develop, not just PRs. develop is pushed to directly as a
+  # matter of course here, and with only a pull_request trigger those commits
+  # got no build, lint or test run at all — a batch of them accumulated
+  # unverified and the first CI to see them would have been the develop->main
+  # release PR, well after the fact.
+  push:
+    branches: [develop]
   pull_request:
     branches: [main, develop]
 
