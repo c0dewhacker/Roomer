@@ -1,8 +1,14 @@
 # ─── Stage 1: base ────────────────────────────────────────────────────────────
-# Shared base with pnpm enabled. Pin the pnpm version to match the repo's
+# Shared base with pnpm installed. Pin the pnpm version to match the repo's
 # lockfile format (pnpm 10.x).
 FROM node:24-alpine AS base
-RUN corepack enable && corepack prepare pnpm@10.30.1 --activate
+# corepack is not bundled with Node from 26 onward (node:24-alpine ships
+# corepack 0.35.0; node:26-alpine ships none), so `corepack enable` fails there
+# with "corepack: not found" — exit 127, before anything else runs. npm is still
+# bundled on both, so installing pnpm through it works on 24 today and does not
+# have to change again when the base image moves to 26. apps/web/Dockerfile
+# already does this for the same reason.
+RUN npm install -g pnpm@10.30.1
 WORKDIR /repo
 
 # ─── Stage 2: install ─────────────────────────────────────────────────────────
