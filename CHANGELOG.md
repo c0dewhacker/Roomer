@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.2.0](https://github.com/c0dewhacker/Roomer/compare/v1.1.1...v1.2.0) (2026-09-09)
+
+
+### Features
+
+* **web:** give the UI a real type system, a shared page frame, and accent-aware charts ([1ac5dfd](https://github.com/c0dewhacker/Roomer/commit/1ac5dfdda2892282e5b5f820964809ce7eb9b440))
+* **web:** type system, accent-aware charts, and two rendering fixes ([ce07118](https://github.com/c0dewhacker/Roomer/commit/ce0711823d81f8d66933d7bfdce2d2db2d1820a8))
+
+
+### Bug Fixes
+
+* **web:** always show the category in the asset label, including when it repeats the name ([4db743a](https://github.com/c0dewhacker/Roomer/commit/4db743a818554e969dd35531e38fab4fcb3fdc91))
+* **web:** make the bookings empty state align with the page and offer the next step ([164087f](https://github.com/c0dewhacker/Roomer/commit/164087fed68e1c3afa8588ae5b276e614f3dd7c3))
+* **web:** name the asset's category in the "you usually book" suggestion ([6d17d1c](https://github.com/c0dewhacker/Roomer/commit/6d17d1ce13f995c28c17d514f8f4fac3013efb00))
+* **web:** name the asset's category in the "you usually book" suggestion ([256144d](https://github.com/c0dewhacker/Roomer/commit/256144dd196f302c6f3a724fd31d2ebdb848764b))
+
+
+### Reverts
+
+* **web:** drop PageShell, keep the type system and chart changes ([cfaa88a](https://github.com/c0dewhacker/Roomer/commit/cfaa88afde65dbe19abbc3b4bbb782ef269a9505))
+
 ## [1.1.1](https://github.com/c0dewhacker/Roomer/compare/v1.1.0...v1.1.1) (2026-09-09)
 
 
