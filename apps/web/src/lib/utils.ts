@@ -145,10 +145,12 @@ export function toISODateString(date: Date): string {
  * the bare name — "You usually book 1A" — leaves the reader guessing what 1A
  * is, so the category is prefixed to give it a noun.
  *
- * The category is dropped when it would only repeat the name, so an asset
- * genuinely called "Desk" reads "Desk" rather than "Desk · Desk". That case is
- * worth knowing about: no label format can disambiguate an asset whose own name
- * is just its category, and the real fix there is renaming the asset.
+ * The category is prefixed unconditionally, including when it duplicates the
+ * name. An asset called "Desk" in the "Desk" category therefore renders
+ * "Desk - Desk", which looks wrong because it is wrong: it means someone named
+ * an asset after its own category, and collapsing the duplicate would hide the
+ * only visible evidence of that. Showing it keeps the label format honest and
+ * points at the row that needs renaming.
  */
 export function formatAssetLabel(asset: {
   name: string
@@ -157,6 +159,5 @@ export function formatAssetLabel(asset: {
 }): string {
   const base = asset.bookingLabel?.trim() || asset.name
   const category = asset.category?.name?.trim()
-  if (!category || category.toLowerCase() === base.toLowerCase()) return base
-  return `${category} · ${base}`
+  return category ? `${category} - ${base}` : base
 }
