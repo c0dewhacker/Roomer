@@ -134,3 +134,30 @@ export function zoneQualifier(timeZone: string | undefined, date: Date | string)
 export function toISODateString(date: Date): string {
   return format(date, 'yyyy-MM-dd')
 }
+
+/**
+ * How an asset should be named in user-facing prose.
+ *
+ * Assets carry three names and picking the wrong one produces sentences that
+ * can't be acted on. `bookingLabel` is the operator-facing label ("1A", "Hot
+ * desk 12") and wins when set; `name` is the fallback; and `category.name`
+ * ("Desk", "Meeting room") is the kind of thing it is. Prose that quotes only
+ * the bare name — "You usually book 1A" — leaves the reader guessing what 1A
+ * is, so the category is prefixed to give it a noun.
+ *
+ * The category is prefixed unconditionally, including when it duplicates the
+ * name. An asset called "Desk" in the "Desk" category therefore renders
+ * "Desk - Desk", which looks wrong because it is wrong: it means someone named
+ * an asset after its own category, and collapsing the duplicate would hide the
+ * only visible evidence of that. Showing it keeps the label format honest and
+ * points at the row that needs renaming.
+ */
+export function formatAssetLabel(asset: {
+  name: string
+  bookingLabel?: string | null
+  category?: { name: string } | null
+}): string {
+  const base = asset.bookingLabel?.trim() || asset.name
+  const category = asset.category?.name?.trim()
+  return category ? `${category} - ${base}` : base
+}
