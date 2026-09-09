@@ -28,6 +28,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, AreaChart, Area,
 } from 'recharts'
+import { PageShell } from '@/components/layout/PageShell'
 
 // ─── Date Range ───────────────────────────────────────────────────────────────
 
@@ -84,20 +85,30 @@ function KpiCard({
   return (
     <Card>
       <CardContent className="p-5">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{label}</p>
-            {loading ? (
-              <Skeleton className="h-7 w-20 mt-1.5" />
-            ) : (
-              <p className="text-2xl font-bold mt-1 tabular-nums">{value}</p>
-            )}
-            {sub && !loading && <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>}
-          </div>
-          <div className={`rounded-lg p-2.5 shrink-0 ${iconColour}`}>
-            <Icon className="h-4 w-4" />
+        {/* Label row first, value beneath, rather than label and value sharing a
+            row with the icon. Previously the icon sat beside the text in the
+            same flex row, so on a narrow tile the uppercase label wrapped into
+            it and clipped — "CANCELLAT", "DESK UTILISATIO". Giving the label
+            the full tile width and a fixed two-line box also puts every value
+            on the same baseline; before, labels wrapping to one, two or three
+            lines pushed the numbers to different heights across the row. */}
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-2xs font-medium uppercase tracking-[0.08em] text-muted-foreground
+                        min-h-8 leading-4 [display:-webkit-box] [-webkit-line-clamp:2]
+                        [-webkit-box-orient:vertical] overflow-hidden">
+            {label}
+          </p>
+          <div className={`rounded-lg p-2 shrink-0 ${iconColour}`}>
+            <Icon className="h-3.5 w-3.5" />
           </div>
         </div>
+        {loading ? (
+          <Skeleton className="h-8 w-20 mt-1" />
+        ) : (
+          /* Tabular figures so a column of these compares digit-by-digit. */
+          <p className="text-2xl font-semibold mt-1 tabular-nums tracking-tight">{value}</p>
+        )}
+        {sub && !loading && <p className="text-xs text-muted-foreground mt-1">{sub}</p>}
       </CardContent>
     </Card>
   )
@@ -115,7 +126,7 @@ function SummaryCards({ params }: { params: AnalyticsParams }) {
   const utilisationColour = !data ? 'default' : data.overallUtilisationPct > 70 ? 'green' : data.overallUtilisationPct > 40 ? 'default' : 'amber'
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-8 gap-4">
+    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
       <KpiCard label="Confirmed Bookings" value={data?.totalBookings ?? '—'} sub={`over ${data?.workingDays ?? '…'} working days`} icon={CheckCircle2} loading={isLoading} colour="green" />
       <KpiCard label="Avg / Day" value={data?.avgDailyBookings ?? '—'} sub="confirmed bookings" icon={BarChart3} loading={isLoading} />
       <KpiCard label="Unique Bookers" value={data?.uniqueBookers ?? '—'} sub="distinct users" icon={Users} loading={isLoading} />
@@ -944,20 +955,14 @@ export default function ReportsAdminPage() {
   }
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold">Reports & Analytics</h1>
-          <p className="text-muted-foreground text-sm mt-1">
-            {formatDate(startDate)} – {formatDate(endDate)}
-            {buildingFilter && buildings && ` · ${buildings.find(b => b.id === buildingFilter)?.name}`}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <ExportAllButton params={params} days={preset} />
-        </div>
-      </div>
+    <PageShell
+      width="full"
+      title="Reports & Analytics"
+      description={`${formatDate(startDate)} – ${formatDate(endDate)}${
+        buildingFilter && buildings ? ` · ${buildings.find((b) => b.id === buildingFilter)?.name}` : ''
+      }`}
+      actions={<ExportAllButton params={params} days={preset} />}
+    >
 
       {/* Filters */}
       <Card>
@@ -1030,6 +1035,6 @@ export default function ReportsAdminPage() {
         <CapacityPlanningTable params={params} />
         <CostPerSeatTable params={params} />
       </div>
-    </div>
+    </PageShell>
   )
 }

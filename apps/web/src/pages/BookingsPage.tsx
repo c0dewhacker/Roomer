@@ -36,6 +36,7 @@ import { DateTimeLocalInput } from '@/components/ui/date-time-input'
 import { assetsApi, recurringBookingsApi, bookingsApi, usersApi, settingsApi } from '@/lib/api'
 import type { Booking, RecurringBookingRule, BookingTransfer, BookingSwap } from '@/types'
 import { AssignedDeskCard } from '@/components/AssignedDeskCard'
+import { PageShell } from '@/components/layout/PageShell'
 
 type Tab = 'upcoming' | 'past' | 'all'
 
@@ -1035,12 +1036,7 @@ export default function BookingsPage() {
   const [tab, setTab] = useState<Tab>('upcoming')
 
   return (
-    <div className="p-6 max-w-3xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold">My Bookings</h1>
-        <p className="text-muted-foreground text-sm mt-1">All your desk reservations</p>
-      </div>
-
+    <PageShell title="My Bookings" description="All your desk reservations">
       <MyAssignedDesks />
       <TransferAndSwapRequestsSection />
       <RecurringBookingsSection />
@@ -1055,6 +1051,6 @@ export default function BookingsPage() {
         <TabsContent value="past"><BookingList tab="past" /></TabsContent>
         <TabsContent value="all"><BookingList tab="all" /></TabsContent>
       </Tabs>
-    </div>
+    </PageShell>
   )
 }
