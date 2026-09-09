@@ -28,7 +28,6 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, AreaChart, Area,
 } from 'recharts'
-import { PageShell } from '@/components/layout/PageShell'
 
 // ─── Date Range ───────────────────────────────────────────────────────────────
 
@@ -955,14 +954,20 @@ export default function ReportsAdminPage() {
   }
 
   return (
-    <PageShell
-      width="full"
-      title="Reports & Analytics"
-      description={`${formatDate(startDate)} – ${formatDate(endDate)}${
-        buildingFilter && buildings ? ` · ${buildings.find((b) => b.id === buildingFilter)?.name}` : ''
-      }`}
-      actions={<ExportAllButton params={params} days={preset} />}
-    >
+    <div className="p-6 max-w-7xl mx-auto space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold">Reports & Analytics</h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            {formatDate(startDate)} – {formatDate(endDate)}
+            {buildingFilter && buildings && ` · ${buildings.find(b => b.id === buildingFilter)?.name}`}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <ExportAllButton params={params} days={preset} />
+        </div>
+      </div>
 
       {/* Filters */}
       <Card>
@@ -1035,6 +1040,6 @@ export default function ReportsAdminPage() {
         <CapacityPlanningTable params={params} />
         <CostPerSeatTable params={params} />
       </div>
-    </PageShell>
+    </div>
   )
 }
