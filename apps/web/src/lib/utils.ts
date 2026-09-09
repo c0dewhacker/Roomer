@@ -134,3 +134,29 @@ export function zoneQualifier(timeZone: string | undefined, date: Date | string)
 export function toISODateString(date: Date): string {
   return format(date, 'yyyy-MM-dd')
 }
+
+/**
+ * How an asset should be named in user-facing prose.
+ *
+ * Assets carry three names and picking the wrong one produces sentences that
+ * can't be acted on. `bookingLabel` is the operator-facing label ("1A", "Hot
+ * desk 12") and wins when set; `name` is the fallback; and `category.name`
+ * ("Desk", "Meeting room") is the kind of thing it is. Prose that quotes only
+ * the bare name — "You usually book 1A" — leaves the reader guessing what 1A
+ * is, so the category is prefixed to give it a noun.
+ *
+ * The category is dropped when it would only repeat the name, so an asset
+ * genuinely called "Desk" reads "Desk" rather than "Desk · Desk". That case is
+ * worth knowing about: no label format can disambiguate an asset whose own name
+ * is just its category, and the real fix there is renaming the asset.
+ */
+export function formatAssetLabel(asset: {
+  name: string
+  bookingLabel?: string | null
+  category?: { name: string } | null
+}): string {
+  const base = asset.bookingLabel?.trim() || asset.name
+  const category = asset.category?.name?.trim()
+  if (!category || category.toLowerCase() === base.toLowerCase()) return base
+  return `${category} · ${base}`
+}

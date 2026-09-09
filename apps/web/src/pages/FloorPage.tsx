@@ -20,6 +20,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import type { AssetWithStatus } from '@/types'
 import { ApiError, settingsApi } from '@/lib/api'
+import { formatAssetLabel } from '@/lib/utils'
 
 const STATUS_LEGEND: Array<{ label: string; colour: string; status: string }> = [
   { label: 'Available', colour: 'bg-green-500', status: 'available' },
@@ -395,7 +396,7 @@ export default function FloorPage() {
         <div className="mx-6 mt-4 flex items-center gap-2 rounded-md border border-primary/20 bg-primary/5 px-4 py-2 text-sm shrink-0">
           <Sparkles className="h-4 w-4 shrink-0 text-primary" />
           <span className="flex-1">
-            You usually book <span className="font-medium">{topSuggestion.name}</span> — it's available {format(selectedDate, 'EEE, d MMM')}
+            You usually book <span className="font-medium">{formatAssetLabel(topSuggestion)}</span> — it's available {format(selectedDate, 'EEE, d MMM')}
             {topSuggestion.floor && topSuggestion.floor.id !== floorId && (
               <span className="text-muted-foreground"> ({topSuggestion.floor.name})</span>
             )}
