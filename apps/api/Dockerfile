@@ -1,7 +1,7 @@
 # ─── Stage 1: base ────────────────────────────────────────────────────────────
 # Shared base with pnpm installed. Pin the pnpm version to match the repo's
 # lockfile format (pnpm 10.x).
-FROM node:24-alpine AS base
+FROM node:26-alpine AS base
 # corepack is not bundled with Node from 26 onward (node:24-alpine ships
 # corepack 0.35.0; node:26-alpine ships none), so `corepack enable` fails there
 # with "corepack: not found" — exit 127, before anything else runs. npm is still
@@ -66,7 +66,7 @@ RUN cp apps/api/prisma.config.ts /deploy/prisma.config.ts
 RUN cd /deploy && node_modules/.bin/prisma generate
 
 # ─── Stage 4: runner ──────────────────────────────────────────────────────────
-FROM node:24-alpine AS runner
+FROM node:26-alpine AS runner
 
 WORKDIR /app
 

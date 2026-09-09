@@ -1,5 +1,220 @@
 # Changelog
 
+## [1.1.0](https://github.com/c0dewhacker/Roomer/compare/v1.0.1...v1.1.0) (2026-09-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* TRUST_PROXY=true is no longer accepted and the API will not start with it. Set it to the peers you actually trust to send X-Forwarded-For — behind the bundled nginx (Docker Compose or the Helm chart) that is `loopback,uniquelocal`. The shipped compose files and Helm chart are already updated, so only hand-written .env files or custom manifests need changing. `true` trusted the entire X-Forwarded-For chain, which made request.ip the left-most entry — a value supplied by the client — letting any caller forge their own IP, get a fresh rate-limit bucket per request, and falsify the IP recorded on every audit-log row. Numeric hop counts are rejected too, since fastify 5.12.1 removed hop-count trust and a number now means "trust nothing". See "Upgrading to 1.1.0" in the README.
+
+### Features
+
+* make systemic push-delivery failure observable via counter and structured logs ([b20ccff](https://github.com/c0dewhacker/Roomer/commit/b20ccff484dbc74655a6244467ca516f552a97b6))
+
+
+### Bug Fixes
+
+* empty-scope ballot was manageable by any authenticated user, and reachable via PATCH ([e44a3dc](https://github.com/c0dewhacker/Roomer/commit/e44a3dc3d626f5f031aec3bb90fdf525d5aefff4))
+* harden security and refactor application structure ([3ea8460](https://github.com/c0dewhacker/Roomer/commit/3ea846025ef513bf466ae3c3ada33f3864217d36))
+* install pnpm via npm instead of corepack, unblocking the Node 26 base-image bump ([317e67f](https://github.com/c0dewhacker/Roomer/commit/317e67fe778208206a8eea36712a0585d61932ad))
+* require guestEmail whenever guestName is set, closing the guest-booking quota bypass ([d0d1bfd](https://github.com/c0dewhacker/Roomer/commit/d0d1bfde90ff8ecb2bcfadabe893f09160583559))
+* state that Utilisation Trend measures every month against today's desk count ([c1024b6](https://github.com/c0dewhacker/Roomer/commit/c1024b6ae060eff6444a4d6a9c709d0d3476623a))
+* upgrade fastify, xmldom, fast-uri and pin browserslist/mysql2 to clear 11 advisories ([df80829](https://github.com/c0dewhacker/Roomer/commit/df80829c0d41f8ea86f2c4e5d012000372bc8e19))
+* X-Forwarded-For spoofing let any client forge request.ip, bypassing every rate limit ([79742dc](https://github.com/c0dewhacker/Roomer/commit/79742dc155cee9bf42b4dd07123d8c8ccca4480b))
+
+
+### Documentation
+
+* add 1.1.0 upgrade note for the TRUST_PROXY change ([416a0a1](https://github.com/c0dewhacker/Roomer/commit/416a0a13fd8aafdfb4b665dac1d4e41ba6690261))
+
+## [1.0.1](https://github.com/c0dewhacker/Roomer/compare/v1.0.0...v1.0.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* "Book it" on a suggested desk silently did nothing for zone-less assets ([ef09584](https://github.com/c0dewhacker/Roomer/commit/ef09584fcc89f2d663186fa8074cbad683f5a43e))
+* /admin/manager-requests route guard admitted floor managers the backend never authorizes ([831c09f](https://github.com/c0dewhacker/Roomer/commit/831c09fb3abf1784b4be1bbd028f60c8794f311e))
+* a whitespace-only department name silently created/renamed to a blank name ([ab473a3](https://github.com/c0dewhacker/Roomer/commit/ab473a3f7c243212da47918d04bfb1a62618ecad))
+* Access Summary dialog showed stale manager/access-group data after a revoke ([93b21be](https://github.com/c0dewhacker/Roomer/commit/93b21bed7e0dcb98492e3d0cacacdb0b24668dbd))
+* admin user creation/bulk-import could create duplicate accounts differing only by email casing ([67eb157](https://github.com/c0dewhacker/Roomer/commit/67eb157fea4c9c38d6867e04cd438b8e22269749))
+* advance-booking-window cap was invisible to non-admins and drifted by a day ([0deb983](https://github.com/c0dewhacker/Roomer/commit/0deb983f1ff0b73eab0986ff611bf6e03d47ab03))
+* analytics reports silently misattributed bookings near a building's local midnight to the wrong UTC calendar day ([3e5469e](https://github.com/c0dewhacker/Roomer/commit/3e5469ecb774e395ab58da721118a1a2a465ec77))
+* approve/reject could double-promote the queue and confirm elapsed bookings ([b8c610c](https://github.com/c0dewhacker/Roomer/commit/b8c610c87fa69fcec12129b2d6aab60ea2f500ae))
+* ballot decline/draw/withdraw and queue claim/cancel had the same unguarded-write race ([50be363](https://github.com/c0dewhacker/Roomer/commit/50be3639cdc145ee013b5fb206d6ae56a6859edc))
+* ballot registration-close check used strict &lt; while the draw-eligibility sweep used inclusive &lt;= ([e3a7242](https://github.com/c0dewhacker/Roomer/commit/e3a72424564392cb31d6c94af8b6e94b5eed7817))
+* ballots UI had a stale Enter button, wrong-day slot dates, and no live refresh ([641f3dd](https://github.com/c0dewhacker/Roomer/commit/641f3ddb86e8be28a0f10d4b2ad1e302ebef2643))
+* booking approvals list didn't self-heal after a stale action, no live refresh, no elapsed gate ([68332f7](https://github.com/c0dewhacker/Roomer/commit/68332f7b25416683f7ea207d532244ad2e96f0da))
+* booking reschedule dialog edited times in the browser's timezone, not the booking's ([feb3ce0](https://github.com/c0dewhacker/Roomer/commit/feb3ce0b674a20f153b0e75dd2df6459ef9e1f7c))
+* bookings list split past/upcoming on a single global UTC cutoff ([31959d0](https://github.com/c0dewhacker/Roomer/commit/31959d0c286642efc8c2ad15440b968a74a9e892))
+* Bookings Report showed every booking's time in the wrong timezone ([39051c0](https://github.com/c0dewhacker/Roomer/commit/39051c0db3e4770b22850ac12f2d301a1d69ccfe))
+* building admins and floor managers silently 403'd on their own admin pages ([ed0a9d5](https://github.com/c0dewhacker/Roomer/commit/ed0a9d583d06af2fc575aada836c0e978a1fcbc5))
+* building admins could never save their own building's settings ([4250a45](https://github.com/c0dewhacker/Roomer/commit/4250a45eaea2a9f4b05df30c254d92533e9ef5bc))
+* bulk CSV import (buildings/floors/zones/assets) had no audit log entry ([1adf4bf](https://github.com/c0dewhacker/Roomer/commit/1adf4bf7466ff5894fcf0d3b248cb1dabb564420))
+* bulk imports created duplicate buildings/floors/zones/categories differing only by name casing ([422dda4](https://github.com/c0dewhacker/Roomer/commit/422dda473d83c9637b84e2dde15cbe712feee521))
+* cancelling a floor edit left the discarded values in the form for next time ([dfaf94c](https://github.com/c0dewhacker/Roomer/commit/dfaf94c61a6b688f2aec433f1869da1f548da9d4))
+* cancelling a lease edit left the discarded values in the form for next time ([b708db2](https://github.com/c0dewhacker/Roomer/commit/b708db262aa6e7ee527b2fc37a9d389300fd66ef))
+* cancelling/rescheduling a booking left the floor plan showing stale availability; cancel button wasn't guarded against a double-click ([7f4263f](https://github.com/c0dewhacker/Roomer/commit/7f4263f7281a118e40ea383c6e091a35b282add6))
+* capacity-planning average daily attendance excluded zero-booking days ([7e6afc0](https://github.com/c0dewhacker/Roomer/commit/7e6afc0c289e30aab2ad6054ba46cdd9947dabf2))
+* category icon delete/upload had the same delete-vs-upload TOCTOU race as floor-plans/lease-documents ([4376725](https://github.com/c0dewhacker/Roomer/commit/4376725187ed9ede6bda0087b6d9d857f51981c7))
+* clicking most notification types silently did nothing ([ca0c2c5](https://github.com/c0dewhacker/Roomer/commit/ca0c2c5058b2f34e19fc3eddb97c86965e78f700))
+* concurrent check-in requests could double-fire the webhook and audit log ([eaf9f49](https://github.com/c0dewhacker/Roomer/commit/eaf9f49c1d9eacb60550be75ab8bf582d524429a))
+* concurrent CSV imports sharing a new asset_tag could crash and roll back an entire valid batch ([a8c653e](https://github.com/c0dewhacker/Roomer/commit/a8c653eeaaab66d7fd7e99d5726be41b3f331015))
+* cost-per-seat analytics missed the timezone fix applied to every other analytics endpoint today ([58b1a53](https://github.com/c0dewhacker/Roomer/commit/58b1a535295e470d88e95bd182f09e8e4c4f78d0))
+* deleting a floor/lease/building could orphan a file uploaded in the same instant ([dc21b8b](https://github.com/c0dewhacker/Roomer/commit/dc21b8b76609e66b259864f85a7655179edfdf0c))
+* deleting an asset cascade-deleted queue entries with no cleanup, unlike bookings ([5ef182b](https://github.com/c0dewhacker/Roomer/commit/5ef182b56754641ef27418d4477ffae4fa71ea7f))
+* desk suggestions endpoint applied one naive UTC day across candidates in different buildings ([0cfe555](https://github.com/c0dewhacker/Roomer/commit/0cfe555fe4b8ce510ce7c2391a5a4f26e9939959))
+* five more incomplete cache-invalidation gaps (transfers/swaps, recurring bookings, bulk import, categories) ([117d729](https://github.com/c0dewhacker/Roomer/commit/117d7299b740784a92cb9454bbad43d5eac5eb8c))
+* floor availability endpoint used a naive UTC day instead of the building's local day ([93288c4](https://github.com/c0dewhacker/Roomer/commit/93288c4c04f99eb692611d7e96084e2c430498cb))
+* FLOOR_AVAILABLE notifications kept notifying subscribers who'd lost access to the floor ([426b771](https://github.com/c0dewhacker/Roomer/commit/426b77132f7671c99fba9747a580b701e930dad0))
+* FLOOR_AVAILABLE notifications showed the wrong calendar day for buildings off UTC ([04da4b7](https://github.com/c0dewhacker/Roomer/commit/04da4b7a2999f12fb6b094ca2c67ebe30d563c43))
+* LDAP login/sync could silently re-link a recycled email to a different identity ([db0833c](https://github.com/c0dewhacker/Roomer/commit/db0833c8dd9d5776d9cc2940b443eaace33d6364))
+* make-desk-available dialog constructed times in the browser's timezone, not the desk's ([09d0138](https://github.com/c0dewhacker/Roomer/commit/09d0138aab22b7e12bea5f1efd246cc45db3644d))
+* manager-requests admin page had the same stale-list/wrong-timezone gaps as booking-approvals ([c68fb28](https://github.com/c0dewhacker/Roomer/commit/c68fb28ddead9a3a7298e83a1381a75450d9d85d))
+* max-advance-booking-days cutoff was a rolling instant, not a calendar-day boundary ([f110a01](https://github.com/c0dewhacker/Roomer/commit/f110a01c5f563d2a40cb078a9cfac430b6ffb453))
+* no-show release cron could clobber a check-in that landed in its own race window ([630e3ab](https://github.com/c0dewhacker/Roomer/commit/630e3ab42981f86b7e9555f1318b7c7ee7ee9fa0))
+* offset pagination had no tiebreaker on non-unique sort columns ([867582c](https://github.com/c0dewhacker/Roomer/commit/867582c3ef708fdc1e6913b0a739d6e2bb7c481f))
+* OIDC/SAML/LDAP department and manager attribute mappings could never be cleared once set ([6a55c91](https://github.com/c0dewhacker/Roomer/commit/6a55c91a903e228459167c4d29c2d2d286d858e5))
+* one-off desk bookings were constructed in the browser's timezone, not the building's ([91c7a1a](https://github.com/c0dewhacker/Roomer/commit/91c7a1ace4eac5ee19d3aba21428b7f20a7f6264))
+* push notification preferences page missing a toggle for booking-approval requests ([d8b2644](https://github.com/c0dewhacker/Roomer/commit/d8b2644744a4900ecaa53aded5222ef8b2d84cc2))
+* queue and transfer/swap notification emails rendered every time in UTC, not the booking's building timezone ([62131c8](https://github.com/c0dewhacker/Roomer/commit/62131c846c711b5793bd46ca495269b9a889d865))
+* queue claim deadlines rendered in the wrong timezone with no client-side expiry gate ([050b961](https://github.com/c0dewhacker/Roomer/commit/050b961d89c28be46d273e7b22cae0696ffbc700))
+* recurring-booking form had no upper bound on "repeat until", and no indication a booking was part of a series ([d3ba98d](https://github.com/c0dewhacker/Roomer/commit/d3ba98dcc8f4017fc4e6de97bd7a8baed4d165d1))
+* recurring-series PATCH had three correctness bugs in extend/shorten ([f80cde9](https://github.com/c0dewhacker/Roomer/commit/f80cde9f4c69c74b4bf70a8416ddc44fe1e683b5))
+* saving any org setting 400'd because 'UTC' failed its own timezone validation; timezone dropdown was slow and glitchy ([60773ac](https://github.com/c0dewhacker/Roomer/commit/60773acb6acd59dd264a49825fc6b2096f7cbbad))
+* SCIM group-name advisory lock reused an already-taken classid ([f53dafb](https://github.com/c0dewhacker/Roomer/commit/f53dafb42a101de7ecc887941fd49fbdc564c4bf))
+* SCIM had a privilege-escalation gap, a filter bug, wrong replace semantics, and no externalId uniqueness ([25a5147](https://github.com/c0dewhacker/Roomer/commit/25a51475850b4c4fbf6cc87da1de7ccae404c4d2))
+* **security:** admin password reset silently created a local-login backdoor on SSO-federated accounts ([2c81323](https://github.com/c0dewhacker/Roomer/commit/2c813231b104555eccc2607234ed8294468312f8))
+* **security:** HTML injection into transactional email &lt;title&gt; via unescaped display names ([31a8f0b](https://github.com/c0dewhacker/Roomer/commit/31a8f0b9f5714151e3ace381bd8a765d02f324b3))
+* **security:** resource-role grants could be duplicated by a race, and revoking one duplicate silently left admin access in place ([2cdfa34](https://github.com/c0dewhacker/Roomer/commit/2cdfa340be5272be6ba27407bf941f838b9b9bda))
+* **security:** SCIM could hijack a privileged user's identity, enabling full SUPER_ADMIN takeover via SSO ([7b0b5fd](https://github.com/c0dewhacker/Roomer/commit/7b0b5fd2e1610b9d9d85659f9a96d655592bfa42))
+* self-download .ics violated RFC 5546, swap-accept double-bumped SEQUENCE, guest invites linked to a page guests can't load ([6dc2aa4](https://github.com/c0dewhacker/Roomer/commit/6dc2aa43f12030052ca27347c93d721b5f6ea00e))
+* service worker precached ~1.7MB of admin/edge-case code for every visitor ([7ee7391](https://github.com/c0dewhacker/Roomer/commit/7ee7391bb4e9a4081715bf2251a53359ee17c55e))
+* six more instances of the missing-sibling-query-invalidation bug across the frontend ([ad04aaa](https://github.com/c0dewhacker/Roomer/commit/ad04aaafb31ecc0f13039614899b8f8c576b865d))
+* surface a declined booking's rejection note to the requester ([46119c8](https://github.com/c0dewhacker/Roomer/commit/46119c8bb87d0206a20115984fb3af800d37e871))
+* switching floors mid-edit could silently corrupt the PREVIOUS floor's layout ([bf7fc6d](https://github.com/c0dewhacker/Roomer/commit/bf7fc6d62d14b388cff88e97197047879ed35e0f))
+* three admin pages left-justified instead of centered; building/floor override cards stuck in a narrow fixed-width column ([3c22ec8](https://github.com/c0dewhacker/Roomer/commit/3c22ec8544df42710136219087d2825343c5a8fd))
+* three more incomplete cache-invalidation gaps in the admin UI ([439854c](https://github.com/c0dewhacker/Roomer/commit/439854cd2b4d150e3f7b8bced007df9a3b1e09ed))
+* transfer/swap accept could reassign a booking cancelled underneath it ([65344b2](https://github.com/c0dewhacker/Roomer/commit/65344b2eaf49a49ba07ddc0fa7dd80fc58b2c2b2))
+* transfer/swap accept/decline/withdraw could silently clobber each other ([564b1b1](https://github.com/c0dewhacker/Roomer/commit/564b1b103f38ff7833a84c509762c3d7c97a4cf0))
+* transfer/swap requests rendered in the wrong timezone, could go stale for up to 15 minutes, never live-refreshed ([0841b0e](https://github.com/c0dewhacker/Roomer/commit/0841b0e72fc1d6fc34754093623fd53d5e6b0e70))
+* transfer/swap webhooks never got enriched — wrong id used for the lookup ([6c28c79](https://github.com/c0dewhacker/Roomer/commit/6c28c79df82ff668e81e950dafd61d37a170cb46))
+* two booking-mutation correctness bugs — double-cancel race double-promotes the queue; reschedule bypassed the actual occupant's limits when done on their behalf ([36da8d8](https://github.com/c0dewhacker/Roomer/commit/36da8d88d2f5dc70910dc0f3170e17af3ee41b29))
+* two endpoints leaked restricted-floor desk data with no group-access check ([be73cfd](https://github.com/c0dewhacker/Roomer/commit/be73cfda5f453a07afebc29766acb217a775a178))
+* two lint-breaking regressions from this session's own earlier fixes (conditional hooks, impure Date.now in render) ([ac1f8f8](https://github.com/c0dewhacker/Roomer/commit/ac1f8f8387383cc70d07076ebdd4a15f6a04068b))
+* two stale-state bugs in DeskPanel — unreset queue expiry, missing assignment-cache invalidation ([f8e38e3](https://github.com/c0dewhacker/Roomer/commit/f8e38e3d94a3dc9688a7b6da7d8def19bceeb252))
+* UserGroup.name had no case-insensitive dedup, unlike every other named entity ([4cc98b4](https://github.com/c0dewhacker/Roomer/commit/4cc98b42c76219e49dd77678b485635ce1ec67ca))
+* utilisation reports could show over 100%, desk-days used a hardcoded 8-hour day, and unassigned users vanished from department rollups ([cf62f85](https://github.com/c0dewhacker/Roomer/commit/cf62f85481cfbae6bb09f661aa225300f0e314bd))
+* webhook delivery log had no live refresh, couldn't tell retrying from exhausted, shared a ping mutation across every row ([a85d1c4](https://github.com/c0dewhacker/Roomer/commit/a85d1c4bdb323246d8d078a0b0da4903550e9fda))
+* webhook retries kept posting to an endpoint's old URL after it was edited ([67ff6a1](https://github.com/c0dewhacker/Roomer/commit/67ff6a1d8fd442885e60d63b3cf53abab9662dd8))
+* whitespace-only names accepted across every entity type, not just departments ([dd68ec3](https://github.com/c0dewhacker/Roomer/commit/dd68ec3a6bdc71aaf1284be7b91e626e0480f6f9))
+* zonedWallClockToUtc depended on the server process's own system timezone, not just the target building's ([7e110d6](https://github.com/c0dewhacker/Roomer/commit/7e110d6eb6ce4bf41aab818702a25ccc83d3ea19))
+
+
+### Performance Improvements
+
+* floor plan panning re-rendered every desk marker on every raw pointer-move tick ([1e4a073](https://github.com/c0dewhacker/Roomer/commit/1e4a07363976b21f58ecfdd6215ed84a0c75f8e8))
+
+## [1.0.0](https://github.com/c0dewhacker/Roomer/compare/v0.5.3...v1.0.0) (2026-08-25)
+
+
+### Features
+
+* audit-log instrumentation Batch A — identity & permissions ([#234](https://github.com/c0dewhacker/Roomer/issues/234)) ([848b914](https://github.com/c0dewhacker/Roomer/commit/848b91450ee0065c8437e0ece49e0386607b79c4))
+* audit-log instrumentation Batch B — workplace hierarchy & inventory ([#234](https://github.com/c0dewhacker/Roomer/issues/234)) ([931cf25](https://github.com/c0dewhacker/Roomer/commit/931cf25a81d92d71066283afc9606b4f8137c265))
+* audit-log instrumentation Batch C — bookings & scheduling ([#234](https://github.com/c0dewhacker/Roomer/issues/234)) ([ae43183](https://github.com/c0dewhacker/Roomer/commit/ae43183dd9bb441359a5cd84b1ae6d4e8388c04b))
+* audit-log instrumentation Batch D — settings, org, and auth JIT ([#234](https://github.com/c0dewhacker/Roomer/issues/234)) ([673ce36](https://github.com/c0dewhacker/Roomer/commit/673ce36488fed7b341795af2a656d3e3ea1e770f))
+* audit-logging core infrastructure — schema, API, admin UI ([#234](https://github.com/c0dewhacker/Roomer/issues/234)) ([6977b71](https://github.com/c0dewhacker/Roomer/commit/6977b7182b8bf6b7ee016f8968c23aee35d37f29))
+* **audit:** instrument webhooks/push/notifications (Batch E, final) ([04ce00b](https://github.com/c0dewhacker/Roomer/commit/04ce00b713f037325e7c4d8e66ec048d5811dead))
+* **ballot:** weighted priority for repeat losers; all-buildings scope option ([8a5dc72](https://github.com/c0dewhacker/Roomer/commit/8a5dc7286cd7ba1b048e0007597946c05c3127d5))
+* booking approval workflows ([#74](https://github.com/c0dewhacker/Roomer/issues/74)) ([01d7fdb](https://github.com/c0dewhacker/Roomer/commit/01d7fdb8aa9b8238f2723b7e7d9f7847056de676))
+* booking ballot system ([#159](https://github.com/c0dewhacker/Roomer/issues/159)) ([d9adc6b](https://github.com/c0dewhacker/Roomer/commit/d9adc6beaa2879aac4699dde099683d5bb231f22))
+* capacity planning, utilisation trend, and cost-per-seat analytics ([#84](https://github.com/c0dewhacker/Roomer/issues/84) partial) ([594bd8f](https://github.com/c0dewhacker/Roomer/commit/594bd8fa953cd79b65864a82f3dcc1e20c4ed6f8))
+* CSV export for the raw bookings report ([#78](https://github.com/c0dewhacker/Roomer/issues/78) part 1/3) ([14328a1](https://github.com/c0dewhacker/Roomer/commit/14328a1abef97a7d4ac873b02b693f512098298d))
+* CSV via Accept: text/csv on the list-shaped analytics endpoints ([#78](https://github.com/c0dewhacker/Roomer/issues/78) part 2/3) ([0176965](https://github.com/c0dewhacker/Roomer/commit/01769659471b5f96606f150212eab528da9a5cba))
+* desk swap and booking transfer ([#83](https://github.com/c0dewhacker/Roomer/issues/83)) ([3a24b9d](https://github.com/c0dewhacker/Roomer/commit/3a24b9d0ac35b4196efc8f7407865995360bcc51))
+* extend/shorten recurring booking series end date, preview all occurrences ([ba4fd75](https://github.com/c0dewhacker/Roomer/commit/ba4fd75799cffb52939041a4da1461b305c7c8fd))
+* lease expiry notifications + webhook events ([#222](https://github.com/c0dewhacker/Roomer/issues/222)) ([a1453c7](https://github.com/c0dewhacker/Roomer/commit/a1453c7828f56803d36b925b002eef6c88962e5e))
+* meeting room / shared space bookings with capacity ([#68](https://github.com/c0dewhacker/Roomer/issues/68)) ([01baea0](https://github.com/c0dewhacker/Roomer/commit/01baea06b44d3ba7ae586abe2c8ed1953b67ba63))
+* multi-timezone and working-hours support ([#72](https://github.com/c0dewhacker/Roomer/issues/72)) ([a4465be](https://github.com/c0dewhacker/Roomer/commit/a4465beaeb4b4f1e23de9f67fd4f0f61be95d4e5))
+* PWA installability — manifest, service worker, app-shell caching ([#76](https://github.com/c0dewhacker/Roomer/issues/76) phase 1) ([8b6a9e1](https://github.com/c0dewhacker/Roomer/commit/8b6a9e106b1299c36e73d216ff6c530ae5157128))
+* QR-on-desk scan-to-book/check-in ([#76](https://github.com/c0dewhacker/Roomer/issues/76) phase 3) ([bf8499f](https://github.com/c0dewhacker/Roomer/commit/bf8499f0d82527581867f2acc585eb6e29a9811a))
+* self-service floor manager access requests ([#85](https://github.com/c0dewhacker/Roomer/issues/85)) ([646b1e3](https://github.com/c0dewhacker/Roomer/commit/646b1e3eff440de1238e9b6ff1701ae37179a26e))
+* smart desk suggestions in the booking flow ([#90](https://github.com/c0dewhacker/Roomer/issues/90)) ([682a694](https://github.com/c0dewhacker/Roomer/commit/682a694fbd1a0b716b7eaa79463d878f9099b5cc))
+* visitor/guest booking ([#79](https://github.com/c0dewhacker/Roomer/issues/79)) ([2fa335a](https://github.com/c0dewhacker/Roomer/commit/2fa335acb3227caedbfeb143bde5fafe5a53d9fa))
+* Web Push notifications ([#76](https://github.com/c0dewhacker/Roomer/issues/76) phase 2) ([57e2359](https://github.com/c0dewhacker/Roomer/commit/57e23592335d5f46d4d9ebf18d012b0199f68503))
+* weekly utilisation summary email for Super Admins ([#78](https://github.com/c0dewhacker/Roomer/issues/78) part 3/3) ([db965c9](https://github.com/c0dewhacker/Roomer/commit/db965c954626ccd928d83747d686d386741dabad))
+* wire AssetZone secondary zone memberships into floor-plan/availability ([#224](https://github.com/c0dewhacker/Roomer/issues/224)) ([ca90912](https://github.com/c0dewhacker/Roomer/commit/ca90912542457d86aeba2df3c70a9fdb5f2fa868))
+* Zone Groups admin UI ([#224](https://github.com/c0dewhacker/Roomer/issues/224)) ([f3a4c8f](https://github.com/c0dewhacker/Roomer/commit/f3a4c8fcfb8ca3e95ad8e2141ad505134f75dff7))
+
+
+### Bug Fixes
+
+* 12 of 24 notification types had no opt-out toggle in the UI ([8961c5b](https://github.com/c0dewhacker/Roomer/commit/8961c5b88386efdc5d45295effcffe11ec8aa352))
+* **analytics:** every report endpoint undercounted historical bookings toward zero ([1a53f5a](https://github.com/c0dewhacker/Roomer/commit/1a53f5ae5cf20ad81d222d36e158668526fd5cb4))
+* **assets-admin:** Delete hidden from floor managers the backend actually permits; capacity/colour validation gaps ([59e2a57](https://github.com/c0dewhacker/Roomer/commit/59e2a571afaa02ad24db4447cbb7d694074f7408))
+* **assets:** desk suggestions ignored PENDING_APPROVAL, could recommend an unbookable desk ([7039169](https://github.com/c0dewhacker/Roomer/commit/7039169108eebfb8965d49c62cf9d31b5184539c))
+* **assets:** user-assignments export had no row cap, unlike every other export path ([3107d4c](https://github.com/c0dewhacker/Roomer/commit/3107d4c8af653c09b8b1da6717a8e82b3a434a11))
+* **auth:** interactive LDAP login never revoked a role after IdP group removal ([9937b9b](https://github.com/c0dewhacker/Roomer/commit/9937b9ba76ba9d0393280b22b092d4b0378da8ed))
+* ballot admin "Open run" button silently no-op'd while reporting success ([0df84f7](https://github.com/c0dewhacker/Roomer/commit/0df84f7a935ff0d91b8be176a30276646fc6e6e2))
+* **ballot:** shared asset cursor under-allocated the draw; run-creation had a duplicate-run race ([b68458a](https://github.com/c0dewhacker/Roomer/commit/b68458ac0df4bfd9d1a57423937df2eced91d83c))
+* **bookings:** approve/reject raced unconditional updates, could double-book a desk ([a2b02ce](https://github.com/c0dewhacker/Roomer/commit/a2b02ceae078598b8c303ea5a2f0ddef2b402857))
+* **bookings:** recurring rule times shown in wrong timezone; approvals page showed no time-of-day ([814ac60](https://github.com/c0dewhacker/Roomer/commit/814ac60981e09414f9cadeb5a6a9c2345b2ff0a0))
+* **bookings:** swap accept never re-validated the same-time invariant ([8d3c83e](https://github.com/c0dewhacker/Roomer/commit/8d3c83ea5eac068bfc0f651c761f6ff62f61f0a1))
+* bulk booking-cancel path never notified the original booker ([8f55fd3](https://github.com/c0dewhacker/Roomer/commit/8f55fd3dbdcb5180d7bdfbfc620f55b609f7feab)), closes [#228](https://github.com/c0dewhacker/Roomer/issues/228)
+* claim-expiry cron could overwrite a just-claimed queue entry back to EXPIRED ([dd9b487](https://github.com/c0dewhacker/Roomer/commit/dd9b487c4e915966536b970ba80ca7e4f4178d29))
+* CSV exports missing UTF-8 BOM cause mojibake in Excel ([62fff97](https://github.com/c0dewhacker/Roomer/commit/62fff97c0751b1f44d04c2219814539885cf5545))
+* **departments,manager:** manager-hierarchy cycles could be created; department names fragmented on case/whitespace ([afbc706](https://github.com/c0dewhacker/Roomer/commit/afbc7064179079799dccf9b5f13123c0f7c1d860))
+* **directory:** "who's in" used a fixed UTC day window, dropping/misfiling bookings near midnight in non-UTC buildings ([669f8be](https://github.com/c0dewhacker/Roomer/commit/669f8bec738153767d27d1ab5628bdef4f80b47d))
+* eight colleague-picker search boxes silently 403'd for anyone who isn't SUPER_ADMIN ([927c9f7](https://github.com/c0dewhacker/Roomer/commit/927c9f742c68401f6435d4dedf8e0a23773250fc))
+* email notification times rendered in the API server's ambient OS timezone ([00ae730](https://github.com/c0dewhacker/Roomer/commit/00ae7304c97ea06c3b7b831e8bf700074fcbe82e))
+* every rate-limited request across the whole API returned 500 instead of 429 ([f99b761](https://github.com/c0dewhacker/Roomer/commit/f99b761bda091724befcdbf7b36c8ab9288a42f7))
+* every real webhook delivery to an external endpoint failed with a bare "fetch failed" ([8846ddd](https://github.com/c0dewhacker/Roomer/commit/8846dddad3552282d6a5c60191d3989896f39665))
+* extending a recurring booking series never fired a notification or webhook ([3a9995a](https://github.com/c0dewhacker/Roomer/commit/3a9995abfb4017096b0a7a4a7d428d635267825e))
+* extending a recurring series bypassed the approval workflow entirely ([8e68f70](https://github.com/c0dewhacker/Roomer/commit/8e68f70f68ef4a17e4b8bb6870ff8a85cdd02140))
+* floor manager could relocate assets onto floors they don't manage ([af45271](https://github.com/c0dewhacker/Roomer/commit/af45271f654901e6a10e27791c69b1bbd05b2469))
+* floor/building/zone-delete and blocked-user cancellations never fired the booking.cancelled webhook ([1336f5a](https://github.com/c0dewhacker/Roomer/commit/1336f5ad7b3667c03c5e1e65505adde4ac2aac3f))
+* fully-deprovisioned IdP admin never lost SUPER_ADMIN or group access ([1b7249d](https://github.com/c0dewhacker/Roomer/commit/1b7249d833fa0f11bd1dabc1911c89c0f7d8bb19))
+* **groups:** add-relation races misreported an FK violation as "already exists" ([ec441c5](https://github.com/c0dewhacker/Roomer/commit/ec441c51048f09415e7284eb2c544c2dca2e4a2a))
+* guest check-in token leaked to admins; ballot decline race; timezone display retrofit ([a3a8348](https://github.com/c0dewhacker/Roomer/commit/a3a83487d264118d144313f8f1b6123c47fcb9ed))
+* **guest-booking:** reschedule/cancel never notified the guest; token outlived cancellation ([c93f094](https://github.com/c0dewhacker/Roomer/commit/c93f0940ba182819b7328cdda0dadbfbc01a9a2a))
+* HSTS header sent unconditionally, including over plain HTTP in dev ([29e6575](https://github.com/c0dewhacker/Roomer/commit/29e6575cb548c5a4d47bdc1db9d7ab874d402b1f))
+* **ical:** guest emails carried no calendar attachment; ICS lacked ORGANIZER/ATTENDEE; line-folding could corrupt non-ASCII text ([4ddb929](https://github.com/c0dewhacker/Roomer/commit/4ddb9299e4c1c9f82b1205f82af7a4cfe8a21e5c))
+* ICS invite generation didn't escape a lone carriage return, enabling property injection ([5ac0c98](https://github.com/c0dewhacker/Roomer/commit/5ac0c98fd95ee8488eec26872f31662b2e960296))
+* interactive LDAP login and SCIM never populated manager data; SSO manager resolution could flap a correct link back to null ([c0b5d4e](https://github.com/c0dewhacker/Roomer/commit/c0b5d4e17edfd2a08cf274d86674f12a2da5a5a4))
+* LDAP directory sync's mass-deactivation could block an org's last active Super Admin ([71bcc9c](https://github.com/c0dewhacker/Roomer/commit/71bcc9ca91b65352509a0d6e618d64302894cad6))
+* make-available, SCIM user lifecycle, recurring booking creation, and bulk-import never fired their webhooks ([40dcb88](https://github.com/c0dewhacker/Roomer/commit/40dcb88431defed32de6811a342d1d590b8a97e5))
+* **manager-requests:** approve/reject/cancel raced unconditional updates, could grant-then-overwrite ([1e882b4](https://github.com/c0dewhacker/Roomer/commit/1e882b4cda31bbe176132e907901a898f1f4b931))
+* org settings leaked the SMTP password; 8 config routes had lost-update races ([501fb24](https://github.com/c0dewhacker/Roomer/commit/501fb241cd3895dd4fa1c5ccee75779a29360d58))
+* **pwa:** failed push registration left a phantom "enabled" state; floor page discarded good cached data on any refetch error ([ae9e7f2](https://github.com/c0dewhacker/Roomer/commit/ae9e7f2f943a7e9bffe2d778be3dab1111ab2dc4))
+* **pwa:** service worker updates never actually got pushed to open tabs ([224c572](https://github.com/c0dewhacker/Roomer/commit/224c57224bd8b66a61060510c42eb47e911e5db7))
+* **qr:** scan-to-book end-of-day cap used the server's timezone, not the desk's building ([f2c1fd7](https://github.com/c0dewhacker/Roomer/commit/f2c1fd713bdc0f351166ecf175dec3661d51858c))
+* queue-join race let a user double-book a slot; blocked users could still claim ([24ccb68](https://github.com/c0dewhacker/Roomer/commit/24ccb688f2be9f3c58c54c906ebf56b1fd940132))
+* **queue:** floor/asset/user cleanup sweeps ignored PENDING_APPROVAL bookings ([e2865e4](https://github.com/c0dewhacker/Roomer/commit/e2865e41efa5acdff976a934086d9be22e6659d5))
+* **queue:** lease-expiry cron compared a date-only field as a raw UTC instant ([39ad83b](https://github.com/c0dewhacker/Roomer/commit/39ad83b618a45d6fedc2d7668091edc65ac6c204))
+* **recurring:** cancelling/shortening a series left PENDING_APPROVAL occurrences resurrectable ([b0069dc](https://github.com/c0dewhacker/Roomer/commit/b0069dc3c33a8e0b3811d8751ebb9cb303516365))
+* replacing the org logo/favicon never visibly updated anywhere in the app ([7d53d02](https://github.com/c0dewhacker/Roomer/commit/7d53d024a6f7767588ee992378af9955c4d7f8a9))
+* **reports:** weekly digest ignored org timezone; no duplicate-send guard; audit CSV truncated silently ([d456dc6](https://github.com/c0dewhacker/Roomer/commit/d456dc63bd28b7c128fe0a8b71ace937a4ea363d))
+* SCIM PUT skipped deprovision cleanup; last-admin guard had a TOCTOU race ([688a71a](https://github.com/c0dewhacker/Roomer/commit/688a71a36023f54284432931b9da280ab46af082))
+* **scim:** active-boolean truthy bug could silently reactivate a blocked user ([83e4163](https://github.com/c0dewhacker/Roomer/commit/83e41631064a09d427ea6453d308be3fd4709db0))
+* **scripts:** key rotation only covered 1 of 3 encrypted-secret tables, and never actually worked ([d6fccbe](https://github.com/c0dewhacker/Roomer/commit/d6fccbe311242db9023c6505334456e711ffa32a))
+* **settings:** auth-provider save swallowed backend field-level errors ([aac56b1](https://github.com/c0dewhacker/Roomer/commit/aac56b15af4185e0369323846ae905c8c89942eb))
+* SSO account takeover; manager-request and bulk-import races; SCIM email collision ([42a3810](https://github.com/c0dewhacker/Roomer/commit/42a38109269947b3d071535418a332e7e6dc1e1d))
+* **subscriptions:** floor-subscription zone replace was a lost-update race ([c1c41c8](https://github.com/c0dewhacker/Roomer/commit/c1c41c8952f353945e1bf0e1f092c376e4782a39))
+* **timezone:** working-hours enforcement trivially bypassed by crossing local midnight ([111a6b4](https://github.com/c0dewhacker/Roomer/commit/111a6b434dff35a852a8cf1a69e304478b014204))
+* transfer/swap acceptance never cancelled the old calendar invite; series cancel could target the wrong occurrence after a reschedule ([e88a12f](https://github.com/c0dewhacker/Roomer/commit/e88a12f6bbf5098973009757dee91fe4f370a639))
+* **users:** colleague picker ignored visibleInColleagueSearch opt-out ([2f9666f](https://github.com/c0dewhacker/Roomer/commit/2f9666f58a741ed41964388b4ad5068595fe3607))
+* **users:** push notification opt-out was silently stripped, never actually persisted ([ac9d7c2](https://github.com/c0dewhacker/Roomer/commit/ac9d7c26cb015acf90c2c036caa2c58dcc028b34))
+* **users:** resource-role grants could be duplicated, surviving a believed-complete revoke ([e8beb99](https://github.com/c0dewhacker/Roomer/commit/e8beb992f4b4c3ffdb3314d2daca1281a713b13a))
+* web push subscription endpoints accepted any URL, enabling SSRF ([938717c](https://github.com/c0dewhacker/Roomer/commit/938717c763f159cd732323c2e8f29cc199f72749))
+* webhook test ping silently no-op'd on a disabled endpoint ([9fcac61](https://github.com/c0dewhacker/Roomer/commit/9fcac6162a21b840dc62b8aa8a8485fa3a85433e))
+* **webhook:** a batch's one failed delivery duplicated/faked every sibling job ([0a2cfc7](https://github.com/c0dewhacker/Roomer/commit/0a2cfc7cfb54a040d0523b989fb6187b6d9b5dbf))
+* **webhooks:** bracketed IPv6 literals always rejected; ping left un-audited ([fbac7a2](https://github.com/c0dewhacker/Roomer/commit/fbac7a292de0addd38e218f89aec7acf5154b4ac))
+
+
+### Miscellaneous
+
+* release 1.0.0 ([5fad936](https://github.com/c0dewhacker/Roomer/commit/5fad936383044239c3e1320e15a1672ad73feb3c))
+
 ## [0.5.3](https://github.com/c0dewhacker/Roomer/compare/v0.5.2...v0.5.3) (2026-08-18)
 
 
