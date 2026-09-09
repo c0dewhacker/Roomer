@@ -999,6 +999,7 @@ function RecurringBookingsSection() {
 }
 
 function BookingList({ tab }: { tab: Tab }) {
+  const navigate = useNavigate()
   const status = tab === 'upcoming' ? 'upcoming' : tab === 'past' ? 'past' : 'all'
   const { data, isLoading } = useMyBookings(status)
   const bookings = data?.bookings ?? []
@@ -1012,11 +1013,48 @@ function BookingList({ tab }: { tab: Tab }) {
   }
 
   if (bookings.length === 0) {
+    // Wrapped in a Card, like every other empty state in the app (see
+    // BallotsPage, QueuePage). It was a bare centred div floating in the
+    // column, which read as disconnected from the left-aligned content above
+    // it — centring only looks deliberate when there's a panel doing the
+    // centring.
+    //
+    // The copy is per-tab because "No bookings found" was doing three
+    // different jobs badly: on Upcoming it's a prompt to act, on Past it's
+    // simply a statement of fact, and the two want different words. Only the
+    // tabs where booking is the obvious next step get the action — offering
+    // "Find a desk" under an empty Past list would be a non-sequitur.
+    const empty = {
+      upcoming: {
+        title: 'No upcoming bookings',
+        body: "Reserve a desk for a day you're coming in.",
+        cta: true,
+      },
+      past: {
+        title: 'No past bookings',
+        body: 'Desks you have used will appear here once the booking has ended.',
+        cta: false,
+      },
+      all: {
+        title: 'No bookings yet',
+        body: "Reserve a desk for a day you're coming in.",
+        cta: true,
+      },
+    }[tab]
+
     return (
-      <div className="flex flex-col items-center justify-center py-16 text-center">
-        <Calendar className="h-12 w-12 text-muted-foreground/30 mb-3" />
-        <p className="text-sm text-muted-foreground">No bookings found</p>
-      </div>
+      <Card>
+        <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+          <Calendar className="h-10 w-10 text-muted-foreground/30 mb-3" aria-hidden="true" />
+          <p className="text-base font-medium text-foreground">{empty.title}</p>
+          <p className="mt-1 text-sm text-muted-foreground max-w-sm text-pretty">{empty.body}</p>
+          {empty.cta && (
+            <Button className="mt-5" onClick={() => navigate('/buildings')}>
+              Find a desk
+            </Button>
+          )}
+        </CardContent>
+      </Card>
     )
   }
 
