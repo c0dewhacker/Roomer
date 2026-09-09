@@ -5,7 +5,11 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#6366f1" />
+    <!-- Matches the default --primary in index.css (blue 600). It read #6366f1
+      (indigo 500), so the browser chrome and the installed-app splash were a
+      different colour from the product itself. Installs that set a brand colour
+      override this at runtime via useBranding. -->
+    <meta name="theme-color" content="#2563eb" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Roomer" />
     <title>Roomer</title>
