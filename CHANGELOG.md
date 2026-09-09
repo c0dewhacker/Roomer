@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.1](https://github.com/c0dewhacker/Roomer/compare/v1.1.0...v1.1.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* bump sharp to 0.35.4 and nodemailer to 9.1.1, clearing 5 open security alerts ([b4e3fb0](https://github.com/c0dewhacker/Roomer/commit/b4e3fb06b9895ca9be5173a240054cf540224c38))
+* harden runtime dependencies and reduce API image size ([bfee684](https://github.com/c0dewhacker/Roomer/commit/bfee68489fe70e8582fe7b52970548663ec828e8))
+* stop shipping /app twice, cutting the API image from 963MB to 561MB ([ef21484](https://github.com/c0dewhacker/Roomer/commit/ef21484227c7c15b0149d96955d7be210ff66805))
+
 ## [1.1.0](https://github.com/c0dewhacker/Roomer/compare/v1.0.1...v1.1.0) (2026-09-08)
 
 
