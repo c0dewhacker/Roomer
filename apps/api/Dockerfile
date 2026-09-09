@@ -70,16 +70,26 @@ FROM node:26-alpine AS runner
 
 WORKDIR /app
 
+# Non-root user for safety. Created BEFORE the copy so ownership can be set by
+# COPY --chown rather than a later `chown -R`.
+RUN addgroup -S roomer && adduser -S roomer -G roomer
+
 # Copy the self-contained deployment produced above.
 # The Prisma client (generated in step 5) is already inside /deploy/node_modules.
-COPY --from=build /deploy ./
+#
+# --chown is load-bearing, not cosmetic. This was previously a plain COPY
+# followed by `RUN chown -R roomer:roomer /app`, and because chown rewrites
+# metadata on every file, the whole ~400MB tree landed in a second layer on top
+# of the one COPY had just written — the image shipped /app twice. Setting
+# ownership during the copy keeps it to a single layer.
+COPY --from=build --chown=roomer:roomer /deploy ./
 
-# Create the uploads directory expected by the API
-RUN mkdir -p uploads
+# Create the uploads directory expected by the API. `chown` here is on two
+# directories, not a recursive walk of the tree, so it costs a few bytes rather
+# than duplicating the whole image (/app itself isn't covered by COPY --chown,
+# which only sets ownership on the entries it copies).
+RUN mkdir -p uploads && chown roomer:roomer /app uploads
 
-# Non-root user for safety
-RUN addgroup -S roomer && adduser -S roomer -G roomer
-RUN chown -R roomer:roomer /app
 USER roomer
 
 EXPOSE 3001
