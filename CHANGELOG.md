@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.1.0](https://github.com/c0dewhacker/Roomer/compare/v1.0.1...v1.1.0) (2026-09-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* TRUST_PROXY=true is no longer accepted and the API will not start with it. Set it to the peers you actually trust to send X-Forwarded-For — behind the bundled nginx (Docker Compose or the Helm chart) that is `loopback,uniquelocal`. The shipped compose files and Helm chart are already updated, so only hand-written .env files or custom manifests need changing. `true` trusted the entire X-Forwarded-For chain, which made request.ip the left-most entry — a value supplied by the client — letting any caller forge their own IP, get a fresh rate-limit bucket per request, and falsify the IP recorded on every audit-log row. Numeric hop counts are rejected too, since fastify 5.12.1 removed hop-count trust and a number now means "trust nothing". See "Upgrading to 1.1.0" in the README.
+
+### Features
+
+* make systemic push-delivery failure observable via counter and structured logs ([b20ccff](https://github.com/c0dewhacker/Roomer/commit/b20ccff484dbc74655a6244467ca516f552a97b6))
+
+
+### Bug Fixes
+
+* empty-scope ballot was manageable by any authenticated user, and reachable via PATCH ([e44a3dc](https://github.com/c0dewhacker/Roomer/commit/e44a3dc3d626f5f031aec3bb90fdf525d5aefff4))
+* harden security and refactor application structure ([3ea8460](https://github.com/c0dewhacker/Roomer/commit/3ea846025ef513bf466ae3c3ada33f3864217d36))
+* install pnpm via npm instead of corepack, unblocking the Node 26 base-image bump ([317e67f](https://github.com/c0dewhacker/Roomer/commit/317e67fe778208206a8eea36712a0585d61932ad))
+* require guestEmail whenever guestName is set, closing the guest-booking quota bypass ([d0d1bfd](https://github.com/c0dewhacker/Roomer/commit/d0d1bfde90ff8ecb2bcfadabe893f09160583559))
+* state that Utilisation Trend measures every month against today's desk count ([c1024b6](https://github.com/c0dewhacker/Roomer/commit/c1024b6ae060eff6444a4d6a9c709d0d3476623a))
+* upgrade fastify, xmldom, fast-uri and pin browserslist/mysql2 to clear 11 advisories ([df80829](https://github.com/c0dewhacker/Roomer/commit/df80829c0d41f8ea86f2c4e5d012000372bc8e19))
+* X-Forwarded-For spoofing let any client forge request.ip, bypassing every rate limit ([79742dc](https://github.com/c0dewhacker/Roomer/commit/79742dc155cee9bf42b4dd07123d8c8ccca4480b))
+
+
+### Documentation
+
+* add 1.1.0 upgrade note for the TRUST_PROXY change ([416a0a1](https://github.com/c0dewhacker/Roomer/commit/416a0a13fd8aafdfb4b665dac1d4e41ba6690261))
+
 ## [1.0.1](https://github.com/c0dewhacker/Roomer/compare/v1.0.0...v1.0.1) (2026-08-27)
 
 
