@@ -39,7 +39,7 @@
     "fastify-plugin": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
     "ldapjs": "^3.0.7",
-    "nodemailer": "^9.1.1",
+    "nodemailer": "^10.0.9",
     "openid-client": "^6.8.5",
     "pg": "^8.23.0",
     "pg-boss": "^12.27.0",
