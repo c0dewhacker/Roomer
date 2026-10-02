@@ -19,7 +19,7 @@ export function SamlConfigForm({
   const [issuer, setIssuer] = useState((current.issuer as string) ?? 'roomer')
   const [cert, setCert] = useState((current.cert as string) ?? '')
   const [callbackUrl, setCallbackUrl] = useState(
-    (current.callbackUrl as string) ?? `${window.location.origin.replace(':5173', ':3001')}/api/v1/auth/saml/callback`,
+    () => (current.callbackUrl as string) ?? `${window.location.origin.replace(':5173', ':3001')}/api/v1/auth/saml/callback`,
   )
   const [label, setLabel] = useState((current.label as string) ?? 'Sign in with SAML SSO')
   const [groupAttribute, setGroupAttribute] = useState((current.groupAttribute as string) ?? 'groups')

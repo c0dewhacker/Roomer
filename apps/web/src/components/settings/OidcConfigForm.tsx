@@ -18,7 +18,7 @@ export function OidcConfigForm({
   const [clientId, setClientId] = useState((current.clientId as string) ?? '')
   const [clientSecret, setClientSecret] = useState('')
   const [redirectUri, setRedirectUri] = useState(
-    (current.redirectUri as string) ?? `${window.location.origin.replace(':5173', ':3001')}/api/v1/auth/oidc/callback`,
+    () => (current.redirectUri as string) ?? `${window.location.origin.replace(':5173', ':3001')}/api/v1/auth/oidc/callback`,
   )
   const [scope, setScope] = useState((current.scope as string) ?? 'openid profile email groups')
   const [label, setLabel] = useState((current.label as string) ?? 'Sign in with SSO')
