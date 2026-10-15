@@ -58,7 +58,7 @@ POSTGRESQL
      To roll back instead, run helm rollback, then straight away make the old
      database writable again (the API cannot start until you do):
        kubectl -n {{ .Release.Namespace }} exec {{ $legacy }}-0 -- sh -c \
-         'PGPASSWORD="$(cat "$POSTGRES_POSTGRES_PASSWORD_FILE")" psql -U postgres -c "ALTER DATABASE \"{{ .Values.postgresql.auth.database }}\" RESET default_transaction_read_only"'
+         'PGPASSWORD="$(cat "$POSTGRES_PASSWORD_FILE")" PGOPTIONS="-c default_transaction_read_only=off" psql -h 127.0.0.1 -U {{ .Values.postgresql.auth.username }} -d {{ .Values.postgresql.auth.database }} -c "ALTER DATABASE \"{{ .Values.postgresql.auth.database }}\" RESET default_transaction_read_only"'
      and before upgrading again, drop the now-stale copy and the finished migration job:
        kubectl -n {{ .Release.Namespace }} delete job/{{ include "roomer.postgresql.statefulsetName" . }}-migrate-from-bitnami pvc/{{ include "roomer.postgresql.dataClaimName" . }}
   {{- end }}

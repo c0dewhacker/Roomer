@@ -81,13 +81,17 @@ spec:
               value: {{ $legacy | quote }}
             - name: PGPORT
               value: "5432"
+            # The application user, not "postgres": it owns the database and
+            # every object in it, and its password is the one the API uses.
+            # Bitnami's stored postgres-password can drift from the real one
+            # across upgrades, so it cannot be relied on here.
             - name: PGUSER
-              value: postgres
+              value: {{ .Values.postgresql.auth.username | quote }}
             - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.postgresql.auth.existingSecret | default $legacy }}
-                  key: postgres-password
+                  key: password
             - name: APP_DB
               value: {{ .Values.postgresql.auth.database | quote }}
           command:
@@ -105,21 +109,23 @@ spec:
                 exit 1
               fi
 
-              until pg_isready -q -d postgres; do echo "[migrate] waiting for $PGHOST"; sleep 2; done
-              echo "[migrate] source: $(psql -XAtq -d postgres -c 'SELECT version()')"
+              until pg_isready -q -d "$APP_DB"; do echo "[migrate] waiting for $PGHOST"; sleep 2; done
+              echo "[migrate] source: $(psql -XAtq -v ON_ERROR_STOP=1 -d "$APP_DB" -c 'SELECT version()')"
 
               frozen=0
               thaw() {
                 if [ "$frozen" = 1 ]; then
                   echo "[migrate] failed — making $APP_DB writable again" >&2
-                  psql -Xq -d postgres -c "ALTER DATABASE \"$APP_DB\" RESET default_transaction_read_only" || true
+                  # New sessions start read-only once the freeze is in place; override that for this one.
+                  PGOPTIONS='-c default_transaction_read_only=off' \
+                    psql -Xq -d "$APP_DB" -c "ALTER DATABASE \"$APP_DB\" RESET default_transaction_read_only" || true
                 fi
               }
               trap thaw ERR
               trap 'thaw; exit 1' TERM INT
 
               frozen=1
-              psql -Xq -v ON_ERROR_STOP=1 -d postgres <<SQL
+              psql -Xq -v ON_ERROR_STOP=1 -d "$APP_DB" <<SQL
               ALTER DATABASE "$APP_DB" SET default_transaction_read_only = on;
               SELECT count(pg_terminate_backend(pid)) AS connections_closed
                 FROM pg_stat_activity
