@@ -41,7 +41,27 @@ STORAGE WARNING
 
 POSTGRESQL
   {{- if .Values.postgresql.enabled }}
-  Bundled PostgreSQL is enabled (development only).
+  Bundled PostgreSQL ({{ include "roomer.postgresql.image" . }}) is enabled.
+  {{- if eq (include "roomer.postgresql.needsMigration" .) "true" }}
+  {{- $legacy := include "roomer.postgresql.legacyName" . }}
+
+  ⚠  MIGRATED FROM THE BITNAMI SUB-CHART (chart 0.1.x)
+     The old database was dumped and is restored into
+     {{ include "roomer.postgresql.statefulsetName" . }}-0 on its first start. Check it with:
+       kubectl -n {{ .Release.Namespace }} logs job/{{ include "roomer.postgresql.statefulsetName" . }}-migrate-from-bitnami
+       kubectl -n {{ .Release.Namespace }} logs {{ include "roomer.postgresql.statefulsetName" . }}-0 -c restore-migration-dump
+
+     The old volume data-{{ $legacy }}-0 is kept untouched (its database
+     is left read-only). Delete it once you are happy:
+       kubectl -n {{ .Release.Namespace }} delete pvc data-{{ $legacy }}-0
+
+     To roll back instead, run helm rollback, then straight away make the old
+     database writable again (the API cannot start until you do):
+       kubectl -n {{ .Release.Namespace }} exec {{ $legacy }}-0 -- sh -c \
+         'PGPASSWORD="$(cat "$POSTGRES_POSTGRES_PASSWORD_FILE")" psql -U postgres -c "ALTER DATABASE \"{{ .Values.postgresql.auth.database }}\" RESET default_transaction_read_only"'
+     and before upgrading again, drop the now-stale copy and the finished migration job:
+       kubectl -n {{ .Release.Namespace }} delete job/{{ include "roomer.postgresql.statefulsetName" . }}-migrate-from-bitnami pvc/{{ include "roomer.postgresql.dataClaimName" . }}
+  {{- end }}
   For production use an external managed database and set:
     postgresql.enabled: false
     secrets.databaseUrl: "postgresql://..."
