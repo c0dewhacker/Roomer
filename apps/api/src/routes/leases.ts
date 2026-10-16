@@ -1,11 +1,10 @@
-import fs from 'fs'
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { isBuildingManagerForBuilding, getManagedBuildingIds } from '../middleware/requireRole.js'
 import { resolveBuildingTimezone, calendarDaysUntil } from '../lib/timezone.js'
-import { resolveStoragePath, checkFileMagic } from '../lib/storage.js'
+import { checkFileMagic, deleteFile, openStoredFile, writeStoredFile } from '../lib/storage.js'
 import { recordAuditLog } from '../lib/audit.js'
 import path from 'path'
 import { z } from 'zod'
@@ -318,12 +317,7 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
 
     // File I/O stays outside the transaction/lock.
     for (const doc of lease.documents) {
-      const absPath = resolveStoragePath(doc.storagePath)
-      try {
-        await fs.promises.unlink(absPath)
-      } catch {
-        // Ignore missing files
-      }
+      await deleteFile(doc.storagePath).catch(() => {})
     }
 
     await recordAuditLog(prisma, {
@@ -378,18 +372,15 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
 
     // Save file — use DB-sourced lease.id (not raw param) to avoid tainted path
     const relDir = path.join('leases', lease.id)
-    const absDir = resolveStoragePath(relDir)
-    await fs.promises.mkdir(absDir, { recursive: true })
     const safeFilename = `${Date.now()}-${data.filename.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.{2,}/g, '_')}`
     const relPath = path.join(relDir, safeFilename)
-    const absPath = resolveStoragePath(relPath)
     const buffer = await data.toBuffer()
     if (!checkFileMagic(buffer, data.mimetype)) {
       return reply.status(400).send({
         error: { message: 'File content does not match the declared type', code: 'INVALID_FILE_TYPE' },
       })
     }
-    await fs.promises.writeFile(absPath, buffer)
+    await writeStoredFile(relPath, buffer, data.mimetype)
 
     const safeDisplayFilename = data.filename
       .replace(/[\x00-\x1f\x7f]/g, '')     // strip control characters incl. null bytes
@@ -418,7 +409,7 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
     })
 
     if (!doc) {
-      await fs.promises.unlink(absPath).catch(() => {})
+      await deleteFile(relPath).catch(() => {})
       return reply.status(404).send({ error: { message: 'Lease not found', code: 'NOT_FOUND' } })
     }
 
@@ -454,14 +445,11 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
-    const docAbsPath = resolveStoragePath(doc.storagePath)
-    try {
-      await fs.promises.access(docAbsPath, fs.constants.R_OK)
-    } catch {
-      return reply.status(404).send({ error: { message: 'File not found on disk', code: 'FILE_NOT_FOUND' } })
+    const stream = await openStoredFile(doc.storagePath)
+    if (!stream) {
+      return reply.status(404).send({ error: { message: 'File not found in storage', code: 'FILE_NOT_FOUND' } })
     }
 
-    const stream = fs.createReadStream(docAbsPath)
     reply.header('Content-Type', doc.mimeType)
     reply.header('X-Content-Type-Options', 'nosniff')
     reply.header('Content-Disposition', `attachment; filename="${encodeURIComponent(doc.filename)}"`)
@@ -489,8 +477,7 @@ export async function leaseRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
-    const absPath = resolveStoragePath(doc.storagePath)
-    try { await fs.promises.unlink(absPath) } catch { /* ignore */ }
+    await deleteFile(doc.storagePath).catch(() => {})
 
     await prisma.leaseDocument.delete({ where: { id: docId } })
     await recordAuditLog(prisma, {
