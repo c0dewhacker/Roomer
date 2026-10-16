@@ -9,6 +9,13 @@ updates:
     schedule:
       interval: "weekly"     # Options: daily, weekly, monthly
     open-pull-requests-limit: 5
+    ignore:
+      # typescript-eslint doesn't support TypeScript 7 yet; lift once it does.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      # prisma's npm "latest" tag points at 8.0 release candidates.
+      - dependency-name: "prisma"
+        versions: [">=8.0.0-0"]
     groups:
       dependencies:
         patterns:
