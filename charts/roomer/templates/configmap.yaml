@@ -24,6 +24,7 @@ data:
   ROOMER_FILE_STORAGE_PATH: "/app/uploads"
   ROOMER_STORAGE_BACKEND: {{ include "roomer.storageBackend" . | quote }}
   {{- if eq (include "roomer.storageBackend" .) "s3" }}
+  {{- $_ := include "roomer.s3.credentialsSource" . }}
   ROOMER_S3_BUCKET: {{ required "storage.s3.bucket is required when storage.backend=s3" .Values.storage.s3.bucket | quote }}
   ROOMER_S3_REGION: {{ .Values.storage.s3.region | default "us-east-1" | quote }}
   ROOMER_S3_ENDPOINT: {{ .Values.storage.s3.endpoint | quote }}

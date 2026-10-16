@@ -397,9 +397,15 @@ storage:
     endpoint: http://minio.minio:9000    # omit for AWS S3
     forcePathStyle: true
 secrets:
-  s3AccessKeyId: "..."                   # or leave empty and use IRSA / Pod Identity
+  s3AccessKeyId: "..."
   s3SecretAccessKey: "..."
 ```
+
+The Helm chart takes S3 credentials in one of three ways:
+
+- `secrets.s3AccessKeyId` / `secrets.s3SecretAccessKey`, as above, stored in the chart's Secret.
+- `storage.s3.existingSecret`: the name of a Secret you manage, such as one from a Rook/Ceph ObjectBucketClaim, a MinIO tenant, External Secrets or Sealed Secrets. The keys default to `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`; change them with `storage.s3.accessKeyIdKey` and `storage.s3.secretAccessKeyKey`.
+- Neither, so the API uses the pod's own identity. For IRSA, add the `eks.amazonaws.com/role-arn` annotation under `serviceAccount.annotations`. EKS Pod Identity and EC2 instance roles need nothing in the chart.
 
 **Moving an existing install to S3.** Object keys are the same relative paths the database already stores, so nothing in the database changes — the files just need copying. The API image includes a copy command that skips anything already in the bucket at the same size, so it's safe to run more than once:
 

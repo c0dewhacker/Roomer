@@ -217,3 +217,27 @@ File storage backend: "local" or "s3". Older values files have no `storage` key.
 {{- end -}}
 {{- $backend -}}
 {{- end }}
+
+{{/*
+Where the API gets S3 credentials: "existingSecret", "values" or "pod" (its
+own identity). Fails on ambiguous or half-set credentials, which the API would
+otherwise reject at startup or silently ignore.
+*/}}
+{{- define "roomer.s3.credentialsSource" -}}
+{{- $s3 := dig "s3" dict (.Values.storage | default dict) -}}
+{{- $id := .Values.secrets.s3AccessKeyId -}}
+{{- $key := .Values.secrets.s3SecretAccessKey -}}
+{{- if ne (empty $id) (empty $key) -}}
+{{- fail "Set both secrets.s3AccessKeyId and secrets.s3SecretAccessKey, or neither" -}}
+{{- end -}}
+{{- if and $id $s3.existingSecret -}}
+{{- fail "Set either storage.s3.existingSecret or secrets.s3AccessKeyId/s3SecretAccessKey, not both" -}}
+{{- end -}}
+{{- if and $id (not .Values.secrets.create) -}}
+{{- fail "secrets.s3AccessKeyId is ignored when secrets.create=false — put ROOMER_S3_ACCESS_KEY_ID and ROOMER_S3_SECRET_ACCESS_KEY in secrets.existingSecret, or use storage.s3.existingSecret" -}}
+{{- end -}}
+{{- if $s3.existingSecret -}}existingSecret
+{{- else if $id -}}values
+{{- else -}}pod
+{{- end -}}
+{{- end }}

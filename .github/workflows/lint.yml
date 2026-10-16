@@ -98,4 +98,15 @@ jobs:
           no-persistence --set postgresql.primary.persistence.enabled=false
           overrides --set fullnameOverride=custom --set ingress.enabled=true
           s3-storage --set storage.backend=s3 --set storage.s3.bucket=roomer --set storage.s3.endpoint=http://minio:9000 --set secrets.s3AccessKeyId=a --set secrets.s3SecretAccessKey=b --set persistence.enabled=false
+          s3-existing-secret --set storage.backend=s3 --set storage.s3.bucket=roomer --set storage.s3.existingSecret=obc-roomer
+          s3-pod-identity --set storage.backend=s3 --set storage.s3.bucket=roomer --set serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::123456789012:role/roomer
+          EOF
+          # Half-set or conflicting S3 credentials must fail at render time.
+          while read -r name args; do
+            if helm template ci charts/roomer $required --set storage.backend=s3 --set storage.s3.bucket=roomer $args > /dev/null 2>&1; then
+              echo "::error::render should have failed: $name"; exit 1
+            fi
+          done <<'EOF'
+          s3-key-id-only --set secrets.s3AccessKeyId=a
+          s3-both-sources --set secrets.s3AccessKeyId=a --set secrets.s3SecretAccessKey=b --set storage.s3.existingSecret=x
           EOF
