@@ -12,8 +12,8 @@ process.env['ROOMER_FILE_STORAGE_PATH'] = root
 process.env['ROOMER_DATABASE_URL'] ??= 'postgresql://unused:unused@localhost:5432/unused'
 process.env['ROOMER_SESSION_SECRET'] ??= randomBytes(32).toString('hex')
 process.env['ROOMER_ENCRYPTION_KEY'] ??= randomBytes(32).toString('hex')
-const { saveFloorPlan, ensureUploadDirs } = await import('../src/lib/storage.js')
-await ensureUploadDirs()
+const { saveFloorPlan, initStorage } = await import('../src/lib/storage.js')
+await initStorage()
 
 // One LINE from (0,0) to (100,50), with matching drawing extents.
 const DXF = [

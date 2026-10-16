@@ -22,6 +22,14 @@ data:
   ROOMER_SMTP_SECURE: {{ .Values.config.smtpSecure | quote }}
   ROOMER_EMAIL_FROM: {{ .Values.config.emailFrom | quote }}
   ROOMER_FILE_STORAGE_PATH: "/app/uploads"
+  ROOMER_STORAGE_BACKEND: {{ include "roomer.storageBackend" . | quote }}
+  {{- if eq (include "roomer.storageBackend" .) "s3" }}
+  ROOMER_S3_BUCKET: {{ required "storage.s3.bucket is required when storage.backend=s3" .Values.storage.s3.bucket | quote }}
+  ROOMER_S3_REGION: {{ .Values.storage.s3.region | default "us-east-1" | quote }}
+  ROOMER_S3_ENDPOINT: {{ .Values.storage.s3.endpoint | quote }}
+  ROOMER_S3_FORCE_PATH_STYLE: {{ .Values.storage.s3.forcePathStyle | toString | quote }}
+  ROOMER_S3_PREFIX: {{ .Values.storage.s3.prefix | quote }}
+  {{- end }}
   ROOMER_MAX_FILE_SIZE_MB: {{ .Values.config.maxFileSizeMb | quote }}
   ROOMER_SEED_ADMIN_EMAIL: {{ .Values.config.seedAdminEmail | quote }}
   ROOMER_SEED_DEMO_DATA: {{ .Values.config.seedDemoData | quote }}

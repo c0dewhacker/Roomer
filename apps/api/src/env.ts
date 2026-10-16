@@ -24,6 +24,10 @@ function isLowEntropyPlaceholder(value: string): boolean {
   return new Set(value.toLowerCase()).size <= 1
 }
 
+// Compose and Helm pass unset optional settings through as "", which would
+// otherwise fail format checks (e.g. URL) or count as "set".
+const optionalString = z.string().optional().transform((v) => v?.trim() || undefined)
+
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1, 'DATABASE_URL (or ROOMER_DATABASE_URL) is required'),
   // Minimum 32 characters. Generate with: openssl rand -hex 32
@@ -129,6 +133,23 @@ const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
   FILE_STORAGE_PATH: z.string().default('./uploads'),
+  // Where uploaded files live: "local" (FILE_STORAGE_PATH) or "s3" (any
+  // S3-compatible object store). Stored paths are the same either way.
+  STORAGE_BACKEND: z.enum(['local', 's3']).default('local'),
+  S3_BUCKET: optionalString,
+  S3_REGION: z.string().default('us-east-1'),
+  // Custom endpoint for S3-compatible services (MinIO, Ceph RGW, Garage, R2...).
+  S3_ENDPOINT: optionalString.refine((v) => v === undefined || URL.canParse(v), 'Must be a URL'),
+  // Bucket in the URL path rather than the hostname — most self-hosted services need this.
+  S3_FORCE_PATH_STYLE: z.string()
+    .default('false')
+    .transform((v) => v === 'true'),
+  // Static credentials. Leave both unset to use the AWS default credential
+  // chain (AWS_* env vars, IRSA / pod identity, instance profile).
+  S3_ACCESS_KEY_ID: optionalString,
+  S3_SECRET_ACCESS_KEY: optionalString,
+  // Optional key prefix, so one bucket can hold several installs.
+  S3_PREFIX: z.string().default(''),
   MAX_FILE_SIZE_MB: z.coerce.number().default(20),
   SMTP_HOST: z.string().default('localhost'),
   SMTP_PORT: z.coerce.number().default(1025),
@@ -158,6 +179,13 @@ const envSchema = z.object({
   SEED_ADMIN_PASSWORD: z.string().optional(),
   SEED_USER_PASSWORD: z.string().optional(),
   SEED_DEMO_DATA: z.string().default('false').transform((v) => v === 'true'),
+}).superRefine((v, ctx) => {
+  if (v.STORAGE_BACKEND === 's3' && !v.S3_BUCKET) {
+    ctx.addIssue({ code: 'custom', path: ['S3_BUCKET'], message: 'Required when STORAGE_BACKEND=s3' })
+  }
+  if (Boolean(v.S3_ACCESS_KEY_ID) !== Boolean(v.S3_SECRET_ACCESS_KEY)) {
+    ctx.addIssue({ code: 'custom', path: ['S3_SECRET_ACCESS_KEY'], message: 'Set both S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY, or neither' })
+  }
 })
 
 const parsed = envSchema.safeParse({
@@ -177,6 +205,14 @@ const parsed = envSchema.safeParse({
   METRICS_TOKEN:          r('METRICS_TOKEN'),
   WEBHOOK_ALLOW_PRIVATE:  r('WEBHOOK_ALLOW_PRIVATE'),
   FILE_STORAGE_PATH:      r('FILE_STORAGE_PATH'),
+  STORAGE_BACKEND:        r('STORAGE_BACKEND'),
+  S3_BUCKET:              r('S3_BUCKET'),
+  S3_REGION:              r('S3_REGION'),
+  S3_ENDPOINT:            r('S3_ENDPOINT'),
+  S3_FORCE_PATH_STYLE:    r('S3_FORCE_PATH_STYLE'),
+  S3_ACCESS_KEY_ID:       r('S3_ACCESS_KEY_ID'),
+  S3_SECRET_ACCESS_KEY:   r('S3_SECRET_ACCESS_KEY'),
+  S3_PREFIX:              r('S3_PREFIX'),
   MAX_FILE_SIZE_MB:       r('MAX_FILE_SIZE_MB'),
   SMTP_HOST:              r('SMTP_HOST'),
   SMTP_PORT:              r('SMTP_PORT'),

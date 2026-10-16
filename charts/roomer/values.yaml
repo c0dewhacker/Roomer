@@ -150,7 +150,34 @@ secrets:
   seedAdminPassword: ""
   seedUserPassword: ""
 
+  # S3 credentials for storage.backend=s3. Leave both empty to use the pod's
+  # own identity instead (IRSA / EKS Pod Identity / instance role).
+  s3AccessKeyId: ""
+  s3SecretAccessKey: ""
+
+# ── Uploaded files ────────────────────────────────────────────────────────────
+# Floor plans, branding images, category icons and lease documents.
+#   local — files live on the uploads PVC (`persistence` below). Default.
+#   s3    — files live in an S3-compatible bucket (AWS S3, MinIO, Ceph RGW,
+#           Garage, Cloudflare R2, ...). Lets api.replicaCount > 1 run without a
+#           ReadWriteMany volume, and the bucket's own durability covers backups.
+# Switching an existing install to s3: see "File storage" in the README.
+storage:
+  backend: local
+  s3:
+    bucket: ""
+    region: us-east-1
+    # Custom endpoint for S3-compatible services, e.g. http://minio.minio:9000.
+    # Leave empty for AWS S3.
+    endpoint: ""
+    # true for most self-hosted services (bucket in the path, not the hostname).
+    forcePathStyle: false
+    # Optional key prefix, so one bucket can hold several installs.
+    prefix: ""
+
 # ── Uploads persistent storage ────────────────────────────────────────────────
+# Used by storage.backend=local. With s3, keep it enabled until existing files
+# have been copied into the bucket, then set enabled: false.
 persistence:
   enabled: true
   storageClass: ""

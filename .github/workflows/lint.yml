@@ -28,9 +28,16 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U roomer_test"
           --health-interval 5s --health-timeout 5s --health-retries 10
+      # S3-compatible endpoint for the S3 file-storage integration tests.
+      s3:
+        image: adobe/s3mock:5.2.3
+        env:
+          COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: roomer-test
+        ports: ['9090:9090']
     env:
       DATABASE_URL: postgresql://roomer_test:roomer_test@localhost:5432/roomer_test
       TEST_DATABASE_URL: postgresql://roomer_test:roomer_test@localhost:5432/roomer_test
+      S3_TEST_ENDPOINT: http://localhost:9090
     steps:
       - uses: actions/checkout@v7
 
@@ -57,7 +64,10 @@ jobs:
       - name: Build, lint and test
         run: pnpm turbo build lint test
 
-      - name: PostgreSQL concurrency regression tests
+      - name: Wait for the S3 mock
+        run: timeout 60 sh -c 'until curl -sf http://localhost:9090/roomer-test >/dev/null; do sleep 2; done'
+
+      - name: Integration tests (PostgreSQL concurrency, S3 storage)
         run: pnpm --filter @roomer/api test:integration
 
       - name: Public proxy smoke test
@@ -87,4 +97,5 @@ jobs:
           external-db --set postgresql.enabled=false --set secrets.databaseUrl=postgresql://u:p@db:5432/roomer
           no-persistence --set postgresql.primary.persistence.enabled=false
           overrides --set fullnameOverride=custom --set ingress.enabled=true
+          s3-storage --set storage.backend=s3 --set storage.s3.bucket=roomer --set storage.s3.endpoint=http://minio:9000 --set secrets.s3AccessKeyId=a --set secrets.s3SecretAccessKey=b --set persistence.enabled=false
           EOF
