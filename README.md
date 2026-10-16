@@ -244,10 +244,9 @@ See the [Backup and Recovery](https://github.com/c0dewhacker/Roomer/wiki/Backup-
 
 ### Kubernetes (Helm)
 
-A Helm chart is included at `charts/roomer/`. Fetch sub-chart dependencies, then install:
+A Helm chart is included at `charts/roomer/`. It bundles PostgreSQL 18 (the official `postgres:18` image) by default; for production, point it at a managed database instead:
 
 ```bash
-helm dependency update ./charts/roomer
 helm install roomer ./charts/roomer \
   --namespace roomer --create-namespace \
   --set ingress.host=roomer.example.com \
@@ -269,6 +268,24 @@ helm install roomer ./charts/roomer \
   --set secrets.encryptionKey=$(openssl rand -hex 32) \
   --set secrets.databaseUrl="postgresql://user:pass@host:5432/roomer"
 ```
+
+**Upgrading to chart 0.2.0 (bundled PostgreSQL moves off Bitnami):**
+
+Chart 0.1.x bundled PostgreSQL through the Bitnami sub-chart, which now only publishes a floating `latest` tag. Chart 0.2.0 runs the official `postgres:18` image instead and migrates the data during `helm upgrade`:
+
+1. A pre-upgrade job makes the old database read-only, closes its connections and `pg_dump`s it.
+2. The Bitnami StatefulSet is replaced by `<release>-postgres`, which restores the dump on its first start.
+3. The API reconnects to the new server (same service name, same credentials).
+
+Writes are refused for roughly 15–30 seconds during the switch; no committed data is lost. Nothing to do if you use an external database (`postgresql.enabled: false`).
+
+```bash
+helm upgrade roomer ./charts/roomer -n roomer --reset-then-reuse-values --wait --timeout 15m
+```
+
+- Large databases: raise `--timeout` (the dump runs inside it) and `postgresql.migration.timeoutSeconds`.
+- The old volume `data-<release>-postgresql-0` is kept, untouched and read-only, so you can roll back. The upgrade's notes print the exact rollback commands. Delete the volume once you're happy with the migration.
+- To migrate by hand instead, set `postgresql.migration.enabled=false`.
 
 See the [Kubernetes Deployment](https://github.com/c0dewhacker/Roomer/wiki/Kubernetes-Deployment) wiki page for the full values reference and upgrade instructions.
 
