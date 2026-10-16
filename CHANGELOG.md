@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.0](https://github.com/c0dewhacker/Roomer/compare/v1.2.1...v1.3.0) (2026-10-16)
+
+
+### Features
+
+* **chart:** bundled PostgreSQL on official postgres:18 with automatic migration from Bitnami ([#385](https://github.com/c0dewhacker/Roomer/issues/385)) ([2f19ddc](https://github.com/c0dewhacker/Roomer/commit/2f19ddc5962a6df82268e4d0b8a0231b4752aa4f))
+
+
+### Bug Fixes
+
+* **deps:** dependency updates (supersedes [#384](https://github.com/c0dewhacker/Roomer/issues/384)) ([#387](https://github.com/c0dewhacker/Roomer/issues/387)) ([75def46](https://github.com/c0dewhacker/Roomer/commit/75def46120ba5dc56e065d340cc57c47b43d2034))
+* **seed:** stop the demo seed crash-looping the API on restart ([#386](https://github.com/c0dewhacker/Roomer/issues/386)) ([9b286f9](https://github.com/c0dewhacker/Roomer/commit/9b286f96f40e1e854858d49f418d841886f8cfea))
+
 ## [1.2.1](https://github.com/c0dewhacker/Roomer/compare/v1.2.0...v1.2.1) (2026-10-03)
 
 
