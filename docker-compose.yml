@@ -58,6 +58,16 @@ services:
       ROOMER_TRUST_PROXY: "loopback,uniquelocal"
       ROOMER_APP_URL: ${APP_ORIGIN:-http://localhost}
       ROOMER_FILE_STORAGE_PATH: /app/uploads
+      # Uploaded files: "local" (the uploads_data volume) or "s3" (any
+      # S3-compatible bucket — see "File storage" in the README).
+      ROOMER_STORAGE_BACKEND: ${ROOMER_STORAGE_BACKEND:-local}
+      ROOMER_S3_BUCKET: ${ROOMER_S3_BUCKET:-}
+      ROOMER_S3_REGION: ${ROOMER_S3_REGION:-us-east-1}
+      ROOMER_S3_ENDPOINT: ${ROOMER_S3_ENDPOINT:-}
+      ROOMER_S3_FORCE_PATH_STYLE: ${ROOMER_S3_FORCE_PATH_STYLE:-false}
+      ROOMER_S3_ACCESS_KEY_ID: ${ROOMER_S3_ACCESS_KEY_ID:-}
+      ROOMER_S3_SECRET_ACCESS_KEY: ${ROOMER_S3_SECRET_ACCESS_KEY:-}
+      ROOMER_S3_PREFIX: ${ROOMER_S3_PREFIX:-}
       ROOMER_SMTP_HOST: mailpit
       ROOMER_SMTP_PORT: "1025"
       ROOMER_SMTP_SECURE: "false"

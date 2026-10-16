@@ -7,6 +7,7 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   HeadBucketCommand,
+  HeadObjectCommand,
 } from '@aws-sdk/client-s3'
 
 /**
@@ -197,6 +198,18 @@ export class S3StorageBackend implements StorageBackend {
     const chunks: Buffer[] = []
     for await (const chunk of stream) chunks.push(Buffer.from(chunk as Uint8Array))
     return Buffer.concat(chunks)
+  }
+
+  /** Size in bytes, or null if the object doesn't exist. */
+  async size(relativePath: string): Promise<number | null> {
+    try {
+      const res = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: this.key(relativePath) }))
+      return res.ContentLength ?? null
+    } catch (err) {
+      const e = err as { name?: string; $metadata?: { httpStatusCode?: number } }
+      if (e.name === 'NotFound' || e.$metadata?.httpStatusCode === 404) return null
+      throw err
+    }
   }
 
   async delete(relativePath: string): Promise<void> {

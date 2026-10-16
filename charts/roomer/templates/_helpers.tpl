@@ -206,3 +206,14 @@ a live cluster.
 {{- end -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+File storage backend: "local" or "s3". Older values files have no `storage` key.
+*/}}
+{{- define "roomer.storageBackend" -}}
+{{- $backend := dig "backend" "local" (.Values.storage | default dict) -}}
+{{- if not (has $backend (list "local" "s3")) -}}
+{{- fail (printf "storage.backend must be \"local\" or \"s3\", got %q" $backend) -}}
+{{- end -}}
+{{- $backend -}}
+{{- end }}
