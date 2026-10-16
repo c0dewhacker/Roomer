@@ -11,20 +11,23 @@ const adapter = new PrismaPg(pool)
 const prisma = new PrismaClient({ adapter })
 
 // ─── Core seed (always runs) ──────────────────────────────────────────────────
-// Creates the default organisation and super-admin account. Both are idempotent
-// (upsert by stable slug/email) so re-running on an existing database is safe.
+// Creates the organisation and super-admin account. Both are idempotent, so
+// re-running on an existing database is safe.
 
 async function seedCore() {
-  // Default organisation — needed for buildings/floors, also creates a sensible
-  // default for single-tenant deployments.
-  const org = await prisma.organisation.upsert({
-    where: { slug: 'default' },
-    update: {},
-    create: {
-      name: 'My Organisation',
-      slug: 'default',
-    },
-  })
+  // Roomer is single-tenant: the API reads the organisation with findFirst(),
+  // so there must only ever be one. Reuse whichever exists — matching by slug
+  // isn't safe, as the slug can change after first start — and create the
+  // default only on an empty database.
+  const org =
+    (await prisma.organisation.findFirst({ orderBy: { createdAt: 'asc' } })) ??
+    (await prisma.organisation.create({
+      data: {
+        name: 'My Organisation',
+        slug: 'default',
+      },
+    }))
+  await removeStrayDefaultOrganisations(org.id)
   console.log(`[seed] Organisation: ${org.name} (${org.id})`)
 
   // Super-admin — created once only. Password is never overwritten on re-runs
@@ -57,11 +60,40 @@ async function seedCore() {
   return { org }
 }
 
+// Older seeds renamed the organisation's slug to "acme" for demo data, then on
+// the next start looked it up by slug "default", didn't find it, and created a
+// second, empty organisation before crashing on the rename. Remove that
+// leftover so findFirst() can't pick it — only if nothing hangs off it.
+async function removeStrayDefaultOrganisations(keepId: string) {
+  const strays = await prisma.organisation.findMany({
+    where: { id: { not: keepId }, slug: 'default' },
+    select: { id: true, _count: { select: { buildings: true, groups: true, departments: true } } },
+  })
+  for (const stray of strays) {
+    const { buildings, groups, departments } = stray._count
+    if (buildings + groups + departments > 0) {
+      console.warn(`[seed] Extra organisation ${stray.id} has data — leaving it in place`)
+      continue
+    }
+    await prisma.organisation.delete({ where: { id: stray.id } })
+    console.log(`[seed] Removed empty duplicate organisation ${stray.id}`)
+  }
+}
+
 // ─── Demo seed (runs when SEED_DEMO_DATA=true) ────────────────────────────────
 // Populates a realistic-looking workspace with one building, one floor, two
 // zones, six desks and a regular test user. Useful for demos and development.
+// Only ever seeds a fresh workspace: if real buildings already exist the flag
+// is ignored, so turning it on against a live database can't mix demo desks
+// and a test login into it.
 
 async function seedDemoData(orgId: string) {
+  const otherBuildings = await prisma.building.count({ where: { id: { not: 'seed-building-001' } } })
+  if (otherBuildings > 0) {
+    console.log('[seed] Existing workspace found — skipping demo data')
+    return
+  }
+
   // Regular test user — created once only, same pattern as admin.
   const existingUser = await prisma.user.findUnique({ where: { email: 'user@roomer.local' }, select: { id: true } })
   if (!existingUser) {
@@ -85,10 +117,10 @@ async function seedDemoData(orgId: string) {
     console.log('[seed] Test user already exists: user@roomer.local')
   }
 
-  // Update org to demo name
-  await prisma.organisation.update({
-    where: { id: orgId },
-    data: { name: 'Acme Corp', slug: 'acme' },
+  // Demo name, unless an admin has already renamed it. The slug is left alone.
+  await prisma.organisation.updateMany({
+    where: { id: orgId, name: 'My Organisation' },
+    data: { name: 'Acme Corp' },
   })
 
   const building = await prisma.building.upsert({

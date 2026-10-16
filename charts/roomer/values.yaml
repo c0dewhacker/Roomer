@@ -110,6 +110,8 @@ config:
   # Seed: admin account is always created on first start.
   # If seedAdminPassword is omitted a random password is printed to API logs.
   seedAdminEmail: "admin@roomer.local"
+  # Demo building, desks and a user@roomer.local login, for evaluation installs.
+  # Only applied to an empty workspace; ignored once real buildings exist.
   seedDemoData: "false"
   # ── External database components (used when postgresql.enabled=false and
   #    secrets.databaseUrl is empty). The URL is assembled as:
