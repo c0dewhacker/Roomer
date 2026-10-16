@@ -62,3 +62,29 @@ jobs:
 
       - name: Public proxy smoke test
         run: bash scripts/test-proxy.sh
+
+  chart:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      # Template errors otherwise only surface at `helm upgrade` time, against
+      # a live release. Helm ships on the ubuntu-latest runner image.
+      - name: Lint and render
+        run: |
+          set -euo pipefail
+          required="--set secrets.sessionSecret=$(openssl rand -hex 32) --set secrets.encryptionKey=$(openssl rand -hex 32)"
+          helm lint charts/roomer --strict $required
+          while read -r name args; do
+            echo "::group::render: $name"
+            helm template ci charts/roomer $required $args > /dev/null
+            echo "::endgroup::"
+          done <<'EOF'
+          defaults
+          external-db --set postgresql.enabled=false --set secrets.databaseUrl=postgresql://u:p@db:5432/roomer
+          no-persistence --set postgresql.primary.persistence.enabled=false
+          overrides --set fullnameOverride=custom --set ingress.enabled=true
+          EOF
