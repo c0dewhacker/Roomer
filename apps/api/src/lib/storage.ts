@@ -6,7 +6,13 @@ import sharp from 'sharp'
 import { env } from '../env.js'
 import { FloorPlanFileType } from '@roomer/shared'
 
-import { DxfParser } from 'dxf-parser'
+import dxfParser from 'dxf-parser'
+
+// dxf-parser's types declare a named `DxfParser` export, but under Node's ESM
+// loader its CommonJS build only exposes the constructor as the default
+// export — the named import was undefined at runtime, so every DXF upload
+// failed conversion and was served as raw DXF instead of SVG.
+const DxfParser = ((dxfParser as unknown as { DxfParser?: unknown }).DxfParser ?? dxfParser) as unknown as new () => unknown
 
 const FLOOR_PLANS_DIR = 'floor-plans'
 const THUMBNAILS_DIR = 'floor-plans/thumbnails'
