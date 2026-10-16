@@ -1,0 +1,211 @@
+{{- if .Values.postgresql.enabled }}
+{{- $persistence := dig "primary" "persistence" "enabled" true .Values.postgresql }}
+{{- $server := dig "server" dict .Values.postgresql }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "roomer.postgresql.secretName" . }}
+  labels:
+    {{- include "roomer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+type: Opaque
+stringData:
+  POSTGRES_USER: {{ .Values.postgresql.auth.username | quote }}
+  POSTGRES_PASSWORD: {{ .Values.postgresql.auth.password | quote }}
+  POSTGRES_DB: {{ .Values.postgresql.auth.database | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "roomer.postgresql.statefulsetName" . }}-scripts
+  labels:
+    {{- include "roomer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+data:
+  # Restores a dump left by the chart 0.1.x → 0.2.x migration hook
+  # (postgresql-migration.yaml). Runs before the server starts, only when the
+  # data directory has never been initialised and a dump is waiting.
+  #
+  # The cluster is built in a staging directory and moved into PGDATA only once
+  # the restore has succeeded. If it fails, PGDATA stays empty and this
+  # container keeps failing — the server never boots a fresh empty database
+  # that the API would then happily migrate into.
+  restore-migration-dump.sh: |
+    #!/usr/bin/env bash
+    # No `set -u`: the official entrypoint functions sourced below rely on unset variables.
+    set -Eeo pipefail
+    dump=/var/lib/postgresql/migration/roomer.dump
+    final="$PGDATA"
+    stage="$(dirname "$PGDATA")/migrating"
+
+    if [ -s "$final/PG_VERSION" ]; then
+      echo "[restore] data directory already initialised — nothing to restore"
+      exit 0
+    fi
+    if [ ! -f "$dump" ]; then
+      echo "[restore] no migration dump found — fresh install"
+      exit 0
+    fi
+    if [ -d "$final" ] && [ -n "$(ls -A "$final")" ]; then
+      echo "[restore] $final is not empty but has no PG_VERSION — refusing to touch it" >&2
+      exit 1
+    fi
+
+    echo "[restore] restoring $dump into a new cluster"
+    rm -rf "$stage"
+    export PGDATA="$stage"
+    # The official entrypoint is designed to be sourced: reuse its init logic so
+    # the result is identical to a normal first boot, then restore into it.
+    source /usr/local/bin/docker-entrypoint.sh
+    docker_setup_env
+    docker_create_db_directories
+    docker_init_database_dir
+    pg_setup_hba_conf
+    docker_temp_server_start postgres
+    docker_setup_db
+    pg_restore --no-owner --no-acl --exit-on-error \
+      --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" "$dump"
+    docker_temp_server_stop
+
+    rmdir "$final" 2>/dev/null || true
+    mv "$stage" "$final"
+    mv "$dump" "$dump.restored"
+    echo "[restore] done — kept $dump.restored; delete it once you are happy with the migration"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "roomer.postgresql.serviceName" . }}
+  labels:
+    {{- include "roomer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  type: ClusterIP
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+      protocol: TCP
+  selector:
+    {{- include "roomer.postgresql.selectorLabels" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "roomer.postgresql.statefulsetName" . }}
+  labels:
+    {{- include "roomer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  replicas: 1
+  serviceName: {{ include "roomer.postgresql.serviceName" . }}
+  selector:
+    matchLabels:
+      {{- include "roomer.postgresql.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "roomer.postgresql.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        # uid/gid 999 is the `postgres` user in the official image.
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        # A recursive chown on every start would also re-add group write to
+        # PGDATA, which postgres refuses to start with.
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: restore-migration-dump
+          image: {{ include "roomer.postgresql.image" . }}
+          imagePullPolicy: {{ dig "image" "pullPolicy" "IfNotPresent" $server }}
+          command: ["bash", "/scripts/restore-migration-dump.sh"]
+          envFrom:
+            - secretRef:
+                name: {{ include "roomer.postgresql.secretName" . }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql
+            - name: scripts
+              mountPath: /scripts
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      containers:
+        - name: postgresql
+          image: {{ include "roomer.postgresql.image" . }}
+          imagePullPolicy: {{ dig "image" "pullPolicy" "IfNotPresent" $server }}
+          envFrom:
+            - secretRef:
+                name: {{ include "roomer.postgresql.secretName" . }}
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+              protocol: TCP
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", 'pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", 'pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          {{- with (dig "resources" dict $server) }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql
+            - name: dshm
+              mountPath: /dev/shm
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "roomer.postgresql.statefulsetName" . }}-scripts
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
+        {{- if not $persistence }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if $persistence }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "roomer.postgresql.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with (include "roomer.postgresql.storageClass" .) }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ include "roomer.postgresql.persistenceSize" . }}
+  {{- end }}
+{{- end }}

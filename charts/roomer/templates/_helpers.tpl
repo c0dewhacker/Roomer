@@ -126,3 +126,83 @@ Web image reference. Falls back to Chart.appVersion if tag is explicitly cleared
 {{- define "roomer.web.image" -}}
 {{- printf "%s:%s" .Values.web.image.repository (.Values.web.image.tag | default .Chart.AppVersion) }}
 {{- end }}
+
+{{/*
+Bundled PostgreSQL (official postgres image).
+Every new setting reads through `dig` with a default: an upgrade from chart
+0.1.x with --reuse-values carries the old Bitnami sub-chart's computed values
+(postgresql.image, postgresql.primary, ...) and none of this chart's new defaults.
+*/}}
+
+{{/* Service name — unchanged from the Bitnami sub-chart so DATABASE_URL and existing clients keep working. */}}
+{{- define "roomer.postgresql.serviceName" -}}
+{{- printf "%s-postgresql" (include "roomer.fullname" .) }}
+{{- end }}
+
+{{/* StatefulSet name — deliberately different from the Bitnami one, whose volumeClaimTemplates are immutable. */}}
+{{- define "roomer.postgresql.statefulsetName" -}}
+{{- printf "%s-postgres" (include "roomer.fullname" .) }}
+{{- end }}
+
+{{/* PVC created by the StatefulSet's `data` volumeClaimTemplate for pod 0. */}}
+{{- define "roomer.postgresql.dataClaimName" -}}
+{{- printf "data-%s-0" (include "roomer.postgresql.statefulsetName" .) }}
+{{- end }}
+
+{{/*
+Name the chart 0.1.x Bitnami sub-chart gave its StatefulSet, Service and Secret
+(its own `common.names.fullname`, evaluated in the sub-chart's scope).
+*/}}
+{{- define "roomer.postgresql.legacyName" -}}
+{{- $sub := .Values.postgresql }}
+{{- if $sub.fullnameOverride }}
+{{- $sub.fullnameOverride | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- $name := default "postgresql" $sub.nameOverride }}
+{{- if contains $name .Release.Name }}
+{{- .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "roomer.postgresql.secretName" -}}
+{{- printf "%s-postgres-auth" (include "roomer.fullname" .) }}
+{{- end }}
+
+{{- define "roomer.postgresql.image" -}}
+{{- $img := dig "server" "image" dict .Values.postgresql }}
+{{- printf "%s:%s" ($img.repository | default "postgres") (toString ($img.tag | default "18")) }}
+{{- end }}
+
+{{- define "roomer.postgresql.selectorLabels" -}}
+{{ include "roomer.selectorLabels" . }}
+app.kubernetes.io/component: postgresql
+{{- end }}
+
+{{- define "roomer.postgresql.persistenceSize" -}}
+{{- dig "primary" "persistence" "size" "10Gi" .Values.postgresql }}
+{{- end }}
+
+{{- define "roomer.postgresql.storageClass" -}}
+{{- dig "primary" "persistence" "storageClass" "" .Values.postgresql }}
+{{- end }}
+
+{{/*
+"true" when this upgrade must migrate data out of the chart 0.1.x Bitnami
+StatefulSet: it still exists and the new StatefulSet does not. `lookup` returns
+nothing under `helm template` / client dry-run, so the hook only renders against
+a live cluster.
+*/}}
+{{- define "roomer.postgresql.needsMigration" -}}
+{{- if and .Values.postgresql.enabled (dig "migration" "enabled" true .Values.postgresql) -}}
+{{- $old := lookup "apps/v1" "StatefulSet" .Release.Namespace (include "roomer.postgresql.legacyName" .) -}}
+{{- $new := lookup "apps/v1" "StatefulSet" .Release.Namespace (include "roomer.postgresql.statefulsetName" .) -}}
+{{- if and $old (not $new) -}}
+{{- $image := "" -}}
+{{- range $old.spec.template.spec.containers -}}{{- $image = printf "%s %s" $image .image -}}{{- end -}}
+{{- if contains "bitnami" $image -}}true{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end }}

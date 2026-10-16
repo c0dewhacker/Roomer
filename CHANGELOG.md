@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/c0dewhacker/Roomer/compare/v1.2.0...v1.2.1) (2026-10-03)
+
+
+### Bug Fixes
+
+* **deps:** dependency updates + security fixes (supersedes [#377](https://github.com/c0dewhacker/Roomer/issues/377)–[#380](https://github.com/c0dewhacker/Roomer/issues/380)) ([#381](https://github.com/c0dewhacker/Roomer/issues/381)) ([32a6770](https://github.com/c0dewhacker/Roomer/commit/32a67706db4908dc145a6b0c54045033a20108b1))
+
 ## [1.2.0](https://github.com/c0dewhacker/Roomer/compare/v1.1.1...v1.2.0) (2026-09-09)
 
 
