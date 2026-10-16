@@ -45,7 +45,11 @@ export default defineConfig({
       injectManifest: {
         // Same app-shell-only precache scope as phase 1 — src/sw.ts's own
         // NavigationRoute denylist keeps /api/** out of the SPA fallback too.
-        globPatterns: ['**/*.{js,css,html,png,svg,webmanifest}'],
+        // Plus the basic-Latin Inter subset (~73KB) so text renders in the
+        // right font offline. The other subsets (Latin Extended, Cyrillic,
+        // Greek, Vietnamese) are only fetched when a page uses those
+        // characters, so they stay out of every visitor's install.
+        globPatterns: ['**/*.{js,css,html,png,svg,webmanifest}', '**/inter-latin-opsz-normal-*.woff2'],
         // globPatterns above is unscoped by directory, so without this it
         // also precached every lazy ROUTE chunk (router.tsx's lazy() calls),
         // not just the shared shell — contradicting the comment above.  Most

@@ -2,8 +2,9 @@
 /* Self-hosted variable Inter. Not a CDN link: Roomer is deployed air-gapped and
    behind a strict CSP, where a fonts.googleapis.com request fails silently and
    drops the whole app back to the OS fallback stack. Bundling it means the
-   typography is the same on every install. */
-@import "@fontsource-variable/inter/opsz.css";
+   typography is the same on every install. Imported from main.tsx, not with
+   @import here: Tailwind inlines @imports without rebasing their relative
+   url()s, so the font files were never bundled and every request 404'd. */
 @config "../tailwind.config.ts";
 
 @layer base {
