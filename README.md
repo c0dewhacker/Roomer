@@ -252,8 +252,11 @@ helm install roomer ./charts/roomer \
   --set ingress.host=roomer.example.com \
   --set secrets.sessionSecret=$(openssl rand -hex 32) \
   --set secrets.encryptionKey=$(openssl rand -hex 32) \
+  --set postgresql.enabled=false \
   --set secrets.databaseUrl="postgresql://user:pass@host:5432/roomer"
 ```
+
+`postgresql.enabled=false` is needed: while the bundled database is on, the chart ignores `secrets.databaseUrl`.
 
 **TLS with cert-manager (Let's Encrypt):**
 
@@ -266,6 +269,7 @@ helm install roomer ./charts/roomer \
   --set ingress.tls.certManager.issuerName=letsencrypt-prod \
   --set secrets.sessionSecret=$(openssl rand -hex 32) \
   --set secrets.encryptionKey=$(openssl rand -hex 32) \
+  --set postgresql.enabled=false \
   --set secrets.databaseUrl="postgresql://user:pass@host:5432/roomer"
 ```
 
