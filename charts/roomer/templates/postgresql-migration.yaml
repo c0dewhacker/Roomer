@@ -1,0 +1,164 @@
+{{- /*
+Chart 0.1.x → 0.2.x: move the bundled database off the Bitnami sub-chart.
+
+Runs once, as a pre-upgrade hook, while the old Bitnami server is still up:
+  1. makes the application database read-only and drops its connections, so
+     nothing written after the dump is lost when the old server goes away;
+  2. pg_dumps it onto the volume the new StatefulSet will claim
+     (data-<release>-postgres-0, created here first so the StatefulSet adopts it);
+  3. the new server's restore-migration-dump init container loads it on first boot.
+
+If the dump fails, the database is made writable again and the upgrade aborts
+with the old server untouched. The old Bitnami volume is never modified or
+deleted, so `helm rollback` still works (see NOTES.txt for the one extra step).
+*/ -}}
+{{- if eq (include "roomer.postgresql.needsMigration" .) "true" }}
+{{- if not (dig "primary" "persistence" "enabled" true .Values.postgresql) }}
+{{- fail "postgresql.primary.persistence.enabled=false: the Bitnami → official postgres migration needs a persistent volume to hand the dump over. Enable persistence, or set postgresql.migration.enabled=false and migrate by hand." }}
+{{- end }}
+{{- $legacy := include "roomer.postgresql.legacyName" . }}
+{{- $claim := include "roomer.postgresql.dataClaimName" . }}
+{{- if not (lookup "v1" "PersistentVolumeClaim" .Release.Namespace $claim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $claim }}
+  labels:
+    {{- include "roomer.postgresql.selectorLabels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/resource-policy": keep
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with (include "roomer.postgresql.storageClass" .) }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ include "roomer.postgresql.persistenceSize" . }}
+---
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "roomer.postgresql.statefulsetName" . }}-migrate-from-bitnami
+  labels:
+    {{- include "roomer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql-migration
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "0"
+    # Kept after success so `kubectl logs job/...` shows what was migrated.
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: {{ dig "migration" "timeoutSeconds" 1800 .Values.postgresql }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: postgresql-migration
+        # Admitted by the Bitnami NetworkPolicy even when allowExternal=false.
+        {{ $legacy }}-client: "true"
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: dump
+          image: {{ include "roomer.postgresql.image" . }}
+          imagePullPolicy: {{ dig "server" "image" "pullPolicy" "IfNotPresent" .Values.postgresql }}
+          env:
+            - name: PGHOST
+              value: {{ $legacy | quote }}
+            - name: PGPORT
+              value: "5432"
+            # The application user, not "postgres": it owns the database and
+            # every object in it, and its password is the one the API uses.
+            # Bitnami's stored postgres-password can drift from the real one
+            # across upgrades, so it cannot be relied on here.
+            - name: PGUSER
+              value: {{ .Values.postgresql.auth.username | quote }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgresql.auth.existingSecret | default $legacy }}
+                  key: password
+            - name: APP_DB
+              value: {{ .Values.postgresql.auth.database | quote }}
+          command:
+            - bash
+            - -c
+            - |
+              set -Eeuo pipefail
+              out=/var/lib/postgresql/migration
+              dump="$out/roomer.dump"
+
+              if [ -s /var/lib/postgresql/18/docker/PG_VERSION ]; then
+                echo "[migrate] {{ $claim }} already holds a database — refusing to overwrite it." >&2
+                echo "[migrate] If it is left over from a rolled-back upgrade, delete it (and this job, which holds it) and upgrade again:" >&2
+                echo "[migrate]   kubectl -n {{ .Release.Namespace }} delete job/{{ include "roomer.postgresql.statefulsetName" . }}-migrate-from-bitnami pvc/{{ $claim }}" >&2
+                exit 1
+              fi
+
+              until pg_isready -q -d "$APP_DB"; do echo "[migrate] waiting for $PGHOST"; sleep 2; done
+              echo "[migrate] source: $(psql -XAtq -v ON_ERROR_STOP=1 -d "$APP_DB" -c 'SELECT version()')"
+
+              frozen=0
+              thaw() {
+                if [ "$frozen" = 1 ]; then
+                  echo "[migrate] failed — making $APP_DB writable again" >&2
+                  # New sessions start read-only once the freeze is in place; override that for this one.
+                  PGOPTIONS='-c default_transaction_read_only=off' \
+                    psql -Xq -d "$APP_DB" -c "ALTER DATABASE \"$APP_DB\" RESET default_transaction_read_only" || true
+                fi
+              }
+              trap thaw ERR
+              trap 'thaw; exit 1' TERM INT
+
+              frozen=1
+              psql -Xq -v ON_ERROR_STOP=1 -d "$APP_DB" <<SQL
+              ALTER DATABASE "$APP_DB" SET default_transaction_read_only = on;
+              SELECT count(pg_terminate_backend(pid)) AS connections_closed
+                FROM pg_stat_activity
+               WHERE datname = '$APP_DB' AND pid <> pg_backend_pid();
+              SQL
+              echo "[migrate] $APP_DB is read-only; dumping"
+
+              mkdir -p "$out"
+              rm -f "$dump" "$dump.partial" "$dump.restored"
+              pg_dump --format=custom --no-owner --no-acl --dbname "$APP_DB" --file "$dump.partial"
+              tables=$(pg_restore --list "$dump.partial" | grep -c " TABLE DATA " || true)
+              mv "$dump.partial" "$dump"
+              trap - ERR TERM INT
+
+              echo "[migrate] wrote $dump ($(du -h "$dump" | cut -f1), $tables tables)"
+              echo "[migrate] the old Bitnami database stays read-only; the new server restores the dump on first start"
+          volumeMounts:
+            - name: target
+              mountPath: /var/lib/postgresql
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: target
+          persistentVolumeClaim:
+            claimName: {{ $claim }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -2,7 +2,7 @@ apiVersion: v2
 name: roomer
 description: Self-hosted workspace booking platform
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: 1.2.1
 keywords:
   - roomer
@@ -15,8 +15,3 @@ sources:
 maintainers:
   - name: c0dewhacker
     url: https://github.com/c0dewhacker
-dependencies:
-  - name: postgresql
-    version: 18.x.x
-    repository: oci://registry-1.docker.io/bitnamicharts
-    condition: postgresql.enabled

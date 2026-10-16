@@ -110,6 +110,8 @@ config:
   # Seed: admin account is always created on first start.
   # If seedAdminPassword is omitted a random password is printed to API logs.
   seedAdminEmail: "admin@roomer.local"
+  # Demo building, desks and a user@roomer.local login, for evaluation installs.
+  # Only applied to an empty workspace; ignored once real buildings exist.
   seedDemoData: "false"
   # ── External database components (used when postgresql.enabled=false and
   #    secrets.databaseUrl is empty). The URL is assembled as:
@@ -158,30 +160,41 @@ persistence:
   # Provide an existing PVC name to skip creation
   existingClaim: ""
 
-# ── Bundled PostgreSQL 18 (Bitnami sub-chart) ────────────────────────────────
+# ── Bundled PostgreSQL 18 (official `postgres` image) ───────────────────────
 # Enabled by default for a zero-config install. DATABASE_URL is automatically
 # constructed from the auth values below.
 # For production, disable and point secrets.databaseUrl (or config.db*) at a
 # managed database instead.
-# Run `helm dependency update ./charts/roomer` before installing.
+#
+# Upgrading from chart 0.1.x (Bitnami sub-chart): the data is migrated
+# automatically on `helm upgrade` — see "Upgrading to chart 0.2.0" in the README.
 postgresql:
   enabled: true
   auth:
     username: roomer
     # Change this in production — or disable postgresql and use an external DB.
+    # Only applied when the database is first created; changing it later does
+    # not change the password inside PostgreSQL.
     password: "roomer"
     database: roomer
+  server:
+    image:
+      repository: postgres
+      # Major-version tag: picks up 18.x patch releases on pod restart while
+      # never jumping to 19. Pin a minor (e.g. "18.6") for fully repeatable rollouts.
+      tag: "18"
+      pullPolicy: IfNotPresent
+    resources: {}
   primary:
     persistence:
+      enabled: true
+      storageClass: ""
       size: 10Gi
-
-# ── Global overrides ──────────────────────────────────────────────────────────
-global:
-  security:
-    # Bitnami's image-verification gate rejects any registry that isn't its own
-    # default. Set to true so the bundled PostgreSQL sub-chart deploys without
-    # manual --set overrides.
-    allowInsecureImages: true
+  migration:
+    # Dump the chart 0.1.x Bitnami database and restore it into the new server
+    # during `helm upgrade`. Has no effect on fresh installs.
+    enabled: true
+    timeoutSeconds: 1800
 
 # ── Service account ───────────────────────────────────────────────────────────
 serviceAccount:
