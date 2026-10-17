@@ -1,12 +1,12 @@
 import './env.js' // Validate env vars on startup — exits process if invalid
-import { ensureUploadDirs } from './lib/storage.js'
+import { initStorage } from './lib/storage.js'
 import { startQueue } from './lib/queue.js'
 import { buildApp } from './app.js'
 import { env } from './env.js'
 async function main(): Promise<void> {
-  // 1. Ensure upload directories exist
-  await ensureUploadDirs()
-  console.log('[startup] Upload directories ready')
+  // 1. Upload storage: create directories, or check the S3 bucket is usable
+  const storageLocation = await initStorage()
+  console.log(`[startup] File storage ready: ${storageLocation}`)
 
   // 2. Start pg-boss queue workers
   await startQueue()

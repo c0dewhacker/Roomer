@@ -1,5 +1,4 @@
 import type { FastifyInstance } from 'fastify'
-import fs from 'fs'
 import { prisma } from '../lib/prisma.js'
 import { GlobalRole, BookableStatus, bulkUpdateAssetPositionsSchema, NotificationType } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
@@ -13,7 +12,7 @@ import { toZonedTime } from 'date-fns-tz'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { checkGroupAccess } from './groups.js'
-import { saveCategoryIcon, deleteFile, resolveStoragePath } from '../lib/storage.js'
+import { saveCategoryIcon, deleteFile, openStoredFile } from '../lib/storage.js'
 import { recordAuditLog } from '../lib/audit.js'
 import { createCategorySchema, createAssetSchema, updateAssetSchema, addToAllowListSchema, addZoneSchema, bulkImportSchema } from './asset-schemas.js'
 
@@ -450,16 +449,11 @@ export async function assetRoutes(fastify: FastifyInstance): Promise<void> {
       const { id } = request.params as { id: string }
       const category = await prisma.assetCategory.findUnique({ where: { id }, select: { iconUrl: true } })
       if (!category?.iconUrl) return reply.status(404).send({ error: { message: 'No icon set', code: 'NOT_FOUND' } })
-      try {
-        const absPath = resolveStoragePath(category.iconUrl)
-        await fs.promises.access(absPath)
-        const stream = fs.createReadStream(absPath)
-        reply.header('Content-Type', 'image/png')
-        reply.header('Cache-Control', 'public, max-age=86400')
-        return reply.send(stream)
-      } catch {
-        return reply.status(404).send({ error: { message: 'Icon file not found', code: 'FILE_NOT_FOUND' } })
-      }
+      const stream = await openStoredFile(category.iconUrl)
+      if (!stream) return reply.status(404).send({ error: { message: 'Icon file not found', code: 'FILE_NOT_FOUND' } })
+      reply.header('Content-Type', 'image/png')
+      reply.header('Cache-Control', 'public, max-age=86400')
+      return reply.send(stream)
     },
   )
 

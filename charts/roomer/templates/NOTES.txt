@@ -26,15 +26,43 @@ FIRST START — Admin account
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-STORAGE WARNING
-  {{- if gt (int .Values.api.replicaCount) 1 }}
+FILE STORAGE
+  {{- $multi := gt (int .Values.api.replicaCount) 1 }}
+  {{- if eq (include "roomer.storageBackend" .) "s3" }}
+  Uploads are stored in S3 bucket "{{ .Values.storage.s3.bucket }}"{{ with .Values.storage.s3.endpoint }} at {{ . }}{{ end }}.
+  {{- $creds := include "roomer.s3.credentialsSource" . }}
+  {{- if eq $creds "existingSecret" }}
+  Credentials: Secret "{{ .Values.storage.s3.existingSecret }}" (keys {{ .Values.storage.s3.accessKeyIdKey | default "AWS_ACCESS_KEY_ID" }}, {{ .Values.storage.s3.secretAccessKeyKey | default "AWS_SECRET_ACCESS_KEY" }}).
+  {{- else if eq $creds "values" }}
+  Credentials: secrets.s3AccessKeyId / secrets.s3SecretAccessKey.
+  {{- else if not .Values.secrets.create }}
+  Credentials: ROOMER_S3_* from Secret "{{ include "roomer.secretName" . }}" if
+  set there, otherwise the pod's own identity.
+  {{- else }}
+  Credentials: none set, so the pod's own identity is used (IRSA, EKS Pod
+  Identity or the node's instance role).
+  {{- if not (hasKey (.Values.serviceAccount.annotations | default dict) "eks.amazonaws.com/role-arn") }}
+  For IRSA, add the eks.amazonaws.com/role-arn annotation in serviceAccount.annotations.
+  {{- end }}
+  {{- end }}
+  {{- if .Values.persistence.enabled }}
+  The uploads PVC is still mounted. Copy any existing files into the bucket
+  (safe to re-run — files already there are skipped), then set
+  persistence.enabled=false:
+    kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "roomer.api.fullname" . }} -- node dist/scripts/copy-uploads-to-s3.js
+  {{- if and $multi (ne .Values.persistence.accessMode "ReadWriteMany") }}
+  ⚠  api.replicaCount > 1 with a ReadWriteOnce uploads PVC: extra API pods
+     can't mount it. Set persistence.enabled=false once the copy is done.
+  {{- end }}
+  {{- end }}
+  {{- else if $multi }}
   ⚠  api.replicaCount > 1 detected. The uploads PVC must use
      accessMode: ReadWriteMany (NFS, EFS, etc.) to be shared
-     across multiple API pods. Update persistence.accessMode
-     and persistence.storageClass accordingly.
+     across multiple API pods — or use storage.backend=s3.
   {{- else }}
   Uploads are stored in a PersistentVolumeClaim ({{ .Values.persistence.size }}).
-  Scale api.replicaCount > 1 only with a ReadWriteMany storage class.
+  To run api.replicaCount > 1, use a ReadWriteMany storage class or
+  storage.backend=s3.
   {{- end }}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

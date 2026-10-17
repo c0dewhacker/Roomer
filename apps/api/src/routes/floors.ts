@@ -1,4 +1,3 @@
-import fs from 'fs'
 import path from 'path'
 import type { FastifyInstance } from 'fastify'
 import type { Prisma } from '@prisma/client'
@@ -6,7 +5,7 @@ import { prisma } from '../lib/prisma.js'
 import { createFloorSchema, updateFloorSchema, GlobalRole } from '@roomer/shared'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { isFloorManagerForFloor, isBuildingManagerForBuilding, RESOURCE_ROLE_GRANT_LOCK_CLASS } from '../middleware/requireRole.js'
-import { saveFloorPlan, resolveStoragePath, deleteFile } from '../lib/storage.js'
+import { saveFloorPlan, deleteFile, openStoredFile, readStoredFile } from '../lib/storage.js'
 import { checkGroupAccess } from './groups.js'
 import { cancelFutureBookingsForFloors, cancelQueueEntriesForFloors } from '../lib/queue.js'
 import { recordAuditLog } from '../lib/audit.js'
@@ -646,14 +645,6 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       }
     }
 
-    const absPath = resolveStoragePath(floorPlan.renderedPath)
-
-    try {
-      await fs.promises.access(absPath, fs.constants.R_OK)
-    } catch {
-      return reply.status(404).send({ error: { message: 'Floor plan file not found', code: 'FILE_NOT_FOUND' } })
-    }
-
     const ext = path.extname(floorPlan.renderedPath).toLowerCase()
     const mimeMap: Record<string, string> = {
       '.png': 'image/png',
@@ -676,9 +667,12 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       stroke = `#${rawStroke}`
     }
 
+    const notFound = () => reply.status(404).send({ error: { message: 'Floor plan file not found', code: 'FILE_NOT_FOUND' } })
+
     if (contentType === 'image/svg+xml' && stroke) {
-      const raw = await fs.promises.readFile(absPath, 'utf-8')
-      const recolored = raw.replace(/stroke="[^"]*"/g, `stroke="${stroke}"`)
+      const file = await readStoredFile(floorPlan.renderedPath)
+      if (!file) return notFound()
+      const recolored = file.toString('utf-8').replace(/stroke="[^"]*"/g, `stroke="${stroke}"`)
       reply
         .header('Content-Type', contentType)
         .header('Cache-Control', 'public, max-age=86400')
@@ -687,7 +681,8 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.send(recolored)
     }
 
-    const stream = fs.createReadStream(absPath)
+    const stream = await openStoredFile(floorPlan.renderedPath)
+    if (!stream) return notFound()
     reply.header('Content-Type', contentType)
     reply.header('Cache-Control', 'public, max-age=86400')
     // SVG files support embedded scripts; lock them down to prevent stored XSS
@@ -1069,5 +1064,3 @@ export async function floorRoutes(fastify: FastifyInstance): Promise<void> {
   })
 }
 
-// Re-export resolveStoragePath for use by other routes if needed
-export { resolveStoragePath }

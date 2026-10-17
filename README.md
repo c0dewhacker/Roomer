@@ -252,8 +252,11 @@ helm install roomer ./charts/roomer \
   --set ingress.host=roomer.example.com \
   --set secrets.sessionSecret=$(openssl rand -hex 32) \
   --set secrets.encryptionKey=$(openssl rand -hex 32) \
+  --set postgresql.enabled=false \
   --set secrets.databaseUrl="postgresql://user:pass@host:5432/roomer"
 ```
+
+`postgresql.enabled=false` is needed: while the bundled database is on, the chart ignores `secrets.databaseUrl`.
 
 **TLS with cert-manager (Let's Encrypt):**
 
@@ -266,6 +269,7 @@ helm install roomer ./charts/roomer \
   --set ingress.tls.certManager.issuerName=letsencrypt-prod \
   --set secrets.sessionSecret=$(openssl rand -hex 32) \
   --set secrets.encryptionKey=$(openssl rand -hex 32) \
+  --set postgresql.enabled=false \
   --set secrets.databaseUrl="postgresql://user:pass@host:5432/roomer"
 ```
 
@@ -348,7 +352,14 @@ All API environment variables. Every variable accepts a `ROOMER_` prefix (e.g. `
 | `ROOMER_METRICS_ENABLED` | `false` | Set to `true` to expose a Prometheus `/metrics` endpoint. Unauthenticated unless `METRICS_TOKEN` is set — protect at the network/ingress level. |
 | `METRICS_TOKEN` | — | Optional bearer token for `/metrics`. When set, scrapers must send `Authorization: Bearer <token>`. |
 | `WEBHOOK_ALLOW_PRIVATE` | `false` | Allow webhook delivery to private/RFC1918 addresses (internal integrations). Loopback and link-local (incl. cloud metadata) remain blocked regardless. |
-| `FILE_STORAGE_PATH` | `./uploads` | Directory for floor plan images |
+| `FILE_STORAGE_PATH` | `./uploads` | Directory for uploaded files (floor plans, branding, category icons, lease documents) when `STORAGE_BACKEND=local` |
+| `STORAGE_BACKEND` | `local` | `local` (files under `FILE_STORAGE_PATH`) or `s3` (an S3-compatible bucket) — see [File storage](#file-storage) |
+| `S3_BUCKET` | — | Bucket name (required when `STORAGE_BACKEND=s3`) |
+| `S3_REGION` | `us-east-1` | Bucket region |
+| `S3_ENDPOINT` | — | Endpoint for S3-compatible services (MinIO, Ceph RGW, Garage, Cloudflare R2, ...). Leave unset for AWS S3 |
+| `S3_FORCE_PATH_STYLE` | `false` | Put the bucket in the URL path rather than the hostname — needed by most self-hosted services |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | — | Static credentials. Leave both unset to use the AWS default credential chain (`AWS_*` env vars, IRSA / EKS Pod Identity, instance profile) |
+| `S3_PREFIX` | — | Optional key prefix, so one bucket can hold several installs |
 | `MAX_FILE_SIZE_MB` | `20` | Maximum upload size |
 | `API_PUBLIC_URL` | `http://localhost:3001` | Public URL of the API — shown in the SCIM settings panel as the endpoint base URL |
 | `SMTP_HOST` | `localhost` | Outbound email relay host |
@@ -360,6 +371,56 @@ All API environment variables. Every variable accepts a `ROOMER_` prefix (e.g. `
 
 > Email/SMTP can also be configured in the admin UI (**Settings → Email**). Any of the `SMTP_*` / `EMAIL_FROM` variables above, when set, **override** the UI value at runtime (captured at startup) and appear locked in the form.
 | `APP_URL` | `http://localhost:5173` | Public URL used in email links |
+
+### File storage
+
+Uploaded files — floor plans and their thumbnails, branding images, asset category icons and lease documents — are stored on local disk by default (`FILE_STORAGE_PATH`, the `uploads_data` volume in Docker Compose, the uploads PVC in Helm). Set `STORAGE_BACKEND=s3` to keep them in an S3-compatible bucket instead. This lets the API run as several replicas without a shared ReadWriteMany volume, and leaves durability and backups to the bucket.
+
+Files are still served through the API, so access checks and URLs are unchanged and the bucket can stay private. The API needs `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on the bucket (plus `s3:ListBucket` so the startup check can tell a missing bucket from a permissions problem). It checks the bucket at startup and refuses to start if the bucket can't be used.
+
+```bash
+# Docker Compose (.env)
+ROOMER_STORAGE_BACKEND=s3
+ROOMER_S3_BUCKET=roomer-uploads
+ROOMER_S3_ENDPOINT=http://minio:9000     # omit for AWS S3
+ROOMER_S3_FORCE_PATH_STYLE=true          # most self-hosted services
+ROOMER_S3_ACCESS_KEY_ID=...
+ROOMER_S3_SECRET_ACCESS_KEY=...
+```
+
+```yaml
+# Helm values
+storage:
+  backend: s3
+  s3:
+    bucket: roomer-uploads
+    endpoint: http://minio.minio:9000    # omit for AWS S3
+    forcePathStyle: true
+secrets:
+  s3AccessKeyId: "..."
+  s3SecretAccessKey: "..."
+```
+
+The Helm chart takes S3 credentials in one of three ways:
+
+- `secrets.s3AccessKeyId` / `secrets.s3SecretAccessKey`, as above, stored in the chart's Secret.
+- `storage.s3.existingSecret`: the name of a Secret you manage, such as one from a Rook/Ceph ObjectBucketClaim, a MinIO tenant, External Secrets or Sealed Secrets. The keys default to `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`; change them with `storage.s3.accessKeyIdKey` and `storage.s3.secretAccessKeyKey`.
+- Neither, so the API uses the pod's own identity. For IRSA, add the `eks.amazonaws.com/role-arn` annotation under `serviceAccount.annotations`. EKS Pod Identity and EC2 instance roles need nothing in the chart.
+
+**Moving an existing install to S3.** Object keys are the same relative paths the database already stores, so nothing in the database changes — the files just need copying. The API image includes a copy command that skips anything already in the bucket at the same size, so it's safe to run more than once:
+
+1. Copy while still on local storage, passing the S3 settings for this one run:
+   ```bash
+   docker compose exec -e ROOMER_S3_BUCKET=roomer-uploads -e ROOMER_S3_ENDPOINT=http://minio:9000 \
+     -e ROOMER_S3_FORCE_PATH_STYLE=true -e ROOMER_S3_ACCESS_KEY_ID=... -e ROOMER_S3_SECRET_ACCESS_KEY=... \
+     api node dist/scripts/copy-uploads-to-s3.js          # add --dry-run to preview
+   ```
+   On Kubernetes, `kubectl exec` can't set environment variables, so prefix the command with `env`:
+   `kubectl -n roomer exec deploy/roomer-api -- env ROOMER_S3_BUCKET=roomer-uploads ROOMER_S3_ENDPOINT=... ROOMER_S3_FORCE_PATH_STYLE=true ROOMER_S3_ACCESS_KEY_ID=... ROOMER_S3_SECRET_ACCESS_KEY=... node dist/scripts/copy-uploads-to-s3.js` (the Deployment is `<release>-api` when the release name contains "roomer", otherwise `<release>-roomer-api`).
+2. Switch to `STORAGE_BACKEND=s3` and restart (Helm: set `storage.backend: s3`, keeping `persistence.enabled: true` for now).
+3. Run the copy once more to pick up anything uploaded in between — the S3 settings are now in the environment:
+   `docker compose exec api node dist/scripts/copy-uploads-to-s3.js`. With Helm, the upgrade's notes print the exact `kubectl exec` command.
+4. Check floor plans and branding still load, then drop the local volume (Helm: `persistence.enabled: false`).
 
 ### Upgrading to 1.1.0 — `TRUST_PROXY=true` is no longer accepted
 

@@ -73,9 +73,27 @@ spec:
                 name: {{ include "roomer.configMapName" . }}
             - secretRef:
                 name: {{ include "roomer.secretName" . }}
-          {{- with .Values.api.extraEnv }}
+          {{- $s3Secret := "" }}
+          {{- if and (eq (include "roomer.storageBackend" .) "s3") (eq (include "roomer.s3.credentialsSource" .) "existingSecret") }}
+          {{- $s3Secret = .Values.storage.s3.existingSecret }}
+          {{- end }}
+          {{- if or $s3Secret .Values.api.extraEnv }}
           env:
+            {{- with $s3Secret }}
+            - name: ROOMER_S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.storage.s3.accessKeyIdKey | default "AWS_ACCESS_KEY_ID" }}
+            - name: ROOMER_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.storage.s3.secretAccessKeyKey | default "AWS_SECRET_ACCESS_KEY" }}
+            {{- end }}
+            {{- with .Values.api.extraEnv }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           volumeMounts:
             {{- if .Values.persistence.enabled }}

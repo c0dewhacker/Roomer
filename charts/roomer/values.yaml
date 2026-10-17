@@ -150,7 +150,48 @@ secrets:
   seedAdminPassword: ""
   seedUserPassword: ""
 
+  # S3 credentials for storage.backend=s3 — set both or neither. To keep them
+  # out of values instead, see storage.s3.existingSecret.
+  s3AccessKeyId: ""
+  s3SecretAccessKey: ""
+
+# ── Uploaded files ────────────────────────────────────────────────────────────
+# Floor plans, branding images, category icons and lease documents.
+#   local — files live on the uploads PVC (`persistence` below). Default.
+#   s3    — files live in an S3-compatible bucket (AWS S3, MinIO, Ceph RGW,
+#           Garage, Cloudflare R2, ...). Lets api.replicaCount > 1 run without a
+#           ReadWriteMany volume, and the bucket's own durability covers backups.
+# Switching an existing install to s3: see "File storage" in the README.
+storage:
+  backend: local
+  s3:
+    bucket: ""
+    region: us-east-1
+    # Custom endpoint for S3-compatible services, e.g. http://minio.minio:9000.
+    # Leave empty for AWS S3.
+    endpoint: ""
+    # true for most self-hosted services (bucket in the path, not the hostname).
+    forcePathStyle: false
+    # Optional key prefix, so one bucket can hold several installs.
+    prefix: ""
+    # Credentials — use one of:
+    #   1. secrets.s3AccessKeyId / secrets.s3SecretAccessKey (above), stored in
+    #      the chart's Secret.
+    #   2. existingSecret: a Secret you manage (Rook/Ceph ObjectBucketClaim,
+    #      MinIO tenant, External Secrets, Sealed Secrets, ...). The key names
+    #      default to the AWS_* names those tools write.
+    #   3. Neither: the pod's own identity. For IRSA, annotate the service
+    #      account with eks.amazonaws.com/role-arn (serviceAccount.annotations);
+    #      EKS Pod Identity and EC2 instance roles need nothing here.
+    # Pods are not restarted when an existing Secret changes — roll the API
+    # deployment after rotating keys.
+    existingSecret: ""
+    accessKeyIdKey: AWS_ACCESS_KEY_ID
+    secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
+
 # ── Uploads persistent storage ────────────────────────────────────────────────
+# Used by storage.backend=local. With s3, keep it enabled until existing files
+# have been copied into the bucket, then set enabled: false.
 persistence:
   enabled: true
   storageClass: ""

@@ -8,6 +8,7 @@ import App from './App'
 import { queryClient } from './lib/queryClient'
 import { ThemeProvider } from './components/ThemeProvider'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import '@fontsource-variable/inter/opsz.css'
 import './index.css'
 
 // vite.config.ts's registerType: 'autoUpdate' has no effect unless something

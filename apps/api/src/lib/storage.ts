@@ -1,45 +1,58 @@
-import fs from 'fs'
 import path from 'path'
 import { randomBytes } from 'crypto'
+import type { Readable } from 'stream'
 import type { MultipartFile } from '@fastify/multipart'
 import sharp from 'sharp'
 import { env } from '../env.js'
 import { FloorPlanFileType } from '@roomer/shared'
+import { LocalStorageBackend, S3StorageBackend, type StorageBackend } from './storage-backend.js'
 
-import { DxfParser } from 'dxf-parser'
+import dxfParser from 'dxf-parser'
+
+// dxf-parser's types declare a named `DxfParser` export, but under Node's ESM
+// loader its CommonJS build only exposes the constructor as the default
+// export — the named import was undefined at runtime, so every DXF upload
+// failed conversion and was served as raw DXF instead of SVG.
+const DxfParser = ((dxfParser as unknown as { DxfParser?: unknown }).DxfParser ?? dxfParser) as unknown as new () => unknown
 
 const FLOOR_PLANS_DIR = 'floor-plans'
 const THUMBNAILS_DIR = 'floor-plans/thumbnails'
 const BRANDING_DIR = 'branding'
 const CATEGORY_ICONS_DIR = 'category-icons'
 
-/**
- * Resolve a path relative to FILE_STORAGE_PATH and reject anything that
- * escapes the root (e.g. `../../etc/passwd`). All paths currently stored in
- * the DB come from sanitising code paths, so this is defence-in-depth: it
- * blocks a write-side compromise (SQL injection, malicious admin) from
- * turning into an arbitrary file read/write.
- */
-export function resolveStoragePath(relativePath: string): string {
-  const root = path.resolve(env.FILE_STORAGE_PATH)
-  const resolved = path.resolve(root, relativePath)
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-    throw new Error(`Path escapes storage root: ${relativePath}`)
-  }
-  return resolved
+// Selected once from STORAGE_BACKEND; see storage-backend.ts.
+const storage: StorageBackend = env.STORAGE_BACKEND === 's3'
+  ? new S3StorageBackend({
+      bucket: env.S3_BUCKET!,
+      region: env.S3_REGION,
+      endpoint: env.S3_ENDPOINT,
+      forcePathStyle: env.S3_FORCE_PATH_STYLE,
+      accessKeyId: env.S3_ACCESS_KEY_ID,
+      secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+      prefix: env.S3_PREFIX,
+    })
+  : new LocalStorageBackend(env.FILE_STORAGE_PATH, [FLOOR_PLANS_DIR, THUMBNAILS_DIR, BRANDING_DIR, CATEGORY_ICONS_DIR])
+
+/** Creates the upload directories, or checks the S3 bucket is reachable. Throws if storage is unusable. */
+export async function initStorage(): Promise<string> {
+  await storage.init()
+  return storage.name === 's3'
+    ? `S3 bucket "${env.S3_BUCKET}"${env.S3_ENDPOINT ? ` at ${env.S3_ENDPOINT}` : ''}`
+    : path.resolve(env.FILE_STORAGE_PATH)
 }
 
-export async function ensureUploadDirs(): Promise<void> {
-  const dirs = [
-    env.FILE_STORAGE_PATH,
-    path.join(env.FILE_STORAGE_PATH, FLOOR_PLANS_DIR),
-    path.join(env.FILE_STORAGE_PATH, THUMBNAILS_DIR),
-    path.join(env.FILE_STORAGE_PATH, BRANDING_DIR),
-    path.join(env.FILE_STORAGE_PATH, CATEGORY_ICONS_DIR),
-  ]
-  for (const dir of dirs) {
-    await fs.promises.mkdir(dir, { recursive: true })
-  }
+/** A stream of a stored file, or null if it doesn't exist. */
+export function openStoredFile(relativePath: string): Promise<Readable | null> {
+  return storage.open(relativePath)
+}
+
+/** The whole stored file, or null if it doesn't exist. */
+export function readStoredFile(relativePath: string): Promise<Buffer | null> {
+  return storage.read(relativePath)
+}
+
+export function writeStoredFile(relativePath: string, data: Buffer | string, contentType?: string): Promise<void> {
+  return storage.write(relativePath, data, contentType)
 }
 
 function sanitizeFilename(name: string): string {
@@ -94,7 +107,6 @@ export async function saveFloorPlan(
   const fileType = detectFileType(file.mimetype, file.filename)
   const filename = generateFilename(file.filename)
   const originalRelPath = path.join(FLOOR_PLANS_DIR, filename)
-  const originalAbsPath = resolveStoragePath(originalRelPath)
 
   // Buffer the entire upload so we can validate magic bytes before persisting
   const buffer = await file.toBuffer()
@@ -108,7 +120,7 @@ export async function saveFloorPlan(
     throw Object.assign(new Error('File content does not match the declared MIME type'), { code: 'INVALID_MAGIC' })
   }
 
-  await fs.promises.writeFile(originalAbsPath, buffer)
+  await writeStoredFile(originalRelPath, buffer, file.mimetype)
 
   // Everything past this point can still fail (a PNG with valid magic bytes
   // but corrupt/truncated pixel data throws in sharp's metadata() call, for
@@ -120,38 +132,37 @@ export async function saveFloorPlan(
   // gracefully instead of throwing), so only IMAGE/PDF land here today.
   try {
     if (fileType === FloorPlanFileType.IMAGE) {
-      return await saveImageFloorPlan(originalAbsPath, originalRelPath, filename)
+      return await saveImageFloorPlan(buffer, originalRelPath, filename)
     }
     if (fileType === FloorPlanFileType.PDF) {
       return await savePdfFloorPlan(originalRelPath)
     }
     // DXF — convert to SVG for rendering
-    return await saveDxfFloorPlan(originalAbsPath, originalRelPath, filename)
+    return await saveDxfFloorPlan(buffer, originalRelPath, filename)
   } catch (err) {
-    await fs.promises.unlink(originalAbsPath).catch(() => {})
+    await deleteFile(originalRelPath).catch(() => {})
     throw Object.assign(new Error('File could not be processed as the declared type'), { code: 'INVALID_MAGIC', cause: err })
   }
 }
 
 async function saveImageFloorPlan(
-  originalAbsPath: string,
+  buffer: Buffer,
   originalRelPath: string,
   filename: string,
 ): Promise<FloorPlanSaveResult> {
-  const image = sharp(originalAbsPath)
-  const metadata = await image.metadata()
+  const metadata = await sharp(buffer).metadata()
   const width = metadata.width ?? 1200
   const height = metadata.height ?? 900
 
   // Generate thumbnail (max 400×300, webp)
   const thumbFilename = `thumb_${path.basename(filename, path.extname(filename))}.webp`
   const thumbRelPath = path.join(FLOOR_PLANS_DIR, 'thumbnails', thumbFilename)
-  const thumbAbsPath = resolveStoragePath(thumbRelPath)
 
-  await sharp(originalAbsPath)
+  const thumbnail = await sharp(buffer)
     .resize(400, 300, { fit: 'inside', withoutEnlargement: true })
     .webp({ quality: 75 })
-    .toFile(thumbAbsPath)
+    .toBuffer()
+  await writeStoredFile(thumbRelPath, thumbnail, 'image/webp')
 
   return {
     originalPath: originalRelPath,
@@ -180,12 +191,12 @@ async function savePdfFloorPlan(
 }
 
 async function saveDxfFloorPlan(
-  originalAbsPath: string,
+  buffer: Buffer,
   originalRelPath: string,
   filename: string,
 ): Promise<FloorPlanSaveResult> {
   try {
-    const content = await fs.promises.readFile(originalAbsPath, 'utf-8')
+    const content = buffer.toString('utf-8')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const parser = new DxfParser() as any
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -254,7 +265,7 @@ async function saveDxfFloorPlan(
 
     const svgFilename = path.basename(filename, path.extname(filename)) + '.svg'
     const svgRelPath = path.join(FLOOR_PLANS_DIR, svgFilename)
-    await fs.promises.writeFile(resolveStoragePath(svgRelPath), svg, 'utf-8')
+    await writeStoredFile(svgRelPath, svg, 'image/svg+xml')
 
     return {
       originalPath: originalRelPath,
@@ -287,7 +298,6 @@ export async function saveBrandingImage(
   file: MultipartFile,
   slot: 'logo' | 'favicon',
 ): Promise<string> {
-  await fs.promises.mkdir(path.join(env.FILE_STORAGE_PATH, BRANDING_DIR), { recursive: true })
   // Unique per upload (not a fixed `${slot}.png`) so the stored logoPath/
   // faviconPath value actually changes on replace — every <img>/<link> in
   // the app cache-busts with `?t=${branding.logoPath}`, which is a no-op
@@ -295,33 +305,30 @@ export async function saveBrandingImage(
   // the serving route, a replaced logo/favicon kept showing the old image
   // for up to 5 minutes (indefinitely in an already-open tab) with no error.
   const relPath = path.join(BRANDING_DIR, `${slot}-${Date.now()}-${randomBytes(4).toString('hex')}.png`)
-  const absPath = resolveStoragePath(relPath)
 
   const buffer = await file.toBuffer()
   if (!checkFileMagic(buffer, file.mimetype)) {
     throw Object.assign(new Error('File content does not match the declared MIME type'), { code: 'INVALID_MAGIC' })
   }
-  if (slot === 'favicon') {
-    await sharp(buffer).resize(64, 64, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toFile(absPath)
-  } else {
+  const png = slot === 'favicon'
+    ? await sharp(buffer).resize(64, 64, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer()
     // logo: max 512 wide, max 128 tall, preserve aspect ratio
-    await sharp(buffer).resize(512, 128, { fit: 'inside', withoutEnlargement: true }).png().toFile(absPath)
-  }
+    : await sharp(buffer).resize(512, 128, { fit: 'inside', withoutEnlargement: true }).png().toBuffer()
+  await writeStoredFile(relPath, png, 'image/png')
   return relPath
 }
 
 // ─── Category icon storage ────────────────────────────────────────────────────
 
 export async function saveCategoryIcon(file: MultipartFile, categoryId: string): Promise<string> {
-  await fs.promises.mkdir(path.join(env.FILE_STORAGE_PATH, CATEGORY_ICONS_DIR), { recursive: true })
   const buffer = await file.toBuffer()
   if (!checkFileMagic(buffer, file.mimetype)) {
     throw Object.assign(new Error('File content does not match the declared MIME type'), { code: 'INVALID_MAGIC' })
   }
   const relPath = path.join(CATEGORY_ICONS_DIR, `${categoryId}.png`)
-  const absPath = resolveStoragePath(relPath)
   // Normalise to 64×64 PNG so the canvas can render it at a consistent size
-  await sharp(buffer).resize(64, 64, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toFile(absPath)
+  const png = await sharp(buffer).resize(64, 64, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer()
+  await writeStoredFile(relPath, png, 'image/png')
   return relPath
 }
 
@@ -363,14 +370,7 @@ export function getFloorPlanUrl(relativePath: string): string {
   return `/api/v1/files/${encodeURIComponent(relativePath)}`
 }
 
-export async function deleteFile(relativePath: string): Promise<void> {
-  const absPath = resolveStoragePath(relativePath)
-  try {
-    await fs.promises.unlink(absPath)
-  } catch (err: unknown) {
-    // Ignore file-not-found errors
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw err
-    }
-  }
+/** Removes a stored file; a missing file is not an error. */
+export function deleteFile(relativePath: string): Promise<void> {
+  return storage.delete(relativePath)
 }
