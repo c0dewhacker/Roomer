@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.4.0](https://github.com/c0dewhacker/Roomer/compare/v1.3.0...v1.4.0) (2026-10-17)
+
+
+### Features
+
+* **chart:** S3 credentials from an existing Secret, with validation ([#395](https://github.com/c0dewhacker/Roomer/issues/395)) ([08f5405](https://github.com/c0dewhacker/Roomer/commit/08f540599b07cada2a5c0d85da5be2dea99a705c))
+* S3-compatible file storage ([#393](https://github.com/c0dewhacker/Roomer/issues/393)) ([7a6a0b3](https://github.com/c0dewhacker/Roomer/commit/7a6a0b3bc8245261154d3d0ed2d050748458a6d3))
+
+
+### Bug Fixes
+
+* **api:** convert DXF floor plans to SVG again ([#392](https://github.com/c0dewhacker/Roomer/issues/392)) ([160d554](https://github.com/c0dewhacker/Roomer/commit/160d554c126d58847ed893316d75718b348f2c9a))
+* **web:** bundle the Inter font files instead of 404ing them ([#390](https://github.com/c0dewhacker/Roomer/issues/390)) ([3ed03b5](https://github.com/c0dewhacker/Roomer/commit/3ed03b59c2a13e43fd1be50a9863ddb7c2702fc4))
+
 ## [1.3.0](https://github.com/c0dewhacker/Roomer/compare/v1.2.1...v1.3.0) (2026-10-16)
 
 
