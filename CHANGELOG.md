@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.1](https://github.com/c0dewhacker/Roomer/compare/v1.4.0...v1.4.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **deps:** raise fast-uri override to ^3.1.9 ([66b93a6](https://github.com/c0dewhacker/Roomer/commit/66b93a6f57cc97ed6f4d930aa54ba56ce931b2c6))
+
+
+### Dependencies
+
+* bump 21 dependencies, including nodemailer 10.2.1 (fixes two address-parser advisories), @aws-sdk/client-s3, the Fastify plugins, vite and @hookform/resolvers 6 ([#400](https://github.com/c0dewhacker/Roomer/issues/400))
+
 ## [1.4.0](https://github.com/c0dewhacker/Roomer/compare/v1.3.0...v1.4.0) (2026-10-17)
 
 
